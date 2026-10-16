@@ -80,6 +80,7 @@ from services.semantic_reconcile import (
     _ensure_building_version,
     reconcile_family_schemas,
     reconcile_or_defer,
+    revive_answered_suggestion_job,
     schedule_extension_wave,
 )
 from services.variant_answer import SchemaAnswer, ValuesAnswer
@@ -1173,7 +1174,10 @@ def reopen_context(db: Session, *, context_id: int, actor_id: int) -> CatalogCon
     разборе — `semantic_state := CONFIRMED`, если вид поставил человек
     (`semantic_kind_source = manual`), иначе `SUGGESTED`; семья, вариант и значения
     остаются пустыми; событие `context_reopened`; сверка очереди той же
-    транзакцией ставит задание предложения применимому контексту.
+    транзакцией ставит задание предложения применимому контексту; выполненное
+    задание текущего отпечатка с предложением, разобранным любым решением, кроме
+    отклонения, возвращается в `pending` (решение остаётся в истории), с
+    отклонённым — нет, с неразобранным — предложение публикуется повторно.
 
     Блокировки — порядок фичи «строка -> семья -> вариант -> контекст»: строка
     каталога `FOR SHARE` (глобальная пометка берёт её `FOR UPDATE`, поэтому вид
@@ -1251,6 +1255,9 @@ def reopen_context(db: Session, *, context_id: int, actor_id: int) -> CatalogCon
         actor_id=actor_id,
         payload={"from_state": SemanticState.NOT_APPLICABLE.value, "to_state": to_state},
     )
+    # Выполненное задание с уже разобранным предложением обычная сверка не
+    # перезапускает; на возврате это нужно (спека §2.8) — единственный такой путь.
+    revive_answered_suggestion_job(db, context_id)
     reconcile_or_defer(db, [context_id])
     return context
 

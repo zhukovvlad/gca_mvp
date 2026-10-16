@@ -10,14 +10,35 @@ from __future__ import annotations
 
 import datetime as dt
 import threading
+from decimal import Decimal
 
 import pytest
 import sqlalchemy as sa
 from sqlalchemy import event
 
+from config import settings as app_settings
 from crud.semantic import context_card
-from models import CatalogContext, CatalogPosition, SemanticEvent, SemanticJob
+from models import (
+    CatalogContext,
+    CatalogPosition,
+    FamilySuggestion,
+    SemanticEvent,
+    SemanticJob,
+    SemanticJobAttempt,
+    SuggestionDecision,
+)
 from services.review import set_position_kind_global
+from services.semantic_decisions import (
+    assign_other_family,
+    confirm_suggestions,
+    reject_suggestion,
+)
+from services.semantic_reconcile import (
+    NO_CAP,
+    reconcile_semantic_jobs,
+    revive_answered_suggestion_job,
+)
+from services.semantic_worker import claim_next, record_result
 from services.work_families import WorkFamilyError, assign_family
 from services.work_variants import is_reopenable, mark_context_not_work, reopen_context
 from tests.integration.test_catalog_discovery_scope import (
@@ -28,11 +49,20 @@ from tests.integration.test_catalog_discovery_scope import (
     world,  # noqa: F401 — фикстура
 )
 from tests.integration.test_semantic_queue_api import _active_family, _proposal, _unit_id
+from tests.integration.test_semantic_queue_worker import _answer, _response
 
 pytestmark = pytest.mark.integration
 
 #: Страховочный предел от зависания, секунды, а не измерение: взаимоблокировку PostgreSQL находит за ~1 с.
 _T = 60.0
+
+def _now() -> dt.datetime:
+    """Захват берёт задания с `next_attempt_at <= now`, а сверка ставит их по часам БД."""
+    return dt.datetime.now(dt.UTC) + dt.timedelta(minutes=1)
+
+
+#: Настройки исполнителя: тело запроса те же, что у сверки (иначе отпечаток другой), бюджет задан.
+_WORKER = app_settings.model_copy(update={"SEMANTIC_DAILY_BUDGET_USD": Decimal("30")})
 
 
 # ---------------------------------------------------------------------------
@@ -552,3 +582,292 @@ class TestRaceOfTwoReopens:
         with factory() as db:
             assert db.get(CatalogContext, context_id).semantic_state == "SUGGESTED"
             assert len(_events(db, context_id, "context_reopened")) == 1
+
+
+# ---------------------------------------------------------------------------
+#  Возврат после принятого решения по предложению (круг Codex на 6cb9a88)
+# ---------------------------------------------------------------------------
+
+def _run_suggestion_job(w, context_id) -> int:
+    """Сверка ставит задание предложения, исполнитель берёт его и записывает
+    подменённый ответ модели «семья пола»; возвращает `id` предложения."""
+    reconcile_semantic_jobs(w.db, [context_id], cap=NO_CAP, source="operation")
+    claim = claim_next(w.db, settings=_WORKER, now=_now())
+    assert claim is not None
+    assert w.db.get(SemanticJob, claim.job_id).context_id == context_id
+    record_result(
+        w.db, claim, _response(_answer(w.family.id)), now=_now(), settings=_WORKER
+    )
+    w.db.expire_all()
+    return w.db.get(SemanticJob, claim.job_id).result_suggestion_id
+
+
+def _suggestion_jobs(db, context_id) -> list[SemanticJob]:
+    db.expire_all()
+    return list(
+        db.execute(
+            sa.select(SemanticJob)
+            .where(SemanticJob.context_id == context_id, SemanticJob.kind == "family_suggestion")
+            .order_by(SemanticJob.id)
+        ).scalars()
+    )
+
+
+def _suggestions_of(db, context_id) -> list[FamilySuggestion]:
+    db.expire_all()
+    return list(
+        db.execute(
+            sa.select(FamilySuggestion)
+            .where(FamilySuggestion.context_id == context_id)
+            .order_by(FamilySuggestion.id)
+        ).scalars()
+    )
+
+
+def _attempts_of(db, job_id) -> int:
+    return db.execute(
+        sa.select(sa.func.count(SemanticJobAttempt.id)).where(SemanticJobAttempt.job_id == job_id)
+    ).scalar_one()
+
+
+def _decide(w, suggestion_id: int, how: str) -> None:
+    """Решение человека тем же путём, что экран: подтвердить, отклонить, другая семья."""
+    if how == "accepted":
+        report = confirm_suggestions(w.db, suggestion_ids=[suggestion_id], actor_id=w.admin.id)
+        assert report.confirmed == [suggestion_id]
+    elif how == "rejected":
+        reject_suggestion(w.db, suggestion_id=suggestion_id, actor_id=w.admin.id)
+    else:
+        assign_other_family(
+            w.db, suggestion_id=suggestion_id, family_id=w.other_family.id, actor_id=w.admin.id
+        )
+    w.db.expire_all()
+
+
+@pytest.fixture
+def decided_world(world):
+    """Две активные семьи единицы: «другая семья» должна быть другой, а список
+    семей не должен меняться между вызовами (иначе сменится отпечаток запроса)."""
+    world.other_family = _active_family(
+        world.db, title="Вторая семья", unit_name="M2", actor_id=world.admin.id
+    )
+    return world
+
+
+class TestReopenAfterADecision:
+    """Круг Codex на 6cb9a88: после принятого решения отпечаток запроса не
+    меняется, выполненное задание в `E` не входит, и контекст оставался без
+    задания."""
+
+    @pytest.mark.parametrize("how", ["accepted", "other_family"])
+    def test_not_work_keeps_the_job_done_and_the_decision_and_reopen_queues_a_pending_job(
+        self, decided_world, how
+    ):
+        w = decided_world
+        context_id = _ctx_family_unit(w, f"Решение {how}")
+        suggestion_id = _run_suggestion_job(w, context_id)
+        _decide(w, suggestion_id, how)
+        (job,) = _suggestion_jobs(w.db, context_id)
+        job_id, generation = job.id, job.retry_generation
+
+        mark_context_not_work(w.db, context_id=context_id, actor_id=w.admin.id)
+
+        (job,) = _suggestion_jobs(w.db, context_id)
+        (old,) = _suggestions_of(w.db, context_id)
+        assert (job.status, job.result_suggestion_id) == ("done", old.id)
+        assert old.decision == how
+        assert old.is_published is False
+        decision = (old.decision, old.decided_by)
+
+        reopen_context(w.db, context_id=context_id, actor_id=w.admin.id)
+
+        assert _pending_suggestion_jobs(w.db, context_id) == 1
+        (job,) = _suggestion_jobs(w.db, context_id)
+        assert (job.id, job.retry_generation) == (job_id, generation + 1)
+        (old,) = _suggestions_of(w.db, context_id)
+        assert (old.decision, old.decided_by) == decision
+        assert old.is_published is False
+
+    @pytest.mark.parametrize(
+        "decision", [d.value for d in SuggestionDecision if d is not SuggestionDecision.rejected]
+    )
+    def test_every_decision_but_a_rejection_queues_a_pending_job_on_reopen(
+        self, world, decision
+    ):
+        # Решение пишется напрямую ПОСЛЕ «Не работа»: продуктовым путём `accepted_pending` и
+        # `auto_pending` «Не работа» сама превращает в `rejected` (ожидание снято человеком,
+        # `_settle_suggestion`), а `auto_superseded` и `family_created` экраном не получить.
+        context_id = _ctx_family_unit(world, f"Любое решение {decision}")
+        suggestion_id = _run_suggestion_job(world, context_id)
+        mark_context_not_work(world.db, context_id=context_id, actor_id=world.admin.id)
+        automatic = decision.startswith("auto_")
+        world.db.execute(
+            sa.update(FamilySuggestion)
+            .where(FamilySuggestion.id == suggestion_id)
+            .values(
+                decision=decision,
+                decided_by=None if automatic else world.admin.id,
+                decided_at=dt.datetime.now(dt.UTC),
+            )
+        )
+        world.db.expire_all()
+
+        reopen_context(world.db, context_id=context_id, actor_id=world.admin.id)
+
+        assert _pending_suggestion_jobs(world.db, context_id) == 1
+        (old,) = _suggestions_of(world.db, context_id)
+        assert (old.id, old.decision) == (suggestion_id, decision)
+
+    def test_rejected_suggestion_is_terminal_for_the_fingerprint_after_a_reopen(self, world):
+        context_id = _ctx_family_unit(world, "Отклонённое")
+        suggestion_id = _run_suggestion_job(world, context_id)
+        reject_suggestion(world.db, suggestion_id=suggestion_id, actor_id=world.admin.id)
+        mark_context_not_work(world.db, context_id=context_id, actor_id=world.admin.id)
+
+        reopen_context(world.db, context_id=context_id, actor_id=world.admin.id)
+
+        assert _pending_suggestion_jobs(world.db, context_id) == 0
+        (job,) = _suggestion_jobs(world.db, context_id)
+        assert (job.status, job.retry_generation) == ("done", 0)
+        (old,) = _suggestions_of(world.db, context_id)
+        assert (old.id, old.decision, old.is_published) == (suggestion_id, "rejected", False)
+        context = world.db.get(CatalogContext, context_id)
+        assert (context.work_family_id, context.pending_family_id) == (None, None)
+
+    def test_undecided_suggestion_is_unpublished_by_not_work_and_republished_by_reopen(
+        self, world
+    ):
+        context_id = _ctx_family_unit(world, "Без решения")
+        suggestion_id = _run_suggestion_job(world, context_id)
+        mark_context_not_work(world.db, context_id=context_id, actor_id=world.admin.id)
+        (old,) = _suggestions_of(world.db, context_id)
+        assert (old.id, old.decision, old.is_published, old.unpublished_reason) == (
+            suggestion_id, None, False, "context_not_applicable",
+        )
+        (job,) = _suggestion_jobs(world.db, context_id)
+        assert job.status == "done"
+
+        reopen_context(world.db, context_id=context_id, actor_id=world.admin.id)
+
+        # Нового вызова модели нет: то же выполненное задание, предложение снова опубликовано.
+        assert _pending_suggestion_jobs(world.db, context_id) == 0
+        (job,) = _suggestion_jobs(world.db, context_id)
+        assert (job.status, job.retry_generation) == ("done", 0)
+        (old,) = _suggestions_of(world.db, context_id)
+        assert (old.id, old.is_published, old.unpublished_reason) == (suggestion_id, True, None)
+
+    @pytest.mark.parametrize("decision", ["rejected", "accepted"])
+    def test_ordinary_reconcile_does_not_revive_a_done_job_with_a_decided_suggestion(
+        self, world, decision
+    ):
+        # `accepted` — решение, которое возврат оживил бы: оно записано напрямую,
+        # без назначения семьи, чтобы контекст остался применимым и обычная сверка
+        # его видела. Иначе тест не отличал бы «обычная сверка не оживляет» от
+        # «отклонение терминально».
+        context_id = _ctx_family_unit(world, f"Обычная сверка {decision}")
+        suggestion_id = _run_suggestion_job(world, context_id)
+        if decision == "rejected":
+            reject_suggestion(world.db, suggestion_id=suggestion_id, actor_id=world.admin.id)
+        else:
+            world.db.execute(
+                sa.update(FamilySuggestion)
+                .where(FamilySuggestion.id == suggestion_id)
+                .values(
+                    decision=decision,
+                    decided_by=world.admin.id,
+                    decided_at=dt.datetime.now(dt.UTC),
+                )
+            )
+            world.db.expire_all()
+        (job,) = _suggestion_jobs(world.db, context_id)
+        assert job.status == "done"
+
+        report = reconcile_semantic_jobs(
+            world.db, [context_id], cap=NO_CAP, source="operation"
+        )
+
+        assert (report.created, report.revived) == (0, 0)
+        assert _pending_suggestion_jobs(world.db, context_id) == 0
+        (job,) = _suggestion_jobs(world.db, context_id)
+        assert (job.status, job.retry_generation) == ("done", 0)
+
+    def test_returned_job_is_executed_into_a_new_suggestion_and_the_old_keeps_its_decision(
+        self, world
+    ):
+        context_id = _ctx_family_unit(world, "Сквозной")
+        old_id = _run_suggestion_job(world, context_id)
+        confirm_suggestions(world.db, suggestion_ids=[old_id], actor_id=world.admin.id)
+        mark_context_not_work(world.db, context_id=context_id, actor_id=world.admin.id)
+        reopen_context(world.db, context_id=context_id, actor_id=world.admin.id)
+        (job,) = _suggestion_jobs(world.db, context_id)
+        assert (job.status, job.result_suggestion_id) == ("pending", old_id)
+
+        claim = claim_next(world.db, settings=_WORKER, now=_now())
+        assert claim is not None and claim.job_id == job.id
+        published = record_result(
+            world.db, claim, _response(_answer(world.family.id, "0.8")),
+            now=_now(), settings=_WORKER,
+        )
+
+        job = _suggestion_jobs(world.db, context_id)[0]
+        old, new = _suggestions_of(world.db, context_id)
+        assert old.id == old_id and new.id == published
+        assert (old.decision, old.is_published) == ("accepted", False)
+        assert (new.decision, new.is_published, new.job_id) == (None, True, job.id)
+        assert (job.status, job.result_suggestion_id) == ("done", new.id)
+
+    def test_returned_context_without_applicability_gets_no_revival(self, world):
+        # Единица без активных семей: применимого отпечатка нет, возвращать нечего.
+        context_id, _ = _make(world.db, world.factories, world.proposal, world.bare_unit, "Голая")
+        assert revive_answered_suggestion_job(world.db, context_id) == 0
+
+    def test_done_job_of_an_old_fingerprint_stays_done_and_the_current_one_is_queued(
+        self, world
+    ):
+        # Возвращается задание только ТЕКУЩЕГО отпечатка: задание прежнего
+        # отпечатка остаётся `done` (иначе сверка тут же отменила бы его как
+        # `input_changed`, и счёт `pending` этого бы не заметил).
+        context_id = _ctx_family_unit(world, "Старый отпечаток")
+        old_id = _run_suggestion_job(world, context_id)
+        confirm_suggestions(world.db, suggestion_ids=[old_id], actor_id=world.admin.id)
+        (old_job,) = _suggestion_jobs(world.db, context_id)
+        old_job_id, old_hash = old_job.id, old_job.request_hash
+        # Ещё одна активная семья единицы меняет список кандидатов, а с ним отпечаток.
+        _active_family(world.db, title="Третья семья", unit_name="M2", actor_id=world.admin.id)
+        mark_context_not_work(world.db, context_id=context_id, actor_id=world.admin.id)
+
+        reopen_context(world.db, context_id=context_id, actor_id=world.admin.id)
+
+        old_job, new_job = _suggestion_jobs(world.db, context_id)
+        assert old_job.id == old_job_id
+        assert (old_job.status, old_job.cancel_reason, old_job.retry_generation) == (
+            "done", None, 0,
+        )
+        assert old_job.result_suggestion_id == old_id
+        assert new_job.status == "pending" and new_job.request_hash != old_hash
+        (old,) = _suggestions_of(world.db, context_id)
+        assert old.decision == "accepted"
+
+    def test_returned_job_is_held_back_by_the_daily_budget_like_any_pending(self, world):
+        # Захват резервирует и отказывает возвращённому заданию так же, как любому
+        # `pending`: при исчерпанном суточном бюджете захвата и попытки нет.
+        context_id = _ctx_family_unit(world, "Бюджет")
+        old_id = _run_suggestion_job(world, context_id)
+        confirm_suggestions(world.db, suggestion_ids=[old_id], actor_id=world.admin.id)
+        mark_context_not_work(world.db, context_id=context_id, actor_id=world.admin.id)
+        reopen_context(world.db, context_id=context_id, actor_id=world.admin.id)
+        (job,) = _suggestion_jobs(world.db, context_id)
+        assert job.status == "pending"
+        job_id = job.id
+        attempts_before = _attempts_of(world.db, job_id)
+
+        broke = _WORKER.model_copy(update={"SEMANTIC_DAILY_BUDGET_USD": Decimal("0")})
+        assert claim_next(world.db, settings=broke, now=_now()) is None
+
+        (job,) = _suggestion_jobs(world.db, context_id)
+        assert (job.status, job.attempts_in_generation, job.claim_token) == ("pending", 0, None)
+        assert _attempts_of(world.db, job_id) == attempts_before
+        # С бюджетом то же задание захватывается: остановил именно бюджет.
+        claim = claim_next(world.db, settings=_WORKER, now=_now())
+        assert claim is not None and claim.job_id == job_id
+        assert _attempts_of(world.db, job_id) == attempts_before + 1

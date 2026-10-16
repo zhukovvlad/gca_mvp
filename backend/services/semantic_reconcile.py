@@ -64,6 +64,7 @@ from models import (
     SemanticJobStatus,
     SemanticReconcileBatch,
     SemanticState,
+    SuggestionDecision,
     SuggestionUnpublishedReason,
     ValueSource,
     WorkFamily,
@@ -1276,7 +1277,9 @@ def _revive_jobs(db: Session, job_ids: list[int]) -> int:
     попытки текущего поколения и отсрочка обнулены, разрешение приватности
     и класс последней ошибки сброшены. Условно по `status = 'cancelled'` —
     та же гонка с захватом, что у `_cancel_where_status`; `done` возвращается
-    только у заданий значений, нужных по отпечатку, который уже выполнялся."""
+    у заданий значений, нужных по отпечатку, который уже выполнялся, и у
+    задания предложения при «Вернуть в разбор»
+    (`revive_answered_suggestion_job`, спека 3б §2.8)."""
     if not job_ids:
         return 0
     result = db.execute(
@@ -1298,6 +1301,54 @@ def _revive_jobs(db: Session, job_ids: list[int]) -> int:
         )
     )
     return result.rowcount
+
+
+#: Терминальные для отпечатка решения: после них возврат в разбор вызов заново не
+#: ставит. Остальные решения (в том числе будущие значения перечисления) оживляют:
+#: семью, которую дало решение, снимала «Не работа». Отклонение семьи не давало —
+#: контекст возвращается в состояние до «Не работа», семью назначают вручную.
+_REOPEN_TERMINAL_DECISIONS = (SuggestionDecision.rejected.value,)
+
+
+def revive_answered_suggestion_job(db: Session, context_id: int) -> int:
+    """«Вернуть в разбор» (спека 3б §2.8): выполненное задание предложения ТЕКУЩЕГО
+    отпечатка, чьё предложение уже разобрано любым решением, кроме терминального
+    (`_REOPEN_TERMINAL_DECISIONS`),
+    возвращается в `pending` — тем же `_revive_jobs`. Предложение и его решение не
+    трогаются: результат нового вызова публикуется НОВЫМ предложением, старое
+    остаётся историей. Предложение без решения здесь не затрагивается: его
+    переопубликует обычная сверка, нового вызова модели не будет.
+
+    Только для пути возврата: обычная сверка выполненное задание не перезапускает
+    (каждая сверка заново платила бы за вызов), поэтому в план `E` это не входит.
+    Вызывается ДО `reconcile_or_defer` возврата, под блокировками контекста; поэтому
+    задание, вернувшееся в `pending`, дальше видно обычному плану как текущее, и
+    удержанная пачка или потолок события его уже не касаются: один вызов по явному
+    действию человека. Приватность проверяет захват (`privacy_hold`), как у любого
+    `pending`. Возвращает число возвращённых заданий (0 или 1)."""
+    prepared = prepare_contexts(db, [context_id])
+    rendered = prepared.applicable_render.get(context_id)
+    if rendered is None:
+        return 0
+    job_ids = list(
+        db.execute(
+            sa.select(SemanticJob.id)
+            .join(FamilySuggestion, FamilySuggestion.id == SemanticJob.result_suggestion_id)
+            .where(
+                SemanticJob.kind == SemanticJobKind.family_suggestion.value,
+                SemanticJob.context_id == context_id,
+                SemanticJob.schema_id.is_(None),
+                SemanticJob.request_hash == rendered.request_hash,
+                SemanticJob.status == SemanticJobStatus.done.value,
+                FamilySuggestion.decision.is_not(None),
+                FamilySuggestion.decision.not_in(_REOPEN_TERMINAL_DECISIONS),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    _lock_jobs(db, job_ids)
+    return _revive_jobs(db, job_ids)
 
 
 def _job_conflict_arbiter() -> list:
