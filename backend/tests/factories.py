@@ -17,6 +17,7 @@ from models import (
     Contract,
     Contractor,
     Estimate,
+    FamilyCategory,
     ImportJob,
     ImportJobStatus,
     Lot,
@@ -64,6 +65,13 @@ def _require_session():
 
 def _unit_id(code: str) -> int:
     return _require_session().query(UnitOfMeasure).filter_by(code=code).one().id
+
+
+def seed_category_id(db, seed_key: str = "work") -> int:
+    """Id строки справочника категорий семей, заведённой миграцией, по её
+    `seed_key` (читается из базы — id не литерал). Нужна и тестам с фикстурой
+    `work_category_id`, и помощникам, у которых есть только сессия."""
+    return db.query(FamilyCategory).filter_by(seed_key=seed_key).one().id
 
 
 class _BaseFactory(SQLAlchemyModelFactory):

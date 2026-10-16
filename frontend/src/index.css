@@ -367,6 +367,14 @@
   padding-inline: 24px;
 }
 
+/* Широкая страница: те же поля, что у `container-page`, но потолок 1920 px —
+   для разделов с таблицей и боковой панелью (сейчас «Семьи и контексты»). */
+@utility container-wide {
+  margin-inline: auto;
+  max-width: 1920px;
+  padding-inline: 24px;
+}
+
 @utility hairline {
   border-width: 0.5px;
   border-style: solid;

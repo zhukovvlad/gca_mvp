@@ -2,8 +2,8 @@ import { useState } from "react";
 
 import { EmptyState } from "@/components/ui-domain/EmptyState";
 import { EntitySelect } from "@/components/ui-domain/EntitySelect";
-import { Skeleton } from "@/components/ui-domain/Skeleton";
 import { Surface } from "@/components/ui-domain/Surface";
+import { EntityCombobox } from "@/components/domain/EntityCombobox";
 import { Pager } from "@/components/domain/Pager";
 import {
   AlertDialog,
@@ -56,6 +56,7 @@ import {
   useContextCard,
   useContextGroupMembers,
   useMarkNotWork,
+  useReopenContext,
   useMergeContexts,
   useMoveMembers,
   useSetNameRole,
@@ -76,6 +77,7 @@ import type {
 } from "@/types/domain";
 
 import {
+  CATALOG_REVIEW_KIND_LABEL,
   CATEGORY_SOURCE_LABEL,
   contextRefusalLabel,
   DECISION_SOURCE_LABEL,
@@ -94,6 +96,7 @@ import {
 import { ContextVariant } from "./ContextVariant";
 import { MarkPositionDialog } from "./MarkPositionDialog";
 import { PendingFamilyBlock } from "./PendingFamilyBlock";
+import { FetchingBar, ListSkeleton } from "./pending";
 import { SourceChip } from "./SourceChip";
 
 const KIND_OPTIONS: SemanticKind[] = ["WORK", "SYSTEM", "UNKNOWN"];
@@ -201,9 +204,11 @@ export function ContextCard({ contextId }: ContextCardProps) {
   const acceptTargetDecision = useAcceptTargetDecision();
   const transferStaleGroup = useTransferStaleGroup();
   const markNotWork = useMarkNotWork();
+  const reopenContext = useReopenContext();
 
   const [tab, setTab] = useState("decisions");
   const [notWorkOpen, setNotWorkOpen] = useState(false);
+  const [reopenOpen, setReopenOpen] = useState(false);
   const [markPositionOpen, setMarkPositionOpen] = useState(false);
   // Исход и отказ смены семьи показывает само окно: тоста у этой мутации нет.
   const [familyOutcome, setFamilyOutcome] = useState<string | null>(null);
@@ -260,6 +265,8 @@ export function ContextCard({ contextId }: ContextCardProps) {
     refusals: { position_item_id: number; message: string | null }[];
   }>>({});
   const [acceptingAllConflicts, setAcceptingAllConflicts] = useState(false);
+  // Перенос из окна конфликтной строки делит `moveMembers` с «Перенести выбранные»: чей запрос в пути.
+  const [conflictMoving, setConflictMoving] = useState(false);
 
   if (contextId === null) {
     return (
@@ -270,7 +277,7 @@ export function ContextCard({ contextId }: ContextCardProps) {
     );
   }
 
-  if (cardQ.isPending) return <Skeleton className="h-64 w-full" />;
+  if (cardQ.isPending) return <ListSkeleton rows={5} />;
 
   if (cardQ.isError || !cardQ.data) {
     return <EmptyState title="Ошибка загрузки" description="Не удалось получить контекст." />;
@@ -396,6 +403,13 @@ export function ContextCard({ contextId }: ContextCardProps) {
 
   const selectedIdList = Array.from(selectedIds);
 
+  // Контекст неприменим из-за разметки строки в Review (раздел, мусор): «не работу» ему
+  // поставил не человек, и вернуть его в разбор нельзя.
+  const reviewKindLabel =
+    card.archived_at === null && card.semantic_state === "NOT_APPLICABLE"
+      ? (CATALOG_REVIEW_KIND_LABEL[card.catalog_kind] ?? null)
+      : null;
+
   // Живые соседи по корзине, кроме текущего контекста — цель слияния/переноса
   // выбирается из НИХ (решение оркестратора П6, план задачи 13), а не
   // вводится id вручную: архивный сосед в выбор не попадает — переносить/
@@ -414,13 +428,17 @@ export function ContextCard({ contextId }: ContextCardProps) {
         { chapter_item_ids: [], no_chapter: false },
         "conflict"
       );
+      // Кнопка «все» занята до конца запроса, а не только пока читаются id: мутацию
+      // делят с ней кнопки отдельных строк, и по `isPending` их не различить.
       acceptTargetDecision.mutate(
         { position_item_ids },
-        { onSuccess: () => pruneSelection(position_item_ids) }
+        {
+          onSuccess: () => pruneSelection(position_item_ids),
+          onSettled: () => setAcceptingAllConflicts(false),
+        }
       );
     } catch (err) {
       toastApiError(err);
-    } finally {
       setAcceptingAllConflicts(false);
     }
   }
@@ -434,6 +452,7 @@ export function ContextCard({ contextId }: ContextCardProps) {
     // если хоть один предок в цепочке (этот корень, `Surface`, `Tabs`,
     // `TabsContent`) не передал сужение дальше.
     <div className="grid min-w-0 gap-4">
+      <FetchingBar active={cardQ.isFetching} />
       {/* Карточка — ОДНА поверхность (сверка с макетом 27.09.2026): шапка,
           строки внимания и вкладки с содержимым живут в одном бордюре, не в
           трёх отдельных карточках. */}
@@ -472,10 +491,29 @@ export function ContextCard({ contextId }: ContextCardProps) {
             >
               Пометить написание целиком…
             </Button>
+            {reviewKindLabel !== null && (
+              <p className="mt-1 text-xs text-fg-tertiary">
+                Размечено в Review как «{reviewKindLabel}» — вид строки решает Review.
+              </p>
+            )}
           </div>
-          <Badge variant={card.archived_at ? "outline" : "secondary"}>
-            {card.archived_at ? "архивный" : SEMANTIC_STATE_LABEL[card.semantic_state]}
-          </Badge>
+          <div className="flex flex-none flex-col items-end gap-2">
+            <Badge variant={card.archived_at ? "outline" : "secondary"}>
+              {card.archived_at ? "архивный" : SEMANTIC_STATE_LABEL[card.semantic_state]}
+            </Badge>
+            {/* «Не работа», которую поставил человек, обратима (спека 3б §2.8); строка,
+                размеченная в Review, кнопки не получает — её вид решает Review. */}
+            {card.reopenable && (
+              <Button
+                size="sm"
+                variant="outline"
+                loading={reopenContext.isPending}
+                onClick={() => setReopenOpen(true)}
+              >
+                Вернуть в разбор
+              </Button>
+            )}
+          </div>
         </div>
 
       {/* Строки внимания (спека §2.6) — МЕЖДУ шапкой и вкладками, видны
@@ -518,6 +556,10 @@ export function ContextCard({ contextId }: ContextCardProps) {
                     sg.target_category_code ?? "—"
                   }» — раздел ${pathLabel}`}
                   disabled={transferStaleGroup.isPending}
+                  loading={
+                    transferStaleGroup.isPending &&
+                    groupKeyOf(transferStaleGroup.variables?.input.chapter_item_ids ?? []) === key
+                  }
                   onClick={() =>
                     transferStaleGroup.mutate(
                       {
@@ -618,7 +660,8 @@ export function ContextCard({ contextId }: ContextCardProps) {
                 variant="link"
                 className="h-auto p-0"
                 aria-label="Принять решение цели (все конфликтные)"
-                disabled={acceptingAllConflicts || acceptTargetDecision.isPending}
+                disabled={acceptTargetDecision.isPending}
+                loading={acceptingAllConflicts}
                 onClick={() => acceptAllConflictingTargetDecisions()}
               >
                 Принять решение цели
@@ -719,6 +762,7 @@ export function ContextCard({ contextId }: ContextCardProps) {
               <Button
                 variant="outline"
                 disabled={card.archived_at !== null || card.semantic_state === "NOT_APPLICABLE"}
+                loading={markNotWork.isPending}
                 onClick={() => setNotWorkOpen(true)}
               >
                 Не работа
@@ -758,6 +802,10 @@ export function ContextCard({ contextId }: ContextCardProps) {
                         acceptStaleTransfer.mutate(id, { onSuccess: () => pruneSelection([id]) })
                       }
                       acceptStaleTransferPending={acceptStaleTransfer.isPending}
+                      acceptingStaleTransferId={
+                        acceptStaleTransfer.isPending ? acceptStaleTransfer.variables : undefined
+                      }
+                      selectionLocked={splitContext.isPending || (moveMembers.isPending && !conflictMoving)}
                       onAcceptTargetDecision={(id) =>
                         acceptTargetDecision.mutate(
                           { position_item_ids: [id] },
@@ -765,6 +813,11 @@ export function ContextCard({ contextId }: ContextCardProps) {
                         )
                       }
                       acceptTargetDecisionPending={acceptTargetDecision.isPending}
+                      acceptingTargetDecisionIds={
+                        acceptTargetDecision.isPending
+                          ? acceptTargetDecision.variables?.position_item_ids
+                          : undefined
+                      }
                       onOpenConflictMove={(row) => {
                         setConflictMove(row);
                         setConflictMoveTarget(null);
@@ -829,10 +882,11 @@ export function ContextCard({ contextId }: ContextCardProps) {
                 <Button
                   variant="outline"
                   disabled={
-                    splitContext.isPending ||
+                    moveMembers.isPending ||
                     selectedIdList.length === 0 ||
                     (splitRuleMode === WITH_RULE && !ruleValue.trim())
                   }
+                  loading={splitContext.isPending}
                   onClick={() =>
                     splitContext.mutate(
                       {
@@ -873,10 +927,12 @@ export function ContextCard({ contextId }: ContextCardProps) {
                 <Button
                   variant="outline"
                   disabled={
+                    splitContext.isPending ||
                     moveMembers.isPending ||
                     selectedIdList.length === 0 ||
                     bulkTarget === null
                   }
+                  loading={moveMembers.isPending && !conflictMoving}
                   onClick={() =>
                     moveMembers.mutate(
                       {
@@ -910,7 +966,8 @@ export function ContextCard({ contextId }: ContextCardProps) {
                   placeholder="Целевой контекст"
                 />
                 <Button
-                  disabled={mergeContexts.isPending || mergeTarget === null}
+                  disabled={mergeTarget === null}
+                  loading={mergeContexts.isPending}
                   onClick={() =>
                     mergeContexts.mutate({ contextId, targetContextId: mergeTarget as number })
                   }
@@ -934,6 +991,7 @@ export function ContextCard({ contextId }: ContextCardProps) {
                 <Button
                   variant="destructive"
                   disabled={Boolean(card.archived_at)}
+                  loading={archiveContext.isPending}
                   onClick={() => setArchiveOpen(true)}
                 >
                   Архивировать
@@ -1002,6 +1060,7 @@ export function ContextCard({ contextId }: ContextCardProps) {
               <Button
                 variant="outline"
                 disabled={confirmKind.isPending}
+                loading={confirmKind.isPending && confirmKind.variables?.input.unconfirm === true}
                 onClick={() =>
                   confirmKind.mutate(
                     { contextId, input: { unconfirm: true } },
@@ -1014,6 +1073,7 @@ export function ContextCard({ contextId }: ContextCardProps) {
             )}
             <Button
               disabled={confirmKind.isPending}
+              loading={confirmKind.isPending && confirmKind.variables?.input.unconfirm !== true}
               onClick={() =>
                 confirmKind.mutate(
                   { contextId, input: { kind: kindChoice } },
@@ -1051,7 +1111,7 @@ export function ContextCard({ contextId }: ContextCardProps) {
           </div>
           <DialogFooter>
             <Button
-              disabled={setNameRole.isPending}
+              loading={setNameRole.isPending}
               onClick={() =>
                 setNameRole.mutate(
                   { contextId, input: { role: roleChoice } },
@@ -1074,19 +1134,21 @@ export function ContextCard({ contextId }: ContextCardProps) {
           if (!open) resetFamilyDialog();
         }}
       >
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-xl">
           <DialogHeader>
             <DialogTitle>{card.work_family_id === null ? "Назначить семью" : "Другая семья"}</DialogTitle>
           </DialogHeader>
           <div className="grid gap-2 py-2">
             <Label htmlFor="context-family-select">Семья</Label>
-            <EntitySelect
+            <EntityCombobox
               id="context-family-select"
-              items={activeFamilies.data}
+              items={activeFamilies.data ?? []}
               value={familyChoice}
-              onChange={(v) => setFamilyChoice(v as number | null)}
+              onChange={(f) => setFamilyChoice(f?.id ?? null)}
               getLabel={(f) => f.title}
               placeholder="Выбрать семью"
+              searchPlaceholder="Найти семью…"
+              emptyText="Ничего не найдено"
             />
             {familyOutcome && (
               <p role="status" className="text-sm text-fg">
@@ -1114,12 +1176,14 @@ export function ContextCard({ contextId }: ContextCardProps) {
                 <Button
                   variant="outline"
                   disabled={assignFamily.isPending || card.work_family_id === null}
+                  loading={assignFamily.isPending && assignFamily.variables?.input.family_id === null}
                   onClick={() => changeFamily(null)}
                 >
                   Снять семью
                 </Button>
                 <Button
                   disabled={assignFamily.isPending || familyChoice === null}
+                  loading={assignFamily.isPending && assignFamily.variables?.input.family_id !== null}
                   onClick={() => changeFamily(familyChoice)}
                 >
                   Назначить семью
@@ -1145,13 +1209,39 @@ export function ContextCard({ contextId }: ContextCardProps) {
               render={
                 <Button
                   variant="destructive"
-                  disabled={markNotWork.isPending}
                   onClick={() => {
                     markNotWork.mutate(contextId);
                     setNotWorkOpen(false);
                   }}
                 >
                   Отметить как не работу
+                </Button>
+              }
+            />
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={reopenOpen} onOpenChange={setReopenOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Вернуть контекст в разбор?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Контекст перестанет считаться «не работа» и снова попадёт в разбор: модель предложит
+              ему семью. Прежние семья, вариант и значения не возвращаются.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel render={<Button variant="outline">Отмена</Button>} />
+            <AlertDialogAction
+              render={
+                <Button
+                  onClick={() => {
+                    reopenContext.mutate(contextId);
+                    setReopenOpen(false);
+                  }}
+                >
+                  Вернуть
                 </Button>
               }
             />
@@ -1218,7 +1308,8 @@ export function ContextCard({ contextId }: ContextCardProps) {
           </div>
           <DialogFooter>
             <Button
-              disabled={moveMembers.isPending || conflictMoveTarget === null}
+              disabled={conflictMoveTarget === null}
+              loading={moveMembers.isPending}
               onClick={() => {
                 if (!conflictMove || conflictMoveTarget === null) return;
                 moveMembers.mutate(
@@ -1229,8 +1320,12 @@ export function ContextCard({ contextId }: ContextCardProps) {
                     // вводится оператором, сервис принимает только "manual".
                     reason: "manual",
                   },
-                  { onSuccess: () => pruneSelection([conflictMove.position_item_id]) }
+                  {
+                    onSuccess: () => pruneSelection([conflictMove.position_item_id]),
+                    onSettled: () => setConflictMoving(false),
+                  }
                 );
+                setConflictMoving(true);
                 setConflictMove(null);
               }}
             >
@@ -1256,6 +1351,12 @@ interface MembershipGroupSectionProps {
   acceptStaleTransferPending: boolean;
   onAcceptTargetDecision: (positionItemId: number) => void;
   acceptTargetDecisionPending: boolean;
+  /** Позиция, чьё предложение переноса принимается сейчас: крутится только её кнопка. */
+  acceptingStaleTransferId?: number;
+  /** Позиции, чьё решение цели принимается сейчас: крутится только их кнопка. */
+  acceptingTargetDecisionIds?: number[];
+  /** Идёт массовое действие над отмеченными: отметки группы и позиций заблокированы. */
+  selectionLocked: boolean;
   onOpenConflictMove: (row: ContextMemberRow) => void;
 }
 
@@ -1278,6 +1379,9 @@ function MembershipGroupSection({
   acceptStaleTransferPending,
   onAcceptTargetDecision,
   acceptTargetDecisionPending,
+  acceptingStaleTransferId,
+  acceptingTargetDecisionIds,
+  selectionLocked,
   onOpenConflictMove,
 }: MembershipGroupSectionProps) {
   const [open, setOpen] = useState(false);
@@ -1334,6 +1438,7 @@ function MembershipGroupSection({
         <Checkbox
           aria-label={`Выбрать ${groupLabel}`}
           checked={isChecked}
+          disabled={selectionLocked}
           onCheckedChange={(checked) => onToggleGroup(checked === true)}
         />
         <CollapsibleTrigger
@@ -1365,7 +1470,8 @@ function MembershipGroupSection({
         </CollapsibleTrigger>
       </div>
       <CollapsibleContent className="mt-2">
-        {pageQ.isPending && <Skeleton className="h-16 w-full" />}
+        <FetchingBar active={pageQ.isFetching && !pageQ.isPending} />
+        {pageQ.isPending && <ListSkeleton rows={3} />}
         {/*
           Внешнее ревью PR #54: неуспех `GET .../members` оставлял раскрытую
           группу пустой — `pageQ.data` не приходит никогда, а скелет гаснет
@@ -1405,6 +1511,7 @@ function MembershipGroupSection({
                           <Checkbox
                             aria-label={`Выбрать позицию ${member.position_item_id}`}
                             checked={selectedIds.has(member.position_item_id)}
+                            disabled={selectionLocked}
                             onCheckedChange={(checked) =>
                               onTogglePosition(member.position_item_id, checked === true)
                             }
@@ -1447,6 +1554,7 @@ function MembershipGroupSection({
                                 variant="outline"
                                 aria-label={`Принять предложение переноса для позиции ${member.position_item_id}`}
                                 disabled={acceptStaleTransferPending}
+                                loading={acceptingStaleTransferId === member.position_item_id}
                                 onClick={() => onAcceptStaleTransfer(member.position_item_id)}
                               >
                                 Принять предложение переноса
@@ -1459,6 +1567,7 @@ function MembershipGroupSection({
                                   variant="outline"
                                   aria-label={`Принять решение цели для позиции ${member.position_item_id}`}
                                   disabled={acceptTargetDecisionPending}
+                                  loading={acceptingTargetDecisionIds?.includes(member.position_item_id) === true}
                                   onClick={() => onAcceptTargetDecision(member.position_item_id)}
                                 >
                                   Принять решение цели

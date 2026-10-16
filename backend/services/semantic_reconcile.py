@@ -47,6 +47,7 @@ from models import (
     ContextBucket,
     ContextMember,
     ContextParameterValue,
+    FamilyParameter,
     FamilyParameterSchema,
     FamilyStatus,
     FamilySuggestion,
@@ -61,9 +62,9 @@ from models import (
     SemanticJob,
     SemanticJobKind,
     SemanticJobStatus,
-    SemanticKind,
     SemanticReconcileBatch,
     SemanticState,
+    SuggestionDecision,
     SuggestionUnpublishedReason,
     ValueSource,
     WorkFamily,
@@ -81,15 +82,16 @@ from services.semantic_cost import (
     tariffs_from,
 )
 from services.semantic_request import (
-    PROMPT_VERSION,
     SERIALIZATION_VERSION,
     ContextRequestMaterial,
     RenderedRequest,
     is_applicable,
     load_request_material,
+    prompt_for,
     render_context_request,
 )
 from services.variant_request import (
+    EMPTY_NAMES_CANDIDATES_HASH,
     SCHEMA_PROMPT_VERSION,
     VALUES_PROMPT_VERSION,
     ValuesRequestMaterial,
@@ -389,7 +391,7 @@ def _job_row(
     rendered: RenderedRequest,
     *,
     unit_id: int | None,
-    prompt_version: int,
+    prompt_version: int | str,
     paths_hash: str | None = None,
 ) -> dict:
     """Столбцы нового задания: предмет, отпечаток и оси запроса для журнала.
@@ -556,14 +558,13 @@ _VALUES_CATALOG_KINDS = (CatalogKind.TO_REVIEW.value, CatalogKind.POSITION.value
 
 def _values_applicable(material: ContextRequestMaterial, columns: _ValuesColumns) -> bool:
     """Применимость `context_values` (спека §2.6): предикат §2.5 без условия
-    кандидатов — не архивирован, есть членства, не `NOT_APPLICABLE`, не `SYSTEM`,
-    строка каталога `TO_REVIEW` или `POSITION`. Путь вычислим и схема есть —
+    кандидатов — не архивирован, есть членства, не `NOT_APPLICABLE`, строка
+    каталога `TO_REVIEW` или `POSITION`. Путь вычислим и схема есть —
     это уже наличие материала значений."""
     return (
         not material.archived
         and material.member_count > 0
         and material.semantic_state != SemanticState.NOT_APPLICABLE.value
-        and material.semantic_kind != SemanticKind.SYSTEM.value
         and columns.catalog_kind in _VALUES_CATALOG_KINDS
     )
 
@@ -640,7 +641,8 @@ def _open_suggestion_state(db: Session) -> tuple[bool, set[int | None]]:
     предложений в pending/running или с удержанной пачкой, касающейся их
     отпечатками предложений)`. Пачка не-`mass` касается единицы контекстов своих
     отпечатков: `unit_id` самой пачки у автоматических пуст. Отпечатки других
-    видов единицу не держат."""
+    видов единицу не держат; задание открытия семей (`family_discovery`) в
+    `pending`/`running` её не занимает."""
     units: set[int | None] = set(
         db.execute(
             sa.select(SemanticJob.unit_id)
@@ -705,21 +707,120 @@ def schema_ready_to_build(db: Session, family_id: int) -> bool:
     return not mass and unit.unit_id not in units
 
 
+def _unbuilt_frozen_exists() -> sa.ColumnElement[bool]:
+    """У семьи (`WorkFamily` внешнего запроса) текущая версия схемы «не
+    построена» (спека 3б §2.16 п. 2): `frozen`, `origin = model`, без параметров,
+    а её последнее выполненное задание схемы ушло с пустым списком наименований
+    (`candidates_hash` — хэш пустого списка). Пустая версия, построенная по
+    непустому списку, — законный ответ модели и сюда не входит."""
+    last = aliased(SemanticJob)
+    chosen = aliased(SemanticJob)
+    last_done_id = (
+        sa.select(sa.func.max(last.id))
+        .where(
+            last.kind == SemanticJobKind.family_schema.value,
+            last.schema_id == FamilyParameterSchema.id,
+            last.status == SemanticJobStatus.done.value,
+        )
+        .correlate(FamilyParameterSchema)
+        .scalar_subquery()
+    )
+    has_parameters = (
+        sa.exists()
+        .where(FamilyParameter.schema_id == FamilyParameterSchema.id)
+        .correlate(FamilyParameterSchema)
+    )
+    built_from_nothing = (
+        sa.exists()
+        .where(chosen.id == last_done_id, chosen.candidates_hash == EMPTY_NAMES_CANDIDATES_HASH)
+        .correlate(FamilyParameterSchema)
+    )
+    return (
+        sa.exists()
+        .where(
+            FamilyParameterSchema.family_id == WorkFamily.id,
+            FamilyParameterSchema.status == SchemaStatus.frozen.value,
+            FamilyParameterSchema.origin == SchemaOrigin.model.value,
+            ~has_parameters,
+            built_from_nothing,
+        )
+        .correlate(WorkFamily)
+    )
+
+
+def _cancelled_restoration_hashes(db: Session, family_ids: Collection[int]) -> dict[int, set[str]]:
+    """`request_hash` заданий версий `cancelled`, которые новее текущей `frozen`
+    версии семьи (спека 3б §2.16 п. 2б): входы восстановления, от которых человек
+    или иной путь отказался. Кто отменил, не различается."""
+    if not family_ids:
+        return {}
+    frozen = aliased(FamilyParameterSchema)
+    cancelled = aliased(FamilyParameterSchema)
+    rows = db.execute(
+        sa.select(cancelled.family_id, SemanticJob.request_hash)
+        .join(
+            frozen,
+            sa.and_(
+                frozen.family_id == cancelled.family_id,
+                frozen.status == SchemaStatus.frozen.value,
+                frozen.version < cancelled.version,
+            ),
+        )
+        .join(
+            SemanticJob,
+            sa.and_(
+                SemanticJob.schema_id == cancelled.id,
+                SemanticJob.kind == SemanticJobKind.family_schema.value,
+            ),
+        )
+        .where(
+            cancelled.status == SchemaStatus.cancelled.value,
+            cancelled.family_id.in_(list(family_ids)),
+        )
+    ).all()
+    hashes: dict[int, set[str]] = {}
+    for row in rows:
+        hashes.setdefault(row.family_id, set()).add(row.request_hash)
+    return hashes
+
+
 def families_awaiting_schema(
     db: Session, *, unit_ids: Collection[int | None] | None = None
 ) -> list[int]:
-    """Активные семьи без текущей и без строящейся версии схемы (кандидаты на
-    сверку схем); `unit_ids` ограничивает единицами (`None` в наборе — семьи без
-    единицы), без него — все единицы. Готовность единицы здесь не проверяется:
-    её решает сама сверка."""
-    has_version = sa.exists().where(
+    """Активные семьи — кандидаты на сверку схем: без строящейся версии, у которых
+    нет текущей версии или она «не построена» (задание схемы ушло с пустым
+    списком наименований); и с версией `building` без живого задания схемы
+    (`pending`, `running`, `privacy_hold`) и без отпечатка этой версии в удержанной
+    пачке — ожидающая `building` после опустевшего материала или пропущенной
+    сверки (спека 3б §2.16 п. 2а). `unit_ids` ограничивает единицами (`None` в
+    наборе — семьи без единицы), без него — все единицы. Готовность единицы, наличие
+    наименований и отказ от восстановления здесь не проверяются: их решает сама
+    сверка."""
+    has_frozen = sa.exists().where(
         FamilyParameterSchema.family_id == WorkFamily.id,
-        FamilyParameterSchema.status.in_(
-            (SchemaStatus.frozen.value, SchemaStatus.building.value)
+        FamilyParameterSchema.status == SchemaStatus.frozen.value,
+    )
+    has_building = sa.exists().where(
+        FamilyParameterSchema.family_id == WorkFamily.id,
+        FamilyParameterSchema.status == SchemaStatus.building.value,
+    )
+    has_live_job = sa.exists().where(
+        SemanticJob.kind == SemanticJobKind.family_schema.value,
+        SemanticJob.family_id == WorkFamily.id,
+        SemanticJob.status.in_(
+            (
+                SemanticJobStatus.pending.value,
+                SemanticJobStatus.running.value,
+                SemanticJobStatus.privacy_hold.value,
+            )
         ),
     )
     query = sa.select(WorkFamily.id).where(
-        WorkFamily.status == FamilyStatus.active.value, ~has_version
+        WorkFamily.status == FamilyStatus.active.value,
+        sa.or_(
+            sa.and_(~has_building, sa.or_(~has_frozen, _unbuilt_frozen_exists())),
+            sa.and_(has_building, ~has_live_job),
+        ),
     )
     if unit_ids is not None:
         non_null = [unit for unit in unit_ids if unit is not None]
@@ -731,7 +832,39 @@ def families_awaiting_schema(
         if not conditions:
             return []
         query = query.where(sa.or_(*conditions))
-    return list(db.execute(query.order_by(WorkFamily.id)).scalars().all())
+    family_ids = list(db.execute(query.order_by(WorkFamily.id)).scalars().all())
+    held_building = _held_building_families(db, family_ids)
+    return [family_id for family_id in family_ids if family_id not in held_building]
+
+
+def _held_building_families(db: Session, family_ids: Collection[int]) -> set[int]:
+    """Семьи, чья версия `building` ждёт решения человека: отпечаток `family_schema`
+    с номером этой версии лежит в удержанной пачке (пачка хранит отпечатки, а не
+    задания, живого задания у такой версии нет). Проход такую семью не берёт:
+    поставить её задание значит обойти решение по пачке."""
+    if not family_ids:
+        return set()
+    held = {
+        (int(element["family_id"]), int(element["schema_id"]))
+        for batch in db.execute(
+            sa.select(SemanticReconcileBatch.held_fingerprints).where(
+                SemanticReconcileBatch.status == ReconcileBatchStatus.held.value
+            )
+        ).scalars()
+        for element in batch
+        if isinstance(element, dict)
+        and element.get("kind") == SemanticJobKind.family_schema.value
+        and element.get("schema_id") is not None
+    }
+    if not held:
+        return set()
+    building = db.execute(
+        sa.select(FamilyParameterSchema.family_id, FamilyParameterSchema.id).where(
+            FamilyParameterSchema.family_id.in_(list(family_ids)),
+            FamilyParameterSchema.status == SchemaStatus.building.value,
+        )
+    ).all()
+    return {family_id for family_id, schema_id in building if (family_id, schema_id) in held}
 
 
 def _discarded_fingerprints(db: Session, kind: SemanticJobKind) -> set[tuple]:
@@ -778,7 +911,8 @@ def without_discarded_values(db: Session, context_ids: Collection[int]) -> list[
 
 
 def without_discarded_schemas(db: Session, family_ids: Collection[int]) -> list[int]:
-    """Семьи без версии схемы, чей ТЕКУЩИЙ вход (семья и хэш запроса) не значится
+    """Семьи-кандидаты на новую версию схемы (без версии или с «не построенной»),
+    чей ТЕКУЩИЙ вход (семья и хэш запроса) не значится
     в отброшенной пачке. Номер версии в сравнении не участвует: тело запроса схемы
     его не содержит, а отброшенная версия `building` отменена, и у семьи, чью версию
     отменило отбрасывание, в отпечатке остался прежний номер."""
@@ -812,10 +946,14 @@ def _plan_family_schemas(
     planned_units: Collection[int | None] = (),
 ) -> None:
     """Ветвь `family_schema` — таблица исходов по предмету «семья + версия
-    `building`». Активной семье без текущей и без `building` версии при
-    готовности единицы создаётся версия и задание; `planned_units` — единицы,
+    `building`». Активной семье без текущей (или с «не построенной» текущей, см.
+    `_unbuilt_frozen_exists`) и без `building` версии при готовности единицы и
+    наличии наименований создаётся версия и задание; `planned_units` — единицы,
     предложения которых эта же сверка ставит или удерживает (перезапрос единицы
-    ещё не окончен)."""
+    ещё не окончен). Без наименований схема не строится: версия не заводится, а
+    у версии `building` задание с пустым списком не ставится (спека 3б §2.16 п. 1,
+    2а). Вход, от которого отказались, отменив пересборку «не построенной»
+    версии, сам не повторяется (п. 2б)."""
     ids = sorted(set(family_ids))
     if not ids:
         return
@@ -846,6 +984,14 @@ def _plan_family_schemas(
         .all(),
         lambda job: job.family_id,
     )
+    unbuilt = set(
+        db.execute(
+            sa.select(WorkFamily.id).where(WorkFamily.id.in_(ids), _unbuilt_frozen_exists())
+        )
+        .scalars()
+        .all()
+    )
+    cancelled_inputs = _cancelled_restoration_hashes(db, unbuilt)
     busy: tuple[bool, set[int | None]] | None = None
     for family in families:
         jobs = jobs_by_family.get(family.id, [])
@@ -853,9 +999,11 @@ def _plan_family_schemas(
         building_id = building_of.get(family.id)
         if active and building_id is not None:
             _plan_inapplicable(plan, [job for job in jobs if job.schema_id != building_id])
-            rendered = render_schema_request(
-                load_schema_material(db, family.id, building_id), settings=settings
-            )
+            material = load_schema_material(db, family.id, building_id)
+            if not material.names:
+                _plan_inapplicable(plan, [job for job in jobs if job.schema_id == building_id])
+                continue
+            rendered = render_schema_request(material, settings=settings)
             current = _plan_applicable(
                 plan, [job for job in jobs if job.schema_id == building_id],
                 (building_id, rendered.request_hash),
@@ -869,7 +1017,7 @@ def _plan_family_schemas(
             _plan_postanovka(plan, current, _NewJob(fingerprint, rendered, row))
             continue
         _plan_inapplicable(plan, jobs)
-        if not active or family.id in with_frozen:
+        if not active or (family.id in with_frozen and family.id not in unbuilt):
             continue
         if family.unit_id in planned_units:
             continue
@@ -877,9 +1025,12 @@ def _plan_family_schemas(
             busy = _open_suggestion_state(db)
         if busy[0] or family.unit_id in busy[1]:
             continue
-        rendered = render_schema_request(
-            load_schema_material(db, family.id, _UNBUILT_SCHEMA_ID), settings=settings
-        )
+        material = load_schema_material(db, family.id, _UNBUILT_SCHEMA_ID)
+        if not material.names:
+            continue
+        rendered = render_schema_request(material, settings=settings)
+        if rendered.request_hash in cancelled_inputs.get(family.id, ()):
+            continue
         fingerprint = Fingerprint(
             SemanticJobKind.family_schema, None, family.id, None, rendered.request_hash
         )
@@ -918,6 +1069,9 @@ def _schema_scope(
 def _split_jobs(
     jobs: Collection[SemanticJob],
 ) -> tuple[list[SemanticJob], list[SemanticJob]]:
+    """Задания предложений и значений. Открытие семей (`family_discovery`)
+    сверка не планирует и не отменяет: его создаёт только запуск оператора, и
+    ни в одну из двух долей оно не попадает."""
     suggestions = [job for job in jobs if job.kind == SemanticJobKind.family_suggestion.value]
     values = [job for job in jobs if job.kind == SemanticJobKind.context_values.value]
     return suggestions, values
@@ -1123,7 +1277,9 @@ def _revive_jobs(db: Session, job_ids: list[int]) -> int:
     попытки текущего поколения и отсрочка обнулены, разрешение приватности
     и класс последней ошибки сброшены. Условно по `status = 'cancelled'` —
     та же гонка с захватом, что у `_cancel_where_status`; `done` возвращается
-    только у заданий значений, нужных по отпечатку, который уже выполнялся."""
+    у заданий значений, нужных по отпечатку, который уже выполнялся, и у
+    задания предложения при «Вернуть в разбор»
+    (`revive_answered_suggestion_job`, спека 3б §2.8)."""
     if not job_ids:
         return 0
     result = db.execute(
@@ -1145,6 +1301,54 @@ def _revive_jobs(db: Session, job_ids: list[int]) -> int:
         )
     )
     return result.rowcount
+
+
+#: Терминальные для отпечатка решения: после них возврат в разбор вызов заново не
+#: ставит. Остальные решения (в том числе будущие значения перечисления) оживляют:
+#: семью, которую дало решение, снимала «Не работа». Отклонение семьи не давало —
+#: контекст возвращается в состояние до «Не работа», семью назначают вручную.
+_REOPEN_TERMINAL_DECISIONS = (SuggestionDecision.rejected.value,)
+
+
+def revive_answered_suggestion_job(db: Session, context_id: int) -> int:
+    """«Вернуть в разбор» (спека 3б §2.8): выполненное задание предложения ТЕКУЩЕГО
+    отпечатка, чьё предложение уже разобрано любым решением, кроме терминального
+    (`_REOPEN_TERMINAL_DECISIONS`),
+    возвращается в `pending` — тем же `_revive_jobs`. Предложение и его решение не
+    трогаются: результат нового вызова публикуется НОВЫМ предложением, старое
+    остаётся историей. Предложение без решения здесь не затрагивается: его
+    переопубликует обычная сверка, нового вызова модели не будет.
+
+    Только для пути возврата: обычная сверка выполненное задание не перезапускает
+    (каждая сверка заново платила бы за вызов), поэтому в план `E` это не входит.
+    Вызывается ДО `reconcile_or_defer` возврата, под блокировками контекста; поэтому
+    задание, вернувшееся в `pending`, дальше видно обычному плану как текущее, и
+    удержанная пачка или потолок события его уже не касаются: один вызов по явному
+    действию человека. Приватность проверяет захват (`privacy_hold`), как у любого
+    `pending`. Возвращает число возвращённых заданий (0 или 1)."""
+    prepared = prepare_contexts(db, [context_id])
+    rendered = prepared.applicable_render.get(context_id)
+    if rendered is None:
+        return 0
+    job_ids = list(
+        db.execute(
+            sa.select(SemanticJob.id)
+            .join(FamilySuggestion, FamilySuggestion.id == SemanticJob.result_suggestion_id)
+            .where(
+                SemanticJob.kind == SemanticJobKind.family_suggestion.value,
+                SemanticJob.context_id == context_id,
+                SemanticJob.schema_id.is_(None),
+                SemanticJob.request_hash == rendered.request_hash,
+                SemanticJob.status == SemanticJobStatus.done.value,
+                FamilySuggestion.decision.is_not(None),
+                FamilySuggestion.decision.not_in(_REOPEN_TERMINAL_DECISIONS),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    _lock_jobs(db, job_ids)
+    return _revive_jobs(db, job_ids)
 
 
 def _job_conflict_arbiter() -> list:
@@ -1195,7 +1399,7 @@ def _insert_new_jobs(
         rows.append(
             _job_row(
                 fingerprint, rendered, unit_id=material_by_context[context_id].unit_id,
-                prompt_version=PROMPT_VERSION,
+                prompt_version=prompt_for(material_by_context[context_id].semantic_kind)[1],
             )
         )
     return _insert_job_rows(db, rows)

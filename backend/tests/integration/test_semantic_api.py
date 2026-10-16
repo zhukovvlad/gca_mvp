@@ -52,6 +52,7 @@ from services.context_routing import (
     chapter_paths,
 )
 from services.unit_resolution import UnitResolver
+from tests.factories import seed_category_id
 
 pytestmark = pytest.mark.integration
 
@@ -229,7 +230,8 @@ def _rule(db, bucket, *, context, admin, ordinal=1, predicate=None) -> ContextRo
 
 def _family(db, admin, *, title="Семья", unit_name=None, definition="Определение", active=True):
     fam = work_families.create_family(
-        db, title=title, unit_name=unit_name, definition=definition, actor_id=admin.id
+        db, title=title, unit_name=unit_name, definition=definition, actor_id=admin.id,
+        family_category_id=seed_category_id(db),
     )
     if active:
         work_families.activate_family(db, family_id=fam.id, actor_id=admin.id)
@@ -434,6 +436,38 @@ WORK_VARIANT_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
 )
 assert len(WORK_VARIANT_ROUTE_TEMPLATES) == 12
 
+#: Маршруты справочника категорий семей (спека `2026-10-09-catalog-discovery-design.md`
+#: §2.12) — ШАБЛОНАМИ пути, независимо от `app.routes`. Права на них перебирает
+#: `test_catalog_discovery_categories.py`.
+FAMILY_CATEGORY_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("GET", f"{BASE}/family-categories"),
+        ("POST", f"{BASE}/family-categories"),
+        ("PATCH", f"{BASE}/family-categories/{{category_id}}"),
+        ("DELETE", f"{BASE}/family-categories/{{category_id}}"),
+    }
+)
+assert len(FAMILY_CATEGORY_ROUTE_TEMPLATES) == 4
+
+#: Маршруты открытия семей (спека 3б §2.12): блок, preview, запуск, черновики и возврат в разбор. Права на них
+#: перебирает `test_catalog_discovery_launch.py`.
+DISCOVERY_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("GET", f"{BASE}/discovery/units"),
+        ("POST", f"{BASE}/discovery/preview"),
+        ("POST", f"{BASE}/discovery"),
+        ("GET", f"{BASE}/discovery/drafts"),
+        ("PATCH", f"{BASE}/discovery/drafts/{{draft_id}}"),
+        ("POST", f"{BASE}/discovery/drafts/{{draft_id}}/merge"),
+        ("POST", f"{BASE}/discovery/drafts/{{draft_id}}/discard"),
+        ("POST", f"{BASE}/discovery/drafts/{{draft_id}}/restore"),
+        ("POST", f"{BASE}/contexts/{{context_id}}/reopen"),
+        ("POST", f"{BASE}/discovery/{{job_id}}/activate"),
+        ("GET", f"{BASE}/unit-busy-jobs"),
+    }
+)
+assert len(DISCOVERY_ROUTE_TEMPLATES) == 11
+
 
 def test_route_set_under_prefix_equals_twenty_one_literal():
     """Множество путей под `/api/v1/semantic`, собранное из `app.routes`,
@@ -443,16 +477,28 @@ def test_route_set_under_prefix_equals_twenty_one_literal():
     §2.8 п. 3-4) и литерала маршрутов экрана «Предложения» — роутер общий, и
     добавленные им маршруты не должны красить проверку прежнего набора. Литералы
     не пересекаются; маршрута восстановления архивного контекста (`…/restore`)
-    в наборе нет. Третий литерал — маршруты вариантов и промоушена."""
+    в наборе нет. Третий литерал — маршруты вариантов и промоушена, четвёртый —
+    справочник категорий семей."""
     assert not TWENTY_ONE_ROUTE_TEMPLATES & SEMANTIC_QUEUE_ROUTE_TEMPLATES
     assert not WORK_VARIANT_ROUTE_TEMPLATES & (
         TWENTY_ONE_ROUTE_TEMPLATES | SEMANTIC_QUEUE_ROUTE_TEMPLATES
     )
-    collected = _collect_semantic_routes()
-    assert collected == (
+    assert not FAMILY_CATEGORY_ROUTE_TEMPLATES & (
         TWENTY_ONE_ROUTE_TEMPLATES | SEMANTIC_QUEUE_ROUTE_TEMPLATES | WORK_VARIANT_ROUTE_TEMPLATES
     )
-    assert not any(path.endswith("/restore") for _method, path in collected)
+    collected = _collect_semantic_routes()
+    assert collected == (
+        TWENTY_ONE_ROUTE_TEMPLATES
+        | SEMANTIC_QUEUE_ROUTE_TEMPLATES
+        | WORK_VARIANT_ROUTE_TEMPLATES
+        | FAMILY_CATEGORY_ROUTE_TEMPLATES
+        | DISCOVERY_ROUTE_TEMPLATES
+    )
+    # Возврата семьи из архива нет; «Вернуть» бывает только у черновиков открытия.
+    assert not any(
+        path.endswith("/restore") and "/discovery/drafts/" not in path
+        for _method, path in collected
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -494,7 +540,11 @@ class TestFamilies:
         assert body["family_id"] == family_id
 
         patched = admin_client.patch(
-            f"{BASE}/families/{family_id}", json={"definition": "Снятие и устройство стяжки"}
+            f"{BASE}/families/{family_id}",
+            json={
+                "definition": "Снятие и устройство стяжки",
+                "family_category_id": seed_category_id(db_session),
+            },
         )
         assert patched.status_code == 200
         activated = admin_client.post(f"{BASE}/families/{family_id}/activate")
@@ -617,11 +667,11 @@ class TestFamilies:
         title = "Штукатурка стен API-дубль"
         first = work_families.create_family(
             db_session, title=title, unit_name="M2", definition="Определение А",
-            actor_id=admin_client.user.id,
+            actor_id=admin_client.user.id, family_category_id=seed_category_id(db_session),
         )
         second = work_families.create_family(
             db_session, title=title, unit_name="M2", definition="Определение Б",
-            actor_id=admin_client.user.id,
+            actor_id=admin_client.user.id, family_category_id=seed_category_id(db_session),
         )
         db_session.commit()
 
@@ -803,12 +853,16 @@ class TestFamilies:
             "id", "title", "unit_id", "unit_code", "unit_symbol", "definition", "status",
             "seed_key", "created_by", "created_at", "updated_at",
             "activated_by", "activated_at", "archived_at", "context_count",
+            "family_category_id", "family_category_title", "unit_busy_jobs",
         })
         m2 = "M2"
 
         created = admin_client.post(
             f"{BASE}/families",
-            json={"title": "Форма ответа мутации", "unit_name": m2, "definition": "Определение"},
+            json={
+                "title": "Форма ответа мутации", "unit_name": m2, "definition": "Определение",
+                "family_category_id": seed_category_id(db_session),
+            },
         )
         assert created.status_code == 201
         assert set(created.json().keys()) == family_row_keys
@@ -1358,6 +1412,111 @@ class TestContextsQueue:
         assert response.status_code == 200
         assert len(response.json()["items"]) == 1
         assert len(statements) == 2, statements
+
+    # -- Фильтр по семье (правка стенда 16.10.2026) -------------------------
+
+    def _family_scene(self, db_session, factories, admin):
+        """Две семьи с контекстами (у A один из них архивный) и контекст без семьи.
+
+        Контекст семьи Б и контекст без семьи — тоже `SYSTEM`: иначе выдача
+        «семья A И `SYSTEM`» совпала бы с выдачей по одному `SYSTEM`, и тест
+        пересечения не заметил бы потерянного предиката семьи (ревью пачки 8)."""
+        fam_a = _family(db_session, admin, title="Семья фильтра А")
+        fam_b = _family(db_session, admin, title="Семья фильтра Б")
+        made: dict[str, list[int]] = {"a": [], "b": [], "none": []}
+        specs = [
+            ("a", fam_a.id, {}),
+            ("a", fam_a.id, {"semantic_kind": SemanticKind.SYSTEM.value}),
+            ("a", fam_a.id, {"archived_at": _now()}),
+            ("b", fam_b.id, {"semantic_kind": SemanticKind.SYSTEM.value}),
+            ("none", None, {"semantic_kind": SemanticKind.SYSTEM.value}),
+        ]
+        for i, (key, family_id, extra) in enumerate(specs):
+            cp = factories.CatalogPositionFactory.create(standard_job_title=f"Строка фильтра семьи {i}")
+            ctx = _context(
+                db_session,
+                _bucket(db_session, catalog_position=cp),
+                work_family_id=family_id,
+                **(
+                    {"family_source": "manual", "family_by": admin.id, "family_at": _now()}
+                    if family_id is not None
+                    else {}
+                ),
+                **extra,
+            )
+            made[key].append(ctx.id)
+        db_session.flush()
+        return fam_a, fam_b, made
+
+    def test_list_contexts_work_family_filter_returns_exactly_the_family_set(
+        self, admin_client, db_session, factories, admin_user
+    ):
+        """Выдача по семье A — РОВНО множество её контекстов (включая архивный):
+        ни контекста семьи Б или без семьи, ни потерянного своего; `total` равен
+        `context_count` семьи A из `GET /families`."""
+        fam_a, fam_b, made = self._family_scene(db_session, factories, admin_user)
+
+        response = admin_client.get(f"{BASE}/contexts", params={"work_family_id": fam_a.id})
+        assert response.status_code == 200
+        body = response.json()
+        assert {item["id"] for item in body["items"]} == set(made["a"])
+        assert all(item["work_family_id"] == fam_a.id for item in body["items"])
+
+        families = {f["id"]: f for f in admin_client.get(f"{BASE}/families").json()["items"]}
+        assert families[fam_a.id]["context_count"] == 3
+        assert body["total"] == families[fam_a.id]["context_count"]
+
+        other = admin_client.get(f"{BASE}/contexts", params={"work_family_id": fam_b.id}).json()
+        assert {item["id"] for item in other["items"]} == set(made["b"])
+        assert other["total"] == families[fam_b.id]["context_count"]
+
+    def test_list_contexts_work_family_filter_combines_with_other_filters(
+        self, admin_client, db_session, factories, admin_user
+    ):
+        fam_a, _fam_b, made = self._family_scene(db_session, factories, admin_user)
+
+        response = admin_client.get(
+            f"{BASE}/contexts",
+            params={"work_family_id": fam_a.id, "semantic_kind": SemanticKind.SYSTEM.value},
+        )
+        body = response.json()
+        assert {item["id"] for item in body["items"]} == {made["a"][1]}
+        assert body["total"] == 1
+
+    def test_list_contexts_work_family_filter_total_and_page_use_the_filter(
+        self, admin_client, db_session, factories, admin_user
+    ):
+        fam_a, _fam_b, made = self._family_scene(db_session, factories, admin_user)
+
+        response = admin_client.get(
+            f"{BASE}/contexts", params={"work_family_id": fam_a.id, "limit": 2, "offset": 2}
+        )
+        body = response.json()
+        assert body["total"] == 3
+        assert len(body["items"]) == 1
+        assert body["items"][0]["id"] in set(made["a"])
+
+    def test_list_contexts_unknown_work_family_id_is_empty_not_404(
+        self, admin_client, db_session, factories, admin_user
+    ):
+        self._family_scene(db_session, factories, admin_user)
+
+        response = admin_client.get(f"{BASE}/contexts", params={"work_family_id": 999_999_999})
+        assert response.status_code == 200
+        assert response.json()["items"] == []
+        assert response.json()["total"] == 0
+
+    def test_list_contexts_without_work_family_id_keeps_every_context(
+        self, admin_client, db_session, factories, admin_user
+    ):
+        _fam_a, _fam_b, made = self._family_scene(db_session, factories, admin_user)
+
+        body = admin_client.get(
+            f"{BASE}/contexts", params={"catalog_query": "Строка фильтра семьи", "limit": 50}
+        ).json()
+        assert {item["id"] for item in body["items"]} == set(
+            made["a"] + made["b"] + made["none"]
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -3644,7 +3803,9 @@ class TestMembers:
         переживёт ответ `4xx` и найдётся в ОТДЕЛЬНОЙ сессии."""
         probe_title = f"RollbackProbe-{uuid.uuid4().hex[:8]}"
 
-        def _fake_create_family_then_fail(db, *, title, unit_name, definition, actor_id):
+        def _fake_create_family_then_fail(
+            db, *, title, unit_name, definition, actor_id, family_category_id=None
+        ):
             # `created_by=None` + `seed_key=probe_title` — нарочно: подмена
             # не должна зависеть от того, существует ли пользователь
             # `actor_id` в НАСТОЯЩЕЙ базе (`committing_client` подставляет

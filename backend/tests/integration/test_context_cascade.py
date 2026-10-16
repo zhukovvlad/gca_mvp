@@ -62,6 +62,7 @@ from services.import_owners import contract_estimate_owner
 from services.matching import match_positions
 from services.round_category_override import set_round_override
 from services.unit_resolution import UnitResolver
+from tests.factories import seed_category_id
 from tests.payloads import payload_for, position
 
 pytestmark = pytest.mark.integration
@@ -1623,11 +1624,13 @@ class TestConsistencySurvivesReviewMergeWithConflict:
         source_family = create_family(
             db_session, title=f"Семья-источник {_uid()}", unit_name="M2",
             definition="Определение", actor_id=admin_user.id,
+            family_category_id=seed_category_id(db_session),
         )
         source_family = activate_family(db_session, family_id=source_family.id, actor_id=admin_user.id)
         target_family = create_family(
             db_session, title=f"Семья-цель {_uid()}", unit_name="M2",
             definition="Определение", actor_id=admin_user.id,
+            family_category_id=seed_category_id(db_session),
         )
         target_family = activate_family(db_session, family_id=target_family.id, actor_id=admin_user.id)
         source_member_before = _member(db_session, source_item.id)

@@ -152,6 +152,7 @@ work_families                 # семья: тип работы, объедин�
   status ('draft|active|archived')
   created_by NULL → users     # NULL = заведено seed-командой (CHECK: автор ⟺ не seed)
   activated_by, activated_at, archived_at
+  family_category_id NULL → family_categories ON DELETE RESTRICT   # 0021, раздел 8; CHECK-а «активна ⟹ категория» нет
   # UNIQUE (seed_key) — NULL-ы различны, ручные семьи не сталкиваются
   # UNIQUE (lower(btrim(title)), COALESCE(unit_id,-1)) WHERE status='active' — raw SQL;
   #   имя семьи не ключ, но две АКТИВНЫЕ семьи с одним именем и единицей — ошибка оператора
@@ -497,3 +498,85 @@ FK объявлены с `use_alter=True`, чтобы сортировка ме�
 **Трёхзначная логика CHECK** (`docs/pitfalls/db.md`): равносильности стоят
 голым равенством только на NOT NULL стороне; `CK_CONTEXT_PENDING` и
 `CK_CONTEXT_FAMILY_PROVENANCE` — один тотальный предикат из двух полных ветвей.
+
+## 8. Открытие семей и категории
+
+Четыре таблицы и расширение трёх существующих (`docs/superpowers/specs/2026-10-09-catalog-discovery-design.md`
+§2.2), миграция `0021`. **Справочник категорий** семей (три строки заводит миграция),
+**группа ответа открытия** единицы — новый черновик семьи, группа имён «в активную
+семью» либо группа «не работа» — и её **члены**-контексты, **предложение категории**
+активной семье. Открытие — четвёртый вид задания очереди: предмет — единица
+(`semantic_jobs.unit_id`), контекста и семьи у него нет.
+
+```
+family_categories                    -- справочник категорий семей
+  id, seed_key text NULL, title text NOT NULL, definition text NOT NULL   # определение видит модель
+  created_by NULL → users ON DELETE RESTRICT, created_at, updated_at
+  # UNIQUE (seed_key); UNIQUE (lower(btrim(title))) — raw SQL uq_family_categories_title
+  # CHECK btrim(title) <> ''; CHECK btrim(definition) <> ''
+  # CHECK (created_by IS NULL) = (seed_key IS NOT NULL)   # как у work_families
+  # три строки миграцией: 'work' «Работа», 'engineering_system' «Инженерная система»,
+  #   'costs_services' «Затраты и услуги»; в `_DOMAIN_TABLES` тестов, после очистки пересеваются
+
+family_drafts                        -- группа ответа открытия
+  id, job_id NOT NULL → semantic_jobs ON DELETE RESTRICT, unit_id NULL → units_of_measure ON DELETE RESTRICT
+  ordinal int NOT NULL, grp ('new|existing|not_work')
+  title NULL, definition NULL, family_category_id NULL → family_categories ON DELETE SET NULL
+  existing_family_id NULL, similar_family_id NULL, activated_family_id NULL → work_families ON DELETE RESTRICT
+  status ('open|activated|merged|discarded|superseded')
+  merged_into_draft_id NULL, merged_into_family_id NULL → work_families ON DELETE RESTRICT
+  edited_by NULL → users ON DELETE RESTRICT, edited_at NULL
+  decided_by NULL → users ON DELETE RESTRICT, decided_at NULL, created_at
+  # UNIQUE (job_id, ordinal); UNIQUE (id, job_id) — цель составных FK
+  # UNIQUE (job_id) WHERE grp='not_work' — raw SQL uq_family_drafts_not_work_per_job: одна группа «не работа» на открытие
+  # FK (merged_into_draft_id, job_id) → family_drafts (id, job_id) — слияние только внутри открытия
+  # CK_DRAFT_SHAPE — ОДИН тотальный предикат из трёх полных ветвей по grp: у new имя и определение
+  #   заполнены и не пусты (IS NOT NULL перед btrim — иначе ветвь NULL, а не FALSE), существующей семьи нет;
+  #   у existing только existing_family_id; у not_work ничего
+  # CHECK (status='activated') = (activated_family_id IS NOT NULL)
+  # CHECK (status='merged') = (num_nonnulls(merged_into_draft_id, merged_into_family_id) = 1); число целей <= 1
+  # CHECK merged_into_draft_id IS NULL OR merged_into_draft_id <> id
+  # CHECK grp='new' OR status IN ('open','superseded')   — решения ставятся только новым черновикам
+  # CHECK (status IN ('activated','merged','discarded')) = (decided_by IS NOT NULL)
+  # CHECK (decided_by IS NULL) = (decided_at IS NULL); (edited_by IS NULL) = (edited_at IS NULL)
+
+family_draft_members                 -- контексты за группой; пишутся один раз и не переносятся
+  draft_id, job_id, context_id NOT NULL → catalog_contexts ON DELETE RESTRICT, name_index int NOT NULL
+  # PK (draft_id, context_id)
+  # FK (draft_id, job_id) → family_drafts (id, job_id) ON DELETE CASCADE — группа своего открытия
+  # UNIQUE (job_id, context_id)   — контекст в одной группе открытия
+
+family_category_proposals            -- предложение категории активной семье (временное)
+  job_id NOT NULL → semantic_jobs ON DELETE RESTRICT, family_id NOT NULL → work_families ON DELETE RESTRICT
+  family_category_id NOT NULL → family_categories ON DELETE CASCADE
+  status ('open|applied|superseded'), decided_by NULL → users ON DELETE RESTRICT, decided_at NULL
+  # PK (job_id, family_id)
+  # CHECK (status='applied') = (decided_by IS NOT NULL); (decided_by IS NULL) = (decided_at IS NULL)
+
+semantic_jobs                        -- четвёртый вид (0021)
+  kind ('family_suggestion|family_schema|context_values|family_discovery')
+  # ck_semantic_jobs_context_subject переписан: (kind IN ('family_suggestion','context_values')) = (context_id IS NOT NULL)
+  # ck_semantic_jobs_schema_id_by_kind переписан: (kind IN ('family_schema','context_values')) = (schema_id IS NOT NULL)
+  # ck_semantic_jobs_discovery_subject (новый): kind <> 'family_discovery' OR (context_id IS NULL AND family_id IS NULL)
+  # UNIQUE (COALESCE(unit_id,-1)) WHERE kind='family_discovery' AND status IN ('pending','running','privacy_hold')
+  #   — raw SQL uq_semantic_jobs_discovery_live: одно живое открытие на единицу; NULL-единица законна
+  # ck_semantic_jobs_schema_subject и ck_semantic_jobs_result_suggestion_kind — без изменений;
+  #   uq_semantic_jobs_subject_request_hash — без изменений (единица входит в тело, а значит в хэш)
+
+semantic_events                      -- расширение (0021): тип context_reopened
+  # предмет контекст; CK_EVENT_SUBJECT_BY_TYPE не меняется (тип не семейный)
+```
+
+**Порядок блокировок фичи** (решение 20 спеки): категории → черновики и предложения
+категорий → строка каталога → семья → вариант → контекст → задание. Ссылающийся на
+категорию берёт её `FOR SHARE` раньше своих строк; удаление категории снимает её с
+черновиков и удаляет предложения само (`SET NULL` и `CASCADE` ключей — страховка).
+
+**`downgrade` отказывает при данных** в любом из шести носителей: черновики открытия,
+предложения категорий, задания `family_discovery`, семьи с `family_category_id`, события
+`context_reopened`, категории без `seed_key`. На пустых носителях откат возвращает
+прежние выражения CHECK заданий и список типов журнала.
+
+**Трёхзначная логика CHECK** (`docs/pitfalls/db.md`): `CK_DRAFT_SHAPE` — один тотальный
+предикат из трёх полных ветвей; остальные равносильности стоят голым равенством только
+на NOT NULL стороне.

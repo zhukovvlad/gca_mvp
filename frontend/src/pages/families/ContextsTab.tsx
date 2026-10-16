@@ -1,14 +1,21 @@
-import { useState } from "react";
-import { Search } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Search, X } from "lucide-react";
 
+import { EntityCombobox } from "@/components/domain/EntityCombobox";
 import { Pager } from "@/components/domain/Pager";
 import { EmptyState } from "@/components/ui-domain/EmptyState";
-import { Skeleton } from "@/components/ui-domain/Skeleton";
 import { Surface } from "@/components/ui-domain/Surface";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
-import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -28,11 +35,25 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { useDebounce } from "@/lib/useDebounce";
-import { useSemanticContexts } from "@/services/queries";
-import type { ContextRow, NameRole, SemanticKind, SemanticState, VariantState } from "@/types/domain";
+import { useSemanticContexts, useWorkFamilies } from "@/services/queries";
+import type {
+  ContextRow,
+  NameRole,
+  SemanticKind,
+  SemanticState,
+  VariantState,
+  WorkFamily,
+} from "@/types/domain";
 
 import { ContextCard } from "./ContextCard";
-import { NAME_ROLE_LABEL, SEMANTIC_KIND_LABEL, SEMANTIC_STATE_LABEL, VARIANT_STATE_LABEL } from "./labels";
+import {
+  FAMILY_STATUS_LABEL,
+  NAME_ROLE_LABEL,
+  SEMANTIC_KIND_LABEL,
+  SEMANTIC_STATE_LABEL,
+  VARIANT_STATE_LABEL,
+} from "./labels";
+import { FetchingBar, ListSkeleton } from "./pending";
 import { SourceChip } from "./SourceChip";
 import { usePersistedPageSize } from "./usePersistedPageSize";
 
@@ -98,6 +119,23 @@ function classifierPathTitle(row: ContextRow): string | null {
 }
 
 /**
+ * Подсказка варианта в списке семей: единица символом, у не активной семьи ещё
+ * и статус словом — названия семей в разных единицах совпадают, и без единицы
+ * их не различить.
+ */
+function familyHint(family: WorkFamily): string | undefined {
+  const parts = [family.unit_symbol, family.status === "active" ? null : FAMILY_STATUS_LABEL[family.status]];
+  const hint = parts.filter(Boolean).join(" · ");
+  return hint || undefined;
+}
+
+interface ContextsTabProps {
+  /** Семья, показанная кнопкой «Показать контексты» вкладки «Семьи»; после применения вкладка сообщает `onFocusShown`. */
+  focusFamilyId?: number | null;
+  onFocusShown?: () => void;
+}
+
+/**
  * Очередь контекстов — вкладка «Контексты» (спека §2.1, §2.4, §2.7).
  * Самодостаточна: выбор строки и её карточка — панель СПРАВА ОТ СПИСКА
  * ({@link ContextCard}), тем же компонентом, что несла отдельная вкладка
@@ -108,9 +146,8 @@ function classifierPathTitle(row: ContextRow): string | null {
  * `has_no_members`) — три отдельных чекбокса, а не один общий: это разные
  * оси и вход с обоими сразу обязан проходить оба фильтра.
  */
-export function ContextsTab() {
+export function ContextsTab({ focusFamilyId = null, onFocusShown }: ContextsTabProps = {}) {
   const [searchInput, setSearchInput] = useState("");
-  const [categoryInput, setCategoryInput] = useState("");
   const [kind, setKind] = useState<string>(ANY);
   const [role, setRole] = useState<string>(ANY);
   const [state, setState] = useState<string>(ANY);
@@ -118,6 +155,10 @@ export function ContextsTab() {
   const [hasConflicting, setHasConflicting] = useState(false);
   const [hasNoMembers, setHasNoMembers] = useState(false);
   const [variantState, setVariantState] = useState<string>(ANY);
+  const [familyId, setFamilyId] = useState<number | null>(null);
+  // Окно «Фильтр по семье»: выбор в нём применяется кнопкой «Показать», «Отмена» его отбрасывает.
+  const [familyDialogOpen, setFamilyDialogOpen] = useState(false);
+  const [familyDraft, setFamilyDraft] = useState<number | null>(null);
   const [pending, setPending] = useState(false);
   const [splitHint, setSplitHint] = useState(false);
   const [page, setPage] = useState(1);
@@ -128,11 +169,41 @@ export function ContextsTab() {
   const [selectedContextId, setSelectedContextId] = useState<number | null>(null);
 
   const search = useDebounce(searchInput, 300);
-  const categoryId = useDebounce(categoryInput, 300);
+  const familiesQ = useWorkFamilies();
+  const selectedFamily = familiesQ.data?.find((f) => f.id === familyId);
+  const selectedFamilyHint = selectedFamily ? familyHint(selectedFamily) : undefined;
+
+  // Переход «Показать контексты: N» из панели семьи: выбранная семья, ВСЕ
+  // остальные фильтры и поиск сброшены (иначе выдача разойдётся с N), первая
+  // страница. Правка состояния во время рендера — приём `FamiliesTab`; пока
+  // запрос не снят (`null`), тот же id не применяется дважды, а после снятия
+  // повторный переход к той же семье срабатывает снова.
+  const [shownFocusId, setShownFocusId] = useState<number | null>(null);
+  if (focusFamilyId === null && shownFocusId !== null) {
+    setShownFocusId(null);
+  } else if (focusFamilyId !== null && focusFamilyId !== shownFocusId) {
+    setShownFocusId(focusFamilyId);
+    setSearchInput("");
+    setKind(ANY);
+    setRole(ANY);
+    setState(ANY);
+    setHasStale(false);
+    setHasConflicting(false);
+    setHasNoMembers(false);
+    setVariantState(ANY);
+    setPending(false);
+    setSplitHint(false);
+    setFamilyId(focusFamilyId);
+    setSelectedContextId(null);
+    setPage(1);
+  }
+  useEffect(() => {
+    if (focusFamilyId !== null) onFocusShown?.();
+  }, [focusFamilyId, onFocusShown]);
 
   const contextsQ = useSemanticContexts({
     catalog_query: search || undefined,
-    work_category_id: categoryId ? Number(categoryId) : undefined,
+    work_family_id: familyId ?? undefined,
     semantic_kind: kind === ANY ? undefined : (kind as SemanticKind),
     name_role: role === ANY ? undefined : (role as NameRole),
     semantic_state: state === ANY ? undefined : (state as SemanticState),
@@ -203,15 +274,14 @@ export function ContextsTab() {
     // автоматический минимум трека.
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,420px)] lg:items-start">
       <div className="grid gap-4">
-        {/* Один ряд (сверка с макетом 27.09.2026, `mock-contexts.png`): поиск,
-            компактная статья (id) без своей строки подписи, три селекта,
-            короткие чекбоксы. */}
+        {/* Поля — один ряд (переносится, если не влезает): поиск и пять
+            выборов с подписью сверху, как на вкладке «Семьи», по нижнему
+            краю. Флажки — отдельной строкой-группой под ними. */}
         <div className="flex flex-wrap items-end gap-3">
-          {/* Ширина явная (замер на стенде 27.09.2026): в `flex flex-wrap`
-              ряду `flex-1` без `min-width` схлопывает поле до содержимого
-              плейсхолдера рядом с нерастяжимыми селектами — `min-w-64`
-              держит его САМЫМ широким контролом ряда, как в макете. */}
-          <InputGroup className="min-w-64 flex-1">
+          {/* Ширина явная и фиксированная (решение 16.10.2026): свободное место
+              ряда занимает поле «Семья» — названия семей длинные, а строка
+              поиска короткая. */}
+          <InputGroup className="w-64 flex-none">
             <InputGroupInput
               aria-label="Поиск по написанию каталога"
               placeholder="Поиск по строке или статье"
@@ -226,87 +296,166 @@ export function ContextsTab() {
             </InputGroupAddon>
           </InputGroup>
 
-          <Input
-            id="filter-category"
-            aria-label="Статья (id)"
-            placeholder="статья (id)"
-            className="w-28"
-            inputMode="numeric"
-            value={categoryInput}
-            onChange={(e) => {
-              setCategoryInput(e.target.value);
-              resetToFirstPage();
-            }}
-          />
+          <div className="grid gap-1">
+            <Label htmlFor="filter-kind" className="text-xs text-fg-tertiary">Вид</Label>
+            <Select value={kind} onValueChange={(v) => { setKind(v ?? ANY); resetToFirstPage(); }}>
+              <SelectTrigger id="filter-kind" className="w-36">
+                <SelectValue>
+                  {(raw) =>
+                    !raw || raw === ANY ? "Любой вид" : SEMANTIC_KIND_LABEL[raw as SemanticKind]
+                  }
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ANY}>Любой вид</SelectItem>
+                {KIND_OPTIONS.map((k) => (
+                  <SelectItem key={k} value={k}>{SEMANTIC_KIND_LABEL[k]}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
 
-          <Select value={kind} onValueChange={(v) => { setKind(v ?? ANY); resetToFirstPage(); }}>
-            <SelectTrigger id="filter-kind" aria-label="Вид" className="w-36">
-              <SelectValue>
-                {(raw) =>
-                  !raw || raw === ANY ? "Любой вид" : SEMANTIC_KIND_LABEL[raw as SemanticKind]
-                }
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ANY}>Любой вид</SelectItem>
-              {KIND_OPTIONS.map((k) => (
-                <SelectItem key={k} value={k}>{SEMANTIC_KIND_LABEL[k]}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className="grid gap-1">
+            <Label htmlFor="filter-role" className="text-xs text-fg-tertiary">Роль</Label>
+            <Select value={role} onValueChange={(v) => { setRole(v ?? ANY); resetToFirstPage(); }}>
+              <SelectTrigger id="filter-role" className="w-40">
+                <SelectValue>
+                  {(raw) => (!raw || raw === ANY ? "Любая роль" : NAME_ROLE_LABEL[raw as NameRole])}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ANY}>Любая роль</SelectItem>
+                {ROLE_OPTIONS.map((r) => (
+                  <SelectItem key={r} value={r}>{NAME_ROLE_LABEL[r]}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
 
-          <Select value={role} onValueChange={(v) => { setRole(v ?? ANY); resetToFirstPage(); }}>
-            <SelectTrigger id="filter-role" aria-label="Наименование называет" className="w-40">
-              <SelectValue>
-                {(raw) => (!raw || raw === ANY ? "Любая роль" : NAME_ROLE_LABEL[raw as NameRole])}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ANY}>Любая роль</SelectItem>
-              {ROLE_OPTIONS.map((r) => (
-                <SelectItem key={r} value={r}>{NAME_ROLE_LABEL[r]}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className="grid gap-1">
+            <Label htmlFor="filter-state" className="text-xs text-fg-tertiary">Состояние</Label>
+            <Select value={state} onValueChange={(v) => { setState(v ?? ANY); resetToFirstPage(); }}>
+              <SelectTrigger id="filter-state" className="w-40">
+                <SelectValue>
+                  {(raw) =>
+                    !raw || raw === ANY ? "Любое состояние" : SEMANTIC_STATE_LABEL[raw as SemanticState]
+                  }
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ANY}>Любое состояние</SelectItem>
+                {STATE_OPTIONS.map((s) => (
+                  <SelectItem key={s} value={s}>{SEMANTIC_STATE_LABEL[s]}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
 
-          <Select value={state} onValueChange={(v) => { setState(v ?? ANY); resetToFirstPage(); }}>
-            <SelectTrigger id="filter-state" aria-label="Состояние" className="w-40">
-              <SelectValue>
-                {(raw) =>
-                  !raw || raw === ANY ? "Любое состояние" : SEMANTIC_STATE_LABEL[raw as SemanticState]
-                }
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ANY}>Любое состояние</SelectItem>
-              {STATE_OPTIONS.map((s) => (
-                <SelectItem key={s} value={s}>{SEMANTIC_STATE_LABEL[s]}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className="grid gap-1">
+            <Label htmlFor="filter-variant" className="text-xs text-fg-tertiary">Вариант</Label>
+            <Select
+              value={variantState}
+              onValueChange={(v) => {
+                setVariantState(v ?? ANY);
+                resetToFirstPage();
+              }}
+            >
+              <SelectTrigger id="filter-variant" className="w-40">
+                <SelectValue>
+                  {(raw) =>
+                    !raw || raw === ANY ? "Любой вариант" : VARIANT_STATE_LABEL[raw as VariantState]
+                  }
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ANY}>Любой вариант</SelectItem>
+                {VARIANT_OPTIONS.map((v) => (
+                  <SelectItem key={v} value={v}>{VARIANT_STATE_LABEL[v]}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
 
-          <Select
-            value={variantState}
-            onValueChange={(v) => {
-              setVariantState(v ?? ANY);
-              resetToFirstPage();
-            }}
-          >
-            <SelectTrigger id="filter-variant" aria-label="Вариант" className="w-40">
-              <SelectValue>
-                {(raw) =>
-                  !raw || raw === ANY ? "Любой вариант" : VARIANT_STATE_LABEL[raw as VariantState]
-                }
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ANY}>Любой вариант</SelectItem>
-              {VARIANT_OPTIONS.map((v) => (
-                <SelectItem key={v} value={v}>{VARIANT_STATE_LABEL[v]}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className="grid min-w-72 flex-1 gap-1">
+            <Label htmlFor="filter-family" className="text-xs text-fg-tertiary">Семья</Label>
+            <div className="flex items-center gap-1">
+              <Button
+                id="filter-family"
+                type="button"
+                variant="outline"
+                title={selectedFamily ? `${selectedFamily.title}${selectedFamilyHint ? ` · ${selectedFamilyHint}` : ""}` : undefined}
+                className="min-w-0 flex-1 justify-start font-normal"
+                onClick={() => {
+                  setFamilyDraft(familyId);
+                  setFamilyDialogOpen(true);
+                }}
+              >
+                <span className={cn("min-w-0 truncate", !selectedFamily && "text-muted-foreground")}>
+                  {selectedFamily
+                    ? `${selectedFamily.title}${selectedFamilyHint ? ` · ${selectedFamilyHint}` : ""}`
+                    : "Любая семья"}
+                </span>
+              </Button>
+              {familyId !== null && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Сбросить семью"
+                  onClick={() => {
+                    setFamilyId(null);
+                    resetToFirstPage();
+                  }}
+                >
+                  <X size={14} />
+                </Button>
+              )}
+            </div>
+          </div>
+        </div>
 
+        <Dialog open={familyDialogOpen} onOpenChange={setFamilyDialogOpen}>
+          <DialogContent className="sm:max-w-xl">
+            <DialogHeader>
+              <DialogTitle>Фильтр по семье</DialogTitle>
+            </DialogHeader>
+            <div className="grid gap-2 py-2">
+              <Label htmlFor="filter-family-select">Семья</Label>
+              <EntityCombobox
+                id="filter-family-select"
+                items={familiesQ.data ?? []}
+                value={familyDraft}
+                onChange={(f) => setFamilyDraft(f?.id ?? null)}
+                getLabel={(f) => f.title}
+                getHint={familyHint}
+                placeholder="Выбрать семью"
+                searchPlaceholder="Найти семью…"
+                emptyText="Ничего не найдено"
+              />
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setFamilyDialogOpen(false)}>
+                Отмена
+              </Button>
+              <Button
+                disabled={familyDraft === null}
+                onClick={() => {
+                  setFamilyId(familyDraft);
+                  resetToFirstPage();
+                  setFamilyDialogOpen(false);
+                }}
+              >
+                Показать
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <div
+          role="group"
+          aria-label="Признаки"
+          className="flex flex-wrap items-center gap-x-4 gap-y-2"
+        >
           <div className="flex items-center gap-1.5">
             <Checkbox
               id="filter-stale"
@@ -353,7 +502,9 @@ export function ContextsTab() {
           </div>
         </div>
 
-        {contextsQ.isPending && <Skeleton className="h-40 w-full" />}
+        <FetchingBar active={contextsQ.isFetching && !contextsQ.isPending} />
+
+        {contextsQ.isPending && <ListSkeleton />}
 
         {contextsQ.isError && (
           <EmptyState title="Ошибка загрузки" description="Не удалось получить контексты." />
@@ -449,9 +600,11 @@ export function ContextsTab() {
                             <div className="mt-1 text-xs text-fg-tertiary">—</div>
                           )}
                         </TableCell>
-                        <TableCell>{row.unit_symbol ?? "—"}</TableCell>
-                        <TableCell>{familyCaption}</TableCell>
-                        <TableCell className="text-right">
+                        <TableCell className="align-top">{row.unit_symbol ?? "—"}</TableCell>
+                        <TableCell className="max-w-56 min-w-0 align-top whitespace-normal">
+                          {familyCaption}
+                        </TableCell>
+                        <TableCell className="text-right align-top">
                           <div className="flex items-center justify-end gap-2 tabular-nums">
                             <span>{row.member_count}</span>
                             <AttentionDot row={row} />

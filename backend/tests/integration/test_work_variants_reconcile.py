@@ -65,6 +65,7 @@ from tests.integration.test_work_variants_material import (
     _uid,
     _unit_id,
 )
+from tests.integration.test_work_variants_material import _context as _bound_context
 from tests.integration.test_work_variants_schema import (
     _batch,
     _family,
@@ -373,6 +374,9 @@ class TestSchemaJobOnVersionThatIsNotBuilding:
         self, db_session, factories
     ):
         family = _active_family(db_session)
+        # Наименование есть: «нового задания нет» держит текущая версия, а не
+        # пустой материал (спека 3б §2.16 п. 1).
+        _context(db_session, factories, family=family)
         frozen = _schema(db_session, factories, family, version=1, status="frozen")
         job = _job(
             db_session, kind=_SCHEMA, request_hash="x", family_id=family.id, schema_id=frozen.id
@@ -390,6 +394,10 @@ class TestSchemaJobOnVersionThatIsNotBuilding:
         self, db_session, factories, status
     ):
         family = _family(db_session, status=status, definition="Определение")
+        # Наименование есть (строка-член; задания предложений нет — единица
+        # свободна): версии нет из-за статуса семьи, а не из-за пустого
+        # материала (спека 3б §2.16 п. 1).
+        _bound_context(db_session, factories, "Строка семьи", work=family)
         if status == "archived":
             family.archived_at = _now()
             db_session.flush()
@@ -458,6 +466,7 @@ class TestBuildingVersionCreation:
 
     def test_version_number_is_max_plus_one_counting_cancelled(self, db_session, factories):
         family = _active_family(db_session)
+        _context(db_session, factories, family=family)
         _schema(db_session, factories, family, version=3, status="cancelled")
 
         reconcile_family_schemas(db_session, [family.id], cap=NO_CAP, source="operation")
@@ -469,14 +478,17 @@ class TestBuildingVersionCreation:
         ).all()
         assert [tuple(v) for v in versions] == [(3, "cancelled"), (4, "building")]
 
-    def test_family_without_living_rows_still_gets_version_and_job(self, db_session, factories):
+    def test_family_without_living_rows_gets_no_version_and_no_job(self, db_session, factories):
         family = _active_family(db_session)
         assert load_schema_material(db_session, family.id, 0).names == ()
 
         report = reconcile_family_schemas(db_session, [family.id], cap=NO_CAP, source="operation")
 
-        assert report.created == 1
-        assert len(_jobs(db_session, kind=_SCHEMA)) == 1
+        assert report == _ZERO
+        assert _jobs(db_session, kind=_SCHEMA) == []
+        assert db_session.execute(
+            sa.select(sa.func.count()).select_from(FamilyParameterSchema)
+        ).scalar_one() == 0
 
     def test_family_with_a_single_row_gets_version_and_job(self, db_session, factories):
         family = _active_family(db_session)
@@ -489,6 +501,8 @@ class TestBuildingVersionCreation:
 
     def test_family_with_current_version_gets_nothing(self, db_session, factories):
         family = _active_family(db_session)
+        # Наименование есть: «ничего» держит текущая версия, а не пустой материал.
+        _context(db_session, factories, family=family)
         _schema(db_session, factories, family, version=1, status="frozen")
 
         report = reconcile_family_schemas(db_session, [family.id], cap=NO_CAP, source="operation")
@@ -498,6 +512,7 @@ class TestBuildingVersionCreation:
 
     def test_second_call_changes_nothing(self, db_session, factories):
         family = _active_family(db_session)
+        _context(db_session, factories, family=family)
         reconcile_family_schemas(db_session, [family.id], cap=NO_CAP, source="operation")
 
         second = reconcile_family_schemas(db_session, [family.id], cap=NO_CAP, source="operation")
@@ -508,6 +523,9 @@ class TestBuildingVersionCreation:
     def test_unit_that_is_still_being_asked_gets_no_version(self, db_session, factories):
         unit = _unit_id(db_session, "M2")
         family = _active_family(db_session, unit_id=unit)
+        # Наименование есть: версии нет из-за перезапроса единицы, а не из-за
+        # пустого материала (спека 3б §2.16 п. 1).
+        _context(db_session, factories, family=family, unit_id=unit)
         context_id = _context(db_session, factories, unit_id=unit)
         _job(
             db_session, kind=_SUGGESTION, request_hash="s", context_id=context_id, unit_id=unit
@@ -532,6 +550,7 @@ class TestBuildingVersionCreation:
 
     def test_over_cap_holds_the_subject_without_creating_the_version(self, db_session, factories):
         family = _active_family(db_session)
+        _context(db_session, factories, family=family)
         cap = EventCap(max_contexts=0, max_reserve_usd=Decimal("1000000"))
 
         report = reconcile_family_schemas(db_session, [family.id], cap=cap, source="operation")
@@ -780,7 +799,7 @@ class TestValuesNeeded:
 class TestValuesApplicability:
     @pytest.mark.parametrize(
         "spoil",
-        ["archived", "not_applicable", "system", "header", "trash", "no_members"],
+        ["archived", "not_applicable", "header", "trash", "no_members"],
     )
     def test_each_inapplicable_condition_blocks_creation_alone(
         self, db_session, factories, spoil
@@ -793,8 +812,6 @@ class TestValuesApplicability:
             context.archived_at = _now()
         elif spoil == "not_applicable":
             context.semantic_state = "NOT_APPLICABLE"
-        elif spoil == "system":
-            context.semantic_kind = "SYSTEM"
         elif spoil in ("header", "trash"):
             catalog_id = db_session.execute(
                 sa.select(ContextBucket.catalog_position_id).where(
@@ -811,6 +828,17 @@ class TestValuesApplicability:
         report = reconcile_context_values(db_session, [context_id], cap=NO_CAP, source="operation")
 
         assert report == _ZERO
+
+    def test_system_kind_does_not_block_creation(self, db_session, factories):
+        family = _active_family(db_session)
+        _frozen_schema(db_session, factories, family, [(1, "Толщина", ["50 мм"])])
+        context_id = _context(db_session, factories, family=family)
+        db_session.get(CatalogContext, context_id).semantic_kind = "SYSTEM"
+        db_session.flush()
+
+        report = reconcile_context_values(db_session, [context_id], cap=NO_CAP, source="operation")
+
+        assert report.created == 1
 
     @pytest.mark.parametrize("kind", ["TO_REVIEW", "POSITION"])
     def test_review_and_position_rows_are_applicable(self, db_session, factories, kind):
@@ -855,6 +883,8 @@ def _joint_scene(db, factories):
     f2 = _active_family(db)
     _frozen_schema(db, factories, f2, [(1, "Толщина", ["50 мм"])])
     f3 = _active_family(db)
+    # Схема не строится из нуля наименований: у F3 есть строка (вне набора сверки).
+    _context(db, factories, family=f3, title="Строка F3")
     a = _context(db, factories, unit_id=m2, title="Предложение")
     b = _context(db, factories, family=f2, title="Значения")
     settled = _settled_suggestion(db, b)
@@ -877,6 +907,9 @@ class TestAllKindsTogether:
 
     def test_unit_of_the_contexts_that_is_being_asked_gets_no_schema(self, db_session, factories):
         world = _joint_scene(db_session, factories)
+        # Наименование у F1 есть (строка вне набора сверки): схемы нет из-за
+        # перезапроса единицы, а не из-за пустого материала (спека 3б §2.16 п. 1).
+        _context(db_session, factories, family=world.f1, unit_id=world.f1.unit_id)
 
         reconcile_semantic_jobs(db_session, [world.a, world.b], cap=NO_CAP, source="operation")
 
@@ -1426,6 +1459,7 @@ class TestSchemaJobOfAnotherVersionWhileBuilding:
         версии неприменимо, задание `building`-версии — нет. Хэш у обоих один,
         различает их только версия."""
         family = _active_family(db_session)
+        _context(db_session, factories, family=family)
         frozen = _schema(db_session, factories, family, version=1, status="frozen")
         building = _schema(db_session, factories, family, version=2, status="building")
         current_hash = _schema_hash(db_session, family.id, building.id)
@@ -1618,6 +1652,7 @@ class TestJobAuditColumnsByKind:
 
         unit = _unit_id(db_session, "M2")
         family = _active_family(db_session, unit_id=unit)
+        _context(db_session, factories, family=family)
 
         reconcile_family_schemas(db_session, [family.id], cap=NO_CAP, source="operation")
 

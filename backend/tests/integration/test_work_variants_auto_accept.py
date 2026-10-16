@@ -36,6 +36,7 @@ from models import (
 from services.family_change import (
     AutoAcceptError,
     AutoAcceptPreview,
+    Thresholds,
     apply_auto_accept,
     apply_publication_rules,
     preview_auto_accept,
@@ -78,10 +79,20 @@ from tests.integration.test_work_variants_family_change import (
     _with_variant,
 )
 from tests.integration.test_work_variants_material import _settings
-from tests.integration.test_work_variants_reconcile import _active_family as _schemaless_family
+from tests.integration.test_work_variants_reconcile import _active_family as _bare_active_family
+from tests.integration.test_work_variants_reconcile import _context
 from tests.integration.test_work_variants_schema import _param, _schema, _value, _variant
 
 pytestmark = pytest.mark.integration
+
+
+def _schemaless_family(db, factories):
+    """Активная семья без версии схемы, у которой есть строка с наименованием:
+    без наименований схема не строится."""
+    family = _bare_active_family(db)
+    _context(db, factories, family=family)
+    return family
+
 
 TITLES = ("Пол 1", "Пол 2", "Пол 3", "Пол 4", "Пол 5")
 
@@ -396,7 +407,7 @@ class TestCandidates:
         suggestion = _publish(db_session, scene.context_ids[0], family_id=other.id)
 
         outcome = apply_publication_rules(
-            db_session, suggestion_id=suggestion.id, threshold=THRESHOLD
+            db_session, suggestion_id=suggestion.id, thresholds=Thresholds(THRESHOLD, None)
         )
 
         assert outcome is None
@@ -464,7 +475,7 @@ class TestPreviewAgreesWithThePublicationRule:
 
         previewed = {k: v for k, v in preview_auto_accept(db_session).by_outcome.items() if v}
         result = apply_publication_rules(
-            db_session, suggestion_id=scene.suggestion.id, threshold=THRESHOLD
+            db_session, suggestion_id=scene.suggestion.id, thresholds=Thresholds(THRESHOLD, None)
         )
 
         assert previewed == {outcome: 1}
@@ -944,7 +955,7 @@ class TestAFamilyNoLongerActive:
         scene = self._scene(db_session, factories)
 
         outcome = apply_publication_rules(
-            db_session, suggestion_id=scene.tested_suggestion.id, threshold=THRESHOLD
+            db_session, suggestion_id=scene.tested_suggestion.id, thresholds=Thresholds(THRESHOLD, None)
         )
 
         assert outcome is None
@@ -1300,13 +1311,13 @@ class TestSchemasBackfill:
     def test_only_active_families_without_a_current_version_get_a_schema_job(
         self, db_session, factories
     ):
-        needy = _schemaless_family(db_session)
-        with_current = _schemaless_family(db_session)
+        needy = _schemaless_family(db_session, factories)
+        with_current = _schemaless_family(db_session, factories)
         _schema(db_session, factories, with_current, version=1, status="frozen")
-        archived = _schemaless_family(db_session)
+        archived = _schemaless_family(db_session, factories)
         archived.status = "archived"
         archived.archived_at = dt.datetime.now(dt.UTC)
-        draft = _schemaless_family(db_session)
+        draft = _schemaless_family(db_session, factories)
         draft.status = "draft"
         db_session.flush()
 
@@ -1322,7 +1333,7 @@ class TestSchemasBackfill:
         assert needy.id not in (with_current.id, archived.id, draft.id)
 
     def test_a_repeat_creates_nothing_more(self, db_session, factories):
-        _schemaless_family(db_session)
+        _schemaless_family(db_session, factories)
         backfill_family_schemas(db_session)
 
         report = backfill_family_schemas(db_session)
@@ -1333,8 +1344,8 @@ class TestSchemasBackfill:
     def test_over_the_event_cap_the_set_is_one_held_mass_batch(
         self, db_session, factories, monkeypatch
     ):
-        first = _schemaless_family(db_session)
-        second = _schemaless_family(db_session)
+        first = _schemaless_family(db_session, factories)
+        second = _schemaless_family(db_session, factories)
         monkeypatch.setattr(app_settings, "SEMANTIC_EVENT_MAX_CONTEXTS", 1)
 
         report = backfill_family_schemas(db_session)
@@ -1349,8 +1360,8 @@ class TestSchemasBackfill:
         assert _schema_jobs(db_session) == []
 
     def test_exactly_on_the_cap_the_jobs_are_created(self, db_session, factories, monkeypatch):
-        _schemaless_family(db_session)
-        _schemaless_family(db_session)
+        _schemaless_family(db_session, factories)
+        _schemaless_family(db_session, factories)
         monkeypatch.setattr(app_settings, "SEMANTIC_EVENT_MAX_CONTEXTS", 2)
 
         report = backfill_family_schemas(db_session)
@@ -1360,7 +1371,7 @@ class TestSchemasBackfill:
     def test_command_commits_the_jobs_and_prints_the_count(
         self, cli_db, committing_db, committing_factories
     ):
-        family = _schemaless_family(committing_db)
+        family = _schemaless_family(committing_db, committing_factories)
         family_id = family.id
         committing_db.commit()
 
@@ -1377,8 +1388,8 @@ class TestSchemasBackfill:
     def test_command_holds_a_batch_over_the_cap_and_prints_its_number(
         self, cli_db, committing_db, committing_factories, monkeypatch
     ):
-        _schemaless_family(committing_db)
-        _schemaless_family(committing_db)
+        _schemaless_family(committing_db, committing_factories)
+        _schemaless_family(committing_db, committing_factories)
         committing_db.commit()
         monkeypatch.setattr(app_settings, "SEMANTIC_EVENT_MAX_CONTEXTS", 1)
 

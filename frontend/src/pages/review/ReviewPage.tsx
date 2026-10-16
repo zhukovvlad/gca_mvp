@@ -127,7 +127,7 @@ export default function ReviewPage() {
   }
 
   return (
-    <div className="container-page py-8">
+    <div className="container-wide py-8">
       <PageHeader
         serif
         title="Ручной матчинг"
@@ -272,7 +272,7 @@ export default function ReviewPage() {
         {data && items.length > 0 && (
           <>
             <Surface padding="none" className="overflow-x-auto">
-              <Table>
+              <Table className="table-fixed">
                 <TableHeader>
                   <TableRow>
                     <TableHead className="w-10">
@@ -283,9 +283,9 @@ export default function ReviewPage() {
                       />
                     </TableHead>
                     <TableHead>Работа</TableHead>
-                    <TableHead>Единица</TableHead>
-                    <TableHead className="text-right">Позиций</TableHead>
-                    <TableHead>Действия</TableHead>
+                    <TableHead className="w-28">Единица</TableHead>
+                    <TableHead className="w-24 text-right">Позиций</TableHead>
+                    <TableHead className="w-[22rem]">Действия</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -299,11 +299,16 @@ export default function ReviewPage() {
                         />
                       </TableCell>
                       <TableCell>
-                        <div className="font-medium text-fg">{item.standard_job_title}</div>
+                        <div
+                          className="line-clamp-2 font-medium break-words text-fg"
+                          title={item.standard_job_title}
+                        >
+                          {item.standard_job_title}
+                        </div>
                         {item.sample_titles.length > 0 && (
                           <ul className="mt-0.5 text-xs text-fg-tertiary">
                             {item.sample_titles.map((title) => (
-                              <li key={title} className="truncate">
+                              <li key={title} className="truncate" title={title}>
                                 в смете: {title}
                               </li>
                             ))}

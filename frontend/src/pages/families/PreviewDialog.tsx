@@ -179,7 +179,11 @@ export function PreviewDialog({ target, unitLabel = "", onClose }: PreviewDialog
             <Button variant="outline" onClick={() => handleOpenChange(false)}>
               Отмена
             </Button>
-            <Button disabled={busy || !data} onClick={handleConfirm}>
+            <Button
+              disabled={busy || !data}
+              loading={reaskConfirm.isPending || rebuild.isPending}
+              onClick={handleConfirm}
+            >
               {confirmLabelOf(target)}
             </Button>
           </DialogFooter>

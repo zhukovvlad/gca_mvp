@@ -51,6 +51,7 @@ from services.work_families import (
     set_name_role,
     unconfirm_kind,
 )
+from tests.factories import seed_category_id
 
 pytestmark = pytest.mark.integration
 
@@ -365,6 +366,7 @@ class TestAxisIndependence:
         family = create_family(
             db_session, title=f"Не трогает семью {_uid()}", unit_name="M2",
             definition="Определение", actor_id=user.id,
+            family_category_id=seed_category_id(db_session),
         )
         activate_family(db_session, family_id=family.id, actor_id=user.id)
         assign_family(db_session, context_id=context.id, family_id=family.id, actor_id=user.id)

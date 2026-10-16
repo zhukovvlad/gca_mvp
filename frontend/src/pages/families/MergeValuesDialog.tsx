@@ -129,7 +129,8 @@ function MergeValuesForm({ schema, onDone }: { schema: FamilySchema; onDone: () 
       <DialogFooter>
         <Button
           type="submit"
-          disabled={sourceId === null || targetId === null || merge.isPending}
+          disabled={sourceId === null || targetId === null}
+          loading={merge.isPending}
         >
           Слить
         </Button>

@@ -57,7 +57,13 @@ from tests.integration.test_semantic_queue_worker import (
 from tests.integration.test_semantic_queue_worker import _answer as _suggestion_answer
 from tests.integration.test_work_variants_concurrency import _freeze_answer, _Scene
 from tests.integration.test_work_variants_core import _freeze_world
-from tests.integration.test_work_variants_material import _proposal, _settings, _uid
+from tests.integration.test_work_variants_material import (
+    _context,
+    _proposal,
+    _publish,
+    _settings,
+    _uid,
+)
 from tests.integration.test_work_variants_schema import _family, _schema
 
 pytestmark = pytest.mark.integration
@@ -165,6 +171,8 @@ class TestLockedFamilyGetsItsVersionLater:
     ):
         db = committing_db
         empty = _family(db, status="active", definition="Пустая семья")
+        # Схема не строится из нуля наименований: у семьи есть строка.
+        _context(db, committing_factories, "Строка семьи без схемы", work=empty)
         world = _freeze_world(db, committing_factories)
         _quiet_unit(db, world.context_id)
         db.commit()
@@ -212,6 +220,7 @@ class TestSchemaJobForASiblingWithABuildingVersion:
     def _scene(self, db, factories):
         sibling = _family(db, status="active", definition="Соседка с версией")
         _schema(db, factories, sibling, version=1, status="building")
+        _context(db, factories, "Строка соседки", work=sibling)
         world = _freeze_world(db, factories)
         return sibling, world
 
@@ -438,6 +447,12 @@ class TestBuildingVersionAgainstArchive:
         `cancel_schema_build`, который для архивной семьи разрешён."""
         db = committing_db
         empty = _family(db, status="active", definition="Пустая семья")
+        # Члены семью архивировать не дают: наименование — из опубликованного
+        # предложения на контекст без семьи.
+        _publish(
+            db, committing_factories,
+            _context(db, committing_factories, "Строка семьи без схемы"), empty,
+        )
         world = _freeze_world(db, committing_factories)
         actor = committing_factories.UserFactory.create().id
         _quiet_unit(db, world.context_id)

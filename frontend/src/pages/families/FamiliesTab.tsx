@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { Plus } from "lucide-react";
 
+import { EntityCombobox } from "@/components/domain/EntityCombobox";
 import { Pager } from "@/components/domain/Pager";
 import { EmptyState } from "@/components/ui-domain/EmptyState";
 import { EntitySelect } from "@/components/ui-domain/EntitySelect";
-import { Skeleton } from "@/components/ui-domain/Skeleton";
 import { Surface } from "@/components/ui-domain/Surface";
 import {
   AlertDialog,
@@ -49,14 +49,19 @@ import {
   useActivateWorkFamily,
   useArchiveWorkFamily,
   useCreateWorkFamily,
+  useFamilyCategories,
   useMergeWorkFamilies,
   useUnits,
+  useUnitBusyJobs,
   useUpdateWorkFamily,
   useWorkFamilies,
 } from "@/services/queries";
 import type { WorkFamily, WorkFamilyStatus } from "@/types/domain";
 
-import { FAMILY_STATUS_LABEL } from "./labels";
+import { FamilyCategoriesDialog } from "./FamilyCategoriesDialog";
+import { discoveryRefusalLabel, FAMILY_STATUS_LABEL } from "./labels";
+import { FetchingBar, ListSkeleton } from "./pending";
+import { RerunResetWarning, UnitCheckFailedWarning } from "./RerunResetWarning";
 import { SchemaBlock } from "./SchemaBlock";
 import { usePersistedPageSize } from "./usePersistedPageSize";
 
@@ -75,6 +80,7 @@ const FAMILY_STATUS_TINT: Record<WorkFamilyStatus, string> = {
 };
 
 const ANY = "any";
+const NO_CATEGORY = "none";
 const DEFAULT_PAGE_SIZE = 20;
 const STATUS_OPTIONS: WorkFamilyStatus[] = ["draft", "active", "archived"];
 
@@ -95,12 +101,17 @@ interface FamiliesTabProps {
   /** Семья, открытая ссылкой «Открыть семью» с другой вкладки; после показа вкладка сообщает `onFocusShown`. */
   focusFamilyId?: number | null;
   onFocusShown?: () => void;
+  /** Кнопка «Показать контексты: N» панели семьи: переход на вкладку «Контексты» с этой семьёй. */
+  onShowContexts?: (familyId: number) => void;
 }
 
-export function FamiliesTab({ focusFamilyId = null, onFocusShown }: FamiliesTabProps = {}) {
+export function FamiliesTab({ focusFamilyId = null, onFocusShown, onShowContexts }: FamiliesTabProps = {}) {
   const [statusFilter, setStatusFilter] = useState<string>("draft");
   const [unitFilter, setUnitFilter] = useState<string>(ANY);
+  // Фильтр категории: `ANY`, `NO_CATEGORY` («без категории») или id категории строкой.
+  const [categoryFilter, setCategoryFilter] = useState<string>(ANY);
   const [createOpen, setCreateOpen] = useState(false);
+  const [categoriesOpen, setCategoriesOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [merging, setMerging] = useState<WorkFamily | null>(null);
   const [archiving, setArchiving] = useState<WorkFamily | null>(null);
@@ -116,6 +127,7 @@ export function FamiliesTab({ focusFamilyId = null, onFocusShown }: FamiliesTabP
     setShownFocusId(focusFamilyId);
     setStatusFilter(ANY);
     setUnitFilter(ANY);
+    setCategoryFilter(ANY);
     setPage(1);
     setSelectedId(focusFamilyId);
   }
@@ -124,9 +136,15 @@ export function FamiliesTab({ focusFamilyId = null, onFocusShown }: FamiliesTabP
   }, [focusFamilyId, onFocusShown]);
 
   const unitsQ = useUnits();
+  const categoriesQ = useFamilyCategories();
   const familiesQ = useWorkFamilies(
     statusFilter === ANY ? undefined : (statusFilter as WorkFamilyStatus),
-    unitFilter === ANY ? undefined : Number(unitFilter)
+    unitFilter === ANY ? undefined : Number(unitFilter),
+    categoryFilter === ANY
+      ? undefined
+      : categoryFilter === NO_CATEGORY
+        ? "none"
+        : Number(categoryFilter)
   );
   // Сводка над списком (сверка с макетом 27.09.2026, `mock-families.png`:
   // «активных N · черновиков M · в архиве K») — считается по ВСЕМУ списку
@@ -181,17 +199,17 @@ export function FamiliesTab({ focusFamilyId = null, onFocusShown }: FamiliesTabP
   return (
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px] lg:items-start">
       <div className="grid gap-4">
+        {/* Сводка — отдельной строкой над фильтрами: три фильтра и две кнопки в одну строку с
+            ней не помещаются в колонку списка (замер на снимке рядом с макетом К1). */}
+        {statusCounts && (
+          <p className="text-sm text-fg-tertiary tabular-nums">
+            активных {statusCounts.active} · черновиков {statusCounts.draft} · в архиве{" "}
+            {statusCounts.archived}
+          </p>
+        )}
+        {allFamiliesQ.isError && <p className="text-sm text-fg-tertiary">сводка недоступна</p>}
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div className="flex flex-wrap items-end gap-3">
-            {statusCounts && (
-              <p className="self-end text-sm text-fg-tertiary tabular-nums">
-                активных {statusCounts.active} · черновиков {statusCounts.draft} · в архиве{" "}
-                {statusCounts.archived}
-              </p>
-            )}
-            {allFamiliesQ.isError && (
-              <p className="self-end text-sm text-fg-tertiary">сводка недоступна</p>
-            )}
             <div className="grid gap-1">
               <Label htmlFor="family-status-filter" className="text-xs text-fg-tertiary">Статус</Label>
               <Select
@@ -236,13 +254,44 @@ export function FamiliesTab({ focusFamilyId = null, onFocusShown }: FamiliesTabP
                 </SelectContent>
               </Select>
             </div>
+            <div className="grid gap-1">
+              <Label htmlFor="family-category-filter" className="text-xs text-fg-tertiary">Категория (фильтр)</Label>
+              <Select
+                value={categoryFilter}
+                onValueChange={(v) => { setCategoryFilter(v ?? ANY); resetToFirstPage(); }}
+              >
+                <SelectTrigger id="family-category-filter" className="w-48">
+                  <SelectValue>
+                    {(raw) =>
+                      !raw || raw === ANY
+                        ? "Любая категория"
+                        : raw === NO_CATEGORY
+                          ? "Без категории"
+                          : (categoriesQ.data?.find((c) => String(c.id) === raw)?.title ?? "Любая категория")
+                    }
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ANY}>Любая категория</SelectItem>
+                  {(categoriesQ.data ?? []).map((c) => (
+                    <SelectItem key={c.id} value={String(c.id)}>{c.title}</SelectItem>
+                  ))}
+                  <SelectItem value={NO_CATEGORY}>Без категории</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <Button variant="outline" onClick={() => setCategoriesOpen(true)}>
+              Категории…
+            </Button>
           </div>
           <Button onClick={() => setCreateOpen(true)}>
             <Plus className="size-4" /> Новая семья
           </Button>
         </div>
 
-        {familiesQ.isPending && <Skeleton className="h-40 w-full" />}
+        <FetchingBar active={familiesQ.isFetching && !familiesQ.isPending} />
+
+        {familiesQ.isPending && <ListSkeleton />}
 
         {familiesQ.isError && (
           <EmptyState title="Ошибка загрузки" description="Не удалось получить семьи." />
@@ -261,6 +310,7 @@ export function FamiliesTab({ focusFamilyId = null, onFocusShown }: FamiliesTabP
                     <TableHead className="text-xs font-normal text-fg-tertiary">Название</TableHead>
                     <TableHead className="text-xs font-normal text-fg-tertiary">Единица</TableHead>
                     <TableHead className="text-xs font-normal text-fg-tertiary">Статус</TableHead>
+                    <TableHead className="text-xs font-normal text-fg-tertiary">Категория</TableHead>
                     <TableHead className="text-xs font-normal text-fg-tertiary">Определение</TableHead>
                     <TableHead className="text-right text-xs font-normal text-fg-tertiary">Контекстов</TableHead>
                   </TableRow>
@@ -287,16 +337,19 @@ export function FamiliesTab({ focusFamilyId = null, onFocusShown }: FamiliesTabP
                         family.id === selectedId && "bg-surface-hover"
                       )}
                     >
-                      <TableCell className="font-medium text-fg">{family.title}</TableCell>
+                      <TableCell className="max-w-64 whitespace-normal break-words font-medium text-fg">{family.title}</TableCell>
                       <TableCell>{family.unit_symbol ?? "—"}</TableCell>
                       <TableCell>
                         <Badge variant="outline" className={FAMILY_STATUS_TINT[family.status]}>
                           {FAMILY_STATUS_LABEL[family.status]}
                         </Badge>
                       </TableCell>
-                      <TableCell className="max-w-xs">
+                      <TableCell className="max-w-40 whitespace-normal break-words text-fg-secondary">
+                        {family.family_category_title ?? "—"}
+                      </TableCell>
+                      <TableCell className="min-w-48 max-w-md whitespace-normal">
                         {family.definition && family.definition.trim() ? (
-                          <span className="block truncate text-fg-secondary" title={family.definition}>
+                          <span className="line-clamp-2 break-words text-fg-secondary" title={family.definition}>
                             {family.definition}
                           </span>
                         ) : (
@@ -336,6 +389,8 @@ export function FamiliesTab({ focusFamilyId = null, onFocusShown }: FamiliesTabP
           family={selected}
           onMerge={() => setMerging(selected)}
           onArchive={() => setArchiving(selected)}
+          archivePending={archive.isPending}
+          onShowContexts={onShowContexts ? () => onShowContexts(selected.id) : undefined}
         />
       ) : (
         <EmptyState
@@ -346,6 +401,7 @@ export function FamiliesTab({ focusFamilyId = null, onFocusShown }: FamiliesTabP
       </div>
 
       <CreateFamilyDialog open={createOpen} onOpenChange={setCreateOpen} />
+      <FamilyCategoriesDialog open={categoriesOpen} onOpenChange={setCategoriesOpen} />
       <MergeFamilyDialog family={merging} onOpenChange={(open) => !open && setMerging(null)} />
 
       <AlertDialog open={archiving !== null} onOpenChange={(open) => !open && setArchiving(null)}>
@@ -358,6 +414,7 @@ export function FamiliesTab({ focusFamilyId = null, onFocusShown }: FamiliesTabP
                 : "Архивная семья перестаёт предлагаться для назначения контексту."}
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {archiving && <RerunResetWarning family={archiving} />}
           <AlertDialogFooter>
             <AlertDialogCancel render={<Button variant="outline">Отмена</Button>} />
             <AlertDialogAction
@@ -392,22 +449,69 @@ function FamilyPanel({
   family,
   onMerge,
   onArchive,
+  archivePending,
+  onShowContexts,
 }: {
   family: WorkFamily;
   onMerge: () => void;
   onArchive: () => void;
+  archivePending: boolean;
+  onShowContexts?: () => void;
 }) {
   const [title, setTitle] = useState(family.title);
   const [unitName, setUnitName] = useState(family.unit_symbol ?? "");
   const [definition, setDefinition] = useState(family.definition ?? "");
   const update = useUpdateWorkFamily();
   const activate = useActivateWorkFamily();
+  const categoriesQ = useFamilyCategories();
 
   const unitLocked = family.context_count > 0;
+  // Название, определение и единица входят в строку семьи в теле запроса предложения;
+  // категория — нет. Единица правится, пока нет привязок.
+  const textChanged =
+    title.trim() !== family.title || definition.trim() !== (family.definition ?? "").trim();
+  const unitText = unitName.trim();
+  // Единица влияет на тело запроса предложения только у активной семьи: у черновика проверки нет.
+  const unitTextDiffers =
+    family.status === "active" && !unitLocked && unitText !== (family.unit_symbol ?? "").trim();
+  // Новая единица — та, что выставит сервер по введённому имени (тот же разбор, что у правки
+  // семьи): другое написание той же единицы — не смена. Запрос — после паузы в наборе.
+  const [settledUnitText, setSettledUnitText] = useState(unitText);
+  useEffect(() => {
+    const timer = setTimeout(() => setSettledUnitText(unitText), 300);
+    return () => clearTimeout(timer);
+  }, [unitText]);
+  const unitLookup = useUnitBusyJobs(
+    unitTextDiffers && settledUnitText === unitText ? unitText : null
+  );
+  // Единица изменена, а разбор введённого текста ещё не завершён (пауза набора или запрос в пути):
+  // сохранять рано — предупреждения о целевой единице ещё нет. Отказ проверки — не ожидание.
+  const lookupFailed = unitTextDiffers && settledUnitText === unitText && unitLookup.isError;
+  // Кэшированный ответ по этому тексту показывается сразу, но сохранение ждёт СВЕЖИЙ (`isFetching`).
+  const unitChecking =
+    unitTextDiffers &&
+    !lookupFailed &&
+    !(settledUnitText === unitText && unitLookup.isSuccess && !unitLookup.isFetching);
+  const lookedUp =
+    unitTextDiffers && settledUnitText === unitText && unitLookup.isSuccess
+      ? unitLookup.data
+      : null;
+  const unitChanged = lookedUp !== null && lookedUp.resolved && lookedUp.unit_id !== family.unit_id;
+  // Пока ответа нет, прежняя единица считается затронутой; ответ «та же единица» или «неизвестное имя» снимает.
+  const fromApplies = textChanged || unitChanged || (unitTextDiffers && lookedUp === null);
+  const unitTarget =
+    unitChanged && lookedUp !== null
+      ? {
+          unit: lookedUp.unit_symbol ?? lookedUp.unit_code ?? "без единицы",
+          count: lookedUp.busy_jobs,
+        }
+      : null;
   const hasDefinition = Boolean(family.definition && family.definition.trim());
+  const hasCategory = family.family_category_id !== null;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (unitChecking) return;
     try {
       await update.mutateAsync({
         id: family.id,
@@ -456,16 +560,44 @@ function FamilyPanel({
           <Label htmlFor="edit-family-definition">Определение</Label>
           <Textarea id="edit-family-definition" value={definition} onChange={(e) => setDefinition(e.target.value)} />
         </div>
+        <div className="grid gap-2">
+          <Label htmlFor="edit-family-category">Категория</Label>
+          {/* Выбор сохраняется сразу, а не кнопкой «Сохранить»: от категории зависит
+              «Активировать», и несохранённый выбор оставил бы её недоступной. Снять
+              категорию нельзя — только сменить (спека 3б §2.9, `clear_category_active`). */}
+          <EntitySelect
+            id="edit-family-category"
+            items={categoriesQ.data}
+            value={family.family_category_id}
+            onChange={(id) => {
+              if (id !== null && id !== family.family_category_id) {
+                update.mutate({ id: family.id, input: { family_category_id: id } });
+              }
+            }}
+            getLabel={(c) => c.title}
+            placeholder="Выбрать категорию"
+            disabled={update.isPending}
+          />
+        </div>
+        {(textChanged || unitTextDiffers) && (
+          <RerunResetWarning family={family} target={unitTarget} fromApplies={fromApplies} />
+        )}
+        {lookupFailed && <UnitCheckFailedWarning unit={unitText} />}
         {/* Одна строка (сверка с макетом 27.09.2026, `mock-families.png`). */}
         <div className="flex flex-wrap gap-2 border-t border-border-subtle pt-3">
-          <Button type="submit" disabled={!title.trim() || update.isPending}>
-            Сохранить
+          <Button
+            type="submit"
+            disabled={!title.trim()}
+            loading={update.isPending || unitChecking}
+          >
+            {unitChecking ? "Проверяю единицу…" : "Сохранить"}
           </Button>
           {family.status === "draft" && (
             <Button
               variant="outline"
               aria-label={`Активировать семью ${family.title}`}
-              disabled={!hasDefinition || activate.isPending}
+              disabled={!hasDefinition || !hasCategory}
+              loading={activate.isPending}
               onClick={() => activate.mutate(family.id)}
             >
               Активировать
@@ -482,9 +614,15 @@ function FamilyPanel({
               // Видимый текст «В архив» — начало доступного имени (WCAG
               // 2.5.3 «метка в имени»), а не независимая от него подпись.
               aria-label={`В архив: семья ${family.title}`}
+              loading={archivePending}
               onClick={onArchive}
             >
               В архив
+            </Button>
+          )}
+          {onShowContexts && family.context_count > 0 && (
+            <Button type="button" variant="outline" onClick={onShowContexts}>
+              Показать контексты: {family.context_count}
             </Button>
           )}
         </div>
@@ -496,6 +634,9 @@ function FamilyPanel({
       {family.status === "draft" && !hasDefinition && (
         <p className="text-xs text-fg-tertiary">Активировать можно только с определением.</p>
       )}
+      {family.status === "draft" && !hasCategory && (
+        <p className="text-xs text-fg-tertiary">{discoveryRefusalLabel("activate_without_category")}</p>
+      )}
       <SchemaBlock family={family} />
     </Surface>
   );
@@ -505,6 +646,8 @@ function CreateFamilyDialog({ open, onOpenChange }: { open: boolean; onOpenChang
   const [title, setTitle] = useState("");
   const [unitName, setUnitName] = useState("");
   const [definition, setDefinition] = useState("");
+  const [categoryId, setCategoryId] = useState<number | null>(null);
+  const categoriesQ = useFamilyCategories();
   const create = useCreateWorkFamily();
 
   async function handleSubmit(e: React.FormEvent) {
@@ -515,10 +658,13 @@ function CreateFamilyDialog({ open, onOpenChange }: { open: boolean; onOpenChang
         title: title.trim(),
         unit_name: unitName.trim() || null,
         definition: definition.trim() || null,
+        // Категория при создании необязательна (спека 3б §2.9); активация потребует её.
+        ...(categoryId !== null ? { family_category_id: categoryId } : {}),
       });
       setTitle("");
       setUnitName("");
       setDefinition("");
+      setCategoryId(null);
       onOpenChange(false);
     } catch {
       // Причина в тосте.
@@ -548,9 +694,20 @@ function CreateFamilyDialog({ open, onOpenChange }: { open: boolean; onOpenChang
               <Label htmlFor="new-family-definition">Определение</Label>
               <Textarea id="new-family-definition" value={definition} onChange={(e) => setDefinition(e.target.value)} />
             </div>
+            <div className="grid gap-2">
+              <Label htmlFor="new-family-category">Категория</Label>
+              <EntitySelect
+                id="new-family-category"
+                items={categoriesQ.data}
+                value={categoryId}
+                onChange={setCategoryId}
+                getLabel={(c) => c.title}
+                placeholder="Не выбрана"
+              />
+            </div>
           </div>
           <DialogFooter>
-            <Button type="submit" disabled={!title.trim() || create.isPending}>
+            <Button type="submit" disabled={!title.trim()} loading={create.isPending}>
               Создать
             </Button>
           </DialogFooter>
@@ -586,26 +743,29 @@ function MergeFamilyDialog({
 
   return (
     <Dialog open={family !== null} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>Слить семью «{family?.title}»</DialogTitle>
           <DialogDescription>
             Контексты источника переезжают в целевую семью; источник архивируется.
           </DialogDescription>
         </DialogHeader>
+        {family && <RerunResetWarning family={family} />}
         <div className="grid gap-2 py-4">
           <Label htmlFor="merge-target-family">Целевая семья</Label>
-          <EntitySelect
+          <EntityCombobox
             id="merge-target-family"
             items={candidates}
             value={targetId}
-            onChange={(v) => setTargetId(v as number | null)}
+            onChange={(f) => setTargetId(f?.id ?? null)}
             getLabel={(f) => f.title}
             placeholder="Выбрать семью"
+            searchPlaceholder="Найти семью…"
+            emptyText="Ничего не найдено"
           />
         </div>
         <DialogFooter>
-          <Button disabled={targetId === null || merge.isPending} onClick={handleMerge}>
+          <Button disabled={targetId === null} loading={merge.isPending} onClick={handleMerge}>
             Слить
           </Button>
         </DialogFooter>

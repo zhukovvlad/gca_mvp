@@ -41,6 +41,7 @@ from models import (
     CatalogPosition,
     ContextBucket,
     ContextMember,
+    FamilyCategory,
     Lot,
     MembershipState,
     NameRole,
@@ -52,7 +53,10 @@ from models import (
     WorkFamily,
 )
 from services.context_routing import chapter_paths
+from services.family_discovery import _busy_count
 from services.semantic_rules import nearest_working_chapter
+from services.unit_resolution import UnitResolver
+from services.work_variants import is_reopenable
 
 
 class WorkCategoryRef(TypedDict):
@@ -124,11 +128,13 @@ class ContextFilters:
     фильтра-признака — независимые оси (см. докстринг модуля). Фильтры
     `variant_state`, `pending`, `split_hint` — тоже независимые оси: у контекста
     есть вариант (`with`) или нет (`without`), у него есть ожидающее назначение
-    семьи, у него стоит пометка «к делению».
+    семьи, у него стоит пометка «к делению». `work_family_id` — назначенная
+    семья контекста (не ожидающая смена); неизвестный id даёт пустую выдачу.
     """
 
     catalog_query: str | None = None
     work_category_id: int | None = None
+    work_family_id: int | None = None
     semantic_kind: str | None = None
     name_role: str | None = None
     semantic_state: str | None = None
@@ -169,15 +175,29 @@ def _family_row_select():
             WorkFamily.activated_by,
             WorkFamily.activated_at,
             WorkFamily.archived_at,
+            # Категория семьи (спека 3б §2.9): id и имя — то же внешнее
+            # соединение, что единица, третьего запроса нет.
+            WorkFamily.family_category_id,
+            FamilyCategory.title.label("family_category_title"),
             sa.func.count(CatalogContext.id).label("context_count"),
         )
         .outerjoin(UnitOfMeasure, UnitOfMeasure.id == WorkFamily.unit_id)
+        .outerjoin(FamilyCategory, FamilyCategory.id == WorkFamily.family_category_id)
         .outerjoin(CatalogContext, CatalogContext.work_family_id == WorkFamily.id)
-        .group_by(WorkFamily.id, UnitOfMeasure.code, UnitOfMeasure.symbol)
+        .group_by(
+            WorkFamily.id, UnitOfMeasure.code, UnitOfMeasure.symbol, FamilyCategory.title
+        )
     )
 
 
-def _family_row_to_dict(row) -> dict:
+def _family_row_to_dict(db: Session, row, busy: dict[int | None, int]) -> dict:
+    """Строка семьи. `unit_busy_jobs` — сколько заданий предложений единицы семьи ещё
+    не выполнены (то самое число, по которому запуск открытия отказывает
+    `discovery_unit_busy`): правка названия или определения, архивирование и слияние
+    семьи меняют список семей в теле запроса предложения и отменят их. Считается
+    один раз на единицу — `busy` общий для всех строк одного ответа."""
+    if row.unit_id not in busy:
+        busy[row.unit_id] = _busy_count(db, row.unit_id)
     return {
         "id": row.id,
         "title": row.title,
@@ -193,24 +213,70 @@ def _family_row_to_dict(row) -> dict:
         "activated_by": row.activated_by,
         "activated_at": row.activated_at,
         "archived_at": row.archived_at,
+        "family_category_id": row.family_category_id,
+        "family_category_title": row.family_category_title,
         "context_count": row.context_count,
+        "unit_busy_jobs": busy[row.unit_id],
     }
 
 
-def list_families(db: Session, *, status: str | None, unit_id: int | None) -> list[dict]:
-    """Список семей с фильтром по статусу/единице и числом привязанных
+def list_families(
+    db: Session,
+    *,
+    status: str | None,
+    unit_id: int | None,
+    family_category_id: int | Literal["none"] | None = None,
+) -> list[dict]:
+    """Список семей с фильтром по статусу/единице/категории и числом привязанных
     контекстов у КАЖДОЙ (спека §2.10; план, задача 12, «Утверждения») — то
     самое число, на которое ссылаются отказы правки единицы и
     архивирования (`REFUSE_UNIT_CHANGE_WITH_LINKS`/`REFUSE_ARCHIVE_WITH_LINKS`,
-    `services/work_families.py`)."""
+    `services/work_families.py`). `family_category_id`: id — только семьи с этой
+    категорией, `"none"` — только без категории, `None` — фильтра нет."""
     stmt = _family_row_select().order_by(WorkFamily.id)
     if status is not None:
         stmt = stmt.where(WorkFamily.status == status)
     if unit_id is not None:
         stmt = stmt.where(WorkFamily.unit_id == unit_id)
+    if family_category_id == "none":
+        stmt = stmt.where(WorkFamily.family_category_id.is_(None))
+    elif family_category_id is not None:
+        stmt = stmt.where(WorkFamily.family_category_id == family_category_id)
 
     rows = db.execute(stmt).all()
-    return [_family_row_to_dict(row) for row in rows]
+    busy: dict[int | None, int] = {}
+    return [_family_row_to_dict(db, row, busy) for row in rows]
+
+
+def unit_busy_lookup(db: Session, *, unit_name: str | None) -> dict:
+    """Единица, которую выставит `set_unit` по введённому имени (тот же `UnitResolver`),
+    и число её живых заданий предложений (`_busy_count`, то же, по которому отказывает
+    `discovery_unit_busy`). Нужен экрану семьи: смена единицы меняет список кандидатов
+    ЦЕЛЕВОЙ единицы, и её перезапрос тоже сбросится.
+
+    `resolved=False` — имя названо, но справочник его не знает (сохранение откажет
+    `unknown_unit`); пустое имя — «единицы нет» (`unit_id` = `NULL`), как у `set_unit`."""
+    resolved = UnitResolver(db).resolve(unit_name)
+    if resolved.is_unknown:
+        return {
+            "resolved": False,
+            "unit_id": None,
+            "unit_code": None,
+            "unit_symbol": None,
+            "busy_jobs": 0,
+        }
+    symbol = None
+    if resolved.unit_id is not None:
+        symbol = db.execute(
+            sa.select(UnitOfMeasure.symbol).where(UnitOfMeasure.id == resolved.unit_id)
+        ).scalar_one()
+    return {
+        "resolved": True,
+        "unit_id": resolved.unit_id,
+        "unit_code": resolved.unit_norm or None,
+        "unit_symbol": symbol,
+        "busy_jobs": _busy_count(db, resolved.unit_id),
+    }
 
 
 def get_family_row(db: Session, *, family_id: int) -> dict | None:
@@ -222,7 +288,47 @@ def get_family_row(db: Session, *, family_id: int) -> dict | None:
     row = db.execute(_family_row_select().where(WorkFamily.id == family_id)).first()
     if row is None:
         return None
-    return _family_row_to_dict(row)
+    return _family_row_to_dict(db, row, {})
+
+
+def _family_category_row_select():
+    """Строка справочника категорий с числом семей (спека 3б §2.12): число —
+    то самое, на которое ссылается отказ `category_in_use`."""
+    return (
+        sa.select(
+            FamilyCategory.id,
+            FamilyCategory.title,
+            FamilyCategory.definition,
+            FamilyCategory.seed_key,
+            sa.func.count(WorkFamily.id).label("family_count"),
+        )
+        .outerjoin(WorkFamily, WorkFamily.family_category_id == FamilyCategory.id)
+        .group_by(FamilyCategory.id)
+    )
+
+
+def _family_category_row_to_dict(row) -> dict:
+    return {
+        "id": row.id,
+        "title": row.title,
+        "definition": row.definition,
+        "seed_key": row.seed_key,
+        "family_count": row.family_count,
+    }
+
+
+def list_family_categories(db: Session) -> list[dict]:
+    """Справочник категорий семей с числом семей у каждой, по `id`."""
+    rows = db.execute(_family_category_row_select().order_by(FamilyCategory.id)).all()
+    return [_family_category_row_to_dict(row) for row in rows]
+
+
+def get_family_category_row(db: Session, *, category_id: int) -> dict | None:
+    """Строка одной категории той же формы, что строка списка — ответ мутаций."""
+    row = db.execute(
+        _family_category_row_select().where(FamilyCategory.id == category_id)
+    ).first()
+    return None if row is None else _family_category_row_to_dict(row)
 
 
 # ---------------------------------------------------------------------------
@@ -574,6 +680,8 @@ def _context_query(filters: ContextFilters):
         )
     if filters.work_category_id is not None:
         stmt = stmt.where(ContextBucket.work_category_id == filters.work_category_id)
+    if filters.work_family_id is not None:
+        stmt = stmt.where(CatalogContext.work_family_id == filters.work_family_id)
     if filters.semantic_kind is not None:
         stmt = stmt.where(CatalogContext.semantic_kind == filters.semantic_kind)
     if filters.name_role is not None:
@@ -863,6 +971,12 @@ def context_card(db: Session, *, context_id: int) -> dict | None:
         "place_dictionary_version": context.place_dictionary_version,
         "comparability_reason": context.comparability_reason,
         "semantic_state": context.semantic_state,
+        "catalog_kind": catalog_position.kind,
+        "reopenable": is_reopenable(
+            semantic_state=context.semantic_state,
+            catalog_kind=catalog_position.kind,
+            archived=context.archived_at is not None,
+        ),
         "work_family_id": context.work_family_id,
         "family_title": family.title if family is not None else None,
         "family_source": context.family_source,

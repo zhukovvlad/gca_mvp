@@ -57,6 +57,7 @@ from services.semantic_worker import (
     serialize_privacy_matches,
 )
 from services.work_families import activate_family, assign_family, create_family
+from tests.factories import seed_category_id
 
 pytestmark = pytest.mark.integration
 
@@ -98,7 +99,8 @@ def _unit_id(db, code):
 
 def _active_family(db, *, title, unit_name, actor_id):
     fam = create_family(
-        db, title=title, unit_name=unit_name, definition="Определение семьи", actor_id=actor_id
+        db, title=title, unit_name=unit_name, definition="Определение семьи", actor_id=actor_id,
+        family_category_id=seed_category_id(db),
     )
     return activate_family(db, family_id=fam.id, actor_id=actor_id)
 
@@ -1341,6 +1343,21 @@ class TestRecordFailure:
         assert (attempt.error_class, attempt.error_text) == ("http_503", "HTTP 503")
         assert attempt.finished_at == NOW
         assert attempt.cost_usd is None
+
+    def test_failure_of_another_kind_writes_no_answer_fields(self, db_session, factories):
+        # Ревью задачи 8 фичи 3б: запись неудачи получила ответы выполненных
+        # порций открытия; у остальных видов поля ответа попытки остаются пустыми.
+        _scene(db_session, factories)
+        claim = _claim_one(db_session)
+
+        _fail(db_session, claim, TransientModelError("HTTP 503", error_class="http_503"))
+
+        (attempt,) = _attempts(db_session, claim.job_id)
+        assert (
+            attempt.raw_response, attempt.actual_model, attempt.provider,
+            attempt.prompt_tokens, attempt.completion_tokens, attempt.cache_write_tokens,
+            attempt.cached_tokens, attempt.cost_usd,
+        ) == (None,) * 8
 
     def test_jitter_is_added_within_half_of_the_base(self, db_session, factories):
         _scene(db_session, factories)

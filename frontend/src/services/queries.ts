@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 import { toast } from "sonner";
 import type { AxiosError } from "axios";
@@ -17,7 +17,14 @@ import {
   tendersApi,
   type ContractListParams,
 } from "./api/domain";
-import { contextRefusalLabel, pluralRu, schemaRefusalLabel } from "@/pages/families/labels";
+import {
+  CATALOG_REVIEW_KIND_LABEL,
+  contextRefusalLabel,
+  DISCOVERY_REFUSAL_TEMPLATE,
+  discoveryRefusalLabel,
+  pluralRu,
+  schemaRefusalLabel,
+} from "@/pages/families/labels";
 import { isTerminal, jobRefetchInterval } from "./jobPolling";
 import { qk } from "./queryKeys";
 
@@ -25,6 +32,7 @@ import type { ID } from "@/types/common";
 import type { AdminUserCreateInput, AdminUserUpdateInput } from "@/types/admin";
 import type {
   AcceptTargetDecisionInput,
+  ActivateDiscoveryInput,
   ArchiveContextInput,
   AssignFamilyInput,
   ChangeGroup,
@@ -42,6 +50,10 @@ import type {
   ContractInput,
   ContractorInput,
   Decimal,
+  DraftEditInput,
+  DraftMergeTarget,
+  FamilyCategoryFilter,
+  FamilyCategoryInput,
   FamilySchema,
   ManualKind,
   MoveMembersInput,
@@ -1495,10 +1507,105 @@ export function useDeleteParticipant() {
 
 // ========== Семьи и контексты (спека 2026-09-22-catalog-families-design.md §2.10) ==========
 
-export function useWorkFamilies(status?: WorkFamilyStatus, unitId?: number) {
+export function useWorkFamilies(
+  status?: WorkFamilyStatus,
+  unitId?: number,
+  categoryId?: FamilyCategoryFilter
+) {
   return useQuery({
-    queryKey: qk.workFamilies.list(status, unitId),
-    queryFn: () => semanticApi.listFamilies({ status, unit_id: unitId }),
+    queryKey: qk.workFamilies.list(status, unitId, categoryId),
+    queryFn: () =>
+      semanticApi.listFamilies({ status, unit_id: unitId, family_category_id: categoryId }),
+  });
+}
+
+/** Справочник категорий семей с числом семей у каждой (спека 3б §2.9). */
+/** Единица по введённому имени и её живые задания; без запроса, пока имя не передано (`null`). */
+export function useUnitBusyJobs(unitName: string | null) {
+  return useQuery({
+    queryKey: qk.unitBusy(unitName ?? ""),
+    queryFn: () => semanticApi.unitBusyJobs(unitName ?? ""),
+    enabled: unitName !== null,
+    staleTime: 0,
+    // Ответ по уже проверенному тексту остаётся в кэше и виден сразу, но повторный ввод всегда
+    // перезапрашивает (`staleTime: 0`), а сохранение ждёт свежий ответ.
+    gcTime: 5 * 60_000,
+    // Отказ проверки экран показывает сразу, а не после повторов.
+    retry: false,
+  });
+}
+
+export function useFamilyCategories() {
+  return useQuery({
+    queryKey: qk.familyCategories.list(),
+    queryFn: () => semanticApi.listFamilyCategories(),
+  });
+}
+
+/**
+ * Отказ с кодом из таблицы §2.12 печатается подписью по коду (имя и число — из контекста отказа,
+ * иначе текст сервера); любой другой отказ — как раньше, общим тостом.
+ */
+function toastCodedRefusal(error: unknown) {
+  const code = apiErrorCode(error);
+  if (code === undefined || !(code in DISCOVERY_REFUSAL_TEMPLATE)) {
+    toastApiError(error);
+    return;
+  }
+  const context = apiErrorContext<{ title?: string; family_count?: number; catalog_kind?: string }>(
+    error
+  );
+  // Отказ «Вернуть в разбор» на строке, размеченной в Review, называет вид строки: на экран он
+  // выходит словом («мусор»), а не кодом вида.
+  const name =
+    code === "context_not_applicable_by_position" && context?.catalog_kind !== undefined
+      ? CATALOG_REVIEW_KIND_LABEL[context.catalog_kind]
+      : context?.title;
+  toast.error(
+    discoveryRefusalLabel(code, { name, count: context?.family_count }, apiErrorDetail(error))
+  );
+}
+
+export function useCreateFamilyCategory() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: FamilyCategoryInput) => semanticApi.createFamilyCategory(input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.familyCategories.all });
+      toast.success("Категория добавлена");
+    },
+    onError: toastCodedRefusal,
+  });
+}
+
+export function useUpdateFamilyCategory() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: number; input: Partial<FamilyCategoryInput> }) =>
+      semanticApi.updateFamilyCategory(id, input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.familyCategories.all });
+      // Имя категории денормализовано в строку семьи (`family_category_title`).
+      qc.invalidateQueries({ queryKey: qk.workFamilies.all });
+      toast.success("Категория обновлена");
+    },
+    onError: toastCodedRefusal,
+  });
+}
+
+export function useDeleteFamilyCategory() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => semanticApi.deleteFamilyCategory(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.familyCategories.all });
+      toast.success("Категория удалена");
+    },
+    onError: (error) => {
+      // Отказ мог прийти из-за семьи, успевшей сослаться на категорию: счётчик перечитывается.
+      qc.invalidateQueries({ queryKey: qk.familyCategories.all });
+      toastApiError(error);
+    },
   });
 }
 
@@ -1508,6 +1615,7 @@ export function useCreateWorkFamily() {
     mutationFn: (input: WorkFamilyInput) => semanticApi.createFamily(input),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.workFamilies.all });
+      qc.invalidateQueries({ queryKey: qk.familyCategories.all });
       toast.success("Семья создана");
     },
     onError: toastApiError,
@@ -1521,6 +1629,8 @@ export function useUpdateWorkFamily() {
       semanticApi.updateFamily(id, input),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.workFamilies.all });
+      // Смена категории семьи двигает «Семей» в справочнике.
+      qc.invalidateQueries({ queryKey: qk.familyCategories.all });
       // Имя семьи денормализовано в карточку контекста (`family_title`).
       qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
       toast.success("Семья обновлена");
@@ -1539,7 +1649,7 @@ export function useActivateWorkFamily() {
       qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
       toast.success("Семья активирована");
     },
-    onError: toastApiError,
+    onError: toastCodedRefusal,
   });
 }
 
@@ -1707,6 +1817,26 @@ export function useMarkNotWork() {
     onError: (error, contextId) => {
       invalidateContext(qc, contextId);
       toast.error(contextRefusalLabel(apiErrorCode(error)));
+    },
+  });
+}
+
+/**
+ * «Вернуть в разбор»: контекст «не работа» человека снова в разборе, семья и вариант остаются
+ * пустыми. Отказ — подписью по коду (`context_not_reopenable_state`, `context_not_applicable_by_position`).
+ */
+export function useReopenContext() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (contextId: number) => semanticApi.reopenContext(contextId),
+    onSuccess: (_, contextId) => {
+      invalidateContext(qc, contextId);
+      invalidateAfterContextChange(qc);
+      toast.success("Контекст возвращён в разбор.");
+    },
+    onError: (error, contextId) => {
+      invalidateContext(qc, contextId);
+      toastCodedRefusal(error);
     },
   });
 }
@@ -2075,6 +2205,158 @@ export function useReaskConfirm() {
   });
 }
 
+// ---- Открытие семей и черновики (спека 3б §2.3–§2.5) ----
+
+/** Пока задание открытия живо (`pending`/`running`), блок перечитывается сам. */
+const DISCOVERY_POLL_MS = 5_000;
+const DISCOVERY_LIVE_STATUSES = ["pending", "running"];
+
+/** Отказ из таблицы §2.12 — подписью по коду; иной отказ — общим тостом. */
+function toastDiscoveryRefusal(
+  error: unknown,
+  values: Record<string, string | number | null | undefined> = {}
+) {
+  const code = apiErrorCode(error);
+  if (code === undefined || !(code in DISCOVERY_REFUSAL_TEMPLATE)) {
+    toastApiError(error);
+    return;
+  }
+  toast.error(discoveryRefusalLabel(code, values, apiErrorDetail(error)));
+}
+
+export function useDiscoveryUnits() {
+  return useQuery({
+    queryKey: qk.discovery.units(),
+    queryFn: () => semanticApi.discoveryUnits(),
+    refetchInterval: (q) =>
+      (q.state.data ?? []).some(
+        (row) =>
+          row.last_discovery !== null && DISCOVERY_LIVE_STATUSES.includes(row.last_discovery.status)
+      )
+        ? DISCOVERY_POLL_MS
+        : false,
+    refetchIntervalInBackground: false,
+  });
+}
+
+/** Preview окна запуска: числа охвата, оценка и `preview_hash` для запуска. */
+export function useDiscoveryPreview() {
+  return useMutation({
+    mutationFn: (unitId: number | null) => semanticApi.discoveryPreview(unitId),
+  });
+}
+
+/**
+ * Запуск открытия по `preview_hash` из показанного preview. `409 preview_changed` тостом не
+ * показывается — его разбирает окно (новая оценка на экране, без молчаливого повтора).
+ */
+export function useLaunchDiscovery() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      unitId,
+      previewHash,
+    }: {
+      unitId: number | null;
+      unitLabel: string;
+      previewHash: string;
+    }) => semanticApi.launchDiscovery(unitId, previewHash),
+    onSuccess: (_, { unitLabel }) => {
+      qc.invalidateQueries({ queryKey: qk.discovery.all });
+      invalidateQueueAndStatus(qc);
+      toast.success(`Открытие семей для единицы «${unitLabel}» запущено.`);
+    },
+    onError: (error, { unitLabel }) => {
+      if (apiErrorCode(error) === "preview_changed") return;
+      qc.invalidateQueries({ queryKey: qk.discovery.all });
+      toastDiscoveryRefusal(error, { unit: unitLabel });
+    },
+  });
+}
+
+/** Черновики последнего выполненного открытия единицы (`null` — единица «без единицы»). */
+export function useDiscoveryDrafts(unitId: number | null, draftsJobId: number | null) {
+  return useQuery({
+    queryKey: qk.discovery.drafts(unitId, draftsJobId),
+    queryFn: () => semanticApi.discoveryDrafts(unitId),
+    // Новое выполненное открытие подменяет черновики на месте: прежние остаются на экране до ответа.
+    placeholderData: keepPreviousData,
+  });
+}
+
+/** Действие над черновиком: перечитывает экран и блок; отказ называет черновик по `name`. */
+function useDraftAction<TVars extends { name: string }>(
+  mutationFn: (vars: TVars) => Promise<unknown>
+) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.discovery.all });
+    },
+    onError: (error, { name }) => {
+      // Отказ означает, что экран устарел (черновик уже слит, открытие вытеснено): перечитать.
+      qc.invalidateQueries({ queryKey: qk.discovery.all });
+      toastDiscoveryRefusal(error, { name });
+    },
+  });
+}
+
+export function useEditDraft() {
+  return useDraftAction(
+    ({ draftId, input }: { draftId: number; name: string; input: DraftEditInput }) =>
+      semanticApi.editDraft(draftId, input)
+  );
+}
+
+export function useMergeDraft() {
+  return useDraftAction(
+    ({ draftId, target }: { draftId: number; name: string; target: DraftMergeTarget }) =>
+      semanticApi.mergeDraft(draftId, target)
+  );
+}
+
+export function useDiscardDraft() {
+  return useDraftAction(({ draftId }: { draftId: number; name: string }) =>
+    semanticApi.discardDraft(draftId)
+  );
+}
+
+export function useRestoreDraft() {
+  return useDraftAction(({ draftId }: { draftId: number; name: string }) =>
+    semanticApi.restoreDraft(draftId)
+  );
+}
+
+/** Отказы активации, которые экран печатает подписью у черновика, а не тостом. */
+export const ACTIVATION_DRAFT_REFUSALS = ["duplicate_active_family", "draft_without_category"];
+
+/**
+ * «Активировать отмеченные» (спека 3б §2.5): одна транзакция на сервере. Успех перечитывает
+ * черновики, семьи, категории, очереди и контексты; отказ с черновиком в контексте экран
+ * печатает у черновика сам — отметки при этом остаются.
+ */
+export function useActivateDiscovery() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ jobId, input }: { jobId: number; input: ActivateDiscoveryInput }) =>
+      semanticApi.activateDiscovery(jobId, input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.discovery.all });
+      qc.invalidateQueries({ queryKey: qk.workFamilies.all });
+      qc.invalidateQueries({ queryKey: qk.familyCategories.all });
+      qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
+      invalidateQueueAndStatus(qc);
+    },
+    onError: (error) => {
+      const code = apiErrorCode(error);
+      if (code !== undefined && ACTIVATION_DRAFT_REFUSALS.includes(code)) return;
+      qc.invalidateQueries({ queryKey: qk.discovery.all });
+      toastDiscoveryRefusal(error);
+    },
+  });
+}
+
 // ---- Схема и варианты семьи (спека 2026-10-02-catalog-variants-design.md §2.8, §2.12) ----
 
 /** Пересборка идёт заданием очереди: пока она строится, схема перечитывается сама. */
@@ -2249,6 +2531,7 @@ export function useCreateFamilyFromSuggestion() {
     }) => semanticApi.createFamilyFromSuggestion(suggestionId, input),
     onSuccess: (_, { input }) => {
       invalidateAfterAssignment(qc);
+      qc.invalidateQueries({ queryKey: qk.familyCategories.all });
       qc.invalidateQueries({ queryKey: qk.semanticQueue.status });
       toast.success(`Семья «${input.title}» активна и видна на вкладке «Семьи».`, {
         description:
@@ -2263,12 +2546,22 @@ export function useCreateFamilyFromSuggestion() {
   });
 }
 
+/**
+ * Решение по заданию (повтор, отправка, отказ) меняет и статус открытия семей в блоке «Открыть
+ * семьи»: пока задание в `privacy_hold` или `error`, блок не опрашивается и сам не узнает.
+ */
+function invalidateJobDecision(qc: ReturnType<typeof useQueryClient>) {
+  invalidateQueueAndStatus(qc);
+  qc.invalidateQueries({ queryKey: qk.discovery.all });
+}
+
 export function useRetryJob() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (jobId: number) => semanticApi.retryJob(jobId),
     onSuccess: () => {
       invalidateQueue(qc);
+      qc.invalidateQueries({ queryKey: qk.discovery.all });
       toast.success("Задание возвращено в очередь, бюджет попыток сброшен.", {
         description: "История прежних попыток сохранена.",
       });
@@ -2280,7 +2573,7 @@ export function useRetryJob() {
 /** Отказ решения над заданием: `job_changed` — задание изменилось, экран перечитывается без повтора запроса. */
 function onJobDecisionError(qc: ReturnType<typeof useQueryClient>) {
   return (error: unknown) => {
-    invalidateQueueAndStatus(qc);
+    invalidateJobDecision(qc);
     if (apiErrorCode(error) === "job_changed") {
       toast.error("Задание изменилось, обновите экран.");
       return;
@@ -2295,7 +2588,7 @@ export function usePrivacyRelease() {
     mutationFn: ({ jobId, shown }: { jobId: number; shown: PrivacyMatch[] }) =>
       semanticApi.privacyRelease(jobId, shown),
     onSuccess: () => {
-      invalidateQueueAndStatus(qc);
+      invalidateJobDecision(qc);
       toast.success("Запрос отправлен: задание поставлено в очередь.");
     },
     onError: onJobDecisionError(qc),
@@ -2308,7 +2601,7 @@ export function usePrivacyDecline() {
     mutationFn: ({ jobId, shown }: { jobId: number; shown: PrivacyMatch[] }) =>
       semanticApi.privacyDecline(jobId, shown),
     onSuccess: () => {
-      invalidateQueueAndStatus(qc);
+      invalidateJobDecision(qc);
       toast.success("Задание отменено: запрос не отправлен.");
     },
     onError: onJobDecisionError(qc),
@@ -2321,7 +2614,7 @@ export function useUnitPrivacyRelease() {
     mutationFn: ({ unitId, shown }: { unitId: number | null; shown: PrivacyMatch[] }) =>
       semanticApi.unitPrivacyRelease(unitId, shown),
     onSuccess: (result) => {
-      invalidateQueueAndStatus(qc);
+      invalidateJobDecision(qc);
       const n = result.confirmed.length;
       toast.success(
         `${n} ${pluralRu(n, "запрос отправлен", "запроса отправлено", "запросов отправлено")}.`,

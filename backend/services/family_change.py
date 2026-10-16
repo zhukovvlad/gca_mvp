@@ -39,7 +39,7 @@ from typing import Literal
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
-from config import settings
+from config import Settings, settings
 from models import (
     CatalogContext,
     CatalogKind,
@@ -48,6 +48,7 @@ from models import (
     FamilySource,
     FamilyStatus,
     FamilySuggestion,
+    SemanticKind,
     SuggestionDecision,
     WorkFamily,
 )
@@ -636,6 +637,32 @@ def _fitting_families(
     return {pair for pair in pairs if pair in active}
 
 
+@dataclass(frozen=True)
+class Thresholds:
+    """Пороги автопринятия по виду контекста (спека 3б §2.7): `work` - порог
+    работ (и всех видов, кроме системы), `system` - порог систем. `None` -
+    правило к контексту такого вида не применяется целиком."""
+
+    work: Decimal | None
+    system: Decimal | None
+
+
+def thresholds_from(settings: Settings) -> Thresholds:
+    """Оба порога из настроек."""
+    return Thresholds(
+        work=settings.SEMANTIC_AUTO_ACCEPT_THRESHOLD,
+        system=settings.SEMANTIC_SYSTEM_AUTO_ACCEPT_THRESHOLD,
+    )
+
+
+def threshold_for(context, thresholds: Thresholds) -> Decimal | None:
+    """Порог контекста по его виду: система - порог систем, прочие виды -
+    порог работ. `context` - всё, у чего есть `semantic_kind`."""
+    if context.semantic_kind == SemanticKind.SYSTEM.value:
+        return thresholds.system
+    return thresholds.work
+
+
 #: Исходы таблицы публикации (спека §2.5): привязка подтверждена без смены
 #: семьи; семья назначена сразу; поставлено ожидающее назначение; правило
 #: предложение не трогает.
@@ -751,7 +778,7 @@ def _apply_rules_locked(
 
 
 def apply_publication_rules(
-    db: Session, *, suggestion_id: int, threshold: Decimal | None
+    db: Session, *, suggestion_id: int, thresholds: Thresholds
 ) -> FamilyChangeOutcome | None:
     """Правила публикации по только что записанному предложению — отдельная
     транзакция после `commit` записи ответа (спека §2.5): блокировки (семьи по
@@ -760,14 +787,17 @@ def apply_publication_rules(
     Коммитит сама; ошибка откатывает только эту транзакцию — ответ модели уже
     записан, предложение остаётся опубликованным.
 
+    Порог берётся по виду контекста, прочитанному под блокировкой: вид мог
+    смениться после ответа модели (спека 3б §2.7).
+
     `None` — предложение не тронуто: порога нет, ответ без «своей» семьи,
     предложение изменилось или решено, контекст не применим либо строка
     каталога не работа, семья контекста сменилась при захвате, либо таблица
     оставила его человеку."""
-    if threshold is None:
+    if thresholds.work is None and thresholds.system is None:
         return None
     try:
-        outcome = _apply_publication_rules(db, suggestion_id, threshold)
+        outcome = _apply_publication_rules(db, suggestion_id, thresholds)
         db.commit()
         return outcome
     except FamilyLockMismatch:
@@ -779,7 +809,7 @@ def apply_publication_rules(
 
 
 def _apply_publication_rules(
-    db: Session, suggestion_id: int, threshold: Decimal
+    db: Session, suggestion_id: int, thresholds: Thresholds
 ) -> FamilyChangeOutcome | None:
     row = db.execute(
         sa.select(
@@ -796,6 +826,9 @@ def _apply_publication_rules(
     context = _load_context(db, suggestion.context_id)
     kind, unit_id = _catalog_row(db, context.id)
     if kind not in _APPLICABLE_CATALOG_KINDS:
+        return None
+    threshold = threshold_for(context, thresholds)
+    if threshold is None:
         return None
     return _apply_rules_locked(db, suggestion, context, threshold, unit_id=unit_id)
 
@@ -826,10 +859,12 @@ class AutoAcceptError(Exception):
 class AutoAcceptPreview:
     """`by_outcome` - число кандидатов по каждому исходу (в том числе тех,
     кого правило не трогает: их состояние тоже входит в хэш); `total` - число
-    кандидатов."""
+    кандидатов. `threshold` - порог работ, `system_threshold` - порог систем;
+    кандидатами считаются только контексты вида, чей порог задан."""
 
     preview_hash: str
-    threshold: Decimal
+    threshold: Decimal | None
+    system_threshold: Decimal | None
     by_outcome: Mapping[str, int]
     total: int
 
@@ -840,6 +875,7 @@ class _Candidate:
     request_hash: str
     family_id: int
     context_id: int
+    semantic_kind: str
     outcome: str
     work_family_id: int | None
     family_source: str | None
@@ -848,22 +884,25 @@ class _Candidate:
     pending_family_source: str | None
 
 
-def _require_threshold() -> Decimal:
-    threshold = settings.SEMANTIC_AUTO_ACCEPT_THRESHOLD
-    if threshold is None:
+def _require_thresholds() -> Thresholds:
+    thresholds = thresholds_from(settings)
+    if thresholds.work is None and thresholds.system is None:
         raise AutoAcceptError(
-            CODE_THRESHOLD_MISSING, "порог автопринятия SEMANTIC_AUTO_ACCEPT_THRESHOLD не задан"
+            CODE_THRESHOLD_MISSING,
+            "пороги автопринятия SEMANTIC_AUTO_ACCEPT_THRESHOLD и "
+            "SEMANTIC_SYSTEM_AUTO_ACCEPT_THRESHOLD не заданы",
         )
-    return threshold
+    return thresholds
 
 
-def _load_candidates(db: Session, threshold: Decimal) -> list[_Candidate]:
+def _load_candidates(db: Session, thresholds: Thresholds) -> list[_Candidate]:
     """Опубликованные предложения «своей» семьи без решения с текущим
     отпечатком - те же условия, что у перепроверки правила публикации
     (`lock_and_recheck_suggestion`): контекст не архивирован и применим, строка
     каталога - работа. Сюда попадают и предложения, не принятые из-за сбоя между
-    записью ответа и транзакцией правил. Чтение без блокировок, строки по
-    `suggestion_id`."""
+    записью ответа и транзакцией правил. Контекст вида с незаданным порогом
+    кандидатом не считается: правило к нему не применяется. Чтение без
+    блокировок, строки по `suggestion_id`."""
     rows = db.execute(
         sa.select(
             FamilySuggestion.id,
@@ -876,6 +915,7 @@ def _load_candidates(db: Session, threshold: Decimal) -> list[_Candidate]:
             CatalogContext.work_variant_id,
             CatalogContext.pending_family_id,
             CatalogContext.pending_family_source,
+            CatalogContext.semantic_kind,
             CatalogPosition.unit_id,
         )
         .join(CatalogContext, CatalogContext.id == FamilySuggestion.context_id)
@@ -892,7 +932,12 @@ def _load_candidates(db: Session, threshold: Decimal) -> list[_Candidate]:
     if not rows:
         return []
     material = load_request_material(db, sorted({row.context_id for row in rows}))
-    current = [row for row in rows if _is_current(row.request_hash, material.get(row.context_id))]
+    current = [
+        row
+        for row in rows
+        if threshold_for(row, thresholds) is not None
+        and _is_current(row.request_hash, material.get(row.context_id))
+    ]
     fitting = _fitting_families(db, {(row.family_id, row.unit_id) for row in current})
     return [
         _Candidate(
@@ -900,11 +945,12 @@ def _load_candidates(db: Session, threshold: Decimal) -> list[_Candidate]:
             request_hash=row.request_hash,
             family_id=row.family_id,
             context_id=row.context_id,
+            semantic_kind=row.semantic_kind,
             outcome=rule_outcome(
                 family_id=row.family_id,
                 confidence=row.confidence,
                 context=row,
-                threshold=threshold,
+                threshold=threshold_for(row, thresholds),
                 family_fits=(row.family_id, row.unit_id) in fitting,
             ),
             work_family_id=row.work_family_id,
@@ -917,17 +963,23 @@ def _load_candidates(db: Session, threshold: Decimal) -> list[_Candidate]:
     ]
 
 
-def _preview_hash(threshold: Decimal, candidates: Sequence[_Candidate]) -> str:
-    """sha256 канонического JSON по порогу и отсортированным кортежам спеки
-    §2.12: `(suggestion_id, request_hash, семья предложения, исход,
-    work_family_id, family_source, work_variant_id, pending_family_id,
-    pending_family_source)`."""
+def _threshold_text(threshold: Decimal | None) -> str | None:
+    return None if threshold is None else str(threshold)
+
+
+def _preview_hash(thresholds: Thresholds, candidates: Sequence[_Candidate]) -> str:
+    """sha256 канонического JSON по обоим порогам и отсортированным кортежам
+    спеки §2.12 (вид контекста добавлен): `(suggestion_id, request_hash, семья
+    предложения, вид контекста, исход, work_family_id, family_source,
+    work_variant_id, pending_family_id, pending_family_source)`."""
     canonical = json.dumps(
         {
-            "threshold": str(threshold),
+            "threshold": _threshold_text(thresholds.work),
+            "system_threshold": _threshold_text(thresholds.system),
             "rows": [
                 [
-                    c.suggestion_id, c.request_hash, c.family_id, c.outcome, c.work_family_id,
+                    c.suggestion_id, c.request_hash, c.family_id, c.semantic_kind, c.outcome,
+                    c.work_family_id,
                     c.family_source, c.work_variant_id, c.pending_family_id,
                     c.pending_family_source,
                 ]
@@ -947,15 +999,16 @@ def preview_auto_accept(db: Session) -> AutoAcceptPreview:
     блокирует.
 
     Raises:
-        AutoAcceptError: порог не задан (`threshold_missing`)."""
-    threshold = _require_threshold()
-    candidates = _load_candidates(db, threshold)
+        AutoAcceptError: ни один порог не задан (`threshold_missing`)."""
+    thresholds = _require_thresholds()
+    candidates = _load_candidates(db, thresholds)
     by_outcome = {outcome: 0 for outcome in _OUTCOMES}
     for candidate in candidates:
         by_outcome[candidate.outcome] += 1
     return AutoAcceptPreview(
-        preview_hash=_preview_hash(threshold, candidates),
-        threshold=threshold,
+        preview_hash=_preview_hash(thresholds, candidates),
+        threshold=thresholds.work,
+        system_threshold=thresholds.system,
         by_outcome=by_outcome,
         total=len(candidates),
     )
@@ -982,8 +1035,8 @@ def apply_auto_accept(db: Session, *, preview_hash: str) -> Mapping[str, int]:
     Raises:
         AutoAcceptError: порог не задан; состояние изменилось после показа.
             Вызывающий откатывает транзакцию."""
-    threshold = _require_threshold()
-    first = _load_candidates(db, threshold)
+    thresholds = _require_thresholds()
+    first = _load_candidates(db, thresholds)
     suggestions: dict[int, FamilySuggestion] = {}
     if first:
         unstable = acquire_family_locks(
@@ -1001,9 +1054,9 @@ def apply_auto_accept(db: Session, *, preview_hash: str) -> Mapping[str, int]:
                 .execution_options(populate_existing=True)
             ).scalars()
         }
-    candidates = _load_candidates(db, threshold)
+    candidates = _load_candidates(db, thresholds)
     if _candidate_keys(candidates) != _candidate_keys(first) or (
-        _preview_hash(threshold, candidates) != preview_hash
+        _preview_hash(thresholds, candidates) != preview_hash
     ):
         raise AutoAcceptError(CODE_PREVIEW_CHANGED, "состояние изменилось после показа")
 
@@ -1012,12 +1065,11 @@ def apply_auto_accept(db: Session, *, preview_hash: str) -> Mapping[str, int]:
         for candidate in candidates:
             if candidate.outcome == RULE_NONE:
                 continue
+            context = _load_context(db, candidate.context_id)
+            threshold = threshold_for(context, thresholds)
+            assert threshold is not None  # кандидаты - только контексты с заданным порогом
             _apply_outcome(
-                db,
-                suggestions[candidate.suggestion_id],
-                _load_context(db, candidate.context_id),
-                candidate.outcome,
-                threshold,
+                db, suggestions[candidate.suggestion_id], context, candidate.outcome, threshold
             )
             applied[candidate.outcome] += 1
     return applied

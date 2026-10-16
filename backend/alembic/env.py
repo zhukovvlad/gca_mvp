@@ -56,7 +56,8 @@ target_metadata = Base.metadata
 # tests/integration/test_schema_constraints.py, 0017 —
 # tests/integration/test_semantic_schema.py, 0018 —
 # tests/integration/test_semantic_queue_schema.py, 0019 —
-# tests/integration/test_work_variants_schema.py.
+# tests/integration/test_work_variants_schema.py, 0021 —
+# tests/integration/test_catalog_discovery_schema.py.
 RAW_SQL_INDEXES = {
     # UNIQUE (sha256(replace(normalized_job_title,'\','\\')::bytea), COALESCE(unit_id,-1)),
     # миграция 0003: btree не индексирует названия длиннее 2704 байт.
@@ -79,6 +80,13 @@ RAW_SQL_INDEXES = {
     # UNIQUE (kind, COALESCE(context_id,-1), COALESCE(family_id,-1), COALESCE(schema_id,-1),
     # request_hash) — 0019; заменил uq_semantic_jobs_context_request_hash (0018).
     "uq_semantic_jobs_subject_request_hash",
+    # UNIQUE (lower(btrim(title))) — 0021, справочник категорий семей.
+    "uq_family_categories_title",
+    # UNIQUE (COALESCE(unit_id,-1)) WHERE kind = 'family_discovery' AND status IN
+    # ('pending','running','privacy_hold') — 0021, одно живое открытие на единицу.
+    "uq_semantic_jobs_discovery_live",
+    # UNIQUE (job_id) WHERE grp = 'not_work' — 0021, одна группа «не работа» на открытие.
+    "uq_family_drafts_not_work_per_job",
 }
 
 

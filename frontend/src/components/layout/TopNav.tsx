@@ -1,4 +1,4 @@
-import { NavLink } from "react-router-dom";
+import { NavLink, useLocation } from "react-router-dom";
 import {
   Home, Users, LogOut, Search, Bell, FileText, Gavel, ListChecks, Ruler, Layers,
   type LucideIcon,
@@ -6,6 +6,7 @@ import {
 import { Logo } from "./Logo";
 import { ThemeToggle } from "./ThemeToggle";
 import { cn } from "@/lib/utils";
+import { isWidePagePath, WIDE_PAGE_ROUTE } from "@/lib/pageWidth";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
   DropdownMenuTrigger,
@@ -27,7 +28,7 @@ const NAV: { to: string; icon: LucideIcon; label: string; end?: boolean; adminOn
   { to: "/review",      icon: ListChecks, label: "Ручной матчинг" },
   // Семьи и контексты (спека 2026-09-22-catalog-families-design.md §2.10) —
   // право `admin`, тем же решением, что у «Нормативы» ниже.
-  { to: "/families",    icon: Layers,     label: "Семьи",   adminOnly: true },
+  { to: WIDE_PAGE_ROUTE, icon: Layers,     label: "Семьи",   adminOnly: true },
   { to: "/standards",   icon: Ruler,      label: "Нормативы", adminOnly: true },
   { to: "/admin/users", icon: Users,      label: "Пользователи", adminOnly: true },
 ];
@@ -45,13 +46,14 @@ function getInitials(email: string): string {
 export function TopNav() {
   const { data: user } = useCurrentUser();
   const logout = useLogout();
+  const { pathname } = useLocation();
 
   const initials = user ? getInitials(user.email) : "…";
   const navItems = NAV.filter((item) => !item.adminOnly || user?.role === "admin");
 
   return (
     <header className="sticky top-0 z-40 h-14 border-b border-border-subtle bg-surface/95 backdrop-blur">
-      <div className="container-page flex h-full items-center gap-6">
+      <div className={cn(isWidePagePath(pathname) ? "container-wide" : "container-page", "flex h-full items-center gap-6")}>
         <Logo />
         <nav className="flex flex-1 flex-wrap items-center gap-0.5">
           {navItems.map(({ to, icon: Icon, label, end }) => (

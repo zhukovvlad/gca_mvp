@@ -45,6 +45,7 @@ from services.semantic_reconcile import (
 from services.semantic_request import load_request_material, render_context_request
 from services.unit_resolution import UnitResolver
 from services.work_families import activate_family, create_family
+from tests.factories import seed_category_id
 from tests.payloads import baseline_proposal_block, payload_for, position, proposal, round_payload
 
 pytestmark = pytest.mark.integration
@@ -69,7 +70,8 @@ def _fake_parse(payload):
 
 def _active_family(db, *, title, unit_name, actor_id):
     fam = create_family(
-        db, title=title, unit_name=unit_name, definition="Определение семьи", actor_id=actor_id
+        db, title=title, unit_name=unit_name, definition="Определение семьи", actor_id=actor_id,
+        family_category_id=seed_category_id(db),
     )
     return activate_family(db, family_id=fam.id, actor_id=actor_id)
 
