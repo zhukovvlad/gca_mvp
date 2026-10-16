@@ -81,6 +81,17 @@ function manyRows(n: number): ContextRow[] {
   });
 }
 
+/** Поле «Семья» — кнопка, выбор идёт через окно «Фильтр по семье»: открыть, найти, «Показать». */
+async function pickFamily(user: ReturnType<typeof userEvent.setup>, optionName: RegExp, query?: string) {
+  await user.click(screen.getByRole("button", { name: "Семья" }));
+  const dialog = await screen.findByRole("dialog", { name: "Фильтр по семье" });
+  await user.click(within(dialog).getByRole("combobox", { name: "Семья" }));
+  if (query) await user.type(screen.getByPlaceholderText("Найти семью…"), query);
+  await user.click(await screen.findByRole("option", { name: optionName }));
+  await user.click(within(dialog).getByRole("button", { name: "Показать" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+}
+
 function last(requests: URLSearchParams[]): URLSearchParams {
   expect(requests.length).toBeGreaterThan(0);
   return requests[requests.length - 1];
@@ -98,15 +109,18 @@ describe("ContextsTab — фильтр «Семья»", () => {
     await waitFor(() => expect(last(requests).get("offset")).toBe("20"));
     expect(last(requests).has("work_family_id")).toBe(false);
 
-    await user.click(screen.getByRole("combobox", { name: "Семья" }));
+    await user.click(screen.getByRole("button", { name: "Семья" }));
+    const dialog = await screen.findByRole("dialog", { name: "Фильтр по семье" });
+    await user.click(within(dialog).getByRole("combobox", { name: "Семья" }));
     await user.type(screen.getByPlaceholderText("Найти семью…"), "елочные");
     const option = await screen.findByRole("option", { name: /Ёлочные работы/ });
     expect(screen.queryByRole("option", { name: /Кровельные работы/ })).not.toBeInTheDocument();
     await user.click(option);
+    await user.click(within(dialog).getByRole("button", { name: "Показать" }));
 
     await waitFor(() => expect(last(requests).get("work_family_id")).toBe("501"));
     expect(last(requests).get("offset")).toBe("0");
-    expect(screen.getByRole("combobox", { name: "Семья" })).toHaveTextContent("Ёлочные работы");
+    expect(screen.getByRole("button", { name: "Семья" })).toHaveTextContent("Ёлочные работы");
     // Идентификатор семьи на экран не выходит.
     expect(screen.queryByText("501")).not.toBeInTheDocument();
   });
@@ -117,15 +131,57 @@ describe("ContextsTab — фильтр «Семья»", () => {
     renderWithProviders(<ContextsTab />);
     await screen.findByText("Синтетическая работа №1");
 
-    await user.click(screen.getByRole("combobox", { name: "Семья" }));
-    await user.click(await screen.findByRole("option", { name: /Кровельные работы/ }));
+    await pickFamily(user, /Кровельные работы/);
     await waitFor(() => expect(last(requests).get("work_family_id")).toBe("43"));
 
     await user.click(screen.getByRole("button", { name: "Сбросить семью" }));
 
     await waitFor(() => expect(last(requests).has("work_family_id")).toBe(false));
-    expect(screen.getByRole("combobox", { name: "Семья" })).toHaveTextContent("Любая семья");
+    expect(screen.getByRole("button", { name: "Семья" })).toHaveTextContent("Любая семья");
     expect(screen.queryByRole("button", { name: "Сбросить семью" })).not.toBeInTheDocument();
+  });
+
+  it("«Отмена» не меняет запрос и поле; окно открывается с уже выбранной семьёй; «Показать» недоступна без выбора", async () => {
+    const user = userEvent.setup();
+    const requests = useContextRows(manyRows(3));
+    renderWithProviders(<ContextsTab />);
+    await screen.findByText("Синтетическая работа №1");
+
+    // Без выбора «Показать» недоступна.
+    await user.click(screen.getByRole("button", { name: "Семья" }));
+    let dialog = await screen.findByRole("dialog", { name: "Фильтр по семье" });
+    expect(within(dialog).getByRole("button", { name: "Показать" })).toBeDisabled();
+    // Выбрали в окне, но отменили — запрос и поле прежние.
+    await user.click(within(dialog).getByRole("combobox", { name: "Семья" }));
+    await user.click(await screen.findByRole("option", { name: /Кровельные работы/ }));
+    expect(within(dialog).getByRole("button", { name: "Показать" })).toBeEnabled();
+    const before = requests.length;
+    await user.click(within(dialog).getByRole("button", { name: "Отмена" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(requests.length).toBe(before);
+    expect(last(requests).has("work_family_id")).toBe(false);
+    expect(screen.getByRole("button", { name: "Семья" })).toHaveTextContent("Любая семья");
+
+    // Применили; окно открывается уже с этой семьёй, а отмена оставляет её.
+    await pickFamily(user, /Кровельные работы/);
+    await waitFor(() => expect(last(requests).get("work_family_id")).toBe("43"));
+    await user.click(screen.getByRole("button", { name: "Семья" }));
+    dialog = await screen.findByRole("dialog", { name: "Фильтр по семье" });
+    expect(within(dialog).getByRole("combobox", { name: "Семья" })).toHaveTextContent("Кровельные работы");
+    expect(within(dialog).getByRole("button", { name: "Показать" })).toBeEnabled();
+    await user.click(within(dialog).getByRole("button", { name: "Отмена" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(last(requests).get("work_family_id")).toBe("43");
+
+    // После «Сбросить семью» окно открывается пустым: черновик прошлого выбора
+    // не переживает сброс (ревью пачки 8б — без предзаполнения при открытии
+    // окно показало бы «Кровельные работы»).
+    await user.click(screen.getByRole("button", { name: "Сбросить семью" }));
+    await waitFor(() => expect(last(requests).has("work_family_id")).toBe(false));
+    await user.click(screen.getByRole("button", { name: "Семья" }));
+    dialog = await screen.findByRole("dialog", { name: "Фильтр по семье" });
+    expect(within(dialog).getByRole("combobox", { name: "Семья" })).not.toHaveTextContent("Кровельные работы");
+    expect(within(dialog).getByRole("button", { name: "Показать" })).toBeDisabled();
   });
 
   it("две семьи с одним названием в разных единицах различимы подсказкой единицы; у не активной — и статусом", async () => {
@@ -138,7 +194,9 @@ describe("ContextsTab — фильтр «Семья»", () => {
     renderWithProviders(<ContextsTab />);
     await screen.findByText("Синтетическая работа №1");
 
-    await user.click(screen.getByRole("combobox", { name: "Семья" }));
+    await user.click(screen.getByRole("button", { name: "Семья" }));
+    const dialog = await screen.findByRole("dialog", { name: "Фильтр по семье" });
+    await user.click(within(dialog).getByRole("combobox", { name: "Семья" }));
     const options = await screen.findAllByRole("option", { name: /^Гидроизоляция/ });
 
     expect(options).toHaveLength(2);
@@ -199,7 +257,12 @@ describe("ContextsTab — переход с семьёй при смонтиро
     expect(final.has("has_stale_members")).toBe(false);
     expect(final.get("offset")).toBe("0");
     expect(screen.getByLabelText("Поиск по написанию каталога")).toHaveValue("");
-    expect(screen.getByRole("combobox", { name: "Семья" })).toHaveTextContent("Семья работ №1");
+    expect(screen.getByRole("button", { name: "Семья" })).toHaveTextContent("Семья работ №1");
+    // Окно после перехода открывается с семьёй перехода, а не пустым (ревью пачки 8б).
+    await user.click(screen.getByRole("button", { name: "Семья" }));
+    const dialog = await screen.findByRole("dialog", { name: "Фильтр по семье" });
+    expect(within(dialog).getByRole("combobox", { name: "Семья" })).toHaveTextContent("Семья работ №1");
+    expect(within(dialog).getByRole("button", { name: "Показать" })).toBeEnabled();
   });
 
   it("повторный переход к той же семье после ручного сброса срабатывает", async () => {
@@ -216,7 +279,7 @@ describe("ContextsTab — переход с семьёй при смонтиро
 
     await user.click(screen.getByRole("button", { name: "go" }));
     await waitFor(() => expect(last(requests).get("work_family_id")).toBe("1"));
-    expect(screen.getByRole("combobox", { name: "Семья" })).toHaveTextContent("Семья работ №1");
+    expect(screen.getByRole("button", { name: "Семья" })).toHaveTextContent("Семья работ №1");
   });
 });
 
@@ -250,7 +313,7 @@ describe("FamiliesPage — «Показать контексты: N»", () => {
     expect(final.has("semantic_kind")).toBe(false);
     expect(final.has("catalog_query")).toBe(false);
     expect(final.get("offset")).toBe("0");
-    expect(screen.getByRole("combobox", { name: "Семья" })).toHaveTextContent("Семья работ №1");
+    expect(screen.getByRole("button", { name: "Семья" })).toHaveTextContent("Семья работ №1");
     // Ни одного промежуточного запроса «семья + прежний поиск/вид»: вкладка
     // монтируется заново, и `useDebounce` начинает с пустой строки. Если
     // вкладкам когда-нибудь дадут `keepMounted`, здесь станет красно — тогда
@@ -276,7 +339,7 @@ describe("FamiliesPage — «Показать контексты: N»", () => {
     await user.click(await screen.findByRole("button", { name: "Показать контексты: 2" }));
 
     await waitFor(() => expect(last(requests).get("work_family_id")).toBe("1"));
-    expect(screen.getByRole("combobox", { name: "Семья" })).toHaveTextContent("Семья работ №1");
+    expect(screen.getByRole("button", { name: "Семья" })).toHaveTextContent("Семья работ №1");
   });
 
   it("у семьи без контекстов кнопки нет", async () => {

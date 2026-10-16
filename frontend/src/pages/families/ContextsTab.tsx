@@ -9,6 +9,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -149,6 +156,9 @@ export function ContextsTab({ focusFamilyId = null, onFocusShown }: ContextsTabP
   const [hasNoMembers, setHasNoMembers] = useState(false);
   const [variantState, setVariantState] = useState<string>(ANY);
   const [familyId, setFamilyId] = useState<number | null>(null);
+  // Окно «Фильтр по семье»: выбор в нём применяется кнопкой «Показать», «Отмена» его отбрасывает.
+  const [familyDialogOpen, setFamilyDialogOpen] = useState(false);
+  const [familyDraft, setFamilyDraft] = useState<number | null>(null);
   const [pending, setPending] = useState(false);
   const [splitHint, setSplitHint] = useState(false);
   const [page, setPage] = useState(1);
@@ -160,6 +170,8 @@ export function ContextsTab({ focusFamilyId = null, onFocusShown }: ContextsTabP
 
   const search = useDebounce(searchInput, 300);
   const familiesQ = useWorkFamilies();
+  const selectedFamily = familiesQ.data?.find((f) => f.id === familyId);
+  const selectedFamilyHint = selectedFamily ? familyHint(selectedFamily) : undefined;
 
   // Переход «Показать контексты: N» из панели семьи: выбранная семья, ВСЕ
   // остальные фильтры и поиск сброшены (иначе выдача разойдётся с N), первая
@@ -266,11 +278,10 @@ export function ContextsTab({ focusFamilyId = null, onFocusShown }: ContextsTabP
             выборов с подписью сверху, как на вкладке «Семьи», по нижнему
             краю. Флажки — отдельной строкой-группой под ними. */}
         <div className="flex flex-wrap items-end gap-3">
-          {/* Ширина явная (замер на стенде 27.09.2026): в `flex flex-wrap`
-              ряду `flex-1` без `min-width` схлопывает поле до содержимого
-              плейсхолдера рядом с нерастяжимыми селектами — `min-w-64`
-              держит его САМЫМ широким контролом ряда, как в макете. */}
-          <InputGroup className="min-w-64 flex-1">
+          {/* Ширина явная и фиксированная (решение 16.10.2026): свободное место
+              ряда занимает поле «Семья» — названия семей длинные, а строка
+              поиска короткая. */}
+          <InputGroup className="w-64 flex-none">
             <InputGroupInput
               aria-label="Поиск по написанию каталога"
               placeholder="Поиск по строке или статье"
@@ -365,25 +376,26 @@ export function ContextsTab({ focusFamilyId = null, onFocusShown }: ContextsTabP
             </Select>
           </div>
 
-          <div className="grid gap-1">
+          <div className="grid min-w-72 flex-1 gap-1">
             <Label htmlFor="filter-family" className="text-xs text-fg-tertiary">Семья</Label>
             <div className="flex items-center gap-1">
-              <div className="w-56">
-                <EntityCombobox
-                  id="filter-family"
-                  items={familiesQ.data ?? []}
-                  value={familyId}
-                  onChange={(f) => {
-                    setFamilyId(f?.id ?? null);
-                    resetToFirstPage();
-                  }}
-                  getLabel={(f) => f.title}
-                  getHint={familyHint}
-                  placeholder="Любая семья"
-                  searchPlaceholder="Найти семью…"
-                  emptyText="Ничего не найдено"
-                />
-              </div>
+              <Button
+                id="filter-family"
+                type="button"
+                variant="outline"
+                title={selectedFamily ? `${selectedFamily.title}${selectedFamilyHint ? ` · ${selectedFamilyHint}` : ""}` : undefined}
+                className="min-w-0 flex-1 justify-start font-normal"
+                onClick={() => {
+                  setFamilyDraft(familyId);
+                  setFamilyDialogOpen(true);
+                }}
+              >
+                <span className={cn("min-w-0 truncate", !selectedFamily && "text-muted-foreground")}>
+                  {selectedFamily
+                    ? `${selectedFamily.title}${selectedFamilyHint ? ` · ${selectedFamilyHint}` : ""}`
+                    : "Любая семья"}
+                </span>
+              </Button>
               {familyId !== null && (
                 <Button
                   type="button"
@@ -401,6 +413,43 @@ export function ContextsTab({ focusFamilyId = null, onFocusShown }: ContextsTabP
             </div>
           </div>
         </div>
+
+        <Dialog open={familyDialogOpen} onOpenChange={setFamilyDialogOpen}>
+          <DialogContent className="sm:max-w-xl">
+            <DialogHeader>
+              <DialogTitle>Фильтр по семье</DialogTitle>
+            </DialogHeader>
+            <div className="grid gap-2 py-2">
+              <Label htmlFor="filter-family-select">Семья</Label>
+              <EntityCombobox
+                id="filter-family-select"
+                items={familiesQ.data ?? []}
+                value={familyDraft}
+                onChange={(f) => setFamilyDraft(f?.id ?? null)}
+                getLabel={(f) => f.title}
+                getHint={familyHint}
+                placeholder="Выбрать семью"
+                searchPlaceholder="Найти семью…"
+                emptyText="Ничего не найдено"
+              />
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setFamilyDialogOpen(false)}>
+                Отмена
+              </Button>
+              <Button
+                disabled={familyDraft === null}
+                onClick={() => {
+                  setFamilyId(familyDraft);
+                  resetToFirstPage();
+                  setFamilyDialogOpen(false);
+                }}
+              >
+                Показать
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         <div
           role="group"
