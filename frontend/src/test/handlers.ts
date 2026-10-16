@@ -4270,6 +4270,7 @@ export const handlers = [
     const params = url.searchParams;
     const catalogQuery = (params.get("catalog_query") ?? "").trim().toLowerCase();
     const workCategoryId = params.get("work_category_id");
+    const workFamilyId = params.get("work_family_id");
     const semanticKind = params.get("semantic_kind");
     const nameRole = params.get("name_role");
     const semanticState = params.get("semantic_state");
@@ -4285,6 +4286,8 @@ export const handlers = [
     const filtered = handlerState.semanticContexts.filter((c) => {
       if (catalogQuery && !c.standard_job_title.toLowerCase().includes(catalogQuery)) return false;
       if (workCategoryId && String(c.work_category_id) !== workCategoryId) return false;
+      // Назначенная семья, как её считает сервер (`crud/semantic.py::_context_query`).
+      if (workFamilyId && String(c.work_family_id) !== workFamilyId) return false;
       if (semanticKind && c.semantic_kind !== semanticKind) return false;
       if (nameRole && c.name_role !== nameRole) return false;
       if (semanticState && c.semantic_state !== semanticState) return false;

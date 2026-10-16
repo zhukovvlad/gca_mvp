@@ -1,10 +1,12 @@
-import { useState } from "react";
-import { Search } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Search, X } from "lucide-react";
 
+import { EntityCombobox } from "@/components/domain/EntityCombobox";
 import { Pager } from "@/components/domain/Pager";
 import { EmptyState } from "@/components/ui-domain/EmptyState";
 import { Surface } from "@/components/ui-domain/Surface";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Label } from "@/components/ui/label";
@@ -26,11 +28,24 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { useDebounce } from "@/lib/useDebounce";
-import { useSemanticContexts } from "@/services/queries";
-import type { ContextRow, NameRole, SemanticKind, SemanticState, VariantState } from "@/types/domain";
+import { useSemanticContexts, useWorkFamilies } from "@/services/queries";
+import type {
+  ContextRow,
+  NameRole,
+  SemanticKind,
+  SemanticState,
+  VariantState,
+  WorkFamily,
+} from "@/types/domain";
 
 import { ContextCard } from "./ContextCard";
-import { NAME_ROLE_LABEL, SEMANTIC_KIND_LABEL, SEMANTIC_STATE_LABEL, VARIANT_STATE_LABEL } from "./labels";
+import {
+  FAMILY_STATUS_LABEL,
+  NAME_ROLE_LABEL,
+  SEMANTIC_KIND_LABEL,
+  SEMANTIC_STATE_LABEL,
+  VARIANT_STATE_LABEL,
+} from "./labels";
 import { FetchingBar, ListSkeleton } from "./pending";
 import { SourceChip } from "./SourceChip";
 import { usePersistedPageSize } from "./usePersistedPageSize";
@@ -97,6 +112,23 @@ function classifierPathTitle(row: ContextRow): string | null {
 }
 
 /**
+ * Подсказка варианта в списке семей: единица символом, у не активной семьи ещё
+ * и статус словом — названия семей в разных единицах совпадают, и без единицы
+ * их не различить.
+ */
+function familyHint(family: WorkFamily): string | undefined {
+  const parts = [family.unit_symbol, family.status === "active" ? null : FAMILY_STATUS_LABEL[family.status]];
+  const hint = parts.filter(Boolean).join(" · ");
+  return hint || undefined;
+}
+
+interface ContextsTabProps {
+  /** Семья, показанная кнопкой «Показать контексты» вкладки «Семьи»; после применения вкладка сообщает `onFocusShown`. */
+  focusFamilyId?: number | null;
+  onFocusShown?: () => void;
+}
+
+/**
  * Очередь контекстов — вкладка «Контексты» (спека §2.1, §2.4, §2.7).
  * Самодостаточна: выбор строки и её карточка — панель СПРАВА ОТ СПИСКА
  * ({@link ContextCard}), тем же компонентом, что несла отдельная вкладка
@@ -107,7 +139,7 @@ function classifierPathTitle(row: ContextRow): string | null {
  * `has_no_members`) — три отдельных чекбокса, а не один общий: это разные
  * оси и вход с обоими сразу обязан проходить оба фильтра.
  */
-export function ContextsTab() {
+export function ContextsTab({ focusFamilyId = null, onFocusShown }: ContextsTabProps = {}) {
   const [searchInput, setSearchInput] = useState("");
   const [kind, setKind] = useState<string>(ANY);
   const [role, setRole] = useState<string>(ANY);
@@ -116,6 +148,7 @@ export function ContextsTab() {
   const [hasConflicting, setHasConflicting] = useState(false);
   const [hasNoMembers, setHasNoMembers] = useState(false);
   const [variantState, setVariantState] = useState<string>(ANY);
+  const [familyId, setFamilyId] = useState<number | null>(null);
   const [pending, setPending] = useState(false);
   const [splitHint, setSplitHint] = useState(false);
   const [page, setPage] = useState(1);
@@ -126,9 +159,39 @@ export function ContextsTab() {
   const [selectedContextId, setSelectedContextId] = useState<number | null>(null);
 
   const search = useDebounce(searchInput, 300);
+  const familiesQ = useWorkFamilies();
+
+  // Переход «Показать контексты: N» из панели семьи: выбранная семья, ВСЕ
+  // остальные фильтры и поиск сброшены (иначе выдача разойдётся с N), первая
+  // страница. Правка состояния во время рендера — приём `FamiliesTab`; пока
+  // запрос не снят (`null`), тот же id не применяется дважды, а после снятия
+  // повторный переход к той же семье срабатывает снова.
+  const [shownFocusId, setShownFocusId] = useState<number | null>(null);
+  if (focusFamilyId === null && shownFocusId !== null) {
+    setShownFocusId(null);
+  } else if (focusFamilyId !== null && focusFamilyId !== shownFocusId) {
+    setShownFocusId(focusFamilyId);
+    setSearchInput("");
+    setKind(ANY);
+    setRole(ANY);
+    setState(ANY);
+    setHasStale(false);
+    setHasConflicting(false);
+    setHasNoMembers(false);
+    setVariantState(ANY);
+    setPending(false);
+    setSplitHint(false);
+    setFamilyId(focusFamilyId);
+    setSelectedContextId(null);
+    setPage(1);
+  }
+  useEffect(() => {
+    if (focusFamilyId !== null) onFocusShown?.();
+  }, [focusFamilyId, onFocusShown]);
 
   const contextsQ = useSemanticContexts({
     catalog_query: search || undefined,
+    work_family_id: familyId ?? undefined,
     semantic_kind: kind === ANY ? undefined : (kind as SemanticKind),
     name_role: role === ANY ? undefined : (role as NameRole),
     semantic_state: state === ANY ? undefined : (state as SemanticState),
@@ -199,8 +262,8 @@ export function ContextsTab() {
     // автоматический минимум трека.
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,420px)] lg:items-start">
       <div className="grid gap-4">
-        {/* Поля — один ряд (переносится, если не влезает): поиск и четыре
-            выбора с подписью сверху, как на вкладке «Семьи», по нижнему
+        {/* Поля — один ряд (переносится, если не влезает): поиск и пять
+            выборов с подписью сверху, как на вкладке «Семьи», по нижнему
             краю. Флажки — отдельной строкой-группой под ними. */}
         <div className="flex flex-wrap items-end gap-3">
           {/* Ширина явная (замер на стенде 27.09.2026): в `flex flex-wrap`
@@ -300,6 +363,42 @@ export function ContextsTab() {
                 ))}
               </SelectContent>
             </Select>
+          </div>
+
+          <div className="grid gap-1">
+            <Label htmlFor="filter-family" className="text-xs text-fg-tertiary">Семья</Label>
+            <div className="flex items-center gap-1">
+              <div className="w-56">
+                <EntityCombobox
+                  id="filter-family"
+                  items={familiesQ.data ?? []}
+                  value={familyId}
+                  onChange={(f) => {
+                    setFamilyId(f?.id ?? null);
+                    resetToFirstPage();
+                  }}
+                  getLabel={(f) => f.title}
+                  getHint={familyHint}
+                  placeholder="Любая семья"
+                  searchPlaceholder="Найти семью…"
+                  emptyText="Ничего не найдено"
+                />
+              </div>
+              {familyId !== null && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Сбросить семью"
+                  onClick={() => {
+                    setFamilyId(null);
+                    resetToFirstPage();
+                  }}
+                >
+                  <X size={14} />
+                </Button>
+              )}
+            </div>
           </div>
         </div>
 

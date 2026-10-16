@@ -101,9 +101,11 @@ interface FamiliesTabProps {
   /** Семья, открытая ссылкой «Открыть семью» с другой вкладки; после показа вкладка сообщает `onFocusShown`. */
   focusFamilyId?: number | null;
   onFocusShown?: () => void;
+  /** Кнопка «Показать контексты: N» панели семьи: переход на вкладку «Контексты» с этой семьёй. */
+  onShowContexts?: (familyId: number) => void;
 }
 
-export function FamiliesTab({ focusFamilyId = null, onFocusShown }: FamiliesTabProps = {}) {
+export function FamiliesTab({ focusFamilyId = null, onFocusShown, onShowContexts }: FamiliesTabProps = {}) {
   const [statusFilter, setStatusFilter] = useState<string>("draft");
   const [unitFilter, setUnitFilter] = useState<string>(ANY);
   // Фильтр категории: `ANY`, `NO_CATEGORY` («без категории») или id категории строкой.
@@ -388,6 +390,7 @@ export function FamiliesTab({ focusFamilyId = null, onFocusShown }: FamiliesTabP
           onMerge={() => setMerging(selected)}
           onArchive={() => setArchiving(selected)}
           archivePending={archive.isPending}
+          onShowContexts={onShowContexts ? () => onShowContexts(selected.id) : undefined}
         />
       ) : (
         <EmptyState
@@ -447,11 +450,13 @@ function FamilyPanel({
   onMerge,
   onArchive,
   archivePending,
+  onShowContexts,
 }: {
   family: WorkFamily;
   onMerge: () => void;
   onArchive: () => void;
   archivePending: boolean;
+  onShowContexts?: () => void;
 }) {
   const [title, setTitle] = useState(family.title);
   const [unitName, setUnitName] = useState(family.unit_symbol ?? "");
@@ -613,6 +618,11 @@ function FamilyPanel({
               onClick={onArchive}
             >
               В архив
+            </Button>
+          )}
+          {onShowContexts && family.context_count > 0 && (
+            <Button type="button" variant="outline" onClick={onShowContexts}>
+              Показать контексты: {family.context_count}
             </Button>
           )}
         </div>

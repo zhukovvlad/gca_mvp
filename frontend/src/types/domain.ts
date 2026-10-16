@@ -2336,6 +2336,8 @@ export interface ContextsPage {
 export interface ContextsParams {
   catalog_query?: string;
   work_category_id?: number;
+  /** Назначенная семья контекста (не ожидающая); неизвестный id — пустая выдача. */
+  work_family_id?: number;
   semantic_kind?: SemanticKind;
   name_role?: NameRole;
   semantic_state?: SemanticState;

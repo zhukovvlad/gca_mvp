@@ -718,6 +718,7 @@ def delete_family_category_route(
 def list_contexts_route(
     catalog_query: str | None = Query(default=None),
     work_category_id: int | None = Query(default=None),
+    work_family_id: int | None = Query(default=None),
     semantic_kind: SemanticKind | None = Query(default=None),
     name_role: NameRole | None = Query(default=None),
     semantic_state: SemanticState | None = Query(default=None),
@@ -735,6 +736,7 @@ def list_contexts_route(
     filters = crud_semantic.ContextFilters(
         catalog_query=catalog_query,
         work_category_id=work_category_id,
+        work_family_id=work_family_id,
         semantic_kind=semantic_kind.value if semantic_kind is not None else None,
         name_role=name_role.value if name_role is not None else None,
         semantic_state=semantic_state.value if semantic_state is not None else None,

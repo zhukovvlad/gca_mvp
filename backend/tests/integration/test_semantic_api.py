@@ -1413,6 +1413,111 @@ class TestContextsQueue:
         assert len(response.json()["items"]) == 1
         assert len(statements) == 2, statements
 
+    # -- Фильтр по семье (правка стенда 16.10.2026) -------------------------
+
+    def _family_scene(self, db_session, factories, admin):
+        """Две семьи с контекстами (у A один из них архивный) и контекст без семьи.
+
+        Контекст семьи Б и контекст без семьи — тоже `SYSTEM`: иначе выдача
+        «семья A И `SYSTEM`» совпала бы с выдачей по одному `SYSTEM`, и тест
+        пересечения не заметил бы потерянного предиката семьи (ревью пачки 8)."""
+        fam_a = _family(db_session, admin, title="Семья фильтра А")
+        fam_b = _family(db_session, admin, title="Семья фильтра Б")
+        made: dict[str, list[int]] = {"a": [], "b": [], "none": []}
+        specs = [
+            ("a", fam_a.id, {}),
+            ("a", fam_a.id, {"semantic_kind": SemanticKind.SYSTEM.value}),
+            ("a", fam_a.id, {"archived_at": _now()}),
+            ("b", fam_b.id, {"semantic_kind": SemanticKind.SYSTEM.value}),
+            ("none", None, {"semantic_kind": SemanticKind.SYSTEM.value}),
+        ]
+        for i, (key, family_id, extra) in enumerate(specs):
+            cp = factories.CatalogPositionFactory.create(standard_job_title=f"Строка фильтра семьи {i}")
+            ctx = _context(
+                db_session,
+                _bucket(db_session, catalog_position=cp),
+                work_family_id=family_id,
+                **(
+                    {"family_source": "manual", "family_by": admin.id, "family_at": _now()}
+                    if family_id is not None
+                    else {}
+                ),
+                **extra,
+            )
+            made[key].append(ctx.id)
+        db_session.flush()
+        return fam_a, fam_b, made
+
+    def test_list_contexts_work_family_filter_returns_exactly_the_family_set(
+        self, admin_client, db_session, factories, admin_user
+    ):
+        """Выдача по семье A — РОВНО множество её контекстов (включая архивный):
+        ни контекста семьи Б или без семьи, ни потерянного своего; `total` равен
+        `context_count` семьи A из `GET /families`."""
+        fam_a, fam_b, made = self._family_scene(db_session, factories, admin_user)
+
+        response = admin_client.get(f"{BASE}/contexts", params={"work_family_id": fam_a.id})
+        assert response.status_code == 200
+        body = response.json()
+        assert {item["id"] for item in body["items"]} == set(made["a"])
+        assert all(item["work_family_id"] == fam_a.id for item in body["items"])
+
+        families = {f["id"]: f for f in admin_client.get(f"{BASE}/families").json()["items"]}
+        assert families[fam_a.id]["context_count"] == 3
+        assert body["total"] == families[fam_a.id]["context_count"]
+
+        other = admin_client.get(f"{BASE}/contexts", params={"work_family_id": fam_b.id}).json()
+        assert {item["id"] for item in other["items"]} == set(made["b"])
+        assert other["total"] == families[fam_b.id]["context_count"]
+
+    def test_list_contexts_work_family_filter_combines_with_other_filters(
+        self, admin_client, db_session, factories, admin_user
+    ):
+        fam_a, _fam_b, made = self._family_scene(db_session, factories, admin_user)
+
+        response = admin_client.get(
+            f"{BASE}/contexts",
+            params={"work_family_id": fam_a.id, "semantic_kind": SemanticKind.SYSTEM.value},
+        )
+        body = response.json()
+        assert {item["id"] for item in body["items"]} == {made["a"][1]}
+        assert body["total"] == 1
+
+    def test_list_contexts_work_family_filter_total_and_page_use_the_filter(
+        self, admin_client, db_session, factories, admin_user
+    ):
+        fam_a, _fam_b, made = self._family_scene(db_session, factories, admin_user)
+
+        response = admin_client.get(
+            f"{BASE}/contexts", params={"work_family_id": fam_a.id, "limit": 2, "offset": 2}
+        )
+        body = response.json()
+        assert body["total"] == 3
+        assert len(body["items"]) == 1
+        assert body["items"][0]["id"] in set(made["a"])
+
+    def test_list_contexts_unknown_work_family_id_is_empty_not_404(
+        self, admin_client, db_session, factories, admin_user
+    ):
+        self._family_scene(db_session, factories, admin_user)
+
+        response = admin_client.get(f"{BASE}/contexts", params={"work_family_id": 999_999_999})
+        assert response.status_code == 200
+        assert response.json()["items"] == []
+        assert response.json()["total"] == 0
+
+    def test_list_contexts_without_work_family_id_keeps_every_context(
+        self, admin_client, db_session, factories, admin_user
+    ):
+        _fam_a, _fam_b, made = self._family_scene(db_session, factories, admin_user)
+
+        body = admin_client.get(
+            f"{BASE}/contexts", params={"catalog_query": "Строка фильтра семьи", "limit": 50}
+        ).json()
+        assert {item["id"] for item in body["items"]} == set(
+            made["a"] + made["b"] + made["none"]
+        )
+
 
 # ---------------------------------------------------------------------------
 #  Пути членств (`chapter_paths`, спека §2.8 п. 2)

@@ -128,11 +128,13 @@ class ContextFilters:
     фильтра-признака — независимые оси (см. докстринг модуля). Фильтры
     `variant_state`, `pending`, `split_hint` — тоже независимые оси: у контекста
     есть вариант (`with`) или нет (`without`), у него есть ожидающее назначение
-    семьи, у него стоит пометка «к делению».
+    семьи, у него стоит пометка «к делению». `work_family_id` — назначенная
+    семья контекста (не ожидающая смена); неизвестный id даёт пустую выдачу.
     """
 
     catalog_query: str | None = None
     work_category_id: int | None = None
+    work_family_id: int | None = None
     semantic_kind: str | None = None
     name_role: str | None = None
     semantic_state: str | None = None
@@ -678,6 +680,8 @@ def _context_query(filters: ContextFilters):
         )
     if filters.work_category_id is not None:
         stmt = stmt.where(ContextBucket.work_category_id == filters.work_category_id)
+    if filters.work_family_id is not None:
+        stmt = stmt.where(CatalogContext.work_family_id == filters.work_family_id)
     if filters.semantic_kind is not None:
         stmt = stmt.where(CatalogContext.semantic_kind == filters.semantic_kind)
     if filters.name_role is not None:
