@@ -30,6 +30,7 @@ from services.semantic_client import ModelResponse
 from services.semantic_request import load_request_material, render_context_request
 from services.semantic_runner import SemanticRunner, recover_semantic_jobs
 from services.work_families import activate_family, create_family
+from tests.factories import seed_category_id
 
 pytestmark = pytest.mark.integration
 
@@ -124,7 +125,8 @@ def _scene(db, factories, count):
     user = factories.UserFactory.create()
     unit_id = UnitResolver(db).resolve("M2").unit_id
     fam = create_family(
-        db, title="Семья пола", unit_name="M2", definition="Определение", actor_id=user.id
+        db, title="Семья пола", unit_name="M2", definition="Определение", actor_id=user.id,
+        family_category_id=seed_category_id(db),
     )
     family = activate_family(db, family_id=fam.id, actor_id=user.id)
     estimate = factories.EstimateFactory.create()

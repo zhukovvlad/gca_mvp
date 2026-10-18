@@ -199,6 +199,9 @@ _SAMPLE_BUILDERS: dict[str, Callable[[int, int], dict[str, object]]] = {
         "parameter_id": 4, "source_value_id": 9, "target_value_id": 10,
         "merged_variants": [[11, 12]],
     },
+    "context_reopened": lambda ctx_id, fam_id: {
+        "from_state": "NOT_APPLICABLE", "to_state": "SUGGESTED",
+    },
 }
 
 
@@ -254,6 +257,7 @@ _EXPECTED_REQUIRED_KEYS: dict[str, frozenset[str]] = {
     "family_variants_merged": frozenset(
         {"parameter_id", "source_value_id", "target_value_id", "merged_variants"}
     ),
+    "context_reopened": frozenset({"from_state", "to_state"}),
 }
 
 _EXPECTED_ENUM_VALUES: dict[tuple[str, str], frozenset[str]] = {
@@ -262,7 +266,7 @@ _EXPECTED_ENUM_VALUES: dict[tuple[str, str], frozenset[str]] = {
     ),
     ("members_moved", "reason"): frozenset({"manual", "stale_accepted", "review_merge"}),
     ("context_archived", "reason"): frozenset({"operator", "review_merge", "context_merge"}),
-    ("family_created", "origin"): frozenset({"seed", "operator"}),
+    ("family_created", "origin"): frozenset({"seed", "operator", "discovery"}),
     ("family_archived", "reason"): frozenset({"operator", "merged"}),
     ("members_marked_stale", "trigger"): frozenset({"category_override"}),
     ("kind_set", "source"): frozenset({"rule", "manual"}),
@@ -279,8 +283,8 @@ _EXPECTED_ENUM_VALUES: dict[tuple[str, str], frozenset[str]] = {
 }
 
 
-class TestExactlyTwentyOneTypes:
-    def test_event_required_keys_has_exactly_twenty_one_types(self):
+class TestExactlyTwentyTwoTypes:
+    def test_event_required_keys_has_exactly_twenty_two_types(self):
         expected_types = {
             "context_created", "context_split", "context_merged", "members_moved",
             "members_marked_stale", "kind_set", "name_role_set",
@@ -289,10 +293,11 @@ class TestExactlyTwentyOneTypes:
             "family_archived", "family_merged",
             "context_variant_assigned", "context_family_pending", "context_not_work",
             "family_schema_frozen", "family_schema_value_added", "family_variants_merged",
+            "context_reopened",
         }
-        assert len(expected_types) == 21
+        assert len(expected_types) == 22
         assert set(EVENT_REQUIRED_KEYS) == expected_types
-        assert len(EVENT_REQUIRED_KEYS) == 21
+        assert len(EVENT_REQUIRED_KEYS) == 22
 
 
 class TestRequiredKeysMatchIndependentLiteral:
@@ -304,7 +309,7 @@ class TestRequiredKeysMatchIndependentLiteral:
     равенство словарей."""
 
     def test_event_required_keys_equals_independent_literal(self):
-        assert len(_EXPECTED_REQUIRED_KEYS) == 21
+        assert len(_EXPECTED_REQUIRED_KEYS) == 22
         assert EVENT_REQUIRED_KEYS == _EXPECTED_REQUIRED_KEYS
 
 
@@ -688,7 +693,7 @@ class TestExternalCrossCheckWithSchema:
         parsed = {
             piece.strip().strip("'") for piece in SEMANTIC_EVENT_TYPES_SQL.split(",")
         }
-        assert len(parsed) == 21
+        assert len(parsed) == 22
         assert parsed == (FAMILY_EVENT_TYPES | CONTEXT_EVENT_TYPES)
 
     def test_family_and_context_types_are_disjoint(self):

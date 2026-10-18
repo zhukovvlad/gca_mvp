@@ -97,6 +97,40 @@ describe("Экран «Ручной матчинг» (§7.2)", () => {
   });
 });
 
+/**
+ * Вёрстка таблицы. jsdom не считает раскладку, поэтому тест фиксирует классы,
+ * а сама ширина доказана замером стенда: таблица 2916 px в контейнере 1350 px
+ * до правки (строка «в смете: …» с `truncate` растягивала автоматическую
+ * раскладку по своей полной длине) и не шире контейнера после.
+ */
+describe("Вёрстка таблицы очереди", () => {
+  it("страница на container-wide, таблица с фиксированной раскладкой", async () => {
+    const { container } = renderWithProviders(<ReviewPage />);
+    const title = await screen.findByText("Стяжка неведомая");
+
+    expect(container.querySelector(".container-wide")).not.toBeNull();
+    expect(container.querySelector(".container-page")).toBeNull();
+    expect(title.closest("table")).toHaveClass("table-fixed");
+  });
+
+  it("название работы режется до двух строк, полный текст в подсказке", async () => {
+    renderWithProviders(<ReviewPage />);
+    const title = await screen.findByText("Стяжка неведомая");
+
+    expect(title).toHaveClass("line-clamp-2");
+    expect(title).toHaveAttribute("title", "Стяжка неведомая");
+  });
+
+  it("пример из сметы обрезается в одну строку, полный текст в подсказке", async () => {
+    renderWithProviders(<ReviewPage />);
+    await screen.findByText("Стяжка неведомая");
+
+    const sample = screen.getByText("в смете: Стяжка пола 50мм");
+    expect(sample).toHaveClass("truncate");
+    expect(sample).toHaveAttribute("title", "Стяжка пола 50мм");
+  });
+});
+
 describe("Пакетная разметка (решение §6.5)", () => {
   it("отправляет выбранные строки одним запросом", async () => {
     const user = userEvent.setup();

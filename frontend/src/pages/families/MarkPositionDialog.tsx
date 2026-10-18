@@ -113,10 +113,20 @@ function MarkPositionForm({
       </div>
 
       <DialogFooter>
-        <Button variant="outline" disabled={mark.isPending} onClick={() => submit("HEADER")}>
+        <Button
+          variant="outline"
+          disabled={mark.isPending}
+          loading={mark.isPending && mark.variables?.kind === "HEADER"}
+          onClick={() => submit("HEADER")}
+        >
           Пометить заголовком
         </Button>
-        <Button variant="destructive" disabled={mark.isPending} onClick={() => submit("TRASH")}>
+        <Button
+          variant="destructive"
+          disabled={mark.isPending}
+          loading={mark.isPending && mark.variables?.kind === "TRASH"}
+          onClick={() => submit("TRASH")}
+        >
           Пометить мусором
         </Button>
       </DialogFooter>

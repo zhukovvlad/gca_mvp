@@ -432,15 +432,17 @@ class TestRebuildSchemaReconciles:
         [job] = _jobs(db_session, "family_schema")
         assert (job.schema_id, job.status) == (schema.id, "pending")
 
-    def test_a_family_without_contexts_gets_the_schema_job(self, db_session, factories):
+    def test_a_family_without_contexts_waits_for_names_without_a_schema_job(
+        self, db_session, factories
+    ):
         actor = _actor(factories)
         family = _family(db_session, status="active", definition="Пустая семья")
         _frozen_schema(db_session, factories, family, [(1, "Тип", ["а"])])
 
         schema = rebuild_schema(db_session, family_id=family.id, actor_id=actor)
 
-        [job] = _jobs(db_session, "family_schema")
-        assert (job.schema_id, job.status) == (schema.id, "pending")
+        assert schema.status == "building"
+        assert _jobs(db_session, "family_schema") == []
 
 
 class TestUpdateSchemaReconciles:

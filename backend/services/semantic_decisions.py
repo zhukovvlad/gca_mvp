@@ -56,6 +56,7 @@ from models import (
     SuggestionUnpublishedReason,
     WorkFamily,
 )
+from services.family_categories import require_category
 from services.family_change import (
     acquire_family_locks,
     family_change_route,
@@ -324,14 +325,23 @@ def assign_other_family(
 
 
 def create_family_from_suggestion(
-    db: Session, *, suggestion_id: int, title: str, definition: str, actor_id: int
+    db: Session,
+    *,
+    suggestion_id: int,
+    title: str,
+    definition: str,
+    family_category_id: int,
+    actor_id: int,
 ) -> int:
     """«Завести семью…»: одной транзакцией `create_family` -> `activate_family`
     -> `assign_family(source = suggestion)`, предложение `family_created`.
-    Возвращает id новой семьи.
+    Категория обязательна (спека 3б §2.9, решение 10) и берётся `FOR SHARE` ДО
+    строк контекста и семьи — первой в общем порядке блокировок. Возвращает id
+    новой семьи.
 
     Raises:
         ValueError: пустое имя или определение — до любой записи.
+        WorkFamilyError: `category_not_found` — категорию удалили.
         DecisionConflict: `suggestion_changed`; `family_exists` (с `family_id`
             существующей активной семьи с тем же именем и единицей) — записано
             ничего, точка сохранения откатывается."""
@@ -341,6 +351,8 @@ def create_family_from_suggestion(
         raise ValueError("имя семьи обязательно")
     if not clean_definition:
         raise ValueError("определение семьи обязательно")
+
+    require_category(db, family_category_id, exclusive=False)
 
     suggestion = _read_suggestion(db, suggestion_id)
     suggestion = _lock_for_decision(
@@ -355,7 +367,7 @@ def create_family_from_suggestion(
         try:
             family = create_family(
                 db, title=clean_title, unit_name=unit_name, definition=clean_definition,
-                actor_id=actor_id,
+                actor_id=actor_id, family_category_id=family_category_id,
             )
             family_id = family.id
             activate_family(db, family_id=family_id, actor_id=actor_id)
@@ -622,10 +634,35 @@ def release_unit_privacy_holds(
 def retry_job(db: Session, *, job_id: int, actor_id: int) -> None:
     """Ручной повтор (спека §2.6): только из `error`; ТО ЖЕ задание -> `pending`
     с новым поколением. Попытки прежних поколений не трогаются. `done` с тем же
-    отпечатком повторять нельзя."""
+    отпечатком повторять нельзя. Открытие семей (`family_discovery`), у единицы
+    которого есть открытие новее — выполненное или живое, — не возвращается в
+    очередь, а отменяется `input_changed` (как задание, у которого при захвате
+    разошёлся вход, `semantic_worker`): результат старого задания спрятал бы
+    черновики нового, а отказ оставил бы строку в очереди ошибок навсегда."""
     job = _lock_job(db, job_id)
     if job.status != SemanticJobStatus.error.value:
         raise DecisionConflict(CODE_JOB_CHANGED)
+    if job.kind == SemanticJobKind.family_discovery.value:
+        newer = db.execute(
+            sa.select(SemanticJob.id).where(
+                SemanticJob.kind == SemanticJobKind.family_discovery.value,
+                SemanticJob.id > job.id,
+                SemanticJob.unit_id.is_not_distinct_from(job.unit_id),
+                SemanticJob.status.in_(
+                    (
+                        SemanticJobStatus.done.value,
+                        SemanticJobStatus.pending.value,
+                        SemanticJobStatus.running.value,
+                        SemanticJobStatus.privacy_hold.value,
+                    )
+                ),
+            ).limit(1)
+        ).first()
+        if newer is not None:
+            job.status = SemanticJobStatus.cancelled.value
+            job.cancel_reason = SemanticCancelReason.input_changed.value
+            db.flush()
+            return
     job.status = SemanticJobStatus.pending.value
     job.retry_generation = job.retry_generation + 1
     job.attempts_in_generation = 0
@@ -850,6 +887,9 @@ def _mark_batch_jobs(db: Session, batch_id: int, pairs: Sequence[Fingerprint]) -
     schema_unbuilt: list[tuple[int, str]] = []
     for fingerprint in pairs:
         kind = SemanticJobKind(fingerprint.kind)
+        if kind == SemanticJobKind.family_discovery:
+            # Открытие создаёт только запуск оператора; в пачки сверки оно не входит.
+            continue
         if kind == SemanticJobKind.family_suggestion:
             suggestion.append((fingerprint.context_id, fingerprint.request_hash))
         elif kind == SemanticJobKind.context_values:
@@ -978,8 +1018,9 @@ def enqueue_all(db: Session) -> int | None:
 def backfill_family_schemas(db: Session) -> ReconcileReport:
     """Массовая постановка схем (CLI `semantic-schemas-backfill`): сверка ветви
     `family_schema` по всем семьям, источник пачки `mass`. Схему получают
-    активные семьи без текущей версии: ветвь плана пропускает семью с текущей
-    версией и неактивную. Постановка идёт под потолком события
+    активные семьи без текущей версии или с «не построенной», у которых есть
+    наименования: ветвь плана пропускает семью с построенной текущей версией,
+    семью без наименований и неактивную. Постановка идёт под потолком события
     из настроек, сверх него - ОДНА удержанная пачка `mass` в `report.held_batch_id`."""
     family_ids = db.execute(sa.select(WorkFamily.id)).scalars().all()
     return reconcile_family_schemas(

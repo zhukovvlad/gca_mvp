@@ -1,7 +1,7 @@
 import { ChevronRight } from "lucide-react";
 import { useState } from "react";
 
-import { EntitySelect } from "@/components/ui-domain/EntitySelect";
+import { EntityCombobox } from "@/components/domain/EntityCombobox";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -24,7 +24,7 @@ import {
 } from "@/services/queries";
 import type { SuggestionBand, SuggestionGroup, SuggestionRow } from "@/types/domain";
 
-import { BAND_LABEL } from "./labels";
+import { BAND_LABEL, SEMANTIC_KIND_LABEL } from "./labels";
 import { SourceChip } from "./SourceChip";
 
 /** Сколько строк группа печатает сразу; остальные — «… и ещё K, отмечены», раскрываются кнопкой. */
@@ -46,6 +46,9 @@ const BAND_TINT: Record<SuggestionBand, string> = {
   mid: "border-warning-border bg-warning-soft text-warning-text",
   low: "border-danger-border bg-danger-soft text-danger-text",
 };
+
+/** Метка «система» (спека 3б §2.6): нейтральная — это вид строки, а не оценка. */
+const SYSTEM_TINT = "border-neutral-border bg-neutral-soft text-neutral-text";
 
 const CONFIDENCE_TEXT: Record<SuggestionBand, string> = {
   high: "text-accent-text",
@@ -92,7 +95,7 @@ function OtherFamilyDialog({ group, unitLabel, row, change, onClose }: OtherFami
   return (
     <Dialog open={row !== null} onOpenChange={(open) => !open && handleClose()}>
       {row !== null && (
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-xl">
           <DialogHeader>
             <DialogTitle>Другая семья</DialogTitle>
             <DialogDescription>{row.title}</DialogDescription>
@@ -100,13 +103,15 @@ function OtherFamilyDialog({ group, unitLabel, row, change, onClose }: OtherFami
           {candidates.length > 0 ? (
             <div className="grid gap-2 py-2">
               <Label htmlFor="other-family-select">Активные семьи {unitLabel}</Label>
-              <EntitySelect
+              <EntityCombobox
                 id="other-family-select"
                 items={candidates}
                 value={choice}
-                onChange={(v) => setChoice(v as number | null)}
+                onChange={(f) => setChoice(f?.id ?? null)}
                 getLabel={(f) => f.title}
                 placeholder="Выбрать семью"
+                searchPlaceholder="Найти семью…"
+                emptyText="Ничего не найдено"
               />
             </div>
           ) : (
@@ -122,7 +127,8 @@ function OtherFamilyDialog({ group, unitLabel, row, change, onClose }: OtherFami
             </Button>
             {candidates.length > 0 && (
               <Button
-                disabled={choice === null || otherFamily.isPending}
+                disabled={choice === null}
+                loading={otherFamily.isPending}
                 onClick={() =>
                   choice !== null &&
                   otherFamily.mutate(
@@ -144,6 +150,11 @@ function OtherFamilyDialog({ group, unitLabel, row, change, onClose }: OtherFami
       )}
     </Dialog>
   );
+}
+
+/** Id строки, которую отклоняет текущий запрос (переменные — id или `{ suggestionId, change }`). */
+function rejectingId(variables: number | { suggestionId: number } | undefined): number | undefined {
+  return typeof variables === "object" ? variables.suggestionId : variables;
 }
 
 interface GroupCardProps {
@@ -207,9 +218,15 @@ function GroupCard({ group, unitLabel, defaultOpen, mode }: GroupCardProps) {
         <Badge variant="outline" className={BAND_TINT[group.band]}>
           {BAND_LABEL[group.band]}
         </Badge>
+        {(group.system_count ?? 0) > 0 && (
+          <Badge variant="outline" className={SYSTEM_TINT} data-testid="group-system-label">
+            {SEMANTIC_KIND_LABEL.SYSTEM}
+          </Badge>
+        )}
         <Button
           className="ml-auto"
-          disabled={checkedIds.length === 0 || confirm.isPending}
+          disabled={checkedIds.length === 0}
+          loading={confirm.isPending}
           onClick={() =>
             confirm.mutate({
               ids: checkedIds,
@@ -240,6 +257,7 @@ function GroupCard({ group, unitLabel, defaultOpen, mode }: GroupCardProps) {
                   className="mt-1"
                   aria-label="Отметить строку"
                   checked={!isOff}
+                  disabled={confirm.isPending}
                   onCheckedChange={(checked) => toggle(row.suggestion_id, checked === true)}
                 />
                 <div
@@ -251,7 +269,14 @@ function GroupCard({ group, unitLabel, defaultOpen, mode }: GroupCardProps) {
                   {formatConfidence(row.confidence)}
                 </div>
                 <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                  <div className="text-fg">{row.title}</div>
+                  <div className="flex min-w-0 items-center gap-2 text-fg">
+                    <span>{row.title}</span>
+                    {row.semantic_kind === "SYSTEM" && (
+                      <Badge variant="outline" className={SYSTEM_TINT} data-testid="row-system-label">
+                        {SEMANTIC_KIND_LABEL.SYSTEM}
+                      </Badge>
+                    )}
+                  </div>
                   <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-fg-tertiary">
                     {row.article && (
                       <>
@@ -277,13 +302,19 @@ function GroupCard({ group, unitLabel, defaultOpen, mode }: GroupCardProps) {
                   )}
                 </div>
                 <div className="flex flex-none gap-1.5">
-                  <Button variant="outline" size="sm" onClick={() => setOtherRow(row)}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={confirm.isPending || reject.isPending}
+                    onClick={() => setOtherRow(row)}
+                  >
                     Другая семья…
                   </Button>
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={reject.isPending}
+                    disabled={confirm.isPending || reject.isPending}
+                    loading={reject.isPending && rejectingId(reject.variables) === row.suggestion_id}
                     onClick={() =>
                       reject.mutate(change ? { suggestionId: row.suggestion_id, change } : row.suggestion_id)
                     }

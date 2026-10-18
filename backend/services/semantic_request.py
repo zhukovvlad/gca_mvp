@@ -93,6 +93,34 @@ SEMANTIC_PROMPT = """Ты сметчик-каталогизатор строит
 - Строка, называющая систему или часть объекта целиком в «компл» (тепловой пункт, АСУД, кабельные линии), в семьи работ не входит: family_id = 0, new_family_name = "СИСТЕМА".
 - confidence — насколько ты уверен именно в этом family_id."""
 
+#: Версия текста промпта систем (спека 3б §2.6); метка версии на задании —
+#: `system:<версия>`, чтобы отличать её от версии промпта работ.
+SYSTEM_PROMPT_VERSION = 1
+
+#: Промпт предложения семьи для контекстов-систем: та же форма ответа и тот же
+#: разбор, что у `SEMANTIC_PROMPT`, но без правила «СИСТЕМА» — система сама
+#: предмет вопроса (спека 3б §2.6).
+SYSTEM_SEMANTIC_PROMPT = """Ты сметчик-каталогизатор строительной компании-заказчика. У компании есть каталог СЕМЕЙ систем: семья — это тип системы без параметров, бренда и места (например «Тепловой пункт», «Автоматика и диспетчеризация», «Кабельные линии»). Внутри семьи строки различаются параметрами (мощность, производитель, этаж) — это не мешает им быть одной семьёй.
+
+Тебе дают одну строку ведомости (разделы, статья, наименование, единица) и список семей. Строка называет комплект или систему целиком, цена в ней задана за комплект целиком. Ответь строгим JSON без пояснений:
+{"family_id": <номер из списка или 0>, "new_family_name": "<имя, если family_id = 0, иначе null>", "confidence": 0.0-1.0, "reason": "<одно предложение>"}
+
+Правила:
+- family_id = 0 только если НИ ОДНА семья списка не описывает этот тип системы. Не заводи новую семью ради параметров, бренда или места; имя новой семьи — тип системы.
+- Семья должна совпадать по единице измерения (в скобках); при расхождении единицы предпочитай 0 или другую семью.
+- Строка — комплект или система целиком: относи её к семье по типу системы, а не по отдельным работам и материалам внутри неё.
+- confidence — насколько ты уверен именно в этом family_id."""
+
+
+def prompt_for(semantic_kind: str) -> tuple[str, str]:
+    """Текст промпта предложения семьи и `prompt_version` задания по виду
+    контекста: система — свой промпт и метка `system:<версия>`, прочие виды —
+    прежний промпт и прежняя метка (спека 3б §2.6)."""
+    if semantic_kind == SemanticKind.SYSTEM.value:
+        return SYSTEM_SEMANTIC_PROMPT, f"system:{SYSTEM_PROMPT_VERSION}"
+    return SEMANTIC_PROMPT, str(PROMPT_VERSION)
+
+
 #: Отображение единицы, когда её нет (спека §2.2): контексты и семьи без
 #: единицы (`unit_id IS NULL`) существуют, и это законное значение, а не дыра
 #: в данных — сентинел только для РЕНДЕРА, `unit_code` полей остаётся `None`.
@@ -205,8 +233,8 @@ def top_path(path_counts: Sequence[tuple[str, int]]) -> str:
 def is_applicable(material: ContextRequestMaterial) -> bool:
     """Контекст получает задания, только если ОДНОВРЕМЕННО (спека §2.7): не
     архивирован и имеет хотя бы одно членство; `semantic_state <>
-    'NOT_APPLICABLE'`; `semantic_kind <> 'SYSTEM'`; у единицы контекста есть
-    хотя бы одна активная семья. Привязка к семье применимость не отменяет:
+    'NOT_APPLICABLE'`; у единицы контекста есть хотя бы одна активная семья
+    (вид контекста применимость не определяет: система — как работа). Привязка к семье применимость не отменяет:
     привязанный контекст тоже получает задание (пересмотр привязок, спека
     вариантов §2.5). В базу не ходит —
     решает по уже загруженному `material` (кандидаты — его часть)."""
@@ -215,8 +243,6 @@ def is_applicable(material: ContextRequestMaterial) -> bool:
     if material.member_count == 0:
         return False
     if material.semantic_state == SemanticState.NOT_APPLICABLE.value:
-        return False
-    if material.semantic_kind == SemanticKind.SYSTEM.value:
         return False
     if material.path_broken:
         return False
@@ -400,12 +426,18 @@ def _user_text(material: ContextRequestMaterial) -> str:
 
 
 def _build_body(
-    ordered_candidates: Sequence[CandidateFamily], user_text: str, *, settings: Settings
+    ordered_candidates: Sequence[CandidateFamily],
+    user_text: str,
+    *,
+    settings: Settings,
+    semantic_kind: str,
 ) -> tuple[dict, list[dict]]:
-    """Тело запроса и блоки `system`; кандидаты уже упорядочены по `id`."""
+    """Тело запроса и блоки `system`; кандидаты уже упорядочены по `id`.
+    Промпт выбирается по виду контекста (`prompt_for`)."""
     family_block = _candidates_block(ordered_candidates)
+    prompt_text, _prompt_version = prompt_for(semantic_kind)
     system_blocks: list[dict] = [
-        {"type": "text", "text": SEMANTIC_PROMPT},
+        {"type": "text", "text": prompt_text},
         {"type": "text", "text": f"{FAMILY_BLOCK_HEADER}{family_block}"},
     ]
     system_blocks[CACHE_CONTROL_BLOCK_INDEX]["cache_control"] = {"type": "ephemeral"}
@@ -430,7 +462,9 @@ def render_context_request(material: ContextRequestMaterial, *, settings: Settin
     входе на результат не влияет."""
     ordered_candidates = tuple(sorted(material.candidates, key=lambda c: c.id))
     user_text = _user_text(material)
-    body, system_blocks = _build_body(ordered_candidates, user_text, settings=settings)
+    body, system_blocks = _build_body(
+        ordered_candidates, user_text, settings=settings, semantic_kind=material.semantic_kind
+    )
 
     request_hash = _sha256_hex({"serialization_version": SERIALIZATION_VERSION, "body": body})
     prefix_hash = _sha256_hex(
@@ -483,20 +517,38 @@ class RequestHasher:
     рендерится и не сериализуется заново для каждого контекста.
 
     Экземпляр строится по материалу любого контекста единицы: кандидаты у всех
-    контекстов единицы одни и те же.
+    контекстов единицы одни и те же. Промпт зависит от вида контекста (система
+    или нет), поэтому половины режутся отдельно на каждый вид и лениво — по
+    первому контексту этого вида.
     """
 
     def __init__(self, template: ContextRequestMaterial, *, settings: Settings) -> None:
-        ordered = tuple(sorted(template.candidates, key=lambda c: c.id))
-        body, _ = _build_body(ordered, _USER_TEXT_SENTINEL, settings=settings)
-        canonical = _canonical_bytes({"serialization_version": SERIALIZATION_VERSION, "body": body})
-        marker = json.dumps(_USER_TEXT_SENTINEL, ensure_ascii=False).encode("utf-8")
-        # Метка — целое JSON-значение в кавычках: она есть в теле ровно один раз, на
-        # месте сообщения (промпт и блок семей целиком ей равняться не могут).
-        head, _marker, tail = canonical.partition(marker)
-        self._split = (head, tail)
+        self._ordered = tuple(sorted(template.candidates, key=lambda c: c.id))
+        self._settings = settings
+        self._splits: dict[bool, tuple[bytes, bytes]] = {}
+
+    def _split_for(self, semantic_kind: str) -> tuple[bytes, bytes]:
+        is_system = semantic_kind == SemanticKind.SYSTEM.value
+        split = self._splits.get(is_system)
+        if split is None:
+            body, _ = _build_body(
+                self._ordered,
+                _USER_TEXT_SENTINEL,
+                settings=self._settings,
+                semantic_kind=semantic_kind,
+            )
+            canonical = _canonical_bytes(
+                {"serialization_version": SERIALIZATION_VERSION, "body": body}
+            )
+            marker = json.dumps(_USER_TEXT_SENTINEL, ensure_ascii=False).encode("utf-8")
+            # Метка — целое JSON-значение в кавычках: она есть в теле ровно один раз, на
+            # месте сообщения (промпт и блок семей целиком ей равняться не могут).
+            head, _marker, tail = canonical.partition(marker)
+            split = (head, tail)
+            self._splits[is_system] = split
+        return split
 
     def request_hash(self, material: ContextRequestMaterial) -> str:
-        head, tail = self._split
+        head, tail = self._split_for(material.semantic_kind)
         user_json = json.dumps(_user_text(material), ensure_ascii=False).encode("utf-8")
         return hashlib.sha256(head + user_json + tail).hexdigest()

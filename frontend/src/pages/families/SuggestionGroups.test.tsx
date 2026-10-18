@@ -39,6 +39,7 @@ function bigGroup(rowCount: number): SuggestionGroup {
     reason: `Причина ${i + 1}`,
     multi_owner: false,
     previously_rejected: null,
+    semantic_kind: "WORK",
   }));
   return { family_id: 900, family_title: "Большая семья", unit_code: "M2", band: "high", rows, total: rowCount };
 }
@@ -77,6 +78,62 @@ describe("SuggestionGroups — группы", () => {
 
     await user.click(within(groups[1]).getByRole("button", { name: "Раскрыть группу" }));
     expect(within(groups[1]).getAllByTestId("suggestion-row")).toHaveLength(1);
+  });
+});
+
+describe("SuggestionGroups — метка «система»", () => {
+  /** Первая группа смешанная (одна строка-система из трёх), вторая — свёрнутая, целиком из систем. */
+  function groupsWithSystems(): SuggestionGroup[] {
+    const groups = fixtureGroups();
+    groups[0].rows[1].semantic_kind = "SYSTEM";
+    groups[0].system_count = 1;
+    groups[1].rows[0].semantic_kind = "SYSTEM";
+    groups[1].system_count = 1;
+    groups[2].system_count = 0;
+    return groups;
+  }
+
+  it("заголовок группы несёт метку при system_count > 0 и не несёт при нуле, даже у свёрнутой группы", () => {
+    renderGroups(groupsWithSystems());
+
+    const groups = screen.getAllByTestId("suggestion-group");
+    expect(within(groups[0]).getByTestId("group-system-label")).toHaveTextContent("система");
+    // Вторая группа свёрнута — метка видна без раскрытия.
+    expect(within(groups[1]).queryAllByTestId("suggestion-row")).toHaveLength(0);
+    expect(within(groups[1]).getByTestId("group-system-label")).toHaveTextContent("система");
+    expect(within(groups[2]).queryByTestId("group-system-label")).not.toBeInTheDocument();
+  });
+
+  it("строка несёт метку только у системы: в смешанной группе помечена одна из трёх", () => {
+    renderGroups(groupsWithSystems());
+
+    const rows = within(firstGroup()).getAllByTestId("suggestion-row");
+    expect(within(rows[0]).queryByTestId("row-system-label")).not.toBeInTheDocument();
+    expect(within(rows[1]).getByTestId("row-system-label")).toHaveTextContent("система");
+    expect(within(rows[2]).queryByTestId("row-system-label")).not.toBeInTheDocument();
+  });
+
+  it("очередь без систем и очередь без ключа system_count не получают ни одной метки", () => {
+    const groups = fixtureGroups();
+    delete groups[1].system_count;
+    renderGroups(groups);
+
+    expect(screen.queryAllByTestId("group-system-label")).toHaveLength(0);
+    expect(screen.queryAllByTestId("row-system-label")).toHaveLength(0);
+  });
+
+  it("ключ группы не меняется: смена system_count не сворачивает раскрытую группу", async () => {
+    const user = userEvent.setup();
+    const groups = fixtureGroups();
+    const { rerender } = renderGroups(groups);
+    await user.click(within(screen.getAllByTestId("suggestion-group")[1]).getByRole("button", { name: "Раскрыть группу" }));
+    expect(within(screen.getAllByTestId("suggestion-group")[1]).getAllByTestId("suggestion-row")).toHaveLength(1);
+
+    rerender(<SuggestionGroups groups={groupsWithSystems()} unitLabel={unitLabel} />);
+
+    const second = screen.getAllByTestId("suggestion-group")[1];
+    expect(within(second).getByTestId("group-system-label")).toBeInTheDocument();
+    expect(within(second).getAllByTestId("suggestion-row")).toHaveLength(1);
   });
 });
 
@@ -309,6 +366,111 @@ describe("SuggestionGroups — «Другая семья…»", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 
+  it("поиск сужает список по подстроке в середине названия без учёта регистра", async () => {
+    const user = userEvent.setup();
+    activeFamily(900, "Устройство покрытий", "M2");
+    activeFamily(901, "Монтаж перекрытий", "M2");
+    activeFamily(903, "Окраска стен", "M2");
+    renderGroups();
+
+    const row = within(firstGroup()).getAllByTestId("suggestion-row")[0];
+    await user.click(within(row).getByRole("button", { name: "Другая семья…" }));
+    await user.click(await screen.findByRole("combobox", { name: /Активные семьи м²/ }));
+    expect(await screen.findByRole("option", { name: "Окраска стен" })).toBeInTheDocument();
+    await user.type(screen.getByPlaceholderText("Найти семью…"), "ЙСТВО ПОК");
+
+    expect(await screen.findByRole("option", { name: "Устройство покрытий" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Окраска стен" })).not.toBeInTheDocument();
+    // «Монтаж перекрытий» тоже оканчивается на «крытий», но искомой подстроки в нём нет.
+    expect(screen.queryByRole("option", { name: "Монтаж перекрытий" })).not.toBeInTheDocument();
+
+    // Обратный регистр: строчный запрос находит заглавную букву названия — к нижнему
+    // регистру приводится и подпись, а не только запрос.
+    await user.clear(screen.getByPlaceholderText("Найти семью…"));
+    await user.type(screen.getByPlaceholderText("Найти семью…"), "монтаж");
+    expect(await screen.findByRole("option", { name: "Монтаж перекрытий" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Устройство покрытий" })).not.toBeInTheDocument();
+  });
+
+  it("поиск не переживает закрытие списка: при новом открытии — снова весь список", async () => {
+    const user = userEvent.setup();
+    activeFamily(900, "Устройство покрытий", "M2");
+    activeFamily(903, "Окраска стен", "M2");
+    renderGroups();
+
+    const row = within(firstGroup()).getAllByTestId("suggestion-row")[0];
+    await user.click(within(row).getByRole("button", { name: "Другая семья…" }));
+    const combobox = await screen.findByRole("combobox", { name: /Активные семьи м²/ });
+    await user.click(combobox);
+    await user.type(screen.getByPlaceholderText("Найти семью…"), "краск");
+    await waitFor(() =>
+      expect(screen.queryByRole("option", { name: "Устройство покрытий" })).not.toBeInTheDocument()
+    );
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByPlaceholderText("Найти семью…")).not.toBeInTheDocument());
+
+    await user.click(screen.getByRole("combobox", { name: /Активные семьи м²/ }));
+    expect(await screen.findByRole("option", { name: "Устройство покрытий" })).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Найти семью…")).toHaveValue("");
+  });
+
+  it("выбор из отфильтрованного списка уходит тем же запросом назначения", async () => {
+    const user = userEvent.setup();
+    activeFamily(900, "Устройство покрытий", "M2");
+    activeFamily(903, "Окраска стен", "M2");
+    renderGroups();
+
+    const row = within(firstGroup()).getAllByTestId("suggestion-row")[1];
+    await user.click(within(row).getByRole("button", { name: "Другая семья…" }));
+    await user.click(await screen.findByRole("combobox", { name: /Активные семьи м²/ }));
+    await user.type(screen.getByPlaceholderText("Найти семью…"), "краск");
+    expect(await screen.findByRole("option", { name: "Окраска стен" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Устройство покрытий" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("option", { name: "Окраска стен" }));
+    await user.click(screen.getByRole("button", { name: "Назначить" }));
+
+    await waitFor(() => expect(handlerState.otherFamilyRequests).toEqual([{ suggestionId: 2, familyId: 903 }]));
+  });
+
+  it("пустой результат поиска — «Ничего не найдено»; исключённая семья не находится", async () => {
+    const user = userEvent.setup();
+    activeFamily(900, "Устройство покрытий", "M2");
+    activeFamily(501, "Геотекстиль", "M2");
+    activeFamily(902, "Кубатурная семья", "M3");
+    renderGroups();
+
+    const row = within(firstGroup()).getAllByTestId("suggestion-row")[0];
+    await user.click(within(row).getByRole("button", { name: "Другая семья…" }));
+    await user.click(await screen.findByRole("combobox", { name: /Активные семьи м²/ }));
+    const search = screen.getByPlaceholderText("Найти семью…");
+
+    // Предложенная семья («Геотекстиль») и семья другой единицы поиском не возвращаются.
+    await user.type(search, "геотекст");
+    expect(await screen.findByText("Ничего не найдено")).toBeInTheDocument();
+    await user.clear(search);
+    await user.type(search, "кубатур");
+    expect(await screen.findByText("Ничего не найдено")).toBeInTheDocument();
+  });
+
+  it("варианты приходят вразнобой — показаны по алфавиту", async () => {
+    const user = userEvent.setup();
+    activeFamily(900, "Устройство покрытий", "M2");
+    activeFamily(901, "Монтаж перекрытий", "M2");
+    activeFamily(903, "Армирование", "M2");
+    renderGroups();
+
+    const row = within(firstGroup()).getAllByTestId("suggestion-row")[0];
+    await user.click(within(row).getByRole("button", { name: "Другая семья…" }));
+    await user.click(await screen.findByRole("combobox", { name: /Активные семьи м²/ }));
+    await screen.findByRole("option", { name: "Армирование" });
+
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "Армирование",
+      "Монтаж перекрытий",
+      "Устройство покрытий",
+    ]);
+  });
+
   it("«Назначить» недоступна, пока семья не выбрана", async () => {
     const user = userEvent.setup();
     activeFamily(900, "Устройство покрытий", "M2");
@@ -317,6 +479,19 @@ describe("SuggestionGroups — «Другая семья…»", () => {
     await user.click(within(within(firstGroup()).getAllByTestId("suggestion-row")[0]).getByRole("button", { name: "Другая семья…" }));
 
     expect(await screen.findByRole("button", { name: "Назначить" })).toBeDisabled();
+  });
+
+  // Вид (подпись не вылезает за края окна) доказывают снимки стенда при 1280 и 1920; здесь — классы ширины.
+  it("окно выбора семьи шире окна по умолчанию: sm:max-w-xl", async () => {
+    const user = userEvent.setup();
+    activeFamily(900, "Устройство покрытий", "M2");
+    renderGroups();
+
+    await user.click(within(within(firstGroup()).getAllByTestId("suggestion-row")[0]).getByRole("button", { name: "Другая семья…" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveClass("sm:max-w-xl");
+    expect(dialog).not.toHaveClass("sm:max-w-md");
   });
 
   it("других активных семей единицы нет — сообщение и нет кнопки назначения", async () => {

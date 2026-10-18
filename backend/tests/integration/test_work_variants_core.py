@@ -847,7 +847,6 @@ _NOT_APPLICABLE_CASES = [
     ("archived_context", _archive_context),
     ("no_members", _drop_members),
     ("state_not_applicable", _state_not_applicable),
-    ("kind_system", _kind_system),
     ("catalog_header", _catalog_kind("HEADER")),
     ("catalog_trash", _catalog_kind("TRASH")),
     ("catalog_lot_header", _catalog_kind("LOT_HEADER")),
@@ -893,6 +892,26 @@ class TestVerdictNotApplicable:
         outcome = _apply(db_session, world, guard=None)
         assert (outcome.applied, outcome.unapplied_reason) == (False, "not_applicable")
         assert _snapshot(db_session, world) == before
+
+    def test_system_kind_does_not_make_a_guarded_job_inapplicable(self, db_session, factories):
+        world = _world(db_session, factories)
+        job, guard = _guarded(db_session, context_id=world.context_id, schema_id=world.schema.id)
+        _kind_system(db_session, world)
+        db_session.flush()
+
+        outcome = _apply(db_session, world, guard=guard)
+
+        assert outcome.applied is True
+        assert outcome.unapplied_reason is None
+
+    def test_system_kind_without_a_job_is_applied_like_work(self, db_session, factories):
+        world = _world(db_session, factories)
+        _kind_system(db_session, world)
+        db_session.flush()
+
+        outcome = _apply(db_session, world, guard=None)
+
+        assert (outcome.applied, outcome.unapplied_reason) == (True, None)
 
     def test_schema_of_another_family_is_not_applicable(self, db_session, factories):
         world = _world(db_session, factories)

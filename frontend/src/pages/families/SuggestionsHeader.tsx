@@ -107,7 +107,7 @@ export function SuggestionsHeader({ status, onPreview }: SuggestionsHeaderProps)
             <Button
               variant="outline"
               size="sm"
-              disabled={resume.isPending}
+              loading={resume.isPending}
               onClick={() => resume.mutate()}
             >
               Снять остановку
@@ -140,6 +140,7 @@ export function SuggestionsHeader({ status, onPreview }: SuggestionsHeaderProps)
                 variant="outline"
                 size="sm"
                 disabled={discard.isPending}
+                loading={discard.isPending && discard.variables === batch.batch_id}
                 onClick={() => discard.mutate(batch.batch_id)}
               >
                 Отбросить

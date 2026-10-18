@@ -17,7 +17,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -469,6 +469,15 @@ _DOMAIN_TABLES = (
     "family_parameter_values",
     "family_parameters",
     "family_parameter_schemas",
+    # Открытие семей и категории (миграция 0021), все четыре таблицы — ЯВНО, по
+    # той же причине; `family_categories` пересеивается тремя строками миграции
+    # в той же транзакции очистки (см. `_truncate_domain_tables`): тесты заводят
+    # свои категории, и без очистки они протекали бы между тестами. Порядок в
+    # списке значения не имеет.
+    "family_category_proposals",
+    "family_draft_members",
+    "family_drafts",
+    "family_categories",
     # Отметки победителя тендера (миграция 0020): ЯВНО, а не в расчёте на
     # каскад от tenders. Порядок в списке значения не имеет.
     "tender_awards",
@@ -489,6 +498,17 @@ _DOMAIN_TABLES = (
 )
 
 
+def _seed_categories() -> tuple[tuple[str, str, str], ...]:
+    """Три строки справочника категорий из миграции 0021 (`SEED_CATEGORIES`)."""
+    import importlib.util
+
+    path = next(BACKEND_ROOT.glob("alembic/versions/*0021-catalog_discovery.py"))
+    spec = importlib.util.spec_from_file_location("_migration_0021_seed", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.SEED_CATEGORIES
+
+
 def _truncate_domain_tables(engine) -> None:
     with engine.begin() as conn:
         conn.exec_driver_sql(
@@ -502,6 +522,17 @@ def _truncate_domain_tables(engine) -> None:
         conn.exec_driver_sql(
             "INSERT INTO semantic_worker_state (id, claim_paused) VALUES (1, false)"
         )
+        # Три категории семей (миграция 0021) — тот же приём: без них тесты
+        # активации потеряли бы категорию «Работа». Строки берутся из самой
+        # миграции, а не перепечатываются: определения видит модель.
+        for seed_key, title, definition in _seed_categories():
+            conn.execute(
+                text(
+                    "INSERT INTO family_categories (seed_key, title, definition) "
+                    "VALUES (:seed_key, :title, :definition)"
+                ),
+                {"seed_key": seed_key, "title": title, "definition": definition},
+            )
 
 
 @pytest.fixture
@@ -599,6 +630,15 @@ def committing_factories(committing_db):
     f._register_session(committing_db)
     yield f
     f._register_session(None)
+
+
+@pytest.fixture
+def work_category_id(db_session) -> int:
+    """Id категории семей «Работа» (строка справочника с `seed_key = 'work'`,
+    миграция 0021) — читается из базы, не литералом."""
+    from tests.factories import seed_category_id
+
+    return seed_category_id(db_session, "work")
 
 
 @pytest.fixture

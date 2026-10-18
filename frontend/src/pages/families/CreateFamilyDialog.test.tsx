@@ -33,6 +33,12 @@ const nameInput = () => screen.getByLabelText("Имя") as HTMLInputElement;
 const definitionInput = () => screen.getByLabelText(/Определение/) as HTMLTextAreaElement;
 const saveButton = () => screen.getByRole("button", { name: "Сохранить и активировать" });
 
+/** Категория обязательна (спека 3б §2.9): выбирается из справочника, по умолчанию не выбрана. */
+async function pickCategory(user: ReturnType<typeof userEvent.setup>, name = "Работа") {
+  await user.click(screen.getByRole("combobox", { name: "Категория" }));
+  await user.click(await screen.findByRole("option", { name }));
+}
+
 describe("CreateFamilyDialog", () => {
   it("имя подставлено из ответа ИИ, строка названа в описании", () => {
     renderDialog();
@@ -52,6 +58,7 @@ describe("CreateFamilyDialog", () => {
 
     expect(nameInput().value).toBe("");
     await user.type(definitionInput(), "Входит: дымоудаление. Не входит: вентиляция.");
+    await pickCategory(user, "Инженерная система");
     expect(saveButton()).toBeDisabled();
     await user.type(nameInput(), "Система дымоудаления");
     expect(saveButton()).toBeEnabled();
@@ -71,17 +78,19 @@ describe("CreateFamilyDialog", () => {
     await user.clear(nameInput());
     await user.type(nameInput(), "Гидрошпонка деформационных швов");
     await user.type(definitionInput(), "Входит: шпонки. Не входит: мастики.");
+    await pickCategory(user);
     await user.click(saveButton());
 
     await waitFor(() => expect(handlerState.createFamilyRequests).toHaveLength(1));
     expect(handlerState.createFamilyRequests[0].body.title).toBe("Гидрошпонка деформационных швов");
   });
 
-  it("единица показана и не редактируется: рядом нет ни поля, ни списка", () => {
+  it("единица показана и не редактируется: рядом нет ни поля, ни списка — единственный список это категория", () => {
     renderDialog();
     expect(screen.getByTestId("create-family-unit")).toHaveTextContent("м²");
     expect(screen.getAllByRole("textbox")).toHaveLength(2);
-    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("combobox")).toHaveLength(1);
+    expect(screen.getByRole("combobox", { name: "Категория" })).toBeInTheDocument();
   });
 
   it("без определения кнопка неактивна", () => {
@@ -94,6 +103,7 @@ describe("CreateFamilyDialog", () => {
     renderDialog();
     await waitForDialogFocus();
     await user.type(definitionInput(), "   ");
+    await pickCategory(user);
     expect(saveButton()).toBeDisabled();
   });
 
@@ -104,15 +114,42 @@ describe("CreateFamilyDialog", () => {
     await user.clear(nameInput());
     await user.type(nameInput(), "   ");
     await user.type(definitionInput(), "Входит: шпонки. Не входит: мастики.");
+    await pickCategory(user);
     expect(saveButton()).toBeDisabled();
   });
 
-  it("имя и определение заполнены — кнопка активна", async () => {
+  it("имя, определение и категория заполнены — кнопка активна", async () => {
     const user = userEvent.setup();
     renderDialog();
     await waitForDialogFocus();
     await user.type(definitionInput(), "Входит: шпонки. Не входит: мастики.");
+    await pickCategory(user);
     expect(saveButton()).toBeEnabled();
+  });
+
+  it("без категории кнопка неактивна, даже когда имя и определение заполнены; поле называет причину", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+    await waitForDialogFocus();
+    await user.type(definitionInput(), "Входит: шпонки. Не входит: мастики.");
+
+    expect(nameInput().value).toBe("Гидрошпонки");
+    expect(saveButton()).toBeDisabled();
+    expect(screen.getByRole("combobox", { name: "Категория" })).toHaveTextContent("Выбрать категорию");
+    expect(handlerState.createFamilyRequests).toEqual([]);
+  });
+
+  it("список категорий — справочник сервера, по определению; выбор показан в поле", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+    await waitForDialogFocus();
+
+    await user.click(screen.getByRole("combobox", { name: "Категория" }));
+    for (const title of ["Работа", "Инженерная система", "Затраты и услуги", "Проектирование"]) {
+      expect(await screen.findByRole("option", { name: title })).toBeInTheDocument();
+    }
+    await user.click(screen.getByRole("option", { name: "Затраты и услуги" }));
+    expect(screen.getByRole("combobox", { name: "Категория" })).toHaveTextContent("Затраты и услуги");
   });
 
   it("успех: запрос на предложение строки с обрезанными пробелами, окно закрывается, кэши очереди, семей и контекстов сброшены", async () => {
@@ -121,13 +158,18 @@ describe("CreateFamilyDialog", () => {
     await waitForDialogFocus();
 
     await user.type(definitionInput(), "  Входит: шпонки. Не входит: мастики.  ");
+    await pickCategory(user, "Инженерная система");
     await user.click(saveButton());
 
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(handlerState.createFamilyRequests).toEqual([
       {
         suggestionId: 11,
-        body: { title: "Гидрошпонки", definition: "Входит: шпонки. Не входит: мастики." },
+        body: {
+          title: "Гидрошпонки",
+          definition: "Входит: шпонки. Не входит: мастики.",
+          family_category_id: 2,
+        },
       },
     ]);
     const keys = invalidate.mock.calls.map((call) =>
@@ -136,6 +178,8 @@ describe("CreateFamilyDialog", () => {
     expect(keys).toEqual(expect.arrayContaining([JSON.stringify(["semantic-queue","suggestions"]), JSON.stringify(["semantic-queue","jobs"]), JSON.stringify(["semantic-queue","status"])]));
     expect(keys).toContain(JSON.stringify(["work-families"]));
     expect(keys).toContain(JSON.stringify(["semantic-contexts"]));
+    // Ревью задачи 5: новая семья с категорией двигает «Семей» в справочнике.
+    expect(keys).toContain(JSON.stringify(["family-categories"]));
   });
 
   it("409 family_exists со ссылкой: сообщение и «Открыть семью» ведёт на семью из тела ответа", async () => {
@@ -146,6 +190,7 @@ describe("CreateFamilyDialog", () => {
     await waitForDialogFocus();
 
     await user.type(definitionInput(), "Входит: шпонки.");
+    await pickCategory(user);
     await user.click(saveButton());
 
     expect(await screen.findByTestId("family-exists")).toHaveTextContent("Такая семья уже есть");
@@ -163,6 +208,7 @@ describe("CreateFamilyDialog", () => {
     await waitForDialogFocus();
 
     await user.type(definitionInput(), "Входит: шпонки.");
+    await pickCategory(user);
     await user.click(saveButton());
 
     expect(await screen.findByTestId("family-exists")).toHaveTextContent("Такая семья уже есть");

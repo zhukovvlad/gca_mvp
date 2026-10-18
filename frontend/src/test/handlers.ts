@@ -65,7 +65,14 @@ import type {
   JobRow,
   NewRow,
   PrivacyMatch,
+  ActivateDiscoveryInput,
+  ActivationOutcome,
   ChangeGroup,
+  DiscoveryDraftsView,
+  DiscoveryPreview,
+  DiscoveryUnitRow,
+  DraftView,
+  FamilyCategory,
   ContextVariantData,
   PositionStandard,
   SuggestionGroup,
@@ -92,7 +99,10 @@ import type {
  * перед сериализацией (`toContextRow`/`toContextCard`): наружу уходит ровно
  * форма ответа бэкенда, не более.
  */
-interface SemanticContextFixture extends Omit<ContextCardData, "variant"> {
+interface SemanticContextFixture
+  extends Omit<ContextCardData, "variant" | "catalog_kind" | "reopenable"> {
+  /** Вид строки каталога; без поля — `POSITION`. `reopenable` считается так же, как у сервера. */
+  catalog_kind?: string;
   /** Вариант, ожидание и пометка «к делению»; без поля — контекст без варианта (как у сервера без значений). */
   variant?: ContextVariantData;
   hasStaleMembers: boolean;
@@ -457,9 +467,26 @@ interface HandlerState {
    */
   workFamilies: WorkFamily[];
   nextWorkFamilyId: number;
+  /** Справочник категорий семей (без `family_count`: его считает обработчик по семьям); мутируемый. */
+  familyCategories: Array<Omit<FamilyCategory, "family_count">>;
+  nextFamilyCategoryId: number;
+  /** Query-строки `GET /families` по порядку — какой фильтр реально ушёл на сервер. */
+  familiesRequests: string[];
+  /** Запросы справочника: `POST`/`PATCH`/`DELETE` по порядку. */
+  categoryRequests: Array<{ method: string; id: number | null; body: Record<string, unknown> | null }>;
+  /** Запросы `POST …/reopen` по порядку: id контекста. */
+  reopenRequests: number[];
   lastCreateFamilyRequest: Record<string, unknown> | null;
   lastUpdateFamilyRequest: { id: number; body: Record<string, unknown> } | null;
   lastMergeFamiliesRequest: { id: number; targetFamilyId: number } | null;
+  /** Живые задания предложений по `unit_id` (ответ `GET /semantic/unit-busy-jobs`); нет ключа — ноль. */
+  unitBusyByUnitId: Record<number, number>;
+  /** Пока не `null`, ответ `GET /semantic/unit-busy-jobs` ждёт этот промис (запрос «в пути»). */
+  unitBusyGate: Promise<void> | null;
+  /** Сколько запросов `GET /semantic/unit-busy-jobs` дошло до сервера (в том числе задержанных). */
+  unitBusyRequests: number;
+  /** Ответ `GET /semantic/unit-busy-jobs` — отказ сервера. */
+  unitBusyFails: boolean;
 
   /** Контексты каталога — очередь и карточка (спека §2.10). */
   semanticContexts: SemanticContextFixture[];
@@ -520,7 +547,10 @@ interface HandlerState {
   errorJobs: JobRow[];
   holdJobs: JobRow[];
   unitHoldGroups: UnitHoldGroup[];
-  createFamilyRequests: Array<{ suggestionId: number; body: { title: string; definition: string } }>;
+  createFamilyRequests: Array<{
+    suggestionId: number;
+    body: { title: string; definition: string; family_category_id?: number };
+  }>;
   /** Отказ «Завести семью…»: `exists` — `409 family_exists` со ссылкой, `exists_null` — без `family_id`. */
   createFamilyOutcome: "ok" | "exists" | "exists_null";
   retryJobRequests: number[];
@@ -565,10 +595,127 @@ interface HandlerState {
    * оценкой, пересчитанной под замком, — здесь с последней показанной.
    */
   schemaPreviewHashes: Record<number, string>;
+
+  /** Открытие семей и черновики (спека 3б §2.12): состояние сервера и журнал запросов. */
+  discovery: DiscoveryFixtureState;
+}
+
+type DiscoveryAction = "launch" | "edit" | "merge" | "discard" | "restore" | "activate";
+
+/**
+ * Сервер открытия семей. `units` и `drafts` (по `String(unit_id)`) мутируют хендлеры — как сервер:
+ * правка, слияние, отбрасывание, возврат и активация меняют черновики, а экран это перечитывает.
+ */
+export interface DiscoveryFixtureState {
+  units: DiscoveryUnitRow[];
+  drafts: Record<string, DiscoveryDraftsView | null>;
+  unitsRequests: number;
+  draftsRequests: string[];
+  previewRequests: Array<number | null>;
+  /** `preview_hash` последнего выданного preview: запуск с другим хэшем — `409 preview_changed`. */
+  lastPreviewHash: string | null;
+  previewCounter: number;
+  launchRequests: Array<{ unit_id: number | null; preview_hash: string }>;
+  /** Сколько ближайших запусков сервер отвергает `409 preview_changed`. */
+  launchConflictsLeft: number;
+  draftRequests: Array<{
+    action: "edit" | "merge" | "discard" | "restore";
+    draftId: number;
+    body: Record<string, unknown> | null;
+  }>;
+  activateRequests: Array<{ jobId: number; body: ActivateDiscoveryInput }>;
+  /** Ответ активации вместо вычисленного (пропущенные строки и категории). */
+  activationOutcome: ActivationOutcome | null;
+  /** Отказать следующему действию кодом; срабатывает один раз. `context` — ключи рядом с `code`. */
+  refusal: {
+    action: DiscoveryAction;
+    code: string;
+    status: number;
+    context?: Record<string, unknown>;
+  } | null;
+}
+
+export function initialDiscovery(): DiscoveryFixtureState {
+  return {
+    units: [],
+    drafts: {},
+    unitsRequests: 0,
+    draftsRequests: [],
+    previewRequests: [],
+    lastPreviewHash: null,
+    previewCounter: 0,
+    launchRequests: [],
+    launchConflictsLeft: 0,
+    draftRequests: [],
+    activateRequests: [],
+    activationOutcome: null,
+    refusal: null,
+  };
+}
+
+/** Строка блока «Открыть семьи»: единица M3 (id 3, у неё активна семья «Кровельные работы»), 1 382 системы без семьи, открытий не было. */
+export function discoveryUnitFixture(overrides: Partial<DiscoveryUnitRow> = {}): DiscoveryUnitRow {
+  return {
+    unit_id: 3,
+    unit_code: "M3",
+    systems: 1382,
+    new_family: 0,
+    bare: 0,
+    names: 1100,
+    uncategorized_families: 0,
+    active_families: 2,
+    reserve_usd: "0.9",
+    expected_cached_usd: "0.6",
+    last_discovery: null,
+    ...overrides,
+  };
+}
+
+/** Открытый черновик новой семьи с категорией «Работа» (id 1) и тремя примерами. */
+export function draftFixture(overrides: Partial<DraftView> = {}): DraftView {
+  return {
+    id: 301,
+    ordinal: 1,
+    status: "open",
+    title: "Вентиляция общеобменная",
+    definition: "Система общеобменной вентиляции здания целиком.",
+    family_category_id: 1,
+    family_category_title: "Работа",
+    similar_family_id: null,
+    similar_family_title: null,
+    similar_family_status: null,
+    merged_into_draft_id: null,
+    merged_into_family_id: null,
+    merged_into_family_title: null,
+    merged_into_family_status: null,
+    activated_family_id: null,
+    rows: 66,
+    examples: ["Вентиляция — приточные установки", "Вентиляция — струйный вентилятор"],
+    edited_at: null,
+    ...overrides,
+  };
+}
+
+/** Черновики открытия `job_id`; без переопределений — пустой экран единицы 3. */
+export function draftsViewFixture(overrides: Partial<DiscoveryDraftsView> = {}): DiscoveryDraftsView {
+  return {
+    job_id: 500,
+    unit_id: 3,
+    opened_at: "2026-10-09T10:00:00",
+    drafts: [],
+    folded: [],
+    activated: [],
+    existing: [],
+    not_work: null,
+    rest: 0,
+    category_proposals: [],
+    actionable: true,
+    ...overrides,
+  };
 }
 
 type SchemaAction = "rebuild" | "update" | "cancel" | "merge";
-type ContextAction = "family" | "cancel-pending" | "not-work" | "position-kind";
+type ContextAction = "family" | "cancel-pending" | "not-work" | "position-kind" | "reopen";
 
 // ---------------------------------------------------------------------------
 //  Семьи и контексты — фикстуры (спека 2026-09-22-catalog-families-design.md
@@ -677,6 +824,7 @@ function suggestionRowFixture(
     reason,
     multi_owner: false,
     previously_rejected: null,
+    semantic_kind: "WORK",
     ...extra,
   };
 }
@@ -806,7 +954,9 @@ function initialNewRows(): NewRow[] {
 function jobFixture(id: number, title: string, extra: Partial<JobRow> = {}): JobRow {
   return {
     job_id: id,
+    kind: "family_suggestion",
     context_id: 6000 + id,
+    names_count: null,
     title,
     unit_id: 5,
     unit_code: "M2",
@@ -930,6 +1080,10 @@ function initialWorkFamilies(): WorkFamily[] {
       activated_at: null,
       archived_at: null,
       context_count: linked ? 2 : 0,
+      // Семья 1 размечена: путь «дописать определение → активировать» проходит на ней.
+      family_category_id: linked ? WORK_CATEGORY_ID : null,
+      family_category_title: linked ? "Работа" : null,
+      unit_busy_jobs: 0,
     };
   });
   const active: WorkFamily = {
@@ -950,6 +1104,9 @@ function initialWorkFamilies(): WorkFamily[] {
     activated_at: isoNow(),
     archived_at: null,
     context_count: 0,
+    family_category_id: WORK_CATEGORY_ID,
+    family_category_title: "Работа",
+    unit_busy_jobs: 0,
   };
   const archived: WorkFamily = {
     id: 44,
@@ -967,8 +1124,51 @@ function initialWorkFamilies(): WorkFamily[] {
     activated_at: isoNow(),
     archived_at: isoNow(),
     context_count: 0,
+    family_category_id: null,
+    family_category_title: null,
+    unit_busy_jobs: 0,
   };
   return [...drafts, active, archived];
+}
+
+/** Id стартовой категории «Работа» справочника. */
+const WORK_CATEGORY_ID = 1;
+
+/** Справочник категорий: три стартовых и одна заведённая человеком; `family_count` считает обработчик по семьям. */
+function initialFamilyCategories(): Array<Omit<FamilyCategory, "family_count">> {
+  return [
+    {
+      id: WORK_CATEGORY_ID,
+      title: "Работа",
+      definition: "Строительно-монтажная работа или материал с объёмом в своей единице.",
+      seed_key: "work",
+    },
+    {
+      id: 2,
+      title: "Инженерная система",
+      definition: "Инженерная система здания или её часть, оцениваемая комплектом.",
+      seed_key: "engineering_system",
+    },
+    {
+      id: 3,
+      title: "Затраты и услуги",
+      definition: "Не работа на объекте, а обеспечение и сопровождение: гарантии, страхование, коммунальные расходы.",
+      seed_key: "costs_services",
+    },
+    {
+      id: 4,
+      title: "Проектирование",
+      definition: "Проектные и изыскательские работы.",
+      seed_key: null,
+    },
+  ];
+}
+
+function familyCategoryRows(): FamilyCategory[] {
+  return handlerState.familyCategories.map((category) => ({
+    ...category,
+    family_count: handlerState.workFamilies.filter((f) => f.family_category_id === category.id).length,
+  }));
 }
 
 /**
@@ -1722,6 +1922,11 @@ function toContextCard(fixture: SemanticContextFixture): ContextCardData {
     place_dictionary_version: fixture.place_dictionary_version,
     comparability_reason: fixture.comparability_reason,
     semantic_state: fixture.semantic_state,
+    catalog_kind: fixture.catalog_kind ?? "POSITION",
+    reopenable:
+      fixture.archived_at === null &&
+      fixture.semantic_state === "NOT_APPLICABLE" &&
+      !["HEADER", "LOT_HEADER", "TRASH"].includes(fixture.catalog_kind ?? "POSITION"),
     work_family_id: fixture.work_family_id,
     family_title: fixture.family_title,
     family_source: fixture.family_source,
@@ -1779,9 +1984,18 @@ export const handlerState: HandlerState = {
   lastChangesExportTenderId: null,
   workFamilies: initialWorkFamilies(),
   nextWorkFamilyId: 1000,
+  familyCategories: initialFamilyCategories(),
+  nextFamilyCategoryId: 100,
+  familiesRequests: [],
+  categoryRequests: [],
+  reopenRequests: [],
   lastCreateFamilyRequest: null,
   lastUpdateFamilyRequest: null,
   lastMergeFamiliesRequest: null,
+  unitBusyByUnitId: {},
+  unitBusyGate: null,
+  unitBusyRequests: 0,
+  unitBusyFails: false,
   semanticContexts: initialSemanticContexts(),
   lastConfirmKindRequest: null,
   lastSetNameRoleRequest: null,
@@ -1836,6 +2050,7 @@ export const handlerState: HandlerState = {
   schemaRefusal: null,
   schemaRequests: [],
   schemaPreviewHashes: {},
+  discovery: initialDiscovery(),
 };
 
 /** Схемы и варианты фикстуры: у активной семьи «Кровельные работы» (`SCHEMA_FAMILY_ID`) схема из двух параметров, у прочих схемы нет. */
@@ -1934,6 +2149,93 @@ function canonicalSchemaValueId(values: FamilySchemaValue[], valueId: number): n
     current = next;
   }
   return current;
+}
+
+/** Отказ следующему действию открытия, если тест его задал (один раз). */
+function takeDiscoveryRefusal(action: DiscoveryAction) {
+  const refusal = handlerState.discovery.refusal;
+  if (!refusal || refusal.action !== action) return null;
+  handlerState.discovery.refusal = null;
+  return HttpResponse.json(
+    { detail: { code: refusal.code, message: refusal.code, ...refusal.context } },
+    { status: refusal.status }
+  );
+}
+
+/** Ищет черновик по id среди всех открытий вместе с видом, которому он принадлежит. */
+function findDraft(draftId: number): { view: DiscoveryDraftsView; draft: DraftView } | null {
+  for (const view of Object.values(handlerState.discovery.drafts)) {
+    if (!view) continue;
+    const draft = [...view.drafts, ...view.folded].find((d) => d.id === draftId);
+    if (draft) return { view, draft };
+  }
+  return null;
+}
+
+/** Число открытых черновиков единицы в строке блока — как `_last_discovery`. */
+function syncOpenDrafts(view: DiscoveryDraftsView) {
+  const unit = handlerState.discovery.units.find((u) => u.unit_id === view.unit_id);
+  // Как `_actionable`: черновик (открытый или возвращаемый), предложение категорий или «Не работа».
+  view.actionable =
+    view.drafts.length > 0 ||
+    view.folded.length > 0 ||
+    view.category_proposals.length > 0 ||
+    (view.not_work?.names.length ?? 0) > 0;
+  if (unit?.last_discovery) {
+    unit.last_discovery.open_drafts = view.drafts.length;
+    unit.last_discovery.actionable = view.actionable;
+  }
+}
+
+function draftNotFound(draftId: number) {
+  return HttpResponse.json({ detail: `Черновик ${draftId} не найден.` }, { status: 404 });
+}
+
+/** Ответ действия над черновиком: ключи `_serialize_draft`. */
+/** Решение по заданию (отправить, повторить, отказаться) меняет статус открытия в строке блока — как сервер. */
+function syncDiscoveryJobStatus(jobIds: number[], status: string) {
+  for (const unit of handlerState.discovery.units) {
+    if (unit.last_discovery && jobIds.includes(unit.last_discovery.job_id)) {
+      unit.last_discovery.status = status;
+    }
+  }
+}
+
+function draftActionResponse(draft: DraftView, view: DiscoveryDraftsView) {
+  return HttpResponse.json({
+    id: draft.id,
+    job_id: view.job_id,
+    unit_id: view.unit_id,
+    grp: "new",
+    status: draft.status,
+    title: draft.title,
+    definition: draft.definition,
+    family_category_id: draft.family_category_id,
+    merged_into_draft_id: draft.merged_into_draft_id,
+    merged_into_family_id: draft.merged_into_family_id,
+  });
+}
+
+function nextDiscoveryPreview(unitId: number | null): DiscoveryPreview {
+  const state = handlerState.discovery;
+  state.previewCounter += 1;
+  const hash = `discovery-hash-${state.previewCounter}`;
+  state.lastPreviewHash = hash;
+  const row = state.units.find((u) => u.unit_id === unitId) ?? discoveryUnitFixture({ unit_id: unitId });
+  return {
+    unit_id: unitId,
+    counts: {
+      systems: row.systems,
+      new_family: row.new_family,
+      bare: row.bare,
+      names: row.names,
+      uncategorized_families: row.uncategorized_families,
+    },
+    active_families: row.active_families,
+    reserve_usd: row.reserve_usd,
+    expected_cached_usd: row.expected_cached_usd,
+    preview_hash: hash,
+  };
 }
 
 /** Следующий preview: `preview_hash` и резерв меняются с каждым запросом — как при движении токенных наблюдений. */
@@ -2038,9 +2340,18 @@ export function resetHandlerState() {
   handlerState.lastChangesExportTenderId = null;
   handlerState.workFamilies = initialWorkFamilies();
   handlerState.nextWorkFamilyId = 1000;
+  handlerState.familyCategories = initialFamilyCategories();
+  handlerState.nextFamilyCategoryId = 100;
+  handlerState.familiesRequests = [];
+  handlerState.categoryRequests = [];
+  handlerState.reopenRequests = [];
   handlerState.lastCreateFamilyRequest = null;
   handlerState.lastUpdateFamilyRequest = null;
   handlerState.lastMergeFamiliesRequest = null;
+  handlerState.unitBusyByUnitId = {};
+  handlerState.unitBusyGate = null;
+  handlerState.unitBusyRequests = 0;
+  handlerState.unitBusyFails = false;
   handlerState.semanticContexts = initialSemanticContexts();
   handlerState.lastConfirmKindRequest = null;
   handlerState.lastSetNameRoleRequest = null;
@@ -2095,6 +2406,7 @@ export function resetHandlerState() {
   handlerState.schemaRefusal = null;
   handlerState.schemaRequests = [];
   handlerState.schemaPreviewHashes = {};
+  handlerState.discovery = initialDiscovery();
 }
 
 function page<T>(items: T[]) {
@@ -3671,19 +3983,109 @@ export const handlers = [
 
   http.get("/api/v1/semantic/families", ({ request }) => {
     const url = new URL(request.url);
+    handlerState.familiesRequests.push(url.search);
     const status = url.searchParams.get("status");
     const unitId = url.searchParams.get("unit_id");
+    const categoryId = url.searchParams.get("family_category_id");
     const items = handlerState.workFamilies.filter((family) => {
       if (status && family.status !== status) return false;
       if (unitId && String(family.unit_id) !== unitId) return false;
+      // `none` — семьи без категории, как у сервера.
+      if (categoryId === "none" && family.family_category_id !== null) return false;
+      if (categoryId && categoryId !== "none" && String(family.family_category_id) !== categoryId) return false;
       return true;
     });
     return HttpResponse.json({ items });
   }),
 
+  // Справочник категорий семей (спека 3б §2.9, §2.12).
+  http.get("/api/v1/semantic/family-categories", () =>
+    HttpResponse.json({ items: familyCategoryRows() })
+  ),
+
+  http.post("/api/v1/semantic/family-categories", async ({ request }) => {
+    const body = (await request.json()) as { title: string; definition: string };
+    handlerState.categoryRequests.push({ method: "POST", id: null, body });
+    if (handlerState.familyCategories.some((c) => c.title.toLowerCase() === body.title.trim().toLowerCase())) {
+      return HttpResponse.json(
+        { detail: { code: "category_duplicate", message: `Категория «${body.title}» уже есть.`, title: body.title } },
+        { status: 409 }
+      );
+    }
+    const category = {
+      id: handlerState.nextFamilyCategoryId++,
+      title: body.title.trim(),
+      definition: body.definition.trim(),
+      seed_key: null,
+    };
+    handlerState.familyCategories.push(category);
+    return HttpResponse.json({ ...category, family_count: 0 }, { status: 201 });
+  }),
+
+  http.patch("/api/v1/semantic/family-categories/:id", async ({ params, request }) => {
+    const id = Number(params.id);
+    const body = (await request.json()) as { title?: string; definition?: string };
+    handlerState.categoryRequests.push({ method: "PATCH", id, body });
+    const category = handlerState.familyCategories.find((c) => c.id === id);
+    if (!category) {
+      return HttpResponse.json(
+        { detail: { code: "category_not_found", message: `Категории «№ ${id}» больше нет — её удалили. Выберите другую.`, category_id: id } },
+        { status: 409 }
+      );
+    }
+    if (body.title !== undefined && !body.title.trim()) {
+      return HttpResponse.json(
+        { detail: { code: "category_blank_title", message: "У категории должно быть имя — по определению модель выбирает категорию." } },
+        { status: 422 }
+      );
+    }
+    if (body.title !== undefined) {
+      category.title = body.title.trim();
+      // Имя категории денормализовано в строку семьи.
+      for (const family of handlerState.workFamilies) {
+        if (family.family_category_id === id) family.family_category_title = category.title;
+      }
+    }
+    if (body.definition !== undefined) category.definition = body.definition.trim();
+    return HttpResponse.json(familyCategoryRows().find((c) => c.id === id));
+  }),
+
+  http.delete("/api/v1/semantic/family-categories/:id", ({ params }) => {
+    const id = Number(params.id);
+    handlerState.categoryRequests.push({ method: "DELETE", id, body: null });
+    const category = familyCategoryRows().find((c) => c.id === id);
+    if (!category) {
+      return HttpResponse.json(
+        { detail: { code: "category_not_found", message: `Категории «№ ${id}» больше нет — её удалили. Выберите другую.`, category_id: id } },
+        { status: 409 }
+      );
+    }
+    if (category.family_count > 0) {
+      return HttpResponse.json(
+        {
+          detail: {
+            code: "category_in_use",
+            message: `Категорию «${category.title}» носят ${category.family_count} семей — удалить можно только пустую.`,
+            category_id: id,
+            family_count: category.family_count,
+          },
+        },
+        { status: 409 }
+      );
+    }
+    handlerState.familyCategories = handlerState.familyCategories.filter((c) => c.id !== id);
+    return new HttpResponse(null, { status: 204 });
+  }),
+
   http.post("/api/v1/semantic/families", async ({ request }) => {
-    const body = (await request.json()) as { title: string; unit_name?: string | null; definition?: string | null };
+    const body = (await request.json()) as {
+      title: string;
+      unit_name?: string | null;
+      definition?: string | null;
+      family_category_id?: number | null;
+    };
     handlerState.lastCreateFamilyRequest = body;
+    const category = handlerState.familyCategories.find((c) => c.id === body.family_category_id);
     const id = handlerState.nextWorkFamilyId++;
     const family: WorkFamily = {
       id,
@@ -3701,9 +4103,47 @@ export const handlers = [
       activated_at: null,
       archived_at: null,
       context_count: 0,
+      family_category_id: category?.id ?? null,
+      family_category_title: category?.title ?? null,
+      unit_busy_jobs: 0,
     };
     handlerState.workFamilies.push(family);
     return HttpResponse.json(family, { status: 201 });
+  }),
+
+  // Разбор имени единицы, как `UnitResolver`: код, символ или алиас одной единицы дают один `unit_id`
+  // (M2 → 5, M3 → 3); пустое имя — «единицы нет»; прочее — не распознано.
+  http.get("/api/v1/semantic/unit-busy-jobs", async ({ request }) => {
+    handlerState.unitBusyRequests += 1;
+    if (handlerState.unitBusyGate) await handlerState.unitBusyGate;
+    if (handlerState.unitBusyFails) {
+      return HttpResponse.json({ detail: "сбой проверки" }, { status: 500 });
+    }
+    const name = (new URL(request.url).searchParams.get("unit_name") ?? "").trim().toLowerCase();
+    const known: Record<string, { id: number; code: string; symbol: string }> = {
+      m2: { id: 5, code: "M2", symbol: "м²" },
+      "м²": { id: 5, code: "M2", symbol: "м²" },
+      "кв.м": { id: 5, code: "M2", symbol: "м²" },
+      m3: { id: 3, code: "M3", symbol: "м³" },
+      "м³": { id: 3, code: "M3", symbol: "м³" },
+      "куб.м": { id: 3, code: "M3", symbol: "м³" },
+    };
+    if (name === "") {
+      return HttpResponse.json({
+        resolved: true, unit_id: null, unit_code: null, unit_symbol: null,
+        busy_jobs: handlerState.unitBusyByUnitId[0] ?? 0,
+      });
+    }
+    const unit = known[name];
+    if (!unit) {
+      return HttpResponse.json({
+        resolved: false, unit_id: null, unit_code: null, unit_symbol: null, busy_jobs: 0,
+      });
+    }
+    return HttpResponse.json({
+      resolved: true, unit_id: unit.id, unit_code: unit.code, unit_symbol: unit.symbol,
+      busy_jobs: handlerState.unitBusyByUnitId[unit.id] ?? 0,
+    });
   }),
 
   http.patch("/api/v1/semantic/families/:id", async ({ params, request }) => {
@@ -3729,6 +4169,23 @@ export const handlers = [
     }
     if (typeof body.title === "string") family.title = body.title;
     if ("definition" in body) family.definition = (body.definition as string | null) ?? null;
+    if ("family_category_id" in body) {
+      if (body.family_category_id === null && family.status === "active") {
+        return HttpResponse.json(
+          { detail: { code: "clear_category_active", message: "У активной семьи категорию можно сменить, но не снять.", family_id: id } },
+          { status: 422 }
+        );
+      }
+      const category = handlerState.familyCategories.find((c) => c.id === body.family_category_id);
+      if (body.family_category_id !== null && !category) {
+        return HttpResponse.json(
+          { detail: { code: "category_not_found", message: `Категории «№ ${String(body.family_category_id)}» больше нет — её удалили. Выберите другую.`, category_id: body.family_category_id } },
+          { status: 409 }
+        );
+      }
+      family.family_category_id = category?.id ?? null;
+      family.family_category_title = category?.title ?? null;
+    }
     if ("unit_name" in body) {
       const unitName = body.unit_name as string | null;
       family.unit_code = unitName;
@@ -3755,6 +4212,12 @@ export const handlers = [
           },
         },
         { status: 409 }
+      );
+    }
+    if (family.family_category_id === null) {
+      return HttpResponse.json(
+        { detail: { code: "activate_without_category", message: "Сначала выберите категорию семьи.", family_id: id } },
+        { status: 422 }
       );
     }
     family.status = "active";
@@ -3807,6 +4270,7 @@ export const handlers = [
     const params = url.searchParams;
     const catalogQuery = (params.get("catalog_query") ?? "").trim().toLowerCase();
     const workCategoryId = params.get("work_category_id");
+    const workFamilyId = params.get("work_family_id");
     const semanticKind = params.get("semantic_kind");
     const nameRole = params.get("name_role");
     const semanticState = params.get("semantic_state");
@@ -3822,6 +4286,8 @@ export const handlers = [
     const filtered = handlerState.semanticContexts.filter((c) => {
       if (catalogQuery && !c.standard_job_title.toLowerCase().includes(catalogQuery)) return false;
       if (workCategoryId && String(c.work_category_id) !== workCategoryId) return false;
+      // Назначенная семья, как её считает сервер (`crud/semantic.py::_context_query`).
+      if (workFamilyId && String(c.work_family_id) !== workFamilyId) return false;
       if (semanticKind && c.semantic_kind !== semanticKind) return false;
       if (nameRole && c.name_role !== nameRole) return false;
       if (semanticState && c.semantic_state !== semanticState) return false;
@@ -3977,6 +4443,24 @@ export const handlers = [
       );
     }
     markNotWork(context);
+    return HttpResponse.json(toContextCard(context));
+  }),
+
+  http.post("/api/v1/semantic/contexts/:id/reopen", ({ params }) => {
+    const contextId = Number(params.id);
+    handlerState.reopenRequests.push(contextId);
+    const refused = takeContextRefusal("reopen");
+    if (refused) return refused;
+    const context = handlerState.semanticContexts.find((c) => c.id === contextId);
+    if (!context) return HttpResponse.json({ detail: `Контекст ${contextId} не найден.` }, { status: 404 });
+    if (context.semantic_state !== "NOT_APPLICABLE") {
+      return HttpResponse.json(
+        { detail: { code: "context_not_reopenable_state", message: "Контекст не отмечен «не работа» — возвращать нечего.", context_id: contextId } },
+        { status: 409 }
+      );
+    }
+    // Как `reopen_context`: состояние по источнику вида; семья, вариант и значения остаются пустыми.
+    context.semantic_state = context.semantic_kind_source === "manual" ? "CONFIRMED" : "SUGGESTED";
     return HttpResponse.json(toContextCard(context));
   }),
 
@@ -4267,7 +4751,11 @@ export const handlers = [
 
   http.post("/api/v1/semantic/suggestions/:id/create-family", async ({ params, request }) => {
     const id = Number(params.id);
-    const body = (await request.json()) as { title: string; definition: string };
+    const body = (await request.json()) as {
+      title: string;
+      definition: string;
+      family_category_id?: number;
+    };
     handlerState.createFamilyRequests.push({ suggestionId: id, body });
     if (handlerState.createFamilyOutcome !== "ok") {
       return HttpResponse.json(
@@ -4299,6 +4787,7 @@ export const handlers = [
     const id = Number(params.id);
     handlerState.retryJobRequests.push(id);
     handlerState.errorJobs = handlerState.errorJobs.filter((j) => j.job_id !== id);
+    syncDiscoveryJobStatus([id], "pending");
     return HttpResponse.json({ job_id: id, status: "pending" });
   }),
   http.post("/api/v1/semantic/jobs/:id/privacy-release", async ({ params, request }) => {
@@ -4307,6 +4796,7 @@ export const handlers = [
     const body = (await request.json()) as { shown_matches: PrivacyMatch[] };
     handlerState.privacyReleaseRequests.push({ jobId: id, matches: body.shown_matches });
     handlerState.holdJobs = handlerState.holdJobs.filter((j) => j.job_id !== id);
+    syncDiscoveryJobStatus([id], "pending");
     return HttpResponse.json({ job_id: id, status: "pending" });
   }),
   http.post("/api/v1/semantic/jobs/:id/privacy-decline", async ({ params, request }) => {
@@ -4315,6 +4805,7 @@ export const handlers = [
     const body = (await request.json()) as { shown_matches: PrivacyMatch[] };
     handlerState.privacyDeclineRequests.push({ jobId: id, matches: body.shown_matches });
     handlerState.holdJobs = handlerState.holdJobs.filter((j) => j.job_id !== id);
+    syncDiscoveryJobStatus([id], "cancelled");
     return HttpResponse.json({ job_id: id, status: "cancelled" });
   }),
   http.post("/api/v1/semantic/unit-privacy-release", async ({ request }) => {
@@ -4325,6 +4816,10 @@ export const handlers = [
       (j) => j.unit_id === body.unit_id && (j.matches ?? []).every((m) => m.where !== "context")
     );
     handlerState.holdJobs = handlerState.holdJobs.filter((j) => !released.includes(j));
+    syncDiscoveryJobStatus(
+      released.map((j) => j.job_id),
+      "pending"
+    );
     handlerState.unitHoldGroups = handlerState.unitHoldGroups.filter((g) => g.unit_id !== body.unit_id);
     return HttpResponse.json({ confirmed: released.map((j) => j.job_id), skipped: [] });
   }),
@@ -4353,6 +4848,163 @@ export const handlers = [
     handlerState.otherFamilyRequests.push({ suggestionId: id, familyId: body.family_id });
     removeSuggestionRows((rowId) => rowId === id);
     return HttpResponse.json({ suggestion_id: id, decision: "other_family", family_id: body.family_id });
+  }),
+
+  // Открытие семей (`routers/semantic.py`, спека 3б §2.12): блок, preview, запуск, черновики, активация.
+  http.get("/api/v1/semantic/discovery/units", () => {
+    handlerState.discovery.unitsRequests += 1;
+    return HttpResponse.json({ units: handlerState.discovery.units });
+  }),
+  http.post("/api/v1/semantic/discovery/preview", async ({ request }) => {
+    const body = (await request.json()) as { unit_id: number | null };
+    handlerState.discovery.previewRequests.push(body.unit_id);
+    return HttpResponse.json(nextDiscoveryPreview(body.unit_id));
+  }),
+  http.post("/api/v1/semantic/discovery", async ({ request }) => {
+    const body = (await request.json()) as { unit_id: number | null; preview_hash: string };
+    const state = handlerState.discovery;
+    state.launchRequests.push(body);
+    const refused = takeDiscoveryRefusal("launch");
+    if (refused) return refused;
+    if (state.launchConflictsLeft > 0 || body.preview_hash !== state.lastPreviewHash) {
+      if (state.launchConflictsLeft > 0) state.launchConflictsLeft -= 1;
+      return HttpResponse.json(
+        { detail: { code: "preview_changed", message: "Оценка устарела: охват единицы изменился после показа." } },
+        { status: 409 }
+      );
+    }
+    const unit = state.units.find((u) => u.unit_id === body.unit_id);
+    if (unit) {
+      unit.last_discovery = {
+        job_id: 500,
+        status: "pending",
+        at: isoNow(),
+        // Выполненное открытие прежнее, пока новое не завершится: экран черновиков на месте.
+        open_drafts: unit.last_discovery?.open_drafts ?? 0,
+        drafts_job_id: unit.last_discovery?.drafts_job_id ?? null,
+        actionable: unit.last_discovery?.actionable ?? false,
+      };
+    }
+    return HttpResponse.json({ job_id: 500, status: "pending", unit_id: body.unit_id });
+  }),
+  http.get("/api/v1/semantic/discovery/drafts", ({ request }) => {
+    const raw = new URL(request.url).searchParams.get("unit_id");
+    handlerState.discovery.draftsRequests.push(raw ?? "none");
+    const unitId = raw === null ? null : Number(raw);
+    return HttpResponse.json({
+      unit_id: unitId,
+      drafts: handlerState.discovery.drafts[String(unitId)] ?? null,
+    });
+  }),
+  http.patch("/api/v1/semantic/discovery/drafts/:id", async ({ params, request }) => {
+    const draftId = Number(params.id);
+    const body = (await request.json()) as Record<string, unknown>;
+    handlerState.discovery.draftRequests.push({ action: "edit", draftId, body });
+    const refused = takeDiscoveryRefusal("edit");
+    if (refused) return refused;
+    const found = findDraft(draftId);
+    if (!found) return draftNotFound(draftId);
+    const { draft, view } = found;
+    if (typeof body.title === "string") draft.title = body.title;
+    if (typeof body.definition === "string") draft.definition = body.definition;
+    if (typeof body.family_category_id === "number") {
+      draft.family_category_id = body.family_category_id;
+      draft.family_category_title =
+        handlerState.familyCategories.find((c) => c.id === body.family_category_id)?.title ?? null;
+    }
+    return draftActionResponse(draft, view);
+  }),
+  http.post("/api/v1/semantic/discovery/drafts/:id/merge", async ({ params, request }) => {
+    const draftId = Number(params.id);
+    const body = (await request.json()) as { target_draft_id?: number; target_family_id?: number };
+    handlerState.discovery.draftRequests.push({ action: "merge", draftId, body });
+    const refused = takeDiscoveryRefusal("merge");
+    if (refused) return refused;
+    const found = findDraft(draftId);
+    if (!found) return draftNotFound(draftId);
+    const { draft, view } = found;
+    draft.status = "merged";
+    if (body.target_draft_id !== undefined) draft.merged_into_draft_id = body.target_draft_id;
+    if (body.target_family_id !== undefined) {
+      const family = handlerState.workFamilies.find((f) => f.id === body.target_family_id);
+      draft.merged_into_family_id = body.target_family_id;
+      draft.merged_into_family_title = family?.title ?? null;
+      draft.merged_into_family_status = family?.status ?? null;
+    }
+    view.drafts = view.drafts.filter((d) => d.id !== draftId);
+    view.folded.push(draft);
+    syncOpenDrafts(view);
+    return draftActionResponse(draft, view);
+  }),
+  http.post("/api/v1/semantic/discovery/drafts/:id/discard", ({ params }) => {
+    const draftId = Number(params.id);
+    handlerState.discovery.draftRequests.push({ action: "discard", draftId, body: null });
+    const refused = takeDiscoveryRefusal("discard");
+    if (refused) return refused;
+    const found = findDraft(draftId);
+    if (!found) return draftNotFound(draftId);
+    const { draft, view } = found;
+    draft.status = "discarded";
+    view.drafts = view.drafts.filter((d) => d.id !== draftId);
+    view.folded.push(draft);
+    syncOpenDrafts(view);
+    return draftActionResponse(draft, view);
+  }),
+  http.post("/api/v1/semantic/discovery/drafts/:id/restore", ({ params }) => {
+    const draftId = Number(params.id);
+    handlerState.discovery.draftRequests.push({ action: "restore", draftId, body: null });
+    const refused = takeDiscoveryRefusal("restore");
+    if (refused) return refused;
+    const found = findDraft(draftId);
+    if (!found) return draftNotFound(draftId);
+    const { draft, view } = found;
+    draft.status = "open";
+    draft.merged_into_draft_id = null;
+    draft.merged_into_family_id = null;
+    draft.merged_into_family_title = null;
+    draft.merged_into_family_status = null;
+    view.folded = view.folded.filter((d) => d.id !== draftId);
+    view.drafts.push(draft);
+    syncOpenDrafts(view);
+    return draftActionResponse(draft, view);
+  }),
+  http.post("/api/v1/semantic/discovery/:jobId/activate", async ({ params, request }) => {
+    const jobId = Number(params.jobId);
+    const body = (await request.json()) as ActivateDiscoveryInput;
+    const state = handlerState.discovery;
+    state.activateRequests.push({ jobId, body });
+    const refused = takeDiscoveryRefusal("activate");
+    if (refused) return refused;
+    const view = Object.values(state.drafts).find((v) => v?.job_id === jobId) ?? null;
+    const outcome: ActivationOutcome = state.activationOutcome ?? {
+      created_family_ids: body.draft_ids.map((id) => 900 + id),
+      categories_applied: body.family_categories.map((p) => p.family_id),
+      categories_skipped: [],
+      not_work_applied: body.not_work_context_ids,
+      not_work_skipped: [],
+      reask_unit_id: view?.unit_id ?? null,
+    };
+    if (view) {
+      // Как сервер: активированные черновики уходят в «активированные», применённые строки и пары
+      // выходят из группы «Не работа» и из предложений категорий.
+      const activated = view.drafts.filter((d) => body.draft_ids.includes(d.id));
+      activated.forEach((d, index) => {
+        d.status = "activated";
+        d.activated_family_id = outcome.created_family_ids[index] ?? null;
+      });
+      view.activated.push(...activated);
+      view.drafts = view.drafts.filter((d) => !body.draft_ids.includes(d.id));
+      if (view.not_work) {
+        view.not_work.names = view.not_work.names.filter(
+          (n) => !n.context_ids.every((id) => outcome.not_work_applied.includes(id))
+        );
+      }
+      view.category_proposals = view.category_proposals.filter(
+        (p) => !outcome.categories_applied.includes(p.family_id)
+      );
+      syncOpenDrafts(view);
+    }
+    return HttpResponse.json(outcome);
   }),
 
   http.post("/api/v1/semantic/unit-reask/preview", async ({ request }) => {

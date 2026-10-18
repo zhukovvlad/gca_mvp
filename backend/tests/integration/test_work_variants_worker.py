@@ -68,6 +68,7 @@ from tests.integration.test_work_variants_material import (
     _bind,
     _capturing_sql,
     _chain_context,
+    _context,
     _frozen_schema,
     _uid,
 )
@@ -1700,6 +1701,8 @@ def _three_kinds_world(db, factories):
         db, factories, title=f"Кладка {_uid()}", path_specs=[((), 1)], unit_id=unit_m2
     )
     family_2 = _family(db, status="active", definition="Определение 2", unit_id=unit_m3)
+    # Схема не строится из нуля наименований: у F2 есть строка (вне набора контекстов).
+    _context(db, factories, f"Труба {_uid()}", work=family_2)
     return SimpleNamespace(
         context_id=context_id, suggest_context_id=suggest_context_id, family_1=family_1,
         family_2=family_2,

@@ -58,7 +58,9 @@ from tests.integration.test_work_variants_material import (
     _bind,
     _capturing_sql,
     _chain_context,
+    _context,
     _frozen_schema,
+    _publish,
     _settings,
     _uid,
 )
@@ -224,10 +226,25 @@ class TestRebuildSchema:
         assert (job.family_id, job.schema_id, job.status) == (world.family.id, schema.id, "pending")
         assert [s.status for s in _schemas(db_session, world.family)] == ["frozen", "building"]
 
-    def test_a_family_without_contexts_gets_its_schema_job(self, db_session, factories):
+    def test_a_family_without_names_gets_the_version_but_no_schema_job(
+        self, db_session, factories
+    ):
         actor = _actor(factories)
         family = _family(db_session, status="active", definition="Пустая семья")
         _frozen_schema(db_session, factories, family, [(1, "Тип", ["а"])])
+
+        schema = rebuild_schema(db_session, family_id=family.id, actor_id=actor)
+
+        assert (schema.status, schema.version) == ("building", 2)
+        assert _jobs(db_session, "family_schema") == []
+
+    def test_a_family_with_only_a_published_suggestion_gets_its_schema_job(
+        self, db_session, factories
+    ):
+        actor = _actor(factories)
+        family = _family(db_session, status="active", definition="Семья без членов")
+        _frozen_schema(db_session, factories, family, [(1, "Тип", ["а"])])
+        _publish(db_session, factories, _context(db_session, factories, "Строка"), family)
 
         schema = rebuild_schema(db_session, family_id=family.id, actor_id=actor)
 
@@ -500,9 +517,11 @@ class TestCancelSchemaBuild:
     ):
         # Семья без контекстов архивируется, пока версия `building`: отмена —
         # единственный выход из неё, поэтому активность семьи не требуется.
+        # Наименование — из опубликованного предложения (членов у семьи нет).
         actor = _actor(factories)
         family = _family(db_session, status="active", definition="Семья без контекстов")
         _frozen_schema(db_session, factories, family, [(1, "Тип", ["а"])])
+        _publish(db_session, factories, _context(db_session, factories, "Строка"), family)
         building = rebuild_schema(db_session, family_id=family.id, actor_id=actor)
         archive_family(db_session, family_id=family.id, actor_id=actor)
 

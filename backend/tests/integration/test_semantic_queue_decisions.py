@@ -74,6 +74,7 @@ from services.semantic_reconcile import (
 from services.semantic_request import load_request_material, render_context_request
 from services.semantic_worker import claim_next
 from services.work_families import WorkFamilyError, activate_family, create_family
+from tests.factories import seed_category_id
 
 pytestmark = pytest.mark.integration
 
@@ -99,7 +100,7 @@ def _unit_id(db, code):
 
 
 def _active_family(db, *, title, unit_name, actor_id, definition="Определение семьи"):
-    fam = create_family(db, title=title, unit_name=unit_name, definition=definition, actor_id=actor_id)
+    fam = create_family(db, title=title, unit_name=unit_name, definition=definition, actor_id=actor_id, family_category_id=seed_category_id(db))
     family = activate_family(db, family_id=fam.id, actor_id=actor_id)
     # Семья уже со схемой: сцены этого файла проверяют задания предложений, а
     # активная семья без схемы получала бы ещё и задание схемы.
@@ -516,6 +517,7 @@ class TestCreateFamilyFromSuggestion:
         family_id = create_family_from_suggestion(
             db_session, suggestion_id=sug.id, title="Новая семья пола",
             definition="Что входит и что не входит", actor_id=scene.user.id,
+            family_category_id=seed_category_id(db_session),
         )
 
         family = _fresh(db_session, WorkFamily, family_id)
@@ -537,6 +539,7 @@ class TestCreateFamilyFromSuggestion:
             create_family_from_suggestion(
                 db_session, suggestion_id=sug.id, title="Имя", definition=definition,
                 actor_id=scene.user.id,
+                family_category_id=seed_category_id(db_session),
             )
 
         assert db_session.execute(sa.select(sa.func.count()).select_from(WorkFamily)).scalar_one() == families_before
@@ -551,6 +554,7 @@ class TestCreateFamilyFromSuggestion:
             create_family_from_suggestion(
                 db_session, suggestion_id=sug.id, title="  ", definition="Определение",
                 actor_id=scene.user.id,
+                family_category_id=seed_category_id(db_session),
             )
 
         assert db_session.execute(sa.select(sa.func.count()).select_from(WorkFamily)).scalar_one() == families_before
@@ -564,6 +568,7 @@ class TestCreateFamilyFromSuggestion:
             create_family_from_suggestion(
                 db_session, suggestion_id=sug.id, title=" семья ПОЛА ", definition="Определение",
                 actor_id=scene.user.id,
+                family_category_id=seed_category_id(db_session),
             )
 
         assert caught.value.code == "family_exists"
@@ -579,6 +584,7 @@ class TestCreateFamilyFromSuggestion:
         family_id = create_family_from_suggestion(
             db_session, suggestion_id=sug.id, title="  Новая семья пола \t",
             definition="\n Что входит и что не входит  ", actor_id=scene.user.id,
+            family_category_id=seed_category_id(db_session),
         )
 
         family = _fresh(db_session, WorkFamily, family_id)
@@ -600,6 +606,7 @@ class TestCreateFamilyFromSuggestion:
             create_family_from_suggestion(
                 db_session, suggestion_id=sug.id, title="Новая", definition="Определение",
                 actor_id=scene.user.id,
+                family_category_id=seed_category_id(db_session),
             )
 
         assert caught.value.code == "activate_not_draft"
@@ -616,6 +623,7 @@ class TestCreateFamilyFromSuggestion:
             create_family_from_suggestion(
                 db_session, suggestion_id=sug.id, title="Новая", definition="Определение",
                 actor_id=scene.user.id,
+                family_category_id=seed_category_id(db_session),
             )
 
         assert caught.value.code == "suggestion_changed"
@@ -1443,10 +1451,17 @@ class TestBatches:
         assert claim_next(db_session, settings=app_settings, now=dt.datetime.now(dt.UTC)) is None
 
 
-def _without_schema(db, family_id):
+def _without_schema(db, factories, scene):
     """Семья сцены заведена уже со схемой; для проверки сверки схем её убирают:
-    активная семья без текущей версии ждёт конца перезапроса единицы."""
-    db.execute(sa.delete(FamilyParameterSchema).where(FamilyParameterSchema.family_id == family_id))
+    активная семья без текущей версии ждёт конца перезапроса единицы. Схема не
+    строится из нуля наименований, поэтому семье даётся строка с наименованием
+    (отдельный контекст, не входящий в `scene.context_ids`)."""
+    from tests.integration.test_work_variants_material import _context as bound_context
+
+    db.execute(
+        sa.delete(FamilyParameterSchema).where(FamilyParameterSchema.family_id == scene.family.id)
+    )
+    bound_context(db, factories, f"Строка семьи {scene.family.id}", work=scene.family)
     db.flush()
 
 
@@ -1468,7 +1483,7 @@ class TestDiscardReconcilesSchemas:
 
     def test_discard_of_the_blocking_batch_sets_the_schema_job(self, db_session, factories):
         scene = _scene(db_session, factories, titles=("Пол А", "Пол Б"))
-        _without_schema(db_session, scene.family.id)
+        _without_schema(db_session, factories, scene)
         batch_id = _held_batch(db_session, scene, source="operation")
         assert _schema_jobs_of(db_session, scene.family.id) == [], "вход: пачка блокирует схему"
 
@@ -1481,7 +1496,7 @@ class TestDiscardReconcilesSchemas:
         self, db_session, factories
     ):
         scene = _scene(db_session, factories, titles=("Пол А", "Пол Б", "Пол В"))
-        _without_schema(db_session, scene.family.id)
+        _without_schema(db_session, factories, scene)
         _make_job(db_session, scene.context_ids[2], unit_id=scene.unit_id)
         scene.context_ids = scene.context_ids[:2]
         batch_id = _held_batch(db_session, scene, source="operation")
@@ -1495,8 +1510,8 @@ class TestDiscardReconcilesSchemas:
     ):
         scene = _scene(db_session, factories, titles=("Пол А", "Пол Б"))
         other = _scene(db_session, factories, titles=("Труба А",), unit="M3")
-        _without_schema(db_session, scene.family.id)
-        _without_schema(db_session, other.family.id)
+        _without_schema(db_session, factories, scene)
+        _without_schema(db_session, factories, other)
         batch_id = _held_batch(db_session, scene, source="operation")
 
         discard_batch(db_session, batch_id=batch_id, actor_id=scene.user.id)
@@ -1509,8 +1524,8 @@ class TestDiscardReconcilesSchemas:
     ):
         scene = _scene(db_session, factories, titles=("Пол А", "Пол Б"))
         other = _scene(db_session, factories, titles=("Труба А",), unit="M3")
-        _without_schema(db_session, scene.family.id)
-        _without_schema(db_session, other.family.id)
+        _without_schema(db_session, factories, scene)
+        _without_schema(db_session, factories, other)
         batch_id = _held_batch(db_session, scene, source="mass")
         assert _schema_jobs_of(db_session, other.family.id) == [], "вход: mass держит все единицы"
 

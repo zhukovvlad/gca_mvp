@@ -375,6 +375,8 @@ class TestNeitherFamilyHasASchema:
         source = _family(db, status="active", definition=f"Источник {_uid()}")
         cancelled = _schema(db, factories, source, version=1, status="cancelled")
         target, _none = _target_family(db, factories, with_current=False)
+        # Схема не строится из нуля наименований: у цели есть строка.
+        _target_context(db, factories, target)
         return SimpleNamespace(
             actor=actor, source=source, cancelled=cancelled, target=target,
         )

@@ -27,13 +27,21 @@ export default function FamiliesPage() {
   // Семья, к которой перешли по ссылке «Открыть семью» из вкладки «Предложения».
   const [focusFamilyId, setFocusFamilyId] = useState<number | null>(null);
 
+  // Семья, показанная кнопкой «Показать контексты: N» панели семьи.
+  const [contextsFamilyId, setContextsFamilyId] = useState<number | null>(null);
+
   function openFamily(familyId: number) {
     setFocusFamilyId(familyId);
     setTab("families");
   }
 
+  function showFamilyContexts(familyId: number) {
+    setContextsFamilyId(familyId);
+    setTab("contexts");
+  }
+
   return (
-    <div className="container-page py-8">
+    <div className="container-wide py-8">
       {/* Вкладки верхнего уровня — сегментный переключатель СПРАВА от
           заголовка (сверка с макетом 27.09.2026, `.head`/`.seg`), легенда
           источника подписи — ПОД заголовком слева (спека §2.1, §2.3).
@@ -76,11 +84,18 @@ export default function FamiliesPage() {
         </div>
 
         <TabsContent value="families" className="mt-6">
-          <FamiliesTab focusFamilyId={focusFamilyId} onFocusShown={() => setFocusFamilyId(null)} />
+          <FamiliesTab
+            focusFamilyId={focusFamilyId}
+            onFocusShown={() => setFocusFamilyId(null)}
+            onShowContexts={showFamilyContexts}
+          />
         </TabsContent>
 
         <TabsContent value="contexts" className="mt-6">
-          <ContextsTab />
+          <ContextsTab
+            focusFamilyId={contextsFamilyId}
+            onFocusShown={() => setContextsFamilyId(null)}
+          />
         </TabsContent>
 
         <TabsContent value="suggestions" className="mt-6">

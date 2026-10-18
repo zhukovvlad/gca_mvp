@@ -17,6 +17,40 @@ import { renderWithProviders } from "@/test/utils";
  * из того, что ломает счётчик-пример первого теста, — его нужно проверять
  * отдельно и явно.
  */
+describe("TopNav: ширина контейнера", () => {
+  const wrapper = (c: HTMLElement) => c.querySelector("header > div")!;
+
+  it("на /families и её подпутях — container-wide", () => {
+    for (const route of ["/families", "/families/42"]) {
+      const { container, unmount } = renderWithProviders(<TopNav />, { initialRoute: route });
+      expect(wrapper(container)).toHaveClass("container-wide");
+      expect(wrapper(container)).not.toHaveClass("container-page");
+      unmount();
+    }
+  });
+
+  it("на /review — container-wide, на /review-x — container-page", () => {
+    const wide = renderWithProviders(<TopNav />, { initialRoute: "/review" });
+    expect(wrapper(wide.container)).toHaveClass("container-wide");
+    expect(wrapper(wide.container)).not.toHaveClass("container-page");
+    wide.unmount();
+
+    const narrow = renderWithProviders(<TopNav />, { initialRoute: "/review-x" });
+    expect(wrapper(narrow.container)).toHaveClass("container-page");
+    expect(wrapper(narrow.container)).not.toHaveClass("container-wide");
+    narrow.unmount();
+  });
+
+  it("на других путях — container-page (в том числе на /families-x)", () => {
+    for (const route of ["/", "/contracts", "/families-x"]) {
+      const { container, unmount } = renderWithProviders(<TopNav />, { initialRoute: route });
+      expect(wrapper(container)).toHaveClass("container-page");
+      expect(wrapper(container)).not.toHaveClass("container-wide");
+      unmount();
+    }
+  });
+});
+
 describe("TopNav", () => {
   it("в навигации нет «Матрица», «Отчёты», «Настройки»", () => {
     renderWithProviders(<TopNav />);
