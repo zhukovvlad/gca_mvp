@@ -30,6 +30,7 @@ from models import (
 )
 from services.discovery_result import DiscoveryOutcome, apply_discovery
 from services.family_discovery import (
+    DiscoveryError,
     DiscoveryScope,
     chunk_sent_of,
     discovery_scope,
@@ -1528,3 +1529,220 @@ class TestCleanupCall:
 
         assert _drafts(world.db, job.id) == []
         assert _job(world.db, job.id).status == "running"
+
+
+# ---------------------------------------------------------------------------
+#  Поздний повтор старого открытия (круг Codex на b438994)
+# ---------------------------------------------------------------------------
+
+class TestLateRetryOfAnOlderRun:
+    def _setup_error_then_newer_done(self, world):
+        """A единицы в `error`; вход меняется (новое имя), B выполнено; вход
+        возвращается (имя архивировано). Возвращает (A, B, category)."""
+        _bare_world(world)
+        a = _launch(world.db, world.bare_unit, admin_id=world.admin.id)
+        claim_a = _claim(world.db)
+        worker.record_failure(
+            world.db, claim_a, PermanentModelError("отказ", error_class="refused"),
+            now=NOW, settings=S,
+        )
+        assert _job(world.db, a.id).status == "error"
+        extra = _ctx_bare_unit(world, "Имя Г — временное")
+        b = _launch(world.db, world.bare_unit, admin_id=world.admin.id)
+        claim_b = _claim(world.db)
+        category = seed_category_id(world.db)
+        worker.record_result(
+            world.db, claim_b,
+            _response(_answer([_group([1, 2, 3, 4], category_id=category, title="Из B")])),
+            now=NOW, settings=S,
+        )
+        assert _job(world.db, b.id).status == "done"
+        world.db.execute(
+            sa.update(CatalogContext).where(CatalogContext.id == extra).values(
+                archived_at=dt.datetime.now(dt.UTC)
+            )
+        )
+        world.db.expire_all()
+        return a.id, b.id, category
+
+    def test_retry_of_an_older_run_cancels_it_when_a_newer_one_is_done(self, world):
+        a_id, b_id, _ = self._setup_error_then_newer_done(world)
+
+        retry_job(world.db, job_id=a_id, actor_id=world.admin.id)
+
+        job_a = _job(world.db, a_id)
+        assert (job_a.status, job_a.cancel_reason) == ("cancelled", "input_changed")
+        assert job_a.retry_generation == 0
+        assert world.db.execute(
+            sa.select(SemanticJob.id).where(SemanticJob.status == "pending")
+        ).first() is None
+        assert [row["job_id"] for row in list_jobs(world.db, status="error")["items"]] == []
+        assert {d.status for d in _drafts(world.db, b_id)} == {"open"}
+
+    def test_launch_with_the_input_of_an_errored_run_is_still_input_unchanged(self, world):
+        # Упавшее задание повторяется «Повторить», а не новым запуском.
+        _bare_world(world)
+        a = _launch(world.db, world.bare_unit, admin_id=world.admin.id)
+        worker.record_failure(
+            world.db, _claim(world.db), PermanentModelError("отказ", error_class="refused"),
+            now=NOW, settings=S,
+        )
+        assert _job(world.db, a.id).status == "error"
+
+        with pytest.raises(DiscoveryError) as raised:
+            _launch(world.db, world.bare_unit, admin_id=world.admin.id)
+
+        assert raised.value.code == "discovery_input_unchanged"
+
+    def test_retry_of_an_older_run_is_not_blocked_by_a_newer_one_of_another_unit(self, world):
+        _bare_world(world)
+        a = _launch(world.db, world.bare_unit, admin_id=world.admin.id)
+        claim_a = _claim(world.db)
+        worker.record_failure(
+            world.db, claim_a, PermanentModelError("отказ", error_class="refused"),
+            now=NOW, settings=S,
+        )
+        _uncategorize(world.db, world.family.id)
+        other = _launch(world.db, world.family_unit, admin_id=world.admin.id)
+        claim_o = _claim(world.db)
+        worker.record_result(
+            world.db, claim_o,
+            _response(_answer([], family_categories=[(world.family.id, seed_category_id(world.db))])),
+            now=NOW, settings=S,
+        )
+        assert _job(world.db, other.id).status == "done" and other.id > a.id
+
+        retry_job(world.db, job_id=a.id, actor_id=world.admin.id)
+
+        assert _job(world.db, a.id).status == "pending"
+        assert _claim(world.db).job_id == a.id
+
+    def test_late_write_of_an_older_run_does_not_supersede_the_newer_drafts(self, world):
+        # Защита в записи результата: повтор обошёл отказ (прямой сдвиг в очередь) —
+        # старое задание закрывается без вытеснения, черновики нового остаются открытыми.
+        from services.discovery_drafts import latest_discovery_job_id
+
+        a_id, b_id, category = self._setup_error_then_newer_done(world)
+        world.db.execute(
+            sa.update(SemanticJob).where(SemanticJob.id == a_id).values(
+                status="pending", retry_generation=1, attempts_in_generation=0,
+                next_attempt_at=dt.datetime.now(dt.UTC),
+            )
+        )
+        world.db.expire_all()
+        claim = _claim(world.db)
+        assert claim.job_id == a_id
+
+        worker.record_result(
+            world.db, claim,
+            _response(_answer([_group([1, 2, 3], category_id=category, title="Из A")])),
+            now=NOW, settings=S,
+        )
+
+        job_a = _job(world.db, a_id)
+        assert (job_a.status, job_a.cancel_reason, job_a.claim_token) == (
+            "cancelled", "not_applicable", None,
+        )
+        assert _drafts(world.db, a_id) == []
+        assert {d.status for d in _drafts(world.db, b_id)} == {"open"}
+        assert latest_discovery_job_id(world.db, world.bare_unit) == b_id
+
+    def test_retry_of_an_older_run_cancels_it_while_a_newer_one_is_live(self, world):
+        # Новее не выполненное, а живое (в очереди): повтор отменяет A, а не
+        # нарушает частичный UNIQUE живого открытия.
+        _bare_world(world)
+        a = _launch(world.db, world.bare_unit, admin_id=world.admin.id)
+        claim_a = _claim(world.db)
+        worker.record_failure(
+            world.db, claim_a, PermanentModelError("отказ", error_class="refused"),
+            now=NOW, settings=S,
+        )
+        _ctx_bare_unit(world, "Имя Г — новое")
+        b = _launch(world.db, world.bare_unit, admin_id=world.admin.id)
+        assert _job(world.db, b.id).status == "pending"
+
+        retry_job(world.db, job_id=a.id, actor_id=world.admin.id)
+
+        job_a = _job(world.db, a.id)
+        assert (job_a.status, job_a.cancel_reason) == ("cancelled", "input_changed")
+        assert _job(world.db, b.id).status == "pending"
+        assert [row["job_id"] for row in list_jobs(world.db, status="error")["items"]] == []
+
+    def test_late_write_of_an_older_run_is_not_blocked_by_a_newer_done_of_another_unit(
+        self, world
+    ):
+        # Шаг 4а смотрит только открытия ЭТОЙ единицы: выполненное открытие
+        # другой единицы с большим id не закрывает старое задание.
+        from services.discovery_drafts import latest_discovery_job_id
+
+        _bare_world(world)
+        a = _launch(world.db, world.bare_unit, admin_id=world.admin.id)
+        claim_a = _claim(world.db)
+        worker.record_failure(
+            world.db, claim_a, PermanentModelError("отказ", error_class="refused"),
+            now=NOW, settings=S,
+        )
+        _uncategorize(world.db, world.family.id)
+        other = _launch(world.db, world.family_unit, admin_id=world.admin.id)
+        claim_o = _claim(world.db)
+        worker.record_result(
+            world.db, claim_o,
+            _response(_answer([], family_categories=[(world.family.id, seed_category_id(world.db))])),
+            now=NOW, settings=S,
+        )
+        assert _job(world.db, other.id).status == "done" and other.id > a.id
+        retry_job(world.db, job_id=a.id, actor_id=world.admin.id)
+        claim = _claim(world.db)
+        assert claim.job_id == a.id
+        category = seed_category_id(world.db)
+
+        worker.record_result(
+            world.db, claim,
+            _response(_answer([_group([1, 2, 3], category_id=category, title="Из A")])),
+            now=NOW, settings=S,
+        )
+
+        assert _job(world.db, a.id).status == "done"
+        assert {d.status for d in _drafts(world.db, a.id)} == {"open"}
+        assert latest_discovery_job_id(world.db, world.bare_unit) == a.id
+
+    def test_newer_run_that_did_not_finish_does_not_block_the_older_one(self, world):
+        # Новее есть, но не выполненное (`error`): ни повтор, ни запись старого
+        # задания оно не останавливает — черновики пишутся, последнее открытие — A.
+        from services.discovery_drafts import latest_discovery_job_id
+
+        _bare_world(world)
+        a = _launch(world.db, world.bare_unit, admin_id=world.admin.id)
+        claim_a = _claim(world.db)
+        worker.record_failure(
+            world.db, claim_a, PermanentModelError("отказ", error_class="refused"),
+            now=NOW, settings=S,
+        )
+        extra = _ctx_bare_unit(world, "Имя Г — временное")
+        b = _launch(world.db, world.bare_unit, admin_id=world.admin.id)
+        claim_b = _claim(world.db)
+        worker.record_failure(
+            world.db, claim_b, PermanentModelError("отказ", error_class="refused"),
+            now=NOW, settings=S,
+        )
+        assert _job(world.db, b.id).status == "error" and b.id > a.id
+        world.db.execute(
+            sa.update(CatalogContext).where(CatalogContext.id == extra).values(
+                archived_at=dt.datetime.now(dt.UTC)
+            )
+        )
+        world.db.expire_all()
+        retry_job(world.db, job_id=a.id, actor_id=world.admin.id)
+        claim = _claim(world.db)
+        assert claim.job_id == a.id
+        category = seed_category_id(world.db)
+
+        worker.record_result(
+            world.db, claim,
+            _response(_answer([_group([1, 2, 3], category_id=category, title="Из A")])),
+            now=NOW, settings=S,
+        )
+
+        assert _job(world.db, a.id).status == "done"
+        assert {d.status for d in _drafts(world.db, a.id)} == {"open"}
+        assert latest_discovery_job_id(world.db, world.bare_unit) == a.id

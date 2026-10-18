@@ -7,7 +7,8 @@
 (2) открытые черновики и предложения категорий единицы `FOR UPDATE`;
 (3) активные семьи единицы и контексты охвата `FOR KEY SHARE` — только затем,
 чтобы неявный `FOR KEY SHARE` внешних ключей вставок шага 7 не ждал доменную
-строку под замком задания; (4) задание `FOR UPDATE` и проверка захвата;
+строку под замком задания; (4) задание `FOR UPDATE` и проверка захвата; затем отказ старому заданию, если у
+единицы есть выполненное открытие новее (`not_applicable`, черновиков нет);
 (5) повторный рендер тела: другой `request_hash` — задание отменено
 (`input_changed`), черновиков нет; (6) прежние открытые черновики и
 предложения категорий единицы — `superseded`; (7) группы, члены, предложения
@@ -56,10 +57,11 @@ from services.variant_answer import DiscoveryAnswer
 class DiscoveryOutcome:
     """Исход обработки. `unapplied_reason`: `lost_claim` — задание не наше,
     ничего не записано; `stale_fingerprint` — охват изменился, задание
-    отменено, черновиков нет. `unassigned` — число пропущенных номеров имён."""
+    отменено, черновиков нет; `outdated` — у единицы есть выполненное открытие
+    новее, задание отменено (`not_applicable`), черновиков нет. `unassigned` — число пропущенных номеров имён."""
 
     applied: bool
-    unapplied_reason: Literal["lost_claim", "stale_fingerprint"] | None
+    unapplied_reason: Literal["lost_claim", "stale_fingerprint", "outdated"] | None
     drafts_created: int
     superseded_drafts: int
     unassigned: int
@@ -147,6 +149,26 @@ def apply_discovery(
     ).scalar_one()
     if job.claim_token != claim_token:
         return DiscoveryOutcome(False, "lost_claim", 0, 0, 0)
+
+    # Шаг 4а: старое задание не вытесняет результат более нового выполненного
+    # открытия единицы — вторая линия после `retry_job`, который такое задание
+    # отменяет. Живое открытие единицы одно (частичный UNIQUE
+    # `uq_semantic_jobs_discovery_live`), поэтому к моменту, когда старое задание
+    # снова живое, `done` нового уже закоммичено и виден здесь.
+    newer_done = db.execute(
+        sa.select(SemanticJob.id).where(
+            SemanticJob.kind == SemanticJobKind.family_discovery.value,
+            SemanticJob.status == SemanticJobStatus.done.value,
+            SemanticJob.id > job.id,
+            _unit_clause_job(unit_id),
+        ).limit(1)
+    ).first()
+    if newer_done is not None:
+        job.status = SemanticJobStatus.cancelled.value
+        job.cancel_reason = SemanticCancelReason.not_applicable.value
+        job.claim_token = None
+        db.flush()
+        return DiscoveryOutcome(False, "outdated", 0, 0, 0)
 
     # Шаг 5: повторный рендер тела.
     scope = discovery_scope(db, unit_id)

@@ -634,10 +634,35 @@ def release_unit_privacy_holds(
 def retry_job(db: Session, *, job_id: int, actor_id: int) -> None:
     """Ручной повтор (спека §2.6): только из `error`; ТО ЖЕ задание -> `pending`
     с новым поколением. Попытки прежних поколений не трогаются. `done` с тем же
-    отпечатком повторять нельзя."""
+    отпечатком повторять нельзя. Открытие семей (`family_discovery`), у единицы
+    которого есть открытие новее — выполненное или живое, — не возвращается в
+    очередь, а отменяется `input_changed` (как задание, у которого при захвате
+    разошёлся вход, `semantic_worker`): результат старого задания спрятал бы
+    черновики нового, а отказ оставил бы строку в очереди ошибок навсегда."""
     job = _lock_job(db, job_id)
     if job.status != SemanticJobStatus.error.value:
         raise DecisionConflict(CODE_JOB_CHANGED)
+    if job.kind == SemanticJobKind.family_discovery.value:
+        newer = db.execute(
+            sa.select(SemanticJob.id).where(
+                SemanticJob.kind == SemanticJobKind.family_discovery.value,
+                SemanticJob.id > job.id,
+                SemanticJob.unit_id.is_not_distinct_from(job.unit_id),
+                SemanticJob.status.in_(
+                    (
+                        SemanticJobStatus.done.value,
+                        SemanticJobStatus.pending.value,
+                        SemanticJobStatus.running.value,
+                        SemanticJobStatus.privacy_hold.value,
+                    )
+                ),
+            ).limit(1)
+        ).first()
+        if newer is not None:
+            job.status = SemanticJobStatus.cancelled.value
+            job.cancel_reason = SemanticCancelReason.input_changed.value
+            db.flush()
+            return
     job.status = SemanticJobStatus.pending.value
     job.retry_generation = job.retry_generation + 1
     job.attempts_in_generation = 0

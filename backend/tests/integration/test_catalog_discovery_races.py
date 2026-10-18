@@ -583,9 +583,13 @@ def _waits_for_lock(factory, pid, thread, *, timeout=8.0) -> bool:
 
 
 def _old_open_draft(scene, *, category_id) -> int:
-    """Открытый черновик прежнего открытия той же единицы."""
+    """Открытый черновик прежнего открытия той же единицы. «Прежнее» — по `id`
+    (обработка отказывает заданию, у которого есть выполненное открытие новее), а
+    задание сцены уже создано, поэтому прежнему задаётся заведомо меньший
+    отрицательный `id`."""
     with scene.factory() as db:
         old = SemanticJob(
+            id=-1 - uuid.uuid4().int % 10**9,
             kind="family_discovery", status="done", unit_id=scene.unit,
             request_hash=f"old-{uuid.uuid4().hex}", prompt_version="discovery:1",
             model_requested="m", place_dictionary_version=1, candidates_hash="c",
