@@ -128,6 +128,9 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .pane { padding: 14px 18px; display: grid; gap: 12px; align-content: start; overflow-y: auto; }
 .field { display: grid; gap: 5px; }
 .field > label { font-size: 12.5px; font-weight: 500; }
+.field > label.check { display: flex; gap: 8px; align-items: center; font-size: 13px; font-weight: 400; }
+.range-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13px; }
+.input.num-in { width: 5rem; font-family: var(--font-mono); }
 
 /* вариант В — таблица с раскрытием */
 table { border-collapse: collapse; width: 100%; font-size: 13px; }
@@ -259,9 +262,32 @@ function viewA() {
 }
 
 // Б — список параметров слева, редактор выбранного справа
+// Вид значений: у армирования — диапазоны (границы «от — до — шаг», подписи строит система), у остальных — точные.
+let selId = 4;
+const isRange = p => p.id === 4;
+function valuesField(p) {
+  const kindSeg = `<div class="seg small" role="group" aria-label="Вид значений"><button aria-pressed="${!isRange(p)}">Точные</button><button aria-pressed="${isRange(p)}">Диапазоны</button></div>`;
+  if (!isRange(p)) return `<div class="field"><label>Значения</label>${kindSeg}${chipsOf(p)}
+    <p class="hint">Точные значения — когда их немного и каждое значимо само по себе: класс бетона, число слоёв, толщина 4 или 8 мм.</p>
+    <label class="check"><input type="checkbox" style="accent-color:var(--accent)"> Только из списка — модель не заводит новых значений, список меняет только человек</label>
+    <div class="summary" style="font-size:12.5px"><b>Встретились значения не из списка <span class="xs" style="font-weight:400">(пример — так выглядит, когда список закрыт)</span></b>
+      <div>У <span class="num">12</span> строк в наименовании нашлись значения, которых нет в списке:</div>
+      <div class="chips"><span class="chip">B42<span class="n">8</span></span><button class="btn sm">Добавить в список</button><button class="btn sm ghost">Слить с…</button></div>
+      <div class="chips"><span class="chip">B47<span class="n">4</span></span><button class="btn sm">Добавить в список</button><button class="btn sm ghost">Слить с…</button></div></div></div>`;
+  const preview = p.values.map(([v, n]) => n === null
+    ? `<span class="chip added">${esc(v)}<span class="n">новое</span></span>`
+    : `<span class="chip${n === 0 ? " zero" : ""}">${esc(v)}<span class="n">${fmt(n)}</span></span>`).join("");
+  return `<div class="field"><label>Значения</label>${kindSeg}
+    <div class="range-row"><span>от</span><input class="input num-in" value="120" aria-label="Нижняя граница"><span>до</span><input class="input num-in" value="200" aria-label="Верхняя граница"><span>шаг</span><input class="input num-in" value="20" aria-label="Шаг"><span class="t3 sm">кг/м³ — из имени параметра</span></div>
+    <p class="hint">Получится ${p.values.length - 2} диапазона от 120 до 200 и 2 крайних — «до 120» и «200 и более»; подписи строит система, дыр и перекрытий нет:</p>
+    <div class="chips">${preview}</div>
+    <p class="hint">Модель найдёт число в наименовании и отнесёт его к диапазону: нижняя граница включается, верхняя — нет (131,73 → «120–140», 140 → «140–160», 200 → «200 и более»). Число не найдено — «не уточнено».</p>
+    <label class="check" style="color:var(--fg3)"><input type="checkbox" checked disabled> Только из списка — для диапазонов включено всегда</label></div>`;
+}
 function viewB() {
-  const sel = PARAMS.find(p => p.id === 4);
-  const item = p => `<div class="item" aria-current="${p === sel}"><b>${esc(p.name)}</b><span>${p.isNew ? "новый · " + p.values.length + " значений" : p.values.length + " значений · " + fmt(rowsOf(p)) + " строк"}</span></div>`;
+  const sel = PARAMS.find(p => p.id === selId);
+  const kindTag = p => (isRange(p) ? "диапазоны · " : "");
+  const item = p => `<div class="item" data-id="${p.id}" role="button" tabindex="0" aria-current="${p === sel}"><b>${esc(p.name)}</b><span>${kindTag(p)}${p.isNew ? "новый · " + p.values.length + " значений" : p.values.length + " значений · " + fmt(rowsOf(p)) + " строк"}</span></div>`;
   return `<div class="dialog w-b">${header()}
     <div class="split" style="min-height:0">
       <nav class="side" aria-label="Параметры">
@@ -272,8 +298,7 @@ function viewB() {
       <div class="pane">
         <div class="field"><label for="bname">Имя параметра</label><input id="bname" class="input" value="${esc(sel.name)}"></div>
         <div class="field"><label>Роль</label>${roleSeg(sel)}<p class="hint">Главный параметр делит семью на варианты, и у каждого варианта свой норматив. Второстепенный записывается у строки и виден рядом с ценой, но вариант не делит.</p></div>
-        <div class="field"><label>Значения</label>${chipsOf(sel)}<p class="hint">Для числовой величины — диапазоны: модель отнесёт «131,73 кг/м³» к «120–140», точное число останется в наименовании.</p>
-          <label style="display:flex; gap:8px; align-items:center; font-size:13px; font-weight:400"><input type="checkbox" checked style="accent-color:var(--accent)"> Только из списка — модель не заводит новых значений</label></div>
+        ${valuesField(sel)}
         <div style="display:flex; justify-content:flex-end"><button class="btn danger sm">Убрать параметр</button></div>
       </div>
     </div>${footer()}</div>`;
@@ -305,7 +330,8 @@ const NOTES = {
   b: `<h3>Б. Список и редактор</h3><ul>
     <li>Окно шире: слева все параметры одним взглядом, справа — один выбранный.</li>
     <li>Растёт без прокрутки списка: параметров может быть сколько угодно.</li>
-    <li>Цена: значения разных параметров не видны одновременно — сверять их приходится переключением.</li></ul>`,
+    <li>Цена: значения разных параметров не видны одновременно — сверять их приходится переключением.</li>
+    <li>Параметры слева кликабельны: у армирования — вид «Диапазоны» (границы от — до — шаг), у остальных — «Точные».</li></ul>`,
   c: `<h3>В. Таблица</h3><ul>
     <li>Самая плотная раскладка: роль, число значений и строк — в строке параметра.</li>
     <li>Значения раскрываются по требованию; здесь раскрыты новый параметр и «Тип конструкции».</li>
@@ -325,6 +351,10 @@ function wire(id, key, set) {
     render();
   });
 }
+document.getElementById("dialogHost").addEventListener("click", e => {
+  const it = e.target.closest(".side .item"); if (!it) return;
+  selId = Number(it.dataset.id); render();
+});
 wire("layoutSeg", "v", v => layout = v);
 wire("scenSeg", "s", s => scen = s);
 render();
