@@ -217,10 +217,12 @@ CHECK ordinal — `BETWEEN 1 AND 100`; `UNIQUE (schema_id, ordinal)` остаё�
 - `refresh_requested_at timestamptz` — NULL; «уточняется»: значение у
   контекста ждёт перезапроса этого параметра (§2.6).
 
-`ValueSource` получает `off_list`. CHECK `ck_context_values_source_pair`
-переписывается: `(value_id IS NULL) = (source IN ('path_conflict', 'none',
-'off_list'))`; новый CHECK `(source = 'off_list') = (off_list_text IS NOT
-NULL)`.
+`ValueSource` получает `off_list`: CHECK перечисления источников
+`ck_context_parameter_values_source` получает `'off_list'`, CHECK
+`ck_context_parameter_values_source_value_pair` переписывается: `(value_id
+IS NULL) = (source IN ('path_conflict', 'none', 'off_list'))`; новый CHECK
+`ck_context_parameter_values_off_list_text`: `(source = 'off_list') =
+(off_list_text IS NOT NULL)`.
 
 **`semantic_jobs`** — `requested_ordinals smallint[]` NULL: номера
 параметров частичного запроса значений (§2.4); CHECK — непусто только у

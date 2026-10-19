@@ -363,10 +363,15 @@ semantic_worker_state             -- РОВНО одна строка (id=1); ф
 ## 7. Варианты работ и схемы параметров семей
 
 Шесть таблиц и расширение четырёх существующих (`docs/superpowers/specs/2026-10-02-catalog-variants-design.md`
-§2.4), миграция `0019`. **Схема** семьи — от 0 до 3 параметров с закрытыми
-списками значений, у схемы есть версии; **вариант** — семья, версия схемы и
-набор значений; контекст получает вариант и, отдельно, ожидающее назначение
-семьи.
+§2.4), миграция `0019`. **Схема** семьи — параметры с закрытыми списками
+значений (модель строит до трёх, человек держит до десяти активных), у схемы
+есть версии; **вариант** — семья, версия схемы и набор значений; контекст
+получает вариант и, отдельно, ожидающее назначение семьи. Миграция `0022`
+(`docs/superpowers/specs/2026-10-19-catalog-parameters-design.md` §2.2) добавляет
+к шести таблицам роль, вид значений, границы диапазона, значения не из списка,
+частичный запрос и правку на месте — новые колонки помечены `0022` ниже.
+**Ключ варианта** `values_key` строится только из активных главных параметров:
+второстепенные и архивные параметры в него не входят.
 
 ```
 family_parameter_schemas         -- версия схемы семьи
@@ -374,6 +379,7 @@ family_parameter_schemas         -- версия схемы семьи
   status ('building|frozen|superseded|cancelled'), origin ('model|manual')
   job_id NULL → semantic_jobs ON DELETE SET NULL, frozen_by NULL → users ON DELETE RESTRICT
   created_at, frozen_at NULL, superseded_at NULL, cancelled_at NULL
+  revision integer NOT NULL DEFAULT 0    # 0022: счётчик правок действующей версии на месте, +1 за каждую запись
   # UNIQUE (family_id, version); UNIQUE (id, family_id) — цель составного FK варианта
   # UNIQUE (family_id) WHERE status='frozen'   — raw SQL uq_family_parameter_schemas_frozen: одна текущая
   # UNIQUE (family_id) WHERE status='building' — raw SQL uq_family_parameter_schemas_building: одна пересборка
@@ -385,13 +391,30 @@ family_parameter_schemas         -- версия схемы семьи
 family_parameters                -- параметр версии схемы
   id, schema_id NOT NULL → family_parameter_schemas ON DELETE CASCADE
   ordinal smallint NOT NULL, name text NOT NULL, name_norm text NOT NULL
-  # UNIQUE (schema_id, ordinal); CHECK ordinal BETWEEN 1 AND 3; CHECK btrim(name) <> ''
+  role text NOT NULL DEFAULT 'main'          # 0022: 'main|secondary'; вариант — только из активных главных
+  value_kind text NOT NULL DEFAULT 'exact'   # 0022: 'exact|range'
+  closed boolean NOT NULL DEFAULT false      # 0022: «только из списка»
+  range_from numeric NULL, range_to numeric NULL, range_step numeric NULL   # 0022: границы и шаг диапазона
+  origin text NOT NULL DEFAULT 'model'       # 0022: 'model|human' — чей параметр для пересборки
+  archived_at timestamptz NULL               # 0022: убранный параметр архивируется, не удаляется
+  # UNIQUE (schema_id, ordinal) — покрывает и архивные: номер в версии не используется повторно
+  # CHECK ordinal BETWEEN 1 AND 100 (0022; предел «не больше 10 активных» держит сервис, не схема)
+  # CHECK btrim(name) <> ''
+  # CHECK role IN ('main','secondary'); CHECK value_kind IN ('exact','range'); CHECK origin IN ('model','human')
+  # CK ck_family_parameters_range_shape — ОДИН тотальный предикат из двух полных ветвей: либо
+  #   value_kind='exact' и три границы NULL, либо value_kind='range', три границы NOT NULL, range_step > 0,
+  #   range_from < range_to, mod(range_to - range_from, range_step) = 0, (range_to - range_from) / range_step <= 28
+  #   и closed. Ветвь range открывается атомом range_step IS NOT NULL: недостающая граница даёт false, не NULL
   # UNIQUE (id, schema_id) — цель составных FK значений варианта и контекста
 
 family_parameter_values          -- значение закрытого списка; «не уточнено» — отсутствие значения, не пустая строка
   id, parameter_id NOT NULL → family_parameters ON DELETE CASCADE
   value text NOT NULL, value_norm text NOT NULL, origin ('schema|extension|manual')
   merged_into_id NULL, created_at
+  range_lo numeric NULL, range_hi numeric NULL   # 0022: границы значения параметра-диапазона; lo пуст у «до …», hi — у «… и более»
+  retired_at timestamptz NULL                    # 0022: ушло из списка без слияния; возвращается, а не заводится заново
+  # CHECK range_lo IS NULL OR range_hi IS NULL OR range_lo < range_hi
+  # CHECK retired_at IS NULL OR merged_into_id IS NULL
   # CHECK btrim(value) <> '' AND value_norm <> ''
   # UNIQUE (parameter_id, value_norm) — атомарное расширение списка
   # UNIQUE (id, parameter_id) — цель составных FK
@@ -418,11 +441,14 @@ work_variant_values              -- набор значений варианта
 
 context_parameter_values         -- значения контекста по текущей версии схемы его семьи (состояние, не история)
   context_id NOT NULL → catalog_contexts ON DELETE RESTRICT, schema_id, parameter_id NOT NULL, value_id NULL
-  source ('name|path|manual|path_conflict|none'), job_id NULL → semantic_jobs ON DELETE SET NULL, created_at
+  source ('name|path|manual|path_conflict|none|off_list'), job_id NULL → semantic_jobs ON DELETE SET NULL, created_at
+  off_list_text text NULL                  # 0022: текст значения не из списка (source = 'off_list')
+  refresh_requested_at timestamptz NULL    # 0022: «уточняется» — значение ждёт перезапроса параметра
   # PK (context_id, parameter_id)
   # FK (parameter_id, schema_id) → family_parameters (id, schema_id)
   # FK (value_id, parameter_id) → family_parameter_values (id, parameter_id)
-  # CHECK (value_id IS NULL) = (source IN ('path_conflict','none'))
+  # CHECK (value_id IS NULL) = (source IN ('path_conflict','none','off_list'))
+  # CHECK (source = 'off_list') = (off_list_text IS NOT NULL)
 
 catalog_contexts                 -- новые колонки (0019)
   work_variant_id NULL, variant_at NULL, variant_paths_hash NULL   # заголовок результата значений
@@ -445,6 +471,8 @@ semantic_jobs                    -- новые колонки и ключ (0019)
                                                                       #   серверного умолчания нет
   family_id NULL → work_families ON DELETE RESTRICT, schema_id NULL → family_parameter_schemas ON DELETE RESTRICT
   paths_hash text NULL, context_id — NULL-able
+  requested_ordinals smallint[] NULL   # 0022: номера параметров частичного запроса значений; в уникальный индекс не входит
+  # CHECK requested_ordinals IS NULL OR kind = 'context_values'
   # CHECK (kind='family_schema') = (context_id IS NULL AND family_id IS NOT NULL)
   # CHECK (kind<>'family_schema') = (context_id IS NOT NULL)
   # CHECK (kind<>'family_suggestion') = (schema_id IS NOT NULL)   # схема: версия building; значения: текущая версия
@@ -462,6 +490,11 @@ semantic_events                  -- расширение (0019): шесть ти
   # предмет контекст: context_variant_assigned, context_family_pending, context_not_work
   # предмет семья:    family_schema_frozen, family_schema_value_added, family_variants_merged
   # CK_EVENT_SUBJECT_BY_TYPE — по-прежнему явное множество типов; в него вошли три семейных
+
+semantic_events                  -- расширение (0022): тип family_schema_edited
+  # предмет семья: family_schema_edited — правка схемы на месте; в CK_EVENT_SUBJECT_BY_TYPE девять семейных типов
+  # обязательные ключи payload (services/semantic_events.py, EVENT_REQUIRED_KEYS): schema_id, revision, changes,
+  #   variants_before, variants_after, jobs_enqueued
 
 semantic_reconcile_batches       -- формат held_fingerprints и хэша — раздел 6 этого файла
 ```
@@ -494,6 +527,16 @@ FK объявлены с `use_alter=True`, чтобы сортировка ме�
 новых типов, пачки с отпечатками не `family_suggestion`. На пустых носителях
 откат возвращает прежний ключ `uq_semantic_jobs_context_request_hash` и
 пачкам — пары `[context_id, request_hash]` с прежним хэшем.
+
+**`downgrade` `0022` отказывает при данных** в любом из шести носителей:
+параметр с ролью, видом, закрытым списком, происхождением, архивом или номером
+больше 3; версия с `revision > 0`; значение с границами или `retired_at`; строка
+контекста `off_list` или с `refresh_requested_at`; задание с `requested_ordinals`;
+событие `family_schema_edited`. На пустых носителях откат возвращает прежние
+`ordinal BETWEEN 1 AND 3`, пару «значение ⇔ источник», список источников и список
+типов журнала. `upgrade` не меняет ни одной строки: значения по умолчанию колонок
+(`'main'`, `'exact'`, `false`, `'model'`, `revision 0`) заполняют существующие
+сами, ни один `request_hash` не пересчитывается.
 
 **Трёхзначная логика CHECK** (`docs/pitfalls/db.md`): равносильности стоят
 голым равенством только на NOT NULL стороне; `CK_CONTEXT_PENDING` и

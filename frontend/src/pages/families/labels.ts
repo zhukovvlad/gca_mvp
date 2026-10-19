@@ -358,7 +358,8 @@ export type SemanticEventType =
   | "family_schema_frozen"
   | "family_schema_value_added"
   | "family_variants_merged"
-  | "context_reopened";
+  | "context_reopened"
+  | "family_schema_edited";
 
 /** Рантайм-список значений {@link SemanticEventType} — тот же порядок, для перебора тестами. */
 export const EVENT_TYPE_VALUES: readonly SemanticEventType[] = [
@@ -384,6 +385,7 @@ export const EVENT_TYPE_VALUES: readonly SemanticEventType[] = [
   "family_schema_value_added",
   "family_variants_merged",
   "context_reopened",
+  "family_schema_edited",
 ];
 
 export const EVENT_LABEL: Record<SemanticEventType, string> = {
@@ -409,6 +411,7 @@ export const EVENT_LABEL: Record<SemanticEventType, string> = {
   family_schema_value_added: "значение схемы добавлено",
   family_variants_merged: "значения схемы слиты",
   context_reopened: "возвращено в разбор",
+  family_schema_edited: "схема изменена",
 };
 
 /** Подпись события журнала; неизвестный код (будущее событие) — сам код, не падает. */
