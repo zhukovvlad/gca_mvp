@@ -2,7 +2,15 @@
 
 **Спека:** `docs/superpowers/specs/2026-10-19-catalog-parameters-design.md` (гейт 2 одобрен 19.10.2026, три круга Codex, редакция 3, `6602b0a`)
 **Ветка:** `feat/catalog-parameters`, черновой PR #71
-**Редакция 1, 19.10.2026 — на ревью, гейт 3 не пройден.**
+**Редакция 2, 19.10.2026 — на ревью, гейт 3 не пройден.** Круг 1 гейта 3 —
+3 замечания Codex на `086d765`, все подтверждены по коду: `PATCH` и
+предпросмотр правки переключаются в Task 4, а не в Task 6 (иначе маршрут
+вызывал бы удалённый `update_schema`); Task 7 передаёт предел в
+`_record_variant_result` и заводит путь без модели при `H = 10`, проверки —
+через настоящий путь обработки ответа; проверка предела 10 и проверка
+сериализации правок в Task 4 разделены, снятия названы по цепочке замков.
+
+**Редакция 1, 19.10.2026.**
 **Макет:** [`docs/superpowers/design/2026-10-19-catalog-parameters/schema-dialog.html`](../design/2026-10-19-catalog-parameters/schema-dialog.html) — десять сценариев; фронт (Task 8) и стенд (Task 9) идут по нему.
 
 > Исполнителю: задачи идут по порядку; каждая — цикл TDD
@@ -400,14 +408,18 @@ def parse_values_answer(raw: str, *, parameters: Sequence[SchemaParameter]) -> V
   всю схему» и волну полной схемой, переписаны на подмножество, а не
   удалены (перечень — в отчёте задачи).
 
-### Task 4: правка на месте — план, предпросмотр, применение
+### Task 4: правка на месте — план, предпросмотр, применение, маршруты правки
 
 **Files**
 - Create: `backend/services/schema_edit.py`
 - Edit: `backend/services/work_variants.py` (удаляются `update_schema`, `_checked_edits`, `_plan_edit`,
-  `_MAX_PARAMETERS`), `backend/services/semantic_events.py`
+  `_MAX_PARAMETERS`), `backend/services/semantic_events.py`, `backend/routers/semantic.py`
+  (`PATCH /families/{id}/schema` переключается на `apply_schema_edit`, новый
+  `POST /families/{id}/schema/edit-preview`, коды отказа в картах статусов),
+  `backend/tests/integration/test_semantic_api.py` (литералы маршрутов +1)
 - Test: `backend/tests/integration/test_catalog_parameters_edit.py`; переписываются
-  `test_work_variants_schema_life.py` (`UpdateSchemaCosmetic`, `NewVersion`, `Refusals`)
+  `test_work_variants_schema_life.py` (`UpdateSchemaCosmetic`, `NewVersion`, `Refusals`) и
+  `test_work_variants_api.py` (`TestSchemaEdit` — тело с `preview_hash`)
 
 **Interfaces**
 - Потребляет: Task 1–3; `_lock_family_for_schema_life`, `reconcile_or_defer`,
@@ -451,7 +463,19 @@ REFUSE_SCHEMA_DUPLICATE_PARAMETER = "schema_duplicate_parameter"
 REFUSE_SCHEMA_BAD_RANGE = "schema_bad_range"
 REFUSE_SCHEMA_RANGE_TOO_MANY_VALUES = "schema_range_too_many_values"
 REFUSE_SCHEMA_ORDINALS_EXHAUSTED = "schema_ordinals_exhausted"
+class EditSummaryOut(TypedDict): ...   # поля EditSummary, деньги строками (crud/work_variants.py)
 ```
+
+```text
+POST  /api/v1/semantic/families/{id}/schema/edit-preview   тело: {parameters}               → EditSummaryOut
+PATCH /api/v1/semantic/families/{id}/schema                тело: {parameters, preview_hash} → SchemaOut (форма до Task 6 — прежняя)
+```
+
+**Маршрут переключается в этой задаче** (ревью Codex гейта 3): удаление
+`update_schema` без переключения `PATCH` оставило бы маршрут вызывать
+несуществующую функцию до Task 6. Окно фронта до Task 8 шлёт тело без
+`preview_hash` и получает `422`; ветка до Task 9 на стенде не
+разворачивается.
 
 **Утверждения**
 - по входу на каждую строку таблицы §2.5 (кроме перестройки — Task 5):
@@ -462,13 +486,23 @@ REFUSE_SCHEMA_ORDINALS_EXHAUSTED = "schema_ordinals_exhausted"
   точного — «уточняется» и запрос одного параметра только у `none` и
   `off_list`, `off_list` с тем же текстом по норме получает значение
   `source = 'manual'` без модели;
-- проверки (DoD 6): 11-й активный — `schema_too_many_parameters`, 10-й —
-  проходит; две параллельные правки по 6 новых — одна отказ (снятие замка
-  семьи в правке — обе проходят, тест красный); новый параметр после
-  архивного получает `max + 1`; исчерпание — `schema_ordinals_exhausted`;
-  дубль имени по норме, смысловое переименование, исчезновение точного
-  значения без смены вида, пустое имя и значение, каждое нарушение
-  диапазона — свой код; `building` — `schema_building`;
+- **предел** (DoD 6): тело с 11 активными — `schema_too_many_parameters`, с
+  10 — проходит; проверка считает активные параметры **итогового состояния**
+  (тело — полное состояние); снятие проверки — тело с 11 сохраняется, тест
+  красный; новый параметр после архивного получает `max + 1`; исчерпание —
+  `schema_ordinals_exhausted`; дубль имени по норме, смысловое
+  переименование, исчезновение точного значения без смены вида, пустое имя и
+  значение, каждое нарушение диапазона — свой код; `building` —
+  `schema_building`;
+- **сериализация правок** (отдельно от предела, ревью Codex гейта 3): две
+  правки одной семьи с одним и тем же действительным `preview_hash`,
+  запущенные одновременно (барьер после предпросмотра): первая сохраняется,
+  вторая ждёт замок семьи и после `commit` первой отказывает
+  `preview_changed` — `revision` перечитывается под замком; снятие замка
+  семьи — вторая всё равно ждёт `FOR UPDATE` версии и отказывает (тест
+  зелёный, второй рубеж); снятие замка семьи **и** `FOR UPDATE` версии —
+  вторая читает `revision` до `commit` первой и затирает её правку, тест
+  красный;
 - происхождение: новый — `human`; модельный, которого коснулась правка
   (имя, в том числе косметически; значения; роль; «только из списка»; вид) —
   `human` (по входу на признак); нетронутый — `model`;
@@ -488,7 +522,12 @@ REFUSE_SCHEMA_ORDINALS_EXHAUSTED = "schema_ordinals_exhausted"
   замка семьи и `FOR UPDATE` версии — запись проходит под правкой, тест
   красный;
 - событие `family_schema_edited` несёт изменения по параметрам, варианты до
-  и после, число запросов; `revision` +1 на правку.
+  и после, число запросов; `revision` +1 на правку;
+- маршруты: `PATCH` и `edit-preview` — право (`member` 403), каждый новый код
+  отказа со статусом, `PATCH` без `preview_hash` — `422`, устаревший —
+  `409 preview_changed`; литеральные множества маршрутов
+  `test_semantic_api.py:421-437`, `:472` — +1; на границе задачи
+  `PATCH` отвечает (тест маршрута проходит через `apply_schema_edit`).
 
 **Имена**
 - Заводятся: всё из «Производит».
@@ -501,9 +540,11 @@ REFUSE_SCHEMA_ORDINALS_EXHAUSTED = "schema_ordinals_exhausted"
 
 **Проверка**
 - `uv run pytest tests -k catalog_parameters` — ДО ≥ 120, ПОСЛЕ ≥ 175.
-- `uv run pytest tests -k work_variants` — зелёная; число может убыть только
-  на тесты новой версии `manual`, переписанные в `catalog_parameters`
-  (перечень с соответствием — в отчёте задачи).
+- `uv run pytest tests -k "work_variants or semantic_api"` — зелёная; ДО
+  2 069 (1 879 + 190), число может убыть только на тесты новой версии
+  `manual`, переписанные в `catalog_parameters` (перечень с соответствием —
+  в отчёте задачи).
+- `uv run pytest tests/test_auth_coverage.py` — зелёная.
 
 ### Task 5: перестройка значений диапазона
 
@@ -580,13 +621,11 @@ class RangeOut(TypedDict): start: str; stop: str; step: str          # Decimal �
 # SchemaOut += revision: int
 # ContextValueOut += role, refreshing: bool, off_list_text: str | None
 # VariantOut.values — только главные
-class EditSummaryOut(TypedDict): ...   # поля EditSummary, деньги строками
 ```
 
 ```text
-POST  /api/v1/semantic/families/{id}/schema/edit-preview      тело: {parameters}            → EditSummaryOut
-PATCH /api/v1/semantic/families/{id}/schema                   тело: {parameters, preview_hash} → SchemaOut
 POST  /api/v1/semantic/families/{id}/schema/off-list/resolve  тело: {parameter_id, text_norm, target_value_id} → SchemaOut
+# PATCH и edit-preview заведены в Task 4; здесь их ответ SchemaOut получает новые поля
 ```
 
 **Утверждения**
@@ -597,16 +636,16 @@ POST  /api/v1/semantic/families/{id}/schema/off-list/resolve  тело: {paramet
   (чужой параметр, слитое, выведенное — по входу);
 - агрегат «не из списка» по норме: два написания одной нормы — одна строка с
   суммой контекстов и строк;
-- каждый маршрут — право (`member` 403), форма ответа, каждый отказ со
-  статусом (DoD 12); `PATCH` без `preview_hash` — `422`; устаревший —
-  `409 preview_changed`;
+- маршрут `off-list/resolve` — право (`member` 403), форма ответа, каждый
+  отказ со статусом; расширенный `SchemaOut` — в ответах `GET`, `PATCH`,
+  `off-list/resolve`, `cancel` одной формой (DoD 12);
 - числа на значение и «не из списка» — постоянным числом запросов: счётчик
   запросов на семье с 5 и с 30 значениями равен;
 - выведенные значения и архивные параметры в `SchemaOut` не отдаются в
   списке правки (`retired` у значения — признак истории); варианты — подписи
   только из главных; карточка — `role`, `refreshing`, `off_list_text`;
 - литеральные множества маршрутов `test_semantic_api.py:421-437`, `:472` —
-  +2; `_status_for_code` знает каждый новый код.
+  ещё +1 (всего +2 за фичу); `_status_for_code` знает каждый новый код.
 
 **Имена**
 - Заводятся: всё из «Производит».
@@ -625,29 +664,50 @@ POST  /api/v1/semantic/families/{id}/schema/off-list/resolve  тело: {paramet
 ### Task 7: пересборка схемы с параметрами человека
 
 **Files**
-- Edit: `backend/services/variant_request.py`, `variant_answer.py`, `work_variants.py`, `crud/work_variants.py`
+- Edit: `backend/services/variant_request.py`, `variant_answer.py`, `work_variants.py`, `crud/work_variants.py`,
+  `backend/services/semantic_worker.py` (`_record_variant_result` передаёт предел; путь без модели),
+  `backend/services/semantic_reconcile.py` (`_plan_family_schemas`: при пределе 0 — путь без модели)
 - Test: `backend/tests/integration/test_catalog_parameters_rebuild.py`
 
 **Interfaces**
 - Потребляет: Task 1–6; `load_schema_material`, `render_schema_request`,
   `parse_schema_answer`, `_write_frozen_schema`, `freeze_schema`,
-  `rebuild_schema`, `rebuild_preview`, `SCHEMA_PROMPT_VERSION` (существуют).
+  `rebuild_schema`, `rebuild_preview`, `SCHEMA_PROMPT_VERSION`,
+  `_record_variant_result`, `render_job_request`, `complete_without_model`,
+  `_plan_family_schemas` (существуют).
 - Производит:
 
 ```python
 # SchemaRequestMaterial += human_parameters: tuple[tuple[str, tuple[str, ...]], ...]
 def model_parameter_limit(human_count: int) -> int      # min(3, 10 - human_count), не меньше 0
 def parse_schema_answer(raw: str, *, limit: int) -> SchemaAnswer
+def complete_schema_without_model(db: Session, job: SemanticJob) -> None   # semantic_worker.py
 SCHEMA_PROMPT_VERSION = 4
 ```
+
+**Предел ответа — из материала задания** (ревью Codex гейта 3): вызывающий
+код опросчика `_record_variant_result` (`semantic_worker.py:726`) передаёт
+`limit = model_parameter_limit(len(material.human_parameters))`, где
+`material` — тот же, по которому `render_job_request` воспроизводит тело
+задания; иначе разбор ответа схемы падал бы на обязательном аргументе. При
+пределе 0 задание схемы модели не уходит: планировщик кладёт его в путь без
+модели (как `plan.free` у значений, стоимость 0), опросчик выполняет
+`complete_schema_without_model` — заморозка версии из одних параметров
+человека тем же `_write_frozen_schema`.
 
 **Утверждения** (DoD 11)
 - **снимок до правок**: тело запроса схемы без параметров человека — прежний
   хэш (DoD 2);
 - блок «уже заданы человеком» и текст «от 0 до N» — только при `H > 0`;
-  `model_parameter_limit` при `H = 0, 3, 8, 10` — 3, 3, 2, 0; при 0 задание
-  схемы не ставит модели параметров, версия замораживается с параметрами
-  человека; ответ с `N + 1` параметром — схемная ошибка;
+  `model_parameter_limit` при `H = 0, 3, 8, 10` — 3, 3, 2, 0;
+- **через настоящий путь обработки ответа** (`_record_variant_result` из
+  прохода опросчика, ответ модели подменён на уровне клиента): при `H = 8`
+  ответ с 2 параметрами замораживает версию из 8 + 2, ответ с 3 — схемная
+  ошибка, версия не заморожена; при `H = 0` — прежнее поведение с пределом 3;
+- **при `H = 10`** — вызова модели нет (счётчик вызовов клиента 0), задание
+  завершено путём без модели, версия заморожена из 10 параметров человека,
+  стоимость 0; снятие ветки «предел 0 — без модели» — вызов модели
+  происходит, тест красный;
 - новая версия: номера уплотнены (человек 1..H по прежним номерам, модель
   H+1..H+N); параметры человека и правленые модельные перенесены с ролью,
   видом, границами, «только из списка», происхождением, активными
@@ -662,8 +722,12 @@ SCHEMA_PROMPT_VERSION = 4
   и называет приближение.
 
 **Имена**
-- Заводятся: `model_parameter_limit`, поле `human_parameters`.
-- Существуют, проверено `grep`-ом: `load_schema_material`
+- Заводятся: `model_parameter_limit`, `complete_schema_without_model`, поле
+  `human_parameters`.
+- Существуют, проверено `grep`-ом: `_record_variant_result`
+  (`semantic_worker.py:697`, вызов разбора схемы — `:726`),
+  `render_job_request` (`:246`), `complete_without_model` (`:915`),
+  `_plan_family_schemas` (`semantic_reconcile.py:941`), `load_schema_material`
   (`variant_request.py:174`), `render_schema_request` (`:407`),
   `SCHEMA_PROMPT_VERSION` (`:63`), `parse_schema_answer`
   (`variant_answer.py:278`), `_write_frozen_schema` (`work_variants.py:472`),
