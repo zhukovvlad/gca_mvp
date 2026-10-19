@@ -146,7 +146,7 @@ tr.detail td { background: var(--sunken); padding: 10px 12px 12px; }
   <header style="display:grid; gap:10px">
     <p class="eyebrow">Малая фича «параметры семьи без предела» · макет гейта 1 · 19.10.2026</p>
     <h1>Окно «Править схему»: три раскладки</h1>
-    <p class="lead">Семья «Устройство жб конструкций» со стенда <span class="num">gca_dev</span>: три главных параметра и их значения с числом строк, взятые оттуда. Сценарий во всех трёх раскладках один и тот же: добавить второстепенный параметр «Коэффициент армирования» с диапазонами по 20 кг/м³. Переключатель сценария показывает, как меняется сводка внизу окна, если сделать этот параметр главным. Число «станет вариантов» во втором сценарии придумано для примера: стенд его не знает, пока у строк нет значений армирования.</p>
+    <p class="lead">Семья «Устройство жб конструкций» со стенда <span class="num">gca_dev</span>: три главных параметра и их значения с числом строк, взятые оттуда. Сценарий — параметр «Коэффициент армирования» с диапазонами по 20 кг/м³, и сценариев три: добавить его второстепенным; добавить и сразу отметить главным (значений у строк ещё нет — нужны запросы, итог неизвестен); сделать главным уже сохранённый второстепенный (значения известны — запросов нет). В третьем сценарии числа строк у армирования и «станет вариантов» придуманы для примера: на стенде этого параметра ещё нет.</p>
   </header>
 
   <div class="bar">
@@ -160,7 +160,8 @@ tr.detail td { background: var(--sunken); padding: 10px 12px 12px; }
     <div><span class="lbl">Сценарий</span>
       <div class="seg" id="scenSeg">
         <button aria-pressed="true" data-s="secondary">Добавить второстепенный</button>
-        <button aria-pressed="false" data-s="main">Сделать его главным</button>
+        <button aria-pressed="false" data-s="newmain">Добавить сразу главным</button>
+        <button aria-pressed="false" data-s="promote">Сделать главным сохранённый</button>
       </div>
     </div>
   </div>
@@ -178,14 +179,21 @@ const PARAMS = [
   { id: 1, name: "Класс бетона по прочности", role: "main", values: [["B25",7436],["B35",4110],["B40",1280],["B50",366],["B60",203],["B70",18],["B100",18],["B90",12],["B80",9],["B55",5],["B30",4],["B45",3],["B7.5",0],["B15",0]] },
   { id: 2, name: "Марка по водонепроницаемости", role: "main", values: [["W8",9110],["W12",2390],["W4",99],["W6",0]] },
   { id: 3, name: "Тип конструкции", role: "main", values: [["балки",2886],["перекрытия",2862],["стены",2644],["пилоны",2411],["колонны",1041],["лестницы",726],["лестничные площадки",363],["плиты покрытий",169],["капители",66],["лестничные марши",44],["парапеты",22],["фундаментная плита",0],["трансферные конструкции",0],["ростверк",0],["рампы",0]] },
-  { id: 4, name: "Коэффициент армирования, кг/м³", role: "secondary", isNew: true, values: [["до 120",null],["120–140",null],["140–160",null],["160–180",null],["180–200",null],["больше 200",null]] },
+  // Армирование: в сценариях «добавить» — новый параметр без значений у строк; в сценарии «сделать главным сохранённый» —
+  // уже сохранённый второстепенный, числа строк ПРИДУМАНЫ для примера (на стенде параметра ещё нет).
+  { id: 4, name: "Коэффициент армирования, кг/м³", role: "secondary",
+    get isNew() { return scen !== "promote"; },
+    get values() { return scen === "promote" ? ARM_EXAMPLE : ARM_NEW; } },
 ];
+const ARM_NEW = [["до 120",null],["120–140",null],["140–160",null],["160–180",null],["180–200",null],["200 и более",null]];
+const ARM_EXAMPLE = [["до 120",0],["120–140",820],["140–160",160],["160–180",69],["180–200",0],["200 и более",0]];
+// secondary — добавить второстепенный; newmain — добавить и сразу отметить главным; promote — сделать главным уже сохранённый.
 let layout = "b", scen = "secondary";
 
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const fmt = n => n.toLocaleString("ru-RU");
 const rowsOf = p => p.values.reduce((s, [, n]) => s + (n || 0), 0);
-const roleOf = p => (p.isNew ? (scen === "main" ? "main" : "secondary") : p.role);
+const roleOf = p => (p.id === 4 ? (scen === "secondary" ? "secondary" : "main") : p.role);
 const mains = () => PARAMS.filter(p => roleOf(p) === "main");
 const secs = () => PARAMS.filter(p => roleOf(p) === "secondary");
 
@@ -203,7 +211,7 @@ function roleSeg(p) {
 function metaOf(p) {
   if (p.isNew) return `<span class="badge new">новый</span>`;
   const used = p.values.filter(([, n]) => n > 0).length;
-  return `<span class="meta">${p.values.length} значений, из них встречаются в строках ${used} · всего <span class="num">${fmt(rowsOf(p))}</span> строк</span>`;
+  return `<span class="meta">${p.values.length} значений, из них встречаются в строках ${used} · всего <span class="num">${fmt(rowsOf(p))}</span> строк${p.id === 4 ? " (числа для примера)" : ""}</span>`;
 }
 
 function summary() {
@@ -213,11 +221,17 @@ function summary() {
       <li>Варианты семьи <b>не меняются</b>: их по-прежнему <span class="num">${FAMILY.variants}</span>; значения главных параметров у строк остаются и заново не запрашиваются.</li>
       <li>У модели запросится только «Коэффициент армирования» — у <span class="num">${FAMILY.contexts}</span> контекстов семьи; пока ответа нет — у строки «не уточнено».</li>
     </ul></div>`;
+  if (scen === "newmain") return `<div class="summary warn">
+    <b>Что изменит правка</b>
+    <ul>
+      <li>Добавляется главный параметр: варианты семьи <b>соберутся заново</b> — сейчас <span class="num">${FAMILY.variants}</span>, сколько станет, будет известно только после ответов модели.</li>
+      <li>У модели запросится «Коэффициент армирования» — у <span class="num">${FAMILY.contexts}</span> контекстов семьи; значения остальных главных у строк остаются.</li>
+    </ul></div>`;
   return `<div class="summary warn">
     <b>Что изменит правка</b>
     <ul>
-      <li>Меняется состав главных параметров: варианты семьи <b>строятся заново</b> — было <span class="num">${FAMILY.variants}</span>, станет <span class="num">118</span> <span class="xs">(число для примера)</span>.</li>
-      <li>Строки без армирования в наименовании попадут в варианты со значением «не уточнено».</li>
+      <li>Сохранённый второстепенный становится главным: варианты <b>делятся по его значениям</b> — было <span class="num">${FAMILY.variants}</span>, станет <span class="num">118</span> <span class="xs">(число для примера)</span>.</li>
+      <li>Строки, где армирование «не уточнено», попадут в варианты со значением «не уточнено».</li>
       <li>Значения армирования уже известны — заново у модели ничего не запрашивается.</li>
     </ul></div>`;
 }
@@ -246,7 +260,7 @@ function viewA() {
 
 // Б — список параметров слева, редактор выбранного справа
 function viewB() {
-  const sel = PARAMS.find(p => p.isNew);
+  const sel = PARAMS.find(p => p.id === 4);
   const item = p => `<div class="item" aria-current="${p === sel}"><b>${esc(p.name)}</b><span>${p.isNew ? "новый · " + p.values.length + " значений" : p.values.length + " значений · " + fmt(rowsOf(p)) + " строк"}</span></div>`;
   return `<div class="dialog w-b">${header()}
     <div class="split" style="min-height:0">
