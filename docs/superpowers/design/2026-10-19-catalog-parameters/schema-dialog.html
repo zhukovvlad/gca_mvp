@@ -47,316 +47,395 @@
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg-page); color: var(--fg); font-family: var(--font-sans); font-size: 14px; line-height: 1.5; }
 p { margin: 0; } h1, h2, h3 { margin: 0; text-wrap: balance; }
-.wrap { max-width: 1180px; margin: 0 auto; padding: 36px 24px 64px; display: grid; gap: 22px; }
+.wrap { max-width: 1320px; margin: 0 auto; padding: 32px 24px 64px; display: grid; gap: 22px; }
 @media (max-width: 640px) { .wrap { padding: 20px 16px 48px; } }
 .eyebrow { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--fg3); font-weight: 500; }
 h1 { font-family: var(--font-serif); font-weight: 600; font-size: clamp(30px, 4.5vw, 42px); line-height: 1.08; }
-.lead { max-width: 72ch; color: var(--fg2); font-size: 15px; }
+.lead { max-width: 80ch; color: var(--fg2); font-size: 15px; }
 .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .t2 { color: var(--fg2); } .t3 { color: var(--fg3); } .xs { font-size: 11.5px; } .sm { font-size: 12.5px; }
+button:focus-visible, input:focus-visible, [role="button"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-.bar { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; }
-.seg { display: inline-flex; gap: 3px; background: var(--neutral-soft); padding: 3px; border-radius: 9px; }
-.seg button { border: 0; background: transparent; color: var(--fg2); font: inherit; font-size: 13px; font-weight: 500; padding: 6px 12px; border-radius: 7px; cursor: pointer; }
-.seg button[aria-pressed="true"] { background: var(--surface); color: var(--fg); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
-.seg.small button { font-size: 12px; padding: 3px 9px; }
-button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.bar .lbl { font-size: 12px; color: var(--fg3); margin-right: 6px; }
-
-.stage { display: grid; grid-template-columns: minmax(0, 1fr) 16rem; gap: 22px; align-items: start; }
-@media (max-width: 1000px) { .stage { grid-template-columns: minmax(0, 1fr); } }
-.backdrop { background: color-mix(in srgb, var(--fg) 22%, var(--bg-page)); border-radius: 14px; padding: 28px 18px; display: grid; justify-items: center; min-width: 0; }
-.notes { display: grid; gap: 10px; font-size: 13px; color: var(--fg2); }
-.notes h3 { font-size: 12px; font-weight: 600; color: var(--fg); letter-spacing: .04em; text-transform: uppercase; }
-.notes ul { margin: 0; padding-left: 18px; display: grid; gap: 7px; }
+.layout { display: grid; grid-template-columns: 16.5rem minmax(0, 1fr); gap: 22px; align-items: start; }
+@media (max-width: 980px) { .layout { grid-template-columns: minmax(0, 1fr); } }
+.scen { display: grid; gap: 4px; position: sticky; top: 16px; }
+@media (max-width: 980px) { .scen { position: static; } }
+.scen .fam-h { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--fg3); padding: 10px 8px 2px; }
+.scen button { text-align: left; border: 1px solid transparent; background: transparent; color: var(--fg2); font: inherit; font-size: 13px; padding: 7px 10px; border-radius: 8px; cursor: pointer; display: grid; gap: 1px; }
+.scen button small { font-size: 11.5px; color: var(--fg3); }
+.scen button[aria-pressed="true"] { background: var(--surface); border-color: var(--border2); color: var(--fg); box-shadow: 0 1px 2px rgba(0,0,0,.05); }
+.main { display: grid; gap: 18px; min-width: 0; }
+.backdrop { background: color-mix(in srgb, var(--fg) 22%, var(--bg-page)); border-radius: 14px; padding: 26px 18px; display: grid; justify-items: center; min-width: 0; }
+.design-note { font-size: 13px; color: var(--fg2); display: grid; gap: 6px; border-left: 3px solid var(--accent-border); padding: 2px 0 2px 12px; max-width: 90ch; }
+.design-note b { color: var(--fg); }
 
 /* --- окно --- */
-.dialog { background: var(--surface); border-radius: 12px; box-shadow: var(--shadow); width: 100%; display: grid; grid-template-rows: auto minmax(0,1fr) auto; max-height: 820px; min-width: 0; }
-.dialog.w-a { max-width: 640px; } .dialog.w-b { max-width: 920px; } .dialog.w-c { max-width: 720px; }
+/* В приложении окно ограничено высотой экрана и правая панель прокручивается; в макете высота больше, чтобы панель была видна целиком. */
+.dialog { background: var(--surface); border-radius: 12px; box-shadow: var(--shadow); width: 100%; max-width: 940px; display: grid; grid-template-rows: auto minmax(0,1fr) auto; max-height: 1400px; min-width: 0; }
+.dialog.small { max-width: 620px; }
 .dh { padding: 18px 20px 12px; border-bottom: 1px solid var(--border); display: grid; gap: 4px; }
 .dh h2 { font-size: 17px; font-weight: 600; }
 .dh .fam { font-size: 13px; color: var(--fg2); }
-.db { overflow-y: auto; padding: 14px 20px; display: grid; gap: 12px; align-content: start; min-height: 0; }
 .df { border-top: 1px solid var(--border); padding: 12px 20px 16px; display: grid; gap: 10px; background: var(--sunken); border-radius: 0 0 12px 12px; }
 .df .row { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.db { overflow-y: auto; padding: 14px 20px; display: grid; gap: 12px; align-content: start; min-height: 0; }
 
-.btn { height: 32px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--border2); background: var(--surface); color: var(--fg); font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+.btn { height: 32px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--border2); background: var(--surface); color: var(--fg); font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .btn.primary { background: var(--action); color: var(--action-text); border-color: var(--action); }
 .btn.ghost { border-color: transparent; background: transparent; color: var(--fg2); }
 .btn.danger { border-color: transparent; background: transparent; color: var(--danger-text); }
 .btn.sm { height: 26px; padding: 0 8px; font-size: 12px; }
+.btn[disabled] { opacity: .5; cursor: not-allowed; }
 .input { height: 32px; border: 1px solid var(--border2); border-radius: 8px; background: var(--surface); color: var(--fg); font: inherit; font-size: 13px; padding: 0 10px; min-width: 0; }
+.input.num-in { width: 5rem; font-family: var(--font-mono); }
 
-.group-h { display: flex; align-items: baseline; gap: 8px; margin-top: 4px; }
-.group-h b { font-size: 12px; letter-spacing: .04em; text-transform: uppercase; }
-.group-h span { font-size: 12px; color: var(--fg3); }
+.split { display: grid; grid-template-columns: 16rem minmax(0,1fr); min-height: 0; }
+@media (max-width: 760px) { .split { grid-template-columns: minmax(0,1fr); } }
+.side { border-right: 1px solid var(--border); padding: 12px; display: grid; gap: 4px; align-content: start; overflow-y: auto; background: var(--sunken); }
+.side .item { display: grid; gap: 2px; padding: 8px 10px; border-radius: 8px; cursor: pointer; border: 1px solid transparent; }
+.side .item[aria-current="true"] { background: var(--surface); border-color: var(--border2); }
+.side .item b { font-size: 13px; font-weight: 500; }
+.side .item span { font-size: 11.5px; color: var(--fg3); }
+.side .sep { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--fg3); padding: 8px 10px 2px; }
+.side .limit { font-size: 11.5px; color: var(--fg3); padding: 0 10px; }
+.pane { padding: 14px 18px; display: grid; gap: 14px; align-content: start; overflow-y: auto; min-width: 0; }
+.field { display: grid; gap: 6px; }
+.field > label, .field > .lbl { font-size: 12.5px; font-weight: 500; }
+.check { display: flex; gap: 8px; align-items: center; font-size: 13px; }
+.check input { accent-color: var(--accent); }
+.hint { font-size: 12px; color: var(--fg3); }
+.range-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13px; }
 
-.card { border: 1px solid var(--border); border-radius: 10px; padding: 12px; display: grid; gap: 10px; background: var(--surface); }
-.card.new { border-color: var(--accent-border); background: color-mix(in srgb, var(--accent-soft) 45%, var(--surface)); }
-.card-h { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-.card-h .input { flex: 1 1 14rem; font-weight: 500; }
-.meta { font-size: 12px; color: var(--fg3); }
-.badge { display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border-radius: 99px; font-size: 11px; font-weight: 500; border: 1px solid var(--neutral-border); background: var(--neutral-soft); color: var(--neutral-text); white-space: nowrap; }
+.seg { display: inline-flex; gap: 3px; background: var(--neutral-soft); padding: 3px; border-radius: 9px; width: fit-content; }
+.seg button { border: 0; background: transparent; color: var(--fg2); font: inherit; font-size: 12px; font-weight: 500; padding: 3px 10px; border-radius: 7px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--surface); color: var(--fg); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+
+.badge { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 99px; font-size: 10.5px; font-weight: 500; border: 1px solid var(--neutral-border); background: var(--neutral-soft); color: var(--neutral-text); white-space: nowrap; }
 .badge.new { border-color: var(--accent-border); background: var(--accent-soft); color: var(--accent-text); }
-.badge.main { border-color: var(--info-border); background: var(--info-soft); color: var(--info-text); }
+.badge.human { border-color: var(--info-border); background: var(--info-soft); color: var(--info-text); }
+.badge.warn { border-color: var(--warn-border); background: var(--warn-soft); color: var(--warn-text); }
 
-.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 4px 0 9px; border-radius: 7px; border: 1px solid var(--border2); background: var(--sunken); font-size: 12.5px; white-space: nowrap; }
 .chip .n { font-family: var(--font-mono); font-size: 11px; color: var(--fg3); }
+.chip .more { border: 0; background: transparent; color: var(--fg3); cursor: pointer; font-size: 13px; padding: 0 4px; border-radius: 4px; }
 .chip.zero { color: var(--fg3); background: transparent; border-style: dashed; }
 .chip.added { border-color: var(--accent-border); background: var(--accent-soft); color: var(--accent-text); }
-.chip .more { border: 0; background: transparent; color: var(--fg3); cursor: pointer; font-size: 13px; padding: 0 4px; border-radius: 4px; }
+.chip.ext { border-color: var(--warn-border); background: var(--warn-soft); color: var(--warn-text); }
 .chip.add { padding: 0; border-style: dashed; background: transparent; }
 .chip.add input { border: 0; background: transparent; height: 24px; width: 9.5rem; font: inherit; font-size: 12.5px; padding: 0 8px; color: var(--fg); }
-.chip.add input::placeholder { color: var(--fg3); }
-.hint { font-size: 12px; color: var(--fg3); }
+.chip.plain { padding-right: 9px; }
 
 .summary { border-radius: 9px; padding: 10px 12px; font-size: 13px; display: grid; gap: 6px; border: 1px solid var(--info-border); background: var(--info-soft); color: var(--info-text); }
 .summary.warn { border-color: var(--warn-border); background: var(--warn-soft); color: var(--warn-text); }
 .summary ul { margin: 0; padding-left: 18px; display: grid; gap: 3px; }
 .summary b { font-weight: 600; }
 
-/* вариант Б — список слева, редактор справа */
-.split { display: grid; grid-template-columns: 15rem minmax(0,1fr); min-height: 0; }
-@media (max-width: 720px) { .split { grid-template-columns: minmax(0,1fr); } }
-.side { border-right: 1px solid var(--border); padding: 12px; display: grid; gap: 6px; align-content: start; overflow-y: auto; background: var(--sunken); }
-.side .item { display: grid; gap: 1px; padding: 8px 10px; border-radius: 8px; cursor: pointer; border: 1px solid transparent; }
-.side .item[aria-current="true"] { background: var(--surface); border-color: var(--border2); }
-.side .item b { font-size: 13px; font-weight: 500; }
-.side .item span { font-size: 11.5px; color: var(--fg3); }
-.side .sep { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--fg3); padding: 8px 10px 2px; }
-.pane { padding: 14px 18px; display: grid; gap: 12px; align-content: start; overflow-y: auto; }
-.field { display: grid; gap: 5px; }
-.field > label { font-size: 12.5px; font-weight: 500; }
-.field > label.check { display: flex; gap: 8px; align-items: center; font-size: 13px; font-weight: 400; }
-.range-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13px; }
-.input.num-in { width: 5rem; font-family: var(--font-mono); }
+.map { display: grid; grid-template-columns: auto auto minmax(0,1fr); gap: 4px 10px; font-size: 12.5px; align-items: center; }
+.map .arrow { color: var(--fg3); }
 
-/* вариант В — таблица с раскрытием */
+/* --- после сохранения --- */
+.after { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; display: grid; gap: 12px; }
+.after h3 { font-size: 15px; font-weight: 600; }
+.after-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 860px) { .after-grid { grid-template-columns: minmax(0,1fr); } }
 table { border-collapse: collapse; width: 100%; font-size: 13px; }
 th { text-align: left; font-size: 11.5px; font-weight: 500; color: var(--fg3); padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
-td { padding: 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+td { padding: 7px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
 td.r, th.r { text-align: right; }
-tr.open td { border-bottom: 0; }
-tr.detail td { background: var(--sunken); padding: 10px 12px 12px; }
 .tw { border: 1px solid var(--border); border-radius: 10px; overflow-x: auto; }
-.caret { border: 0; background: transparent; color: var(--fg3); cursor: pointer; font-size: 12px; width: 20px; }
-.gap { height: 4px; }
+.ctx { border: 1px solid var(--border); border-radius: 10px; padding: 12px; display: grid; gap: 8px; font-size: 13px; }
+.ctx .name { font-family: var(--font-mono); font-size: 12px; color: var(--fg2); }
+.kv { display: grid; grid-template-columns: auto minmax(0,1fr); gap: 3px 12px; }
+.kv dt { color: var(--fg3); } .kv dd { margin: 0; }
+.sub-h { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--fg3); }
 </style>
 </head>
 <body>
 <div class="wrap">
   <header style="display:grid; gap:10px">
-    <p class="eyebrow">Малая фича «параметры семьи без предела» · макет гейта 1 · 19.10.2026</p>
-    <h1>Окно «Править схему»: три раскладки</h1>
-    <p class="lead">Семья «Устройство жб конструкций» со стенда <span class="num">gca_dev</span>: три главных параметра и их значения с числом строк, взятые оттуда. Сценарий — параметр «Коэффициент армирования» с диапазонами по 20 кг/м³, и сценариев три: добавить его второстепенным; добавить и сразу отметить главным (значений у строк ещё нет — нужны запросы, итог неизвестен); сделать главным уже сохранённый второстепенный (значения известны — запросов нет). В третьем сценарии числа строк у армирования и «станет вариантов» придуманы для примера: на стенде этого параметра ещё нет.</p>
+    <p class="eyebrow">Фича 3в «Параметры семьи без предела» · макет гейта 1 · 19.10.2026</p>
+    <h1>Окно «Править схему» — как будет</h1>
+    <p class="lead">Раскладка «Список и редактор» и все действия из дизайна на трёх семьях стенда <span class="num">gca_dev</span>. Параметры, значения, числа строк и контекстов, варианты и их слияния — со стенда на 19.10.2026. Придуманное подписано «пример»: число вариантов после того, как армирование станет главным, его распределение по диапазонам и ответы модели. Сравнение трёх раскладок, из которого выбрана эта, — <a href="layouts.html">layouts.html</a>.</p>
   </header>
 
-  <div class="bar">
-    <div><span class="lbl">Раскладка</span>
-      <div class="seg" id="layoutSeg">
-        <button aria-pressed="false" data-v="a">А. Карточки</button>
-        <button aria-pressed="true" data-v="b">Б. Список и редактор — выбрана</button>
-        <button aria-pressed="false" data-v="c">В. Таблица</button>
-      </div>
+  <div class="layout">
+    <nav class="scen" id="scen" aria-label="Сценарии"></nav>
+    <div class="main">
+      <div class="backdrop"><div id="dialogHost" style="width:100%; display:grid; justify-items:center"></div></div>
+      <div id="afterHost"></div>
+      <div class="design-note" id="noteHost"></div>
     </div>
-    <div><span class="lbl">Сценарий</span>
-      <div class="seg" id="scenSeg">
-        <button aria-pressed="true" data-s="secondary">Добавить второстепенный</button>
-        <button aria-pressed="false" data-s="newmain">Добавить сразу главным</button>
-        <button aria-pressed="false" data-s="promote">Сделать главным сохранённый</button>
-      </div>
-    </div>
-  </div>
-
-  <div class="stage">
-    <div class="backdrop"><div id="dialogHost" style="width:100%; display:grid; justify-items:center"></div></div>
-    <aside class="notes" id="notes"></aside>
   </div>
 </div>
 
 <script>
-// Данные стенда gca_dev, 19.10.2026: семья «Устройство жб конструкций», версия схемы 1; «строк» — все позиции контекстов семьи (договоры и тендеры).
-const FAMILY = { title: "Устройство жб конструкций", unit: "м³", variants: 72, contexts: 218 };
-const PARAMS = [
-  { id: 1, name: "Класс бетона по прочности", role: "main", values: [["B25",7436],["B35",4110],["B40",1280],["B50",366],["B60",203],["B70",18],["B100",18],["B90",12],["B80",9],["B55",5],["B30",4],["B45",3],["B7.5",0],["B15",0]] },
-  { id: 2, name: "Марка по водонепроницаемости", role: "main", values: [["W8",9110],["W12",2390],["W4",99],["W6",0]] },
-  { id: 3, name: "Тип конструкции", role: "main", values: [["балки",2886],["перекрытия",2862],["стены",2644],["пилоны",2411],["колонны",1041],["лестницы",726],["лестничные площадки",363],["плиты покрытий",169],["капители",66],["лестничные марши",44],["парапеты",22],["фундаментная плита",0],["трансферные конструкции",0],["ростверк",0],["рампы",0]] },
-  // Армирование: в сценариях «добавить» — новый параметр без значений у строк; в сценарии «сделать главным сохранённый» —
-  // уже сохранённый второстепенный, числа строк ПРИДУМАНЫ для примера (на стенде параметра ещё нет).
-  { id: 4, name: "Коэффициент армирования, кг/м³", role: "secondary",
-    get isNew() { return scen !== "promote"; },
-    get values() { return scen === "promote" ? ARM_EXAMPLE : ARM_NEW; } },
-];
-const ARM_NEW = [["до 120",null],["120–140",null],["140–160",null],["160–180",null],["180–200",null],["200 и более",null]];
-const ARM_EXAMPLE = [["до 120",0],["120–140",820],["140–160",160],["160–180",69],["180–200",0],["200 и более",0]];
-// secondary — добавить второстепенный; newmain — добавить и сразу отметить главным; promote — сделать главным уже сохранённый.
-let layout = "b", scen = "secondary";
+// ---------- данные стенда gca_dev, 19.10.2026 (только чтение) ----------
+// [значение, контекстов, строк]; «строк» — все позиции контекстов семьи (договоры и тендеры).
+const JB_CLASS = [["B25",43,7436],["B35",84,4110],["B40",32,1280],["B50",28,366],["B60",12,203],["B70",2,18],["B100",2,18],["B90",2,12],["B80",1,9],["B55",5,5],["B30",4,4],["B45",3,3],["B7.5",0,0],["B15",0,0]];
+const JB_W = [["W8",93,9110],["W12",51,2390],["W4",4,99],["W6",0,0]];
+const JB_TYPE = [["балки",30,2886],["перекрытия",42,2862],["стены",36,2644],["пилоны",24,2411],["колонны",44,1041],["лестницы",7,726],["лестничные площадки",2,363],["плиты покрытий",5,169],["капители",2,66],["лестничные марши",2,44],["парапеты",1,22],["фундаментная плита",0,0],["трансферные конструкции",0,0],["ростверк",0,0],["рампы",0,0]];
+const ARM_LABELS = ["до 120","120–140","140–160","160–180","180–200","200 и более"];
+const ARM_EXAMPLE = [["до 120",0,0],["120–140",126,820],["140–160",21,160],["160–180",9,69],["180–200",0,0],["200 и более",0,0]]; // пример
 
+const H_MAT = [["Техноэласт ЭПП",29,864],["Сейфити ЭПП",1,129],["Техноэласт Пламя Стоп",2,68],["Техноэласт Фундамент",5,37],["Икопал",2,18],["Техноэласт Барьер",1,1],["Техноэласт Грин",0,0],["Техноэласт ЭКП",0,0],["Унифлекс Вент",0,0],["Биполь ЭПП",0,0],["мембрана ExtraBase",0,0],["мембрана Logicbase V-SL",0,0],["Сейфити Joint Neodyl",0,0],["Сейфити Керамик ЭКП",0,0],["Технониколь Флекс",0,0]];
+const H_THICK = [["4",21,699],["8",5,276],["10",6,42],["9",2,18],["2",1,6],["5.1",1,1,"ext"],["1.5",0,0],["4.5",0,0],["5",0,0],["1",0,0],["2.5",0,0],["3",0,0]];
+const H_THICK_R2 = [["до 2",0,0],["2–4",1,6],["4–6",22,700],["6–8",0,0],["8–10",7,294],["10 и более",6,42]];
+const H_THICK_R1 = [["до 2",0,0],["2–3",null],["3–4",null],["4–5",null],["5–6",null],["6–7",null],["7–8",null],["8–9",null],["9–10",null],["10 и более",6,42]];
+const H_LAYERS = [["2",17,398],["1",7,264]];
+const H_TYPE = [["битумно-полимерная",null],["оклеечная",null]];
+
+const C_THICK = [["50 мм",32,963],["60 мм",5,309],["40 мм",10,245],["30 мм",11,224],["10 мм",2,210,"ext"],["до 100 мм",12,82,"ext"],["20 мм",6,74],["80 мм",5,61],["100 мм",3,51],["70 мм",3,19],["120 мм",1,17],["до 200 мм",2,10],["от 40 мм",1,1,"ext"]];
+const C_MARK = [["М150",19,274],["М200",16,209],["М100",18,148],["М300",6,124]];
+const C_ARM = [["сетка",28,648],["фиброволокно",14,124],["без армирования",0,0]];
+
+const FAM = {
+  jb: { title: "Устройство жб конструкций", unit: "м³", variants: 72, contexts: 218 },
+  h:  { title: "Укладка гидроизоляции", unit: "м²", variants: 18, contexts: 44 },
+  c:  { title: "ЦПС", unit: "м²", variants: 37, contexts: 113 },
+};
+// Параметр: id, name, role main|secondary, kind exact|range, closed, owner model|human|edited, values, range, isNew, rangeNote
+const P = (o) => Object.assign({ role: "main", kind: "exact", closed: false, owner: "model" }, o);
+const jbBase = () => [
+  P({ id: 1, name: "Класс бетона по прочности", values: JB_CLASS }),
+  P({ id: 2, name: "Марка по водонепроницаемости", values: JB_W }),
+  P({ id: 3, name: "Тип конструкции", values: JB_TYPE }),
+];
+const armNew = (role) => P({ id: 4, name: "Коэффициент армирования, кг/м³", role, kind: "range", closed: true, owner: "human", isNew: true,
+  values: ARM_LABELS.map(l => [l, null]), range: { from: 120, to: 200, step: 20, unit: "кг/м³" } });
+const hBase = () => [
+  P({ id: 1, name: "Тип материала", values: H_MAT }),
+  P({ id: 2, name: "Толщина, мм", values: H_THICK }),
+  P({ id: 3, name: "Количество слоёв", values: H_LAYERS }),
+];
+const hType = () => P({ id: 5, name: "Тип гидроизоляции", owner: "human", values: H_TYPE, isNew: true });
+const cBase = () => [
+  P({ id: 1, name: "Толщина стяжки", values: C_THICK }),
+  P({ id: 2, name: "Марка раствора", values: C_MARK }),
+  P({ id: 3, name: "Армирование", values: C_ARM }),
+];
+
+// ---------- сценарии ----------
+const S = [
+  { key: "jb-add-sec", fam: "jb", title: "Добавить армирование второстепенным", sub: "диапазоны 120–200, шаг 20",
+    params: () => [...jbBase(), armNew("secondary")], sel: 4, tone: "info",
+    summary: () => [
+      `Варианты семьи <b>не меняются</b>: их по-прежнему <span class="num">72</span>; значения главных параметров у строк остаются и заново не запрашиваются.`,
+      `У модели запросится только «Коэффициент армирования» — у <span class="num">218</span> контекстов семьи. Пока ответа нет — у строки «не уточнено».`],
+    after: "jbSec",
+    note: `<b>§2.2, §2.3.</b> Второстепенный параметр вариант не делит; добавление спрашивает модель только о нём. <b>§2.5.</b> Вид «Диапазоны»: границы и шаг, два крайних диапазона всегда, «только из списка» включён без возможности снять.` },
+  { key: "jb-add-main", fam: "jb", title: "Добавить армирование сразу главным", sub: "новый параметр, значений ещё нет",
+    params: () => [...jbBase(), armNew("main")], sel: 4, tone: "warn",
+    summary: () => [
+      `Добавляется главный параметр: варианты семьи <b>соберутся заново</b> — сейчас <span class="num">72</span>, сколько станет, будет известно только после ответов модели.`,
+      `У модели запросится «Коэффициент армирования» — у <span class="num">218</span> контекстов; значения остальных главных у строк остаются.`],
+    note: `<b>§2.3.</b> Параметр, добавленный в этой же правке и сразу отмеченный главным, — это добавление главного, а не смена роли: значений у строк ещё нет, итог неизвестен (ревью Codex, PR #71).` },
+  { key: "jb-promote", fam: "jb", title: "Сделать главным сохранённое армирование", sub: "значения уже известны · числа — пример",
+    params: () => [...jbBase(), P({ id: 4, name: "Коэффициент армирования, кг/м³", role: "main", kind: "range", closed: true, owner: "human", values: ARM_EXAMPLE, range: { from: 120, to: 200, step: 20, unit: "кг/м³" }, example: true })], sel: 4, tone: "warn",
+    summary: () => [
+      `Сохранённый второстепенный становится главным: варианты <b>делятся по его значениям</b> — было <span class="num">72</span>, станет <span class="num">118</span> <span class="xs">(пример)</span>.`,
+      `Строки, где армирование «не уточнено», попадут в варианты со значением «не уточнено».`,
+      `Значения армирования уже известны — у модели ничего не запрашивается.`],
+    note: `<b>§2.3.</b> Смена роли «по известным значениям» — только у сохранённого параметра. Если потом вернуть его во второстепенные и снова сделать главным, вернутся те же варианты, а не новые.` },
+  { key: "jb-demote", fam: "jb", title: "«Марку по водонепроницаемости» — во второстепенные", sub: "варианты сливаются: 72 → 48",
+    params: () => { const p = jbBase(); p[1].role = "secondary"; p[1].owner = "edited"; return p; }, sel: 2, tone: "warn",
+    summary: () => [
+      `Главный становится второстепенным: варианты <b>сливаются</b> — было <span class="num">72</span>, станет <span class="num">48</span>. Например, «B40 · перекрытия» соберёт «B40 · не уточнено · перекрытия» (6 контекстов), «B40 · W8 · перекрытия» (4) и «B40 · W12 · перекрытия» (2).`,
+      `Марка остаётся у строк и видна на карточке контекста; у модели ничего не запрашивается.`],
+    after: "jbDemote",
+    note: `<b>§2.2, §2.3.</b> Обратная смена роли. 48 — число различных пар «класс · тип» среди 72 вариантов стенда. Параметр модели, у которого человек сменил роль, становится параметром человека (§2.4) — пометка «правлен вами».` },
+
+  { key: "h-add-main", fam: "h", title: "Добавить главный «Тип гидроизоляции»", sub: "четвёртый главный параметр",
+    params: () => [...hBase(), hType()], sel: 5, tone: "warn",
+    summary: () => [
+      `Добавляется главный параметр: варианты семьи <b>соберутся заново</b> — сейчас <span class="num">18</span>, сколько станет, будет известно после ответов модели.`,
+      `У модели запросится только «Тип гидроизоляции» — у <span class="num">44</span> контекстов; тип материала, толщина и число слоёв у строк остаются.`],
+    note: `<b>§2.1.</b> Предел трёх параметров снят для ручной правки: здесь их четыре, всего можно до 10 — счётчик под списком. Значения пользователь назвал сам: «битумно-полимерная / оклеечная».` },
+  { key: "h-to-range", fam: "h", title: "Перевести «Толщину» в диапазоны", sub: "все 12 значений — числа: без модели",
+    params: () => { const p = [...hBase(), Object.assign(hType(), { isNew: false, values: [["битумно-полимерная",30,820],["оклеечная",11,240]], example: true })];
+      p[1] = Object.assign(p[1], { kind: "range", closed: true, owner: "edited", values: H_THICK_R2, range: { from: 2, to: 10, step: 2, unit: "мм" }, mapping: [
+        ["1, 1.5", "до 2"], ["2, 2.5, 3", "2–4"], ["4, 4.5, 5, 5.1", "4–6"], ["—", "6–8"], ["8, 9", "8–10"], ["10", "10 и более"]] }); return p; }, sel: 2, tone: "warn",
+    summary: () => [
+      `Все 12 прежних значений — числа: каждое <b>переносится в свой диапазон без модели</b>, запросов <span class="num">0</span>.`,
+      `«Толщина» — главный параметр: варианты меняются сразу, <span class="num">18 → 17</span> — «Техноэласт Фундамент · 5.1 · не уточнено» и «Техноэласт Фундамент · 4 · не уточнено» сливаются в «… · 4–6 · не уточнено».`,
+      `Прежние значения не удаляются, а сливаются с новыми диапазонами.`],
+    note: `<b>§2.3 «Перестройка значений».</b> Точное число однозначно попадает в один диапазон. «5.1» модель когда-то дописала сама — теперь это просто число из диапазона «4–6». Значения «Тип гидроизоляции» здесь — пример, как будто ответы уже пришли.` },
+  { key: "h-step", fam: "h", title: "Уменьшить шаг «Толщины» с 2 до 1", sub: "делящиеся диапазоны — к модели",
+    params: () => { const p = [...hBase(), Object.assign(hType(), { isNew: false, values: [["битумно-полимерная",30,820],["оклеечная",11,240]], example: true })];
+      p[1] = Object.assign(p[1], { kind: "range", closed: true, owner: "edited", values: H_THICK_R1, range: { from: 2, to: 10, step: 1, unit: "мм" }, mapping: [
+        ["до 2", "до 2 — переносится"], ["2–4 (1 контекст)", "2–3 / 3–4 — уточнит модель"], ["4–6 (22)", "4–5 / 5–6 — уточнит модель"], ["6–8 (0)", "6–7 / 7–8 — строк нет"], ["8–10 (7)", "8–9 / 9–10 — уточнит модель"], ["10 и более (6)", "10 и более — переносится"]] }); return p; }, sel: 2, tone: "warn",
+    summary: () => [
+      `Переносятся без модели: «до 2» и «10 и более» — <span class="num">6</span> контекстов.`,
+      `Делятся «2–4», «4–6» и «8–10»: у <span class="num">30</span> контекстов «Толщина» уточнится у модели — только она. Точных чисел больше нет: при переводе в диапазоны они слились.`,
+      `До ответа контекст остаётся в прежнем варианте с прежним значением и пометкой «уточняется»; варианты этих контекстов изменятся после ответов.`,
+      `Разделившиеся значения уходят из списка в историю — не удаляются.`],
+    after: "hStep",
+    note: `<b>§2.3 «Перестройка значений»</b> — замечание второго круга ревью Codex: смена шага не может молча разнести «4–6» на «4–5» и «5–6».` },
+  { key: "h-rebuild", fam: "h", title: "«Пересобрать схему»", sub: "ваши параметры остаются",
+    rebuild: true,
+    note: `<b>§2.4.</b> Пересборка заменяет только параметры модели. Параметр модели, который вы правили (здесь «Тип материала» — включён «только из списка»), становится вашим. Модель видит ваши параметры и не повторяет их; предлагает до трёх, но не больше, чем оставляет предел 10.` },
+
+  { key: "c-closed", fam: "c", title: "Закрыть список «Толщины стяжки»", sub: "значения, дописанные моделью",
+    params: () => { const p = cBase(); p[0].closed = true; p[0].owner = "edited"; p[0].outOfList = true; return p; }, sel: 1, tone: "info",
+    summary: () => [
+      `Список закрыт: <b>новых значений модель больше не заводит</b> — выбирает из списка или отвечает «не уточнено».`,
+      `Варианты не меняются, запросов нет. Уже дописанные моделью значения остаются — их можно слить с существующими (⋯ на плашке).`],
+    note: `<b>§2.5 «Только из списка».</b> Оранжевые плашки — значения, которые модель дописала сама: на стенде так дописано 115 значений в 32 параметрах. «до 100 мм» и «от 40 мм» она взяла прямо из наименований («толщ. до 100мм»), но в списке точных толщин граница смешалась с толщиной: строку «до 100 мм» не сравнить ни с «50 мм», ни с «100 мм». Закрытый список такие значения больше не заводит, а показывает человеку. Блок «Встретились значения не из списка» — пример.` },
+];
+
+// ---------- отрисовка ----------
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const fmt = n => n.toLocaleString("ru-RU");
-const rowsOf = p => p.values.reduce((s, [, n]) => s + (n || 0), 0);
-const roleOf = p => (p.id === 4 ? (scen === "secondary" ? "secondary" : "main") : p.role);
-const mains = () => PARAMS.filter(p => roleOf(p) === "main");
-const secs = () => PARAMS.filter(p => roleOf(p) === "secondary");
+const rowsOf = p => p.values.reduce((s, v) => s + (v[2] || 0), 0);
+let cur = S[0], selId = cur.sel;
 
-function chip([v, n], isNew) {
-  if (isNew) return `<span class="chip added">${esc(v)}<span class="n">новое</span><button class="more" title="Убрать из правки">×</button></span>`;
-  return `<span class="chip${n === 0 ? " zero" : ""}" title="${n === 0 ? "Ни одна строка не получила это значение" : fmt(n) + " строк"}">${esc(v)}<span class="n">${fmt(n)}</span><button class="more" title="Слить с другим значением…">⋯</button></span>`;
+function chip(v, p) {
+  const [label, ctxs, rows, flag] = v;
+  if (ctxs === null || ctxs === undefined) return `<span class="chip added plain">${esc(label)}<span class="n">новое</span></span>`;
+  const cls = flag === "ext" ? " ext" : (rows === 0 ? " zero" : "");
+  const title = flag === "ext" ? "Дописано моделью · " : "";
+  return `<span class="chip${cls}" title="${title}${fmt(ctxs)} контекстов">${esc(label)}<span class="n">${fmt(rows)}</span>${p.kind === "range" ? "" : `<button class="more" title="Слить с другим значением…">⋯</button>`}</span>`;
 }
-function chipsOf(p) {
-  return `<div class="chips">${p.values.map(v => chip(v, p.isNew)).join("")}<span class="chip add"><input placeholder="+ добавить значение" aria-label="Новое значение параметра ${esc(p.name)}"></span></div>`;
-}
-function roleSeg(p) {
-  const r = roleOf(p);
-  return `<div class="seg small" role="group" aria-label="Роль параметра"><button aria-pressed="${r === "main"}">Главный</button><button aria-pressed="${r === "secondary"}">Второстепенный</button></div>`;
-}
-function metaOf(p) {
+function ownerTag(p) {
   if (p.isNew) return `<span class="badge new">новый</span>`;
-  const used = p.values.filter(([, n]) => n > 0).length;
-  return `<span class="meta">${p.values.length} значений, из них встречаются в строках ${used} · всего <span class="num">${fmt(rowsOf(p))}</span> строк${p.id === 4 ? " (числа для примера)" : ""}</span>`;
+  if (p.owner === "human") return `<span class="badge human">ваш</span>`;
+  if (p.owner === "edited") return `<span class="badge human">модели · правлен вами</span>`;
+  return `<span class="badge">модели</span>`;
 }
+function seg(options, on) { return `<div class="seg" role="group">${options.map(o => `<button aria-pressed="${o === on}">${o}</button>`).join("")}</div>`; }
 
-function summary() {
-  if (scen === "secondary") return `<div class="summary">
-    <b>Что изменит правка</b>
-    <ul>
-      <li>Варианты семьи <b>не меняются</b>: их по-прежнему <span class="num">${FAMILY.variants}</span>; значения главных параметров у строк остаются и заново не запрашиваются.</li>
-      <li>У модели запросится только «Коэффициент армирования» — у <span class="num">${FAMILY.contexts}</span> контекстов семьи; пока ответа нет — у строки «не уточнено».</li>
-    </ul></div>`;
-  if (scen === "newmain") return `<div class="summary warn">
-    <b>Что изменит правка</b>
-    <ul>
-      <li>Добавляется главный параметр: варианты семьи <b>соберутся заново</b> — сейчас <span class="num">${FAMILY.variants}</span>, сколько станет, будет известно только после ответов модели.</li>
-      <li>У модели запросится «Коэффициент армирования» — у <span class="num">${FAMILY.contexts}</span> контекстов семьи; значения остальных главных у строк остаются.</li>
-    </ul></div>`;
-  return `<div class="summary warn">
-    <b>Что изменит правка</b>
-    <ul>
-      <li>Сохранённый второстепенный становится главным: варианты <b>делятся по его значениям</b> — было <span class="num">${FAMILY.variants}</span>, станет <span class="num">118</span> <span class="xs">(число для примера)</span>.</li>
-      <li>Строки, где армирование «не уточнено», попадут в варианты со значением «не уточнено».</li>
-      <li>Значения армирования уже известны — заново у модели ничего не запрашивается.</li>
-    </ul></div>`;
-}
-function footer() {
-  return `<div class="df">${summary()}<div class="row"><button class="btn ghost">Отмена</button><button class="btn primary">Сохранить схему</button></div></div>`;
-}
-function header(sub) {
-  return `<div class="dh"><h2>Править схему</h2><p class="fam">${esc(FAMILY.title)} · ${FAMILY.unit} · версия 1 · <span class="num">${FAMILY.variants}</span> вариантов</p>${sub ? `<p class="hint">${sub}</p>` : ""}</div>`;
-}
-
-// А — карточки, сгруппированные по роли
-function viewA() {
-  const card = p => `<div class="card${p.isNew ? " new" : ""}">
-    <div class="card-h"><input class="input" value="${esc(p.name)}" aria-label="Имя параметра">${roleSeg(p)}<button class="btn danger sm" title="Убрать параметр">Убрать</button></div>
-    <div>${metaOf(p)}</div>${chipsOf(p)}</div>`;
-  const ms = mains(), ss = secs();
-  return `<div class="dialog w-a">${header("Значение нельзя удалить — его сливают с другим (⋯ на плашке). Пунктир — значение, которое не получила ни одна строка.")}
-    <div class="db">
-      <div class="group-h"><b>Главные</b><span>определяют вариант · ${ms.length}</span></div>
-      ${ms.map(card).join("")}
-      <div class="group-h"><b>Второстепенные</b><span>уточняют строку, вариант не делят · ${ss.length}</span></div>
-      ${ss.length ? ss.map(card).join("") : `<p class="hint">Нет.</p>`}
-      <div><button class="btn">+ Добавить параметр</button></div>
-    </div>${footer()}</div>`;
-}
-
-// Б — список параметров слева, редактор выбранного справа
-// Вид значений: у армирования — диапазоны (границы «от — до — шаг», подписи строит система), у остальных — точные.
-let selId = 4;
-const isRange = p => p.id === 4;
 function valuesField(p) {
-  const kindSeg = `<div class="seg small" role="group" aria-label="Вид значений"><button aria-pressed="${!isRange(p)}">Точные</button><button aria-pressed="${isRange(p)}">Диапазоны</button></div>`;
-  if (!isRange(p)) return `<div class="field"><label>Значения</label>${kindSeg}${chipsOf(p)}
-    <p class="hint">Точные значения — когда их немного и каждое значимо само по себе: класс бетона, число слоёв, толщина 4 или 8 мм.</p>
-    <label class="check"><input type="checkbox" style="accent-color:var(--accent)"> Только из списка — модель не заводит новых значений, список меняет только человек</label>
-    <div class="summary" style="font-size:12.5px"><b>Встретились значения не из списка <span class="xs" style="font-weight:400">(пример — так выглядит, когда список закрыт)</span></b>
-      <div>У <span class="num">12</span> строк в наименовании нашлись значения, которых нет в списке:</div>
-      <div class="chips"><span class="chip">B42<span class="n">8</span></span><button class="btn sm">Добавить в список</button><button class="btn sm ghost">Слить с…</button></div>
-      <div class="chips"><span class="chip">B47<span class="n">4</span></span><button class="btn sm">Добавить в список</button><button class="btn sm ghost">Слить с…</button></div></div></div>`;
-  const preview = p.values.map(([v, n]) => n === null
-    ? `<span class="chip added">${esc(v)}<span class="n">новое</span></span>`
-    : `<span class="chip${n === 0 ? " zero" : ""}">${esc(v)}<span class="n">${fmt(n)}</span></span>`).join("");
-  return `<div class="field"><label>Значения</label>${kindSeg}
-    <div class="range-row"><span>от</span><input class="input num-in" value="120" aria-label="Нижняя граница"><span>до</span><input class="input num-in" value="200" aria-label="Верхняя граница"><span>шаг</span><input class="input num-in" value="20" aria-label="Шаг"><span class="t3 sm">кг/м³ — из имени параметра</span></div>
-    <p class="hint">Получится ${p.values.length - 2} диапазона от 120 до 200 и 2 крайних — «до 120» и «200 и более»; подписи строит система, дыр и перекрытий нет:</p>
-    <div class="chips">${preview}</div>
-    <p class="hint">Модель найдёт число в наименовании и отнесёт его к диапазону: нижняя граница включается, верхняя — нет (131,73 → «120–140», 140 → «140–160», 200 → «200 и более»). Число не найдено — «не уточнено».</p>
-    <label class="check" style="color:var(--fg3)"><input type="checkbox" checked disabled> Только из списка — для диапазонов включено всегда</label></div>`;
+  const kind = seg(["Точные", "Диапазоны"], p.kind === "range" ? "Диапазоны" : "Точные");
+  if (p.kind === "exact") {
+    const ext = p.values.some(v => v[3] === "ext") ? `<p class="hint"><span class="chip ext plain" style="height:20px">оранжевая</span> — значение, дописанное моделью; его можно слить с существующим.</p>` : "";
+    const oof = p.outOfList ? `<div class="summary" style="font-size:12.5px"><b>Встретились значения не из списка <span class="xs" style="font-weight:400">(пример)</span></b>
+        <div>У <span class="num">3</span> строк в наименовании нашлись значения, которых нет в списке:</div>
+        <div class="chips"><span class="chip plain">5 см<span class="n">2</span></span><button class="btn sm">Добавить в список</button><button class="btn sm ghost">Слить с «50 мм»…</button></div>
+        <div class="chips"><span class="chip plain">45 мм<span class="n">1</span></span><button class="btn sm">Добавить в список</button><button class="btn sm ghost">Слить с…</button></div></div>` : "";
+    return `<div class="field"><span class="lbl">Значения</span>${kind}
+      <div class="chips">${p.values.map(v => chip(v, p)).join("")}<span class="chip add"><input placeholder="+ добавить значение" aria-label="Новое значение"></span></div>
+      <p class="hint">Число строк — на плашке, пунктир — значение без строк. Удалить значение нельзя, только слить (⋯).</p>${ext}
+      <label class="check"><input type="checkbox" ${p.closed ? "checked" : ""}> Только из списка — модель не заводит новых значений, список меняет только человек</label>${oof}</div>`;
+  }
+  const r = p.range, inner = p.values.length - 2;
+  const map = p.mapping ? `<div class="field"><span class="lbl">Что станет с прежними значениями</span><div class="map">${p.mapping.map(([a, b]) => `<span class="num">${esc(a)}</span><span class="arrow">→</span><span>${esc(b)}</span>`).join("")}</div></div>` : "";
+  return `<div class="field"><span class="lbl">Значения</span>${kind}
+    <div class="range-row"><span>от</span><input class="input num-in" value="${r.from}" aria-label="Нижняя граница"><span>до</span><input class="input num-in" value="${r.to}" aria-label="Верхняя граница"><span>шаг</span><input class="input num-in" value="${r.step}" aria-label="Шаг"><span class="t3 sm">${r.unit} — из имени параметра</span></div>
+    <p class="hint">Получится ${inner} ${inner < 5 ? "диапазона" : "диапазонов"} от ${r.from} до ${r.to} и 2 крайних — «до ${r.from}» и «${r.to} и более»; подписи строит система, дыр и перекрытий нет${p.example ? " · числа строк — пример" : ""}:</p>
+    <div class="chips">${p.values.map(v => chip(v, p)).join("")}</div>
+    <p class="hint">Модель найдёт число в наименовании и отнесёт его к диапазону: нижняя граница включается, верхняя — нет (например, ${r.from + r.step} → «${r.from + r.step}–${r.from + 2 * r.step}», ${r.to} → «${r.to} и более»). Числа нет — «не уточнено».</p>
+    <label class="check" style="color:var(--fg3)"><input type="checkbox" checked disabled> Только из списка — для диапазонов включено всегда</label></div>${map}`;
 }
-function viewB() {
-  const sel = PARAMS.find(p => p.id === selId);
-  const kindTag = p => (isRange(p) ? "диапазоны · " : "");
-  const item = p => `<div class="item" data-id="${p.id}" role="button" tabindex="0" aria-current="${p === sel}"><b>${esc(p.name)}</b><span>${kindTag(p)}${p.isNew ? "новый · " + p.values.length + " значений" : p.values.length + " значений · " + fmt(rowsOf(p)) + " строк"}</span></div>`;
-  return `<div class="dialog w-b">${header()}
+
+function editDialog(sc) {
+  const f = FAM[sc.fam], params = sc.params();
+  const sel = params.find(p => p.id === selId) || params.find(p => p.id === sc.sel);
+  const mains = params.filter(p => p.role === "main"), secs = params.filter(p => p.role === "secondary");
+  const item = p => `<div class="item" role="button" tabindex="0" data-id="${p.id}" aria-current="${p === sel}">
+      <b>${esc(p.name)}</b>
+      <span>${p.kind === "range" ? "диапазоны · " : ""}${p.values.length} значений${p.values.every(v => v[1] !== null && v[1] !== undefined) ? " · " + fmt(rowsOf(p)) + " строк" : ""}${p.closed && p.kind === "exact" ? " · только из списка" : ""}</span>
+      <span>${ownerTag(p)}</span></div>`;
+  return `<div class="dialog">
+    <div class="dh"><h2>Править схему</h2><p class="fam">${esc(f.title)} · ${f.unit} · <span class="num">${f.variants}</span> вариантов · <span class="num">${f.contexts}</span> контекстов</p></div>
     <div class="split" style="min-height:0">
       <nav class="side" aria-label="Параметры">
-        <div class="sep">Главные · определяют вариант</div>${mains().map(item).join("")}
-        <div class="sep">Второстепенные · вариант не делят</div>${secs().map(item).join("") || `<p class="hint" style="padding:0 10px">Нет.</p>`}
-        <div style="padding:6px 4px"><button class="btn sm">+ Добавить параметр</button></div>
+        <div class="sep">Главные · определяют вариант</div>${mains.map(item).join("")}
+        <div class="sep">Второстепенные · вариант не делят</div>${secs.map(item).join("") || `<p class="hint" style="padding:0 10px">Нет.</p>`}
+        <div style="padding:6px 4px 0"><button class="btn sm">+ Добавить параметр</button></div>
+        <p class="limit">${params.length} из 10 параметров</p>
       </nav>
       <div class="pane">
-        <div class="field"><label for="bname">Имя параметра</label><input id="bname" class="input" value="${esc(sel.name)}"></div>
-        <div class="field"><label>Роль</label>${roleSeg(sel)}<p class="hint">Главный параметр делит семью на варианты, и у каждого варианта свой норматив. Второстепенный записывается у строки и виден рядом с ценой, но вариант не делит.</p></div>
+        <div class="field"><label for="pname">Имя параметра</label><input id="pname" class="input" value="${esc(sel.name)}"></div>
+        <div class="field"><span class="lbl">Роль</span>${seg(["Главный", "Второстепенный"], sel.role === "main" ? "Главный" : "Второстепенный")}
+          <p class="hint">Главный параметр делит семью на варианты, и у каждого варианта свой норматив. Второстепенный записывается у строки и виден рядом с ценой, но вариант не делит.</p></div>
         ${valuesField(sel)}
-        <div style="display:flex; justify-content:flex-end"><button class="btn danger sm">Убрать параметр</button></div>
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap">${ownerTag(sel)}<button class="btn danger sm">Убрать параметр</button></div>
       </div>
-    </div>${footer()}</div>`;
+    </div>
+    <div class="df"><div class="summary${sc.tone === "warn" ? " warn" : ""}"><b>Что изменит правка</b><ul>${sc.summary().map(s => `<li>${s}</li>`).join("")}</ul></div>
+      <div class="row"><button class="btn ghost">Отмена</button><button class="btn primary">Сохранить схему</button></div></div>
+  </div>`;
 }
 
-// В — компактная таблица, параметр раскрывается в значения
-function viewC() {
-  const row = (p, open) => `<tr class="${open ? "open" : ""}">
-      <td><button class="caret" aria-expanded="${open}">${open ? "▾" : "▸"}</button></td>
-      <td><b style="font-weight:500">${esc(p.name)}</b>${p.isNew ? ` <span class="badge new">новый</span>` : ""}</td>
-      <td>${roleSeg(p)}</td>
-      <td class="r num">${p.values.length}</td>
-      <td class="r num">${p.isNew ? "—" : fmt(rowsOf(p))}</td>
-      <td class="r"><button class="btn danger sm" title="Убрать параметр">×</button></td></tr>
-    ${open ? `<tr class="detail"><td></td><td colspan="5">${chipsOf(p)}</td></tr>` : ""}`;
-  return `<div class="dialog w-c">${header("Строка раскрывается в значения. Пунктир — значение, которое не получила ни одна строка.")}
-    <div class="db"><div class="tw"><table>
-      <thead><tr><th></th><th>Параметр</th><th>Роль</th><th class="r">Значений</th><th class="r">Строк</th><th></th></tr></thead>
-      <tbody>${PARAMS.map(p => row(p, p.isNew || p.id === 3)).join("")}</tbody></table></div>
-      <div><button class="btn">+ Добавить параметр</button></div>
-    </div>${footer()}</div>`;
+function rebuildDialog() {
+  const row = (name, why, tag) => `<tr><td><b style="font-weight:500">${esc(name)}</b></td><td class="t2">${why}</td><td>${tag}</td></tr>`;
+  return `<div class="dialog small">
+    <div class="dh"><h2>Пересобрать схему</h2><p class="fam">Укладка гидроизоляции · м² · <span class="num">18</span> вариантов · <span class="num">44</span> контекста</p></div>
+    <div class="db">
+      <p>Модель построит свою часть схемы заново. Ваши параметры она увидит в запросе и не будет повторять.</p>
+      <div class="sub-h">Останутся — ваши</div>
+      <div class="tw"><table><tbody>
+        ${row("Тип гидроизоляции", "добавлен вами · главный", `<span class="badge human">ваш</span>`)}
+        ${row("Толщина, мм", "правлен вами: переведён в диапазоны", `<span class="badge human">модели · правлен вами</span>`)}
+        ${row("Тип материала", "правлен вами: включено «только из списка»", `<span class="badge human">модели · правлен вами</span>`)}
+      </tbody></table></div>
+      <div class="sub-h">Заменятся — параметры модели, которые никто не правил</div>
+      <div class="tw"><table><tbody>
+        ${row("Количество слоёв", "2 значения · 662 строки", `<span class="badge">модели</span>`)}
+      </tbody></table></div>
+      <div class="summary warn"><b>Что произойдёт</b><ul>
+        <li>Модель предложит до <span class="num">3</span> новых параметров: занято 3 из 10, место есть.</li>
+        <li>Варианты семьи <b>соберутся заново</b> — состав главных меняется; итог известен после ответов.</li>
+        <li>У модели запросятся значения только её новых параметров — у <span class="num">44</span> контекстов; значения ваших параметров у строк остаются.</li>
+      </ul></div>
+    </div>
+    <div class="df"><div class="row"><button class="btn ghost">Отмена</button><button class="btn primary">Пересобрать</button></div></div>
+  </div>`;
 }
 
-const NOTES = {
-  a: `<h3>А. Карточки</h3><ul>
-    <li>Ближе всего к сегодняшнему окну: тот же столбец, но параметр — карточка, значения — плашки с числом строк.</li>
-    <li>Главные и второстепенные — двумя группами; смена роли переносит карточку.</li>
-    <li>Цена: при 5–6 параметрах по 15 значений окно длинное, прокрутка неизбежна.</li></ul>`,
-  b: `<h3>Б. Список и редактор</h3><ul>
-    <li>Окно шире: слева все параметры одним взглядом, справа — один выбранный.</li>
-    <li>Растёт без прокрутки списка: параметров может быть сколько угодно.</li>
-    <li>Цена: значения разных параметров не видны одновременно — сверять их приходится переключением.</li>
-    <li>Параметры слева кликабельны: у армирования — вид «Диапазоны» (границы от — до — шаг), у остальных — «Точные».</li></ul>`,
-  c: `<h3>В. Таблица</h3><ul>
-    <li>Самая плотная раскладка: роль, число значений и строк — в строке параметра.</li>
-    <li>Значения раскрываются по требованию; здесь раскрыты новый параметр и «Тип конструкции».</li>
-    <li>Цена: имя параметра правится отдельным действием, а не прямо в строке.</li></ul>`,
+const AFTER = {
+  jbSec: () => `<div class="after"><h3>После сохранения и ответов модели</h3><div class="after-grid">
+    <div><div class="sub-h" style="margin-bottom:6px">Варианты семьи — подпись только из главных, их по-прежнему 72</div>
+      <div class="tw"><table><thead><tr><th>Вариант</th><th class="r">Контекстов</th><th class="r">Строк</th></tr></thead><tbody>
+        <tr><td>B25 · W8 · балки</td><td class="r num">7</td><td class="r num">1 716</td></tr>
+        <tr><td>B25 · W8 · перекрытия</td><td class="r num">11</td><td class="r num">1 628</td></tr>
+        <tr><td>B25 · W8 · стены</td><td class="r num">4</td><td class="r num">1 430</td></tr>
+        <tr><td>B25 · W8 · пилоны</td><td class="r num">4</td><td class="r num">1 430</td></tr>
+        <tr><td>B35 · W12 · балки</td><td class="r num">14</td><td class="r num">880</td></tr>
+      </tbody></table></div></div>
+    <div class="ctx"><div class="sub-h">Карточка контекста</div>
+      <div class="name">Балки В25;F150;W8 коэф. армир.131,73 кг/м3</div>
+      <div class="sub-h">Главные — вариант «B25 · W8 · балки»</div>
+      <dl class="kv"><dt>Класс бетона</dt><dd>B25 · из наименования</dd><dt>Марка</dt><dd>W8 · из наименования</dd><dt>Тип конструкции</dt><dd>балки · из наименования</dd></dl>
+      <div class="sub-h">Второстепенные</div>
+      <dl class="kv"><dt>Армирование</dt><dd>120–140 кг/м³ · из наименования <span class="xs t3">(пример ответа)</span></dd></dl>
+      <p class="hint">В остальных 7 договорах армирование в наименованиях не пишут — там «не уточнено».</p></div>
+  </div></div>`,
+  jbDemote: () => `<div class="after"><h3>После сохранения — варианты слились, 72 → 48</h3>
+    <div class="tw"><table><thead><tr><th>Вариант после</th><th>Собран из</th><th class="r">Контекстов</th></tr></thead><tbody>
+      <tr><td>B40 · перекрытия</td><td class="t2">B40 · не уточнено · перекрытия (6), B40 · W8 · перекрытия (4), B40 · W12 · перекрытия (2)</td><td class="r num">12</td></tr>
+      <tr><td>B25 · перекрытия</td><td class="t2">B25 · W8 · перекрытия (11), B25 · W4 · перекрытия (1), B25 · W12 · перекрытия (1)</td><td class="r num">13</td></tr>
+      <tr><td>B25 · балки</td><td class="t2">B25 · W8 · балки (7), B25 · W12 · балки (1)</td><td class="r num">8</td></tr>
+      <tr><td>B35 · балки</td><td class="t2">B35 · W12 · балки (14), B35 · W8 · балки (3)</td><td class="r num">17</td></tr>
+    </tbody></table></div>
+    <p class="hint">Марка остаётся у каждой строки — на карточке контекста в группе «Второстепенные».</p></div>`,
+  hStep: () => `<div class="after"><h3>До ответа модели — карточка контекста с делящимся значением</h3>
+    <div class="ctx" style="max-width:560px"><div class="name">Техноэласт ЭПП в 1 слой, толщина 4 мм <span class="xs t3">(пример наименования)</span></div>
+      <div class="sub-h">Главные — вариант «Техноэласт ЭПП · 4–6 · 1», пока прежний</div>
+      <dl class="kv"><dt>Тип материала</dt><dd>Техноэласт ЭПП</dd><dt>Толщина, мм</dt><dd>4–6 · <span class="badge warn">уточняется</span></dd><dt>Количество слоёв</dt><dd>1</dd><dt>Тип гидроизоляции</dt><dd>битумно-полимерная <span class="xs t3">(пример)</span></dd></dl>
+      <p class="hint">Строка не прыгает в «не уточнено» и обратно: после ответа она перейдёт в вариант «… · 4–5 · 1».</p></div></div>`,
 };
 
+function renderNav() {
+  const groups = [["jb", "Устройство жб конструкций"], ["h", "Укладка гидроизоляции"], ["c", "ЦПС"]];
+  document.getElementById("scen").innerHTML = groups.map(([k, t]) =>
+    `<div class="fam-h">${t}</div>` + S.filter(s => s.fam === k).map(s =>
+      `<button data-key="${s.key}" aria-pressed="${s === cur}">${esc(s.title)}<small>${esc(s.sub)}</small></button>`).join("")).join("");
+}
 function render() {
-  document.getElementById("dialogHost").innerHTML = { a: viewA, b: viewB, c: viewC }[layout]();
-  document.getElementById("notes").innerHTML = NOTES[layout] +
-    `<h3>Во всех трёх</h3><ul><li>Сводка «что изменит правка» — до сохранения, а не после.</li><li>Удаления значения нет, как и сегодня: только слияние (⋯).</li><li>Только примитивы shadcn/ui: Dialog, Input, ToggleGroup, Badge, Button, Table.</li></ul>`;
+  renderNav();
+  document.getElementById("dialogHost").innerHTML = cur.rebuild ? rebuildDialog() : editDialog(cur);
+  document.getElementById("afterHost").innerHTML = cur.after ? AFTER[cur.after]() : "";
+  document.getElementById("noteHost").innerHTML = `<span>${cur.note}</span>`;
 }
-function wire(id, key, set) {
-  document.getElementById(id).addEventListener("click", e => {
-    const b = e.target.closest("button"); if (!b) return;
-    set(b.dataset[key]);
-    document.querySelectorAll(`#${id} button`).forEach(x => x.setAttribute("aria-pressed", x === b));
-    render();
-  });
-}
+document.getElementById("scen").addEventListener("click", e => {
+  const b = e.target.closest("button[data-key]"); if (!b) return;
+  cur = S.find(s => s.key === b.dataset.key); selId = cur.sel; render();
+});
 document.getElementById("dialogHost").addEventListener("click", e => {
   const it = e.target.closest(".side .item"); if (!it) return;
   selId = Number(it.dataset.id); render();
 });
-wire("layoutSeg", "v", v => layout = v);
-wire("scenSeg", "s", s => scen = s);
 render();
 </script>
 </body>

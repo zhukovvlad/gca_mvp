@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Окно «Править схему»</title>
+<style>
+/* Токены повторяют frontend/src/index.css; внешних шрифтов и скриптов нет — CDN с рабочей машины недоступен. */
+:root {
+  --bg-page: #F4F2EC; --surface: #FFFFFF; --sunken: #F7F6F2; --hover: #FAFAF7;
+  --fg: #1F2128; --fg2: #5A5D66; --fg3: #8E8B82; --muted: #B5B2A8;
+  --border: rgba(0,0,0,.08); --border2: rgba(0,0,0,.14);
+  --accent: #5F8568; --accent-soft: #E8F0EA; --accent-border: #C9D9CD; --accent-text: #3D5443;
+  --action: #2D3A30; --action-text: #F7F6F2;
+  --warn: #B5642E; --warn-soft: #FAF1E1; --warn-border: #E8C8A8; --warn-text: #6B3915;
+  --info-soft: #E5EEF4; --info-border: #C5D7E2; --info-text: #2C4A60;
+  --neutral-soft: #EFEEE6; --neutral-border: #D8D4C8; --neutral-text: #5F5E5A;
+  --danger-soft: #F9E7E7; --danger-text: #7A2424; --danger-border: #E8C8C8;
+  --shadow: 0 1px 2px rgba(0,0,0,.05), 0 12px 32px rgba(0,0,0,.10);
+  --font-sans: "Geist", "Inter", -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-serif: "Cormorant Garamond", Georgia, serif;
+  --font-mono: "JetBrains Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg-page: #1A1D24; --surface: #232730; --sunken: #1F232B; --hover: #262B35;
+  --fg: #E8E6E0; --fg2: #B4B2AC; --fg3: #8A8880; --muted: #5F5E5A;
+  --border: #2D323D; --border2: #3A4148;
+  --accent: #8FAB91; --accent-soft: #2A352D; --accent-border: #3A4A3D; --accent-text: #B8C4BB;
+  --action: #D9E2DA; --action-text: #1A1D24;
+  --warn: #D49A6E; --warn-soft: #353027; --warn-border: #4A3D2E; --warn-text: #E0AE86;
+  --info-soft: #2A323D; --info-border: #3A4854; --info-text: #A5C0D6;
+  --neutral-soft: #2A2D33; --neutral-border: #3A3E46; --neutral-text: #B4B2AC;
+  --danger-soft: #3A2929; --danger-text: #E8A0A0; --danger-border: #4A3434;
+  color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg-page: #1A1D24; --surface: #232730; --sunken: #1F232B; --hover: #262B35;
+  --fg: #E8E6E0; --fg2: #B4B2AC; --fg3: #8A8880; --muted: #5F5E5A;
+  --border: #2D323D; --border2: #3A4148;
+  --accent: #8FAB91; --accent-soft: #2A352D; --accent-border: #3A4A3D; --accent-text: #B8C4BB;
+  --action: #D9E2DA; --action-text: #1A1D24;
+  --warn: #D49A6E; --warn-soft: #353027; --warn-border: #4A3D2E; --warn-text: #E0AE86;
+  --info-soft: #2A323D; --info-border: #3A4854; --info-text: #A5C0D6;
+  --neutral-soft: #2A2D33; --neutral-border: #3A3E46; --neutral-text: #B4B2AC;
+  --danger-soft: #3A2929; --danger-text: #E8A0A0; --danger-border: #4A3434;
+  color-scheme: dark; }
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg-page); color: var(--fg); font-family: var(--font-sans); font-size: 14px; line-height: 1.5; }
+p { margin: 0; } h1, h2, h3 { margin: 0; text-wrap: balance; }
+.wrap { max-width: 1180px; margin: 0 auto; padding: 36px 24px 64px; display: grid; gap: 22px; }
+@media (max-width: 640px) { .wrap { padding: 20px 16px 48px; } }
+.eyebrow { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--fg3); font-weight: 500; }
+h1 { font-family: var(--font-serif); font-weight: 600; font-size: clamp(30px, 4.5vw, 42px); line-height: 1.08; }
+.lead { max-width: 72ch; color: var(--fg2); font-size: 15px; }
+.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.t2 { color: var(--fg2); } .t3 { color: var(--fg3); } .xs { font-size: 11.5px; } .sm { font-size: 12.5px; }
+
+.bar { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; }
+.seg { display: inline-flex; gap: 3px; background: var(--neutral-soft); padding: 3px; border-radius: 9px; }
+.seg button { border: 0; background: transparent; color: var(--fg2); font: inherit; font-size: 13px; font-weight: 500; padding: 6px 12px; border-radius: 7px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--surface); color: var(--fg); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+.seg.small button { font-size: 12px; padding: 3px 9px; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.bar .lbl { font-size: 12px; color: var(--fg3); margin-right: 6px; }
+
+.stage { display: grid; grid-template-columns: minmax(0, 1fr) 16rem; gap: 22px; align-items: start; }
+@media (max-width: 1000px) { .stage { grid-template-columns: minmax(0, 1fr); } }
+.backdrop { background: color-mix(in srgb, var(--fg) 22%, var(--bg-page)); border-radius: 14px; padding: 28px 18px; display: grid; justify-items: center; min-width: 0; }
+.notes { display: grid; gap: 10px; font-size: 13px; color: var(--fg2); }
+.notes h3 { font-size: 12px; font-weight: 600; color: var(--fg); letter-spacing: .04em; text-transform: uppercase; }
+.notes ul { margin: 0; padding-left: 18px; display: grid; gap: 7px; }
+
+/* --- окно --- */
+.dialog { background: var(--surface); border-radius: 12px; box-shadow: var(--shadow); width: 100%; display: grid; grid-template-rows: auto minmax(0,1fr) auto; max-height: 820px; min-width: 0; }
+.dialog.w-a { max-width: 640px; } .dialog.w-b { max-width: 920px; } .dialog.w-c { max-width: 720px; }
+.dh { padding: 18px 20px 12px; border-bottom: 1px solid var(--border); display: grid; gap: 4px; }
+.dh h2 { font-size: 17px; font-weight: 600; }
+.dh .fam { font-size: 13px; color: var(--fg2); }
+.db { overflow-y: auto; padding: 14px 20px; display: grid; gap: 12px; align-content: start; min-height: 0; }
+.df { border-top: 1px solid var(--border); padding: 12px 20px 16px; display: grid; gap: 10px; background: var(--sunken); border-radius: 0 0 12px 12px; }
+.df .row { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+
+.btn { height: 32px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--border2); background: var(--surface); color: var(--fg); font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+.btn.primary { background: var(--action); color: var(--action-text); border-color: var(--action); }
+.btn.ghost { border-color: transparent; background: transparent; color: var(--fg2); }
+.btn.danger { border-color: transparent; background: transparent; color: var(--danger-text); }
+.btn.sm { height: 26px; padding: 0 8px; font-size: 12px; }
+.input { height: 32px; border: 1px solid var(--border2); border-radius: 8px; background: var(--surface); color: var(--fg); font: inherit; font-size: 13px; padding: 0 10px; min-width: 0; }
+
+.group-h { display: flex; align-items: baseline; gap: 8px; margin-top: 4px; }
+.group-h b { font-size: 12px; letter-spacing: .04em; text-transform: uppercase; }
+.group-h span { font-size: 12px; color: var(--fg3); }
+
+.card { border: 1px solid var(--border); border-radius: 10px; padding: 12px; display: grid; gap: 10px; background: var(--surface); }
+.card.new { border-color: var(--accent-border); background: color-mix(in srgb, var(--accent-soft) 45%, var(--surface)); }
+.card-h { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.card-h .input { flex: 1 1 14rem; font-weight: 500; }
+.meta { font-size: 12px; color: var(--fg3); }
+.badge { display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border-radius: 99px; font-size: 11px; font-weight: 500; border: 1px solid var(--neutral-border); background: var(--neutral-soft); color: var(--neutral-text); white-space: nowrap; }
+.badge.new { border-color: var(--accent-border); background: var(--accent-soft); color: var(--accent-text); }
+.badge.main { border-color: var(--info-border); background: var(--info-soft); color: var(--info-text); }
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 4px 0 9px; border-radius: 7px; border: 1px solid var(--border2); background: var(--sunken); font-size: 12.5px; white-space: nowrap; }
+.chip .n { font-family: var(--font-mono); font-size: 11px; color: var(--fg3); }
+.chip.zero { color: var(--fg3); background: transparent; border-style: dashed; }
+.chip.added { border-color: var(--accent-border); background: var(--accent-soft); color: var(--accent-text); }
+.chip .more { border: 0; background: transparent; color: var(--fg3); cursor: pointer; font-size: 13px; padding: 0 4px; border-radius: 4px; }
+.chip.add { padding: 0; border-style: dashed; background: transparent; }
+.chip.add input { border: 0; background: transparent; height: 24px; width: 9.5rem; font: inherit; font-size: 12.5px; padding: 0 8px; color: var(--fg); }
+.chip.add input::placeholder { color: var(--fg3); }
+.hint { font-size: 12px; color: var(--fg3); }
+
+.summary { border-radius: 9px; padding: 10px 12px; font-size: 13px; display: grid; gap: 6px; border: 1px solid var(--info-border); background: var(--info-soft); color: var(--info-text); }
+.summary.warn { border-color: var(--warn-border); background: var(--warn-soft); color: var(--warn-text); }
+.summary ul { margin: 0; padding-left: 18px; display: grid; gap: 3px; }
+.summary b { font-weight: 600; }
+
+/* вариант Б — список слева, редактор справа */
+.split { display: grid; grid-template-columns: 15rem minmax(0,1fr); min-height: 0; }
+@media (max-width: 720px) { .split { grid-template-columns: minmax(0,1fr); } }
+.side { border-right: 1px solid var(--border); padding: 12px; display: grid; gap: 6px; align-content: start; overflow-y: auto; background: var(--sunken); }
+.side .item { display: grid; gap: 1px; padding: 8px 10px; border-radius: 8px; cursor: pointer; border: 1px solid transparent; }
+.side .item[aria-current="true"] { background: var(--surface); border-color: var(--border2); }
+.side .item b { font-size: 13px; font-weight: 500; }
+.side .item span { font-size: 11.5px; color: var(--fg3); }
+.side .sep { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--fg3); padding: 8px 10px 2px; }
+.pane { padding: 14px 18px; display: grid; gap: 12px; align-content: start; overflow-y: auto; }
+.field { display: grid; gap: 5px; }
+.field > label { font-size: 12.5px; font-weight: 500; }
+.field > label.check { display: flex; gap: 8px; align-items: center; font-size: 13px; font-weight: 400; }
+.range-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13px; }
+.input.num-in { width: 5rem; font-family: var(--font-mono); }
+
+/* вариант В — таблица с раскрытием */
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th { text-align: left; font-size: 11.5px; font-weight: 500; color: var(--fg3); padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+td { padding: 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+td.r, th.r { text-align: right; }
+tr.open td { border-bottom: 0; }
+tr.detail td { background: var(--sunken); padding: 10px 12px 12px; }
+.tw { border: 1px solid var(--border); border-radius: 10px; overflow-x: auto; }
+.caret { border: 0; background: transparent; color: var(--fg3); cursor: pointer; font-size: 12px; width: 20px; }
+.gap { height: 4px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header style="display:grid; gap:10px">
+    <p class="eyebrow">Малая фича «параметры семьи без предела» · макет гейта 1 · 19.10.2026</p>
+    <h1>Окно «Править схему»: три раскладки</h1>
+    <p class="lead">Семья «Устройство жб конструкций» со стенда <span class="num">gca_dev</span>: три главных параметра и их значения с числом строк, взятые оттуда. Сценарий — параметр «Коэффициент армирования» с диапазонами по 20 кг/м³, и сценариев три: добавить его второстепенным; добавить и сразу отметить главным (значений у строк ещё нет — нужны запросы, итог неизвестен); сделать главным уже сохранённый второстепенный (значения известны — запросов нет). В третьем сценарии числа строк у армирования и «станет вариантов» придуманы для примера: на стенде этого параметра ещё нет.</p>
+  </header>
+
+  <div class="bar">
+    <div><span class="lbl">Раскладка</span>
+      <div class="seg" id="layoutSeg">
+        <button aria-pressed="false" data-v="a">А. Карточки</button>
+        <button aria-pressed="true" data-v="b">Б. Список и редактор — выбрана</button>
+        <button aria-pressed="false" data-v="c">В. Таблица</button>
+      </div>
+    </div>
+    <div><span class="lbl">Сценарий</span>
+      <div class="seg" id="scenSeg">
+        <button aria-pressed="true" data-s="secondary">Добавить второстепенный</button>
+        <button aria-pressed="false" data-s="newmain">Добавить сразу главным</button>
+        <button aria-pressed="false" data-s="promote">Сделать главным сохранённый</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="backdrop"><div id="dialogHost" style="width:100%; display:grid; justify-items:center"></div></div>
+    <aside class="notes" id="notes"></aside>
+  </div>
+</div>
+
+<script>
+// Данные стенда gca_dev, 19.10.2026: семья «Устройство жб конструкций», версия схемы 1; «строк» — все позиции контекстов семьи (договоры и тендеры).
+const FAMILY = { title: "Устройство жб конструкций", unit: "м³", variants: 72, contexts: 218 };
+const PARAMS = [
+  { id: 1, name: "Класс бетона по прочности", role: "main", values: [["B25",7436],["B35",4110],["B40",1280],["B50",366],["B60",203],["B70",18],["B100",18],["B90",12],["B80",9],["B55",5],["B30",4],["B45",3],["B7.5",0],["B15",0]] },
+  { id: 2, name: "Марка по водонепроницаемости", role: "main", values: [["W8",9110],["W12",2390],["W4",99],["W6",0]] },
+  { id: 3, name: "Тип конструкции", role: "main", values: [["балки",2886],["перекрытия",2862],["стены",2644],["пилоны",2411],["колонны",1041],["лестницы",726],["лестничные площадки",363],["плиты покрытий",169],["капители",66],["лестничные марши",44],["парапеты",22],["фундаментная плита",0],["трансферные конструкции",0],["ростверк",0],["рампы",0]] },
+  // Армирование: в сценариях «добавить» — новый параметр без значений у строк; в сценарии «сделать главным сохранённый» —
+  // уже сохранённый второстепенный, числа строк ПРИДУМАНЫ для примера (на стенде параметра ещё нет).
+  { id: 4, name: "Коэффициент армирования, кг/м³", role: "secondary",
+    get isNew() { return scen !== "promote"; },
+    get values() { return scen === "promote" ? ARM_EXAMPLE : ARM_NEW; } },
+];
+const ARM_NEW = [["до 120",null],["120–140",null],["140–160",null],["160–180",null],["180–200",null],["200 и более",null]];
+const ARM_EXAMPLE = [["до 120",0],["120–140",820],["140–160",160],["160–180",69],["180–200",0],["200 и более",0]];
+// secondary — добавить второстепенный; newmain — добавить и сразу отметить главным; promote — сделать главным уже сохранённый.
+let layout = "b", scen = "secondary";
+
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const fmt = n => n.toLocaleString("ru-RU");
+const rowsOf = p => p.values.reduce((s, [, n]) => s + (n || 0), 0);
+const roleOf = p => (p.id === 4 ? (scen === "secondary" ? "secondary" : "main") : p.role);
+const mains = () => PARAMS.filter(p => roleOf(p) === "main");
+const secs = () => PARAMS.filter(p => roleOf(p) === "secondary");
+
+function chip([v, n], isNew) {
+  if (isNew) return `<span class="chip added">${esc(v)}<span class="n">новое</span><button class="more" title="Убрать из правки">×</button></span>`;
+  return `<span class="chip${n === 0 ? " zero" : ""}" title="${n === 0 ? "Ни одна строка не получила это значение" : fmt(n) + " строк"}">${esc(v)}<span class="n">${fmt(n)}</span><button class="more" title="Слить с другим значением…">⋯</button></span>`;
+}
+function chipsOf(p) {
+  return `<div class="chips">${p.values.map(v => chip(v, p.isNew)).join("")}<span class="chip add"><input placeholder="+ добавить значение" aria-label="Новое значение параметра ${esc(p.name)}"></span></div>`;
+}
+function roleSeg(p) {
+  const r = roleOf(p);
+  return `<div class="seg small" role="group" aria-label="Роль параметра"><button aria-pressed="${r === "main"}">Главный</button><button aria-pressed="${r === "secondary"}">Второстепенный</button></div>`;
+}
+function metaOf(p) {
+  if (p.isNew) return `<span class="badge new">новый</span>`;
+  const used = p.values.filter(([, n]) => n > 0).length;
+  return `<span class="meta">${p.values.length} значений, из них встречаются в строках ${used} · всего <span class="num">${fmt(rowsOf(p))}</span> строк${p.id === 4 ? " (числа для примера)" : ""}</span>`;
+}
+
+function summary() {
+  if (scen === "secondary") return `<div class="summary">
+    <b>Что изменит правка</b>
+    <ul>
+      <li>Варианты семьи <b>не меняются</b>: их по-прежнему <span class="num">${FAMILY.variants}</span>; значения главных параметров у строк остаются и заново не запрашиваются.</li>
+      <li>У модели запросится только «Коэффициент армирования» — у <span class="num">${FAMILY.contexts}</span> контекстов семьи; пока ответа нет — у строки «не уточнено».</li>
+    </ul></div>`;
+  if (scen === "newmain") return `<div class="summary warn">
+    <b>Что изменит правка</b>
+    <ul>
+      <li>Добавляется главный параметр: варианты семьи <b>соберутся заново</b> — сейчас <span class="num">${FAMILY.variants}</span>, сколько станет, будет известно только после ответов модели.</li>
+      <li>У модели запросится «Коэффициент армирования» — у <span class="num">${FAMILY.contexts}</span> контекстов семьи; значения остальных главных у строк остаются.</li>
+    </ul></div>`;
+  return `<div class="summary warn">
+    <b>Что изменит правка</b>
+    <ul>
+      <li>Сохранённый второстепенный становится главным: варианты <b>делятся по его значениям</b> — было <span class="num">${FAMILY.variants}</span>, станет <span class="num">118</span> <span class="xs">(число для примера)</span>.</li>
+      <li>Строки, где армирование «не уточнено», попадут в варианты со значением «не уточнено».</li>
+      <li>Значения армирования уже известны — заново у модели ничего не запрашивается.</li>
+    </ul></div>`;
+}
+function footer() {
+  return `<div class="df">${summary()}<div class="row"><button class="btn ghost">Отмена</button><button class="btn primary">Сохранить схему</button></div></div>`;
+}
+function header(sub) {
+  return `<div class="dh"><h2>Править схему</h2><p class="fam">${esc(FAMILY.title)} · ${FAMILY.unit} · версия 1 · <span class="num">${FAMILY.variants}</span> вариантов</p>${sub ? `<p class="hint">${sub}</p>` : ""}</div>`;
+}
+
+// А — карточки, сгруппированные по роли
+function viewA() {
+  const card = p => `<div class="card${p.isNew ? " new" : ""}">
+    <div class="card-h"><input class="input" value="${esc(p.name)}" aria-label="Имя параметра">${roleSeg(p)}<button class="btn danger sm" title="Убрать параметр">Убрать</button></div>
+    <div>${metaOf(p)}</div>${chipsOf(p)}</div>`;
+  const ms = mains(), ss = secs();
+  return `<div class="dialog w-a">${header("Значение нельзя удалить — его сливают с другим (⋯ на плашке). Пунктир — значение, которое не получила ни одна строка.")}
+    <div class="db">
+      <div class="group-h"><b>Главные</b><span>определяют вариант · ${ms.length}</span></div>
+      ${ms.map(card).join("")}
+      <div class="group-h"><b>Второстепенные</b><span>уточняют строку, вариант не делят · ${ss.length}</span></div>
+      ${ss.length ? ss.map(card).join("") : `<p class="hint">Нет.</p>`}
+      <div><button class="btn">+ Добавить параметр</button></div>
+    </div>${footer()}</div>`;
+}
+
+// Б — список параметров слева, редактор выбранного справа
+// Вид значений: у армирования — диапазоны (границы «от — до — шаг», подписи строит система), у остальных — точные.
+let selId = 4;
+const isRange = p => p.id === 4;
+function valuesField(p) {
+  const kindSeg = `<div class="seg small" role="group" aria-label="Вид значений"><button aria-pressed="${!isRange(p)}">Точные</button><button aria-pressed="${isRange(p)}">Диапазоны</button></div>`;
+  if (!isRange(p)) return `<div class="field"><label>Значения</label>${kindSeg}${chipsOf(p)}
+    <p class="hint">Точные значения — когда их немного и каждое значимо само по себе: класс бетона, число слоёв, толщина 4 или 8 мм.</p>
+    <label class="check"><input type="checkbox" style="accent-color:var(--accent)"> Только из списка — модель не заводит новых значений, список меняет только человек</label>
+    <div class="summary" style="font-size:12.5px"><b>Встретились значения не из списка <span class="xs" style="font-weight:400">(пример — так выглядит, когда список закрыт)</span></b>
+      <div>У <span class="num">12</span> строк в наименовании нашлись значения, которых нет в списке:</div>
+      <div class="chips"><span class="chip">B42<span class="n">8</span></span><button class="btn sm">Добавить в список</button><button class="btn sm ghost">Слить с…</button></div>
+      <div class="chips"><span class="chip">B47<span class="n">4</span></span><button class="btn sm">Добавить в список</button><button class="btn sm ghost">Слить с…</button></div></div></div>`;
+  const preview = p.values.map(([v, n]) => n === null
+    ? `<span class="chip added">${esc(v)}<span class="n">новое</span></span>`
+    : `<span class="chip${n === 0 ? " zero" : ""}">${esc(v)}<span class="n">${fmt(n)}</span></span>`).join("");
+  return `<div class="field"><label>Значения</label>${kindSeg}
+    <div class="range-row"><span>от</span><input class="input num-in" value="120" aria-label="Нижняя граница"><span>до</span><input class="input num-in" value="200" aria-label="Верхняя граница"><span>шаг</span><input class="input num-in" value="20" aria-label="Шаг"><span class="t3 sm">кг/м³ — из имени параметра</span></div>
+    <p class="hint">Получится ${p.values.length - 2} диапазона от 120 до 200 и 2 крайних — «до 120» и «200 и более»; подписи строит система, дыр и перекрытий нет:</p>
+    <div class="chips">${preview}</div>
+    <p class="hint">Модель найдёт число в наименовании и отнесёт его к диапазону: нижняя граница включается, верхняя — нет (131,73 → «120–140», 140 → «140–160», 200 → «200 и более»). Число не найдено — «не уточнено».</p>
+    <label class="check" style="color:var(--fg3)"><input type="checkbox" checked disabled> Только из списка — для диапазонов включено всегда</label></div>`;
+}
+function viewB() {
+  const sel = PARAMS.find(p => p.id === selId);
+  const kindTag = p => (isRange(p) ? "диапазоны · " : "");
+  const item = p => `<div class="item" data-id="${p.id}" role="button" tabindex="0" aria-current="${p === sel}"><b>${esc(p.name)}</b><span>${kindTag(p)}${p.isNew ? "новый · " + p.values.length + " значений" : p.values.length + " значений · " + fmt(rowsOf(p)) + " строк"}</span></div>`;
+  return `<div class="dialog w-b">${header()}
+    <div class="split" style="min-height:0">
+      <nav class="side" aria-label="Параметры">
+        <div class="sep">Главные · определяют вариант</div>${mains().map(item).join("")}
+        <div class="sep">Второстепенные · вариант не делят</div>${secs().map(item).join("") || `<p class="hint" style="padding:0 10px">Нет.</p>`}
+        <div style="padding:6px 4px"><button class="btn sm">+ Добавить параметр</button></div>
+      </nav>
+      <div class="pane">
+        <div class="field"><label for="bname">Имя параметра</label><input id="bname" class="input" value="${esc(sel.name)}"></div>
+        <div class="field"><label>Роль</label>${roleSeg(sel)}<p class="hint">Главный параметр делит семью на варианты, и у каждого варианта свой норматив. Второстепенный записывается у строки и виден рядом с ценой, но вариант не делит.</p></div>
+        ${valuesField(sel)}
+        <div style="display:flex; justify-content:flex-end"><button class="btn danger sm">Убрать параметр</button></div>
+      </div>
+    </div>${footer()}</div>`;
+}
+
+// В — компактная таблица, параметр раскрывается в значения
+function viewC() {
+  const row = (p, open) => `<tr class="${open ? "open" : ""}">
+      <td><button class="caret" aria-expanded="${open}">${open ? "▾" : "▸"}</button></td>
+      <td><b style="font-weight:500">${esc(p.name)}</b>${p.isNew ? ` <span class="badge new">новый</span>` : ""}</td>
+      <td>${roleSeg(p)}</td>
+      <td class="r num">${p.values.length}</td>
+      <td class="r num">${p.isNew ? "—" : fmt(rowsOf(p))}</td>
+      <td class="r"><button class="btn danger sm" title="Убрать параметр">×</button></td></tr>
+    ${open ? `<tr class="detail"><td></td><td colspan="5">${chipsOf(p)}</td></tr>` : ""}`;
+  return `<div class="dialog w-c">${header("Строка раскрывается в значения. Пунктир — значение, которое не получила ни одна строка.")}
+    <div class="db"><div class="tw"><table>
+      <thead><tr><th></th><th>Параметр</th><th>Роль</th><th class="r">Значений</th><th class="r">Строк</th><th></th></tr></thead>
+      <tbody>${PARAMS.map(p => row(p, p.isNew || p.id === 3)).join("")}</tbody></table></div>
+      <div><button class="btn">+ Добавить параметр</button></div>
+    </div>${footer()}</div>`;
+}
+
+const NOTES = {
+  a: `<h3>А. Карточки</h3><ul>
+    <li>Ближе всего к сегодняшнему окну: тот же столбец, но параметр — карточка, значения — плашки с числом строк.</li>
+    <li>Главные и второстепенные — двумя группами; смена роли переносит карточку.</li>
+    <li>Цена: при 5–6 параметрах по 15 значений окно длинное, прокрутка неизбежна.</li></ul>`,
+  b: `<h3>Б. Список и редактор</h3><ul>
+    <li>Окно шире: слева все параметры одним взглядом, справа — один выбранный.</li>
+    <li>Растёт без прокрутки списка: параметров может быть сколько угодно.</li>
+    <li>Цена: значения разных параметров не видны одновременно — сверять их приходится переключением.</li>
+    <li>Параметры слева кликабельны: у армирования — вид «Диапазоны» (границы от — до — шаг), у остальных — «Точные».</li></ul>`,
+  c: `<h3>В. Таблица</h3><ul>
+    <li>Самая плотная раскладка: роль, число значений и строк — в строке параметра.</li>
+    <li>Значения раскрываются по требованию; здесь раскрыты новый параметр и «Тип конструкции».</li>
+    <li>Цена: имя параметра правится отдельным действием, а не прямо в строке.</li></ul>`,
+};
+
+function render() {
+  document.getElementById("dialogHost").innerHTML = { a: viewA, b: viewB, c: viewC }[layout]();
+  document.getElementById("notes").innerHTML = NOTES[layout] +
+    `<h3>Во всех трёх</h3><ul><li>Сводка «что изменит правка» — до сохранения, а не после.</li><li>Удаления значения нет, как и сегодня: только слияние (⋯).</li><li>Только примитивы shadcn/ui: Dialog, Input, ToggleGroup, Badge, Button, Table.</li></ul>`;
+}
+function wire(id, key, set) {
+  document.getElementById(id).addEventListener("click", e => {
+    const b = e.target.closest("button"); if (!b) return;
+    set(b.dataset[key]);
+    document.querySelectorAll(`#${id} button`).forEach(x => x.setAttribute("aria-pressed", x === b));
+    render();
+  });
+}
+document.getElementById("dialogHost").addEventListener("click", e => {
+  const it = e.target.closest(".side .item"); if (!it) return;
+  selId = Number(it.dataset.id); render();
+});
+wire("layoutSeg", "v", v => layout = v);
+wire("scenSeg", "s", s => scen = s);
+render();
+</script>
+</body>
+</html>
