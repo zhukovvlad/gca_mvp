@@ -73,6 +73,12 @@ button:focus-visible, input:focus-visible, [role="button"]:focus-visible { outli
 /* В приложении окно ограничено высотой экрана и правая панель прокручивается; в макете высота больше, чтобы панель была видна целиком. */
 .dialog { background: var(--surface); border-radius: 12px; box-shadow: var(--shadow); width: 100%; max-width: 940px; display: grid; grid-template-rows: auto minmax(0,1fr) auto; max-height: 1400px; min-width: 0; }
 .dialog.small { max-width: 620px; }
+/* Сценарий «на пределе»: высота окна как на экране ноутбука (~800 px), шапка и низ закреплены, список и редактор прокручиваются каждый сам. */
+.dialog.screen { height: 700px; max-height: 700px; }
+.dialog.screen .split { overflow: hidden; }
+.side.compact .item { padding: 5px 10px; gap: 0; }
+.side.compact .item span { display: inline; }
+.scroll-hint { font-size: 11px; color: var(--fg3); text-align: center; padding: 2px 0; }
 .dh { padding: 18px 20px 12px; border-bottom: 1px solid var(--border); display: grid; gap: 4px; }
 .dh h2 { font-size: 17px; font-weight: 600; }
 .dh .fam { font-size: 13px; color: var(--fg2); }
@@ -275,6 +281,20 @@ const S = [
     rebuild: true,
     note: `<b>§2.4.</b> Пересборка заменяет только параметры модели. Параметр модели, который вы правили (здесь «Тип материала» — включён «только из списка»), становится вашим. Модель видит ваши параметры и не повторяет их; предлагает до трёх, но не больше, чем оставляет предел 10.` },
 
+  { key: "jb-ten", fam: "jb", title: "Семья на пределе: 10 параметров", sub: "окно высотой с экран · прокрутка внутри",
+    screen: true,
+    params: () => [...jbBase(),
+      P({ id: 6, name: "Марка по морозостойкости", owner: "human", values: [["F150",0,0],["F200",0,0],["F300",0,0]], example: true }),
+      armNew("secondary"),
+      P({ id: 7, name: "Тип опалубки", role: "secondary", owner: "human", values: [["щитовая",0,0],["туннельная",0,0],["несъёмная",0,0]], example: true }),
+      P({ id: 8, name: "Способ подачи бетона", role: "secondary", owner: "human", values: [["бетононасос",0,0],["кран-бадья",0,0]], example: true }),
+      P({ id: 9, name: "Класс поверхности", role: "secondary", owner: "human", values: [["А3",0,0],["А4",0,0],["А6",0,0],["А7",0,0]], example: true }),
+      P({ id: 10, name: "Подземная часть", role: "secondary", owner: "human", values: [["да",0,0],["нет",0,0]], example: true }),
+      P({ id: 11, name: "Высота этажа, м", role: "secondary", kind: "range", closed: true, owner: "human", values: [["до 3",0,0],["3–3,5",0,0],["3,5–4",0,0],["4 и более",0,0]], range: { from: 3, to: 4, step: 0.5, unit: "м" }, example: true }),
+    ].map(p => (p.id === 4 ? Object.assign(p, { isNew: false, values: ARM_EXAMPLE, example: true }) : p)), sel: 3, tone: "info",
+    summary: () => [
+      `Правок нет. На пределе: <span class="num">10</span> из 10 параметров — «Добавить параметр» недоступен; одиннадцатый окно и сервер не примут.`],
+    note: `<b>§2.1, §2.6.</b> Окно не выше экрана; шапка и низ со сводкой и «Сохранить» закреплены; список параметров слева и редактор справа прокручиваются каждый сам по себе. Строки списка компактные, но 10 параметров в окне высотой с экран ноутбука всё равно не помещаются: список прокручивается внутри своей колонки (здесь ещё на ~220 px вниз — «Способ подачи бетона», «Класс поверхности», «Подземная часть», «Высота этажа»), а сводка и «Сохранить» остаются на месте. Параметры сверх трёх настоящих — пример.` },
   { key: "c-closed", fam: "c", title: "Закрыть список «Толщины стяжки»", sub: "значения, дописанные моделью",
     params: () => { const p = cBase(); p[0].closed = true; p[0].owner = "edited"; p[0].outOfList = true; return p; }, sel: 1, tone: "info",
     summary: () => [
@@ -331,18 +351,20 @@ function editDialog(sc) {
   const f = FAM[sc.fam], params = sc.params();
   const sel = params.find(p => p.id === selId) || params.find(p => p.id === sc.sel);
   const mains = params.filter(p => p.role === "main"), secs = params.filter(p => p.role === "secondary");
-  const item = p => `<div class="item" role="button" tabindex="0" data-id="${p.id}" aria-current="${p === sel}">
-      <b>${esc(p.name)}</b>
-      <span>${p.kind === "range" ? "диапазоны · " : ""}${p.values.length} значений${p.values.every(v => v[1] !== null && v[1] !== undefined) ? " · " + fmt(rowsOf(p)) + " строк" : ""}${p.closed && p.kind === "exact" ? " · только из списка" : ""}</span>
-      <span>${ownerTag(p)}</span></div>`;
-  return `<div class="dialog">
+  const meta = p => `${p.kind === "range" ? "диапазоны · " : ""}${p.values.length} значений${p.values.every(v => v[1] !== null && v[1] !== undefined) && !p.example ? " · " + fmt(rowsOf(p)) + " строк" : ""}${p.closed && p.kind === "exact" ? " · только из списка" : ""}`;
+  const item = p => sc.screen
+    ? `<div class="item" role="button" tabindex="0" data-id="${p.id}" aria-current="${p === sel}"><b>${esc(p.name)}</b><span>${meta(p)} · ${ownerTag(p)}</span></div>`
+    : `<div class="item" role="button" tabindex="0" data-id="${p.id}" aria-current="${p === sel}">
+      <b>${esc(p.name)}</b><span>${meta(p)}</span><span>${ownerTag(p)}</span></div>`;
+  const full = params.length >= 10;
+  return `<div class="dialog${sc.screen ? " screen" : ""}">
     <div class="dh"><h2>Править схему</h2><p class="fam">${esc(f.title)} · ${f.unit} · <span class="num">${f.variants}</span> вариантов · <span class="num">${f.contexts}</span> контекстов</p></div>
     <div class="split" style="min-height:0">
-      <nav class="side" aria-label="Параметры">
+      <nav class="side${sc.screen ? " compact" : ""}" aria-label="Параметры">
         <div class="sep">Главные · определяют вариант</div>${mains.map(item).join("")}
         <div class="sep">Второстепенные · вариант не делят</div>${secs.map(item).join("") || `<p class="hint" style="padding:0 10px">Нет.</p>`}
-        <div style="padding:6px 4px 0"><button class="btn sm">+ Добавить параметр</button></div>
-        <p class="limit">${params.length} из 10 параметров</p>
+        <div style="padding:6px 4px 0"><button class="btn sm"${full ? " disabled" : ""}>+ Добавить параметр</button></div>
+        <p class="limit">${params.length} из 10 параметров${full ? " — предел" : ""}</p>
       </nav>
       <div class="pane">
         <div class="field"><label for="pname">Имя параметра</label><input id="pname" class="input" value="${esc(sel.name)}"></div>
