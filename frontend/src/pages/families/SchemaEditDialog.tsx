@@ -64,7 +64,9 @@ interface SchemaEditDialogProps {
 export function SchemaEditDialog({ schema, open, onOpenChange }: SchemaEditDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
+      {/* Три параметра со списками значений выше экрана: окно ограничено высотой
+          окна браузера и прокручивается само, кнопка сохранения достижима. */}
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
         <SchemaEditForm schema={schema} onDone={() => onOpenChange(false)} />
       </DialogContent>
     </Dialog>
