@@ -148,6 +148,7 @@ _STATUS_CONFLICT = frozenset(
         work_variants.REFUSE_SCHEMA_BUILDING,
         work_variants.REFUSE_SCHEMA_NO_CURRENT,
         work_variants.REFUSE_MERGE_SOURCE_MERGED,
+        work_variants.REFUSE_MERGE_VALUE_RETIRED,
         review_service.REFUSE_POSITION_NOT_POSITION,
         review_service.REFUSE_POSITION_HAS_STANDARDS,
         context_operations.REFUSE_CONTEXT_NOT_EMPTY,

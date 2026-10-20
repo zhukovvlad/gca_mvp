@@ -1288,7 +1288,7 @@ class TestMergeLockOrder:
         sequence = _lock_sequence(statements)
         assert sequence[:5] == [
             ("work_families", "UPDATE"),
-            ("family_parameter_schemas", "SHARE"),
+            ("family_parameter_schemas", "UPDATE"),
             ("family_parameter_values", "UPDATE"),
             ("work_variants", "UPDATE"),
             ("catalog_contexts", "UPDATE"),
