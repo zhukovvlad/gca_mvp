@@ -36,12 +36,14 @@ from models import (
     FamilyParameterSchema,
     FamilyParameterValue,
     FamilySuggestion,
+    ParameterValueKind,
     SchemaStatus,
     SemanticJob,
     SemanticJobKind,
     UnitOfMeasure,
     WorkFamily,
 )
+from services.parameter_ranges import RANGE_RULE_LINE
 from services.semantic_request import (
     _NO_UNIT_DISPLAY,
     SERIALIZATION_VERSION,
@@ -138,12 +140,16 @@ class SchemaParameterIn:
     ordinal: int
     name: str
     values: tuple[str, ...]
-    """Значения по возрастанию `id`, слитые исключены."""
+    """Значения по возрастанию `id`, слитые и выведенные исключены."""
+    value_kind: str = "exact"
+    """`exact` или `range`: у параметра-диапазона раздел схемы получает строку
+    правила (`parameter_ranges.RANGE_RULE_LINE`)."""
 
 
 @dataclass(frozen=True)
 class ValuesRequestMaterial:
-    """Вход задания `context_values` (спека §2.3): строка, её пути и схема."""
+    """Вход задания `context_values` (спека §2.3, 3в §2.4): строка, её пути и
+    схема."""
 
     context_id: int
     schema_id: int
@@ -153,6 +159,19 @@ class ValuesRequestMaterial:
     paths: tuple[str, ...]
     """До десяти путей — в порядке, в каком они уходят модели."""
     parameters: tuple[SchemaParameterIn, ...]
+    """Все активные параметры версии (архивные не входят)."""
+    requested_ordinals: tuple[int, ...] | None = None
+    """Номера параметров, о которых спрашивают модель, по возрастанию; `None` —
+    все активные (так материал, собранный без подмножества, рендерится как
+    прежде)."""
+
+    def requested_parameters(self) -> tuple[SchemaParameterIn, ...]:
+        """Запрошенные параметры по возрастанию номера."""
+        ordered = sorted(self.parameters, key=lambda p: p.ordinal)
+        if self.requested_ordinals is None:
+            return tuple(ordered)
+        wanted = set(self.requested_ordinals)
+        return tuple(p for p in ordered if p.ordinal in wanted)
 
 
 def top_paths(
@@ -229,15 +248,66 @@ def load_schema_material(db: Session, family_id: int, schema_id: int) -> SchemaR
     )
 
 
+def load_schema_parameters(
+    db: Session, schema_ids: Collection[int]
+) -> dict[int, tuple[SchemaParameterIn, ...]]:
+    """Активные параметры версий схемы по возрастанию номера и их значения для
+    запроса: архивные параметры не входят, значения без слитых и выведенных
+    (`retired_at`) — модель не может назвать значение, которого нет в блоке схемы.
+    Двумя запросами на любое число версий."""
+    ids = set(schema_ids)
+    if not ids:
+        return {}
+    parameters_of: dict[int, list[tuple[int, int, str, str]]] = {sid: [] for sid in ids}
+    for row in db.execute(
+        sa.select(
+            FamilyParameter.id, FamilyParameter.schema_id, FamilyParameter.ordinal,
+            FamilyParameter.name, FamilyParameter.value_kind,
+        )
+        .where(FamilyParameter.schema_id.in_(ids), FamilyParameter.archived_at.is_(None))
+        .order_by(FamilyParameter.schema_id, FamilyParameter.ordinal)
+    ).all():
+        parameters_of[row.schema_id].append((row.id, row.ordinal, row.name, row.value_kind))
+
+    parameter_ids = [pid for params in parameters_of.values() for pid, _o, _n, _k in params]
+    values_of: dict[int, list[str]] = {pid: [] for pid in parameter_ids}
+    if parameter_ids:
+        for row in db.execute(
+            sa.select(FamilyParameterValue.parameter_id, FamilyParameterValue.value)
+            .where(
+                FamilyParameterValue.parameter_id.in_(parameter_ids),
+                FamilyParameterValue.merged_into_id.is_(None),
+                FamilyParameterValue.retired_at.is_(None),
+            )
+            .order_by(FamilyParameterValue.parameter_id, FamilyParameterValue.id)
+        ).all():
+            values_of[row.parameter_id].append(row.value)
+    return {
+        sid: tuple(
+            SchemaParameterIn(
+                ordinal=ordinal, name=name, values=tuple(values_of[pid]), value_kind=kind
+            )
+            for pid, ordinal, name, kind in params
+        )
+        for sid, params in parameters_of.items()
+    }
+
+
 def load_values_material(
-    db: Session, context_ids: Collection[int]
+    db: Session,
+    context_ids: Collection[int],
+    *,
+    requested_ordinals: Sequence[int] | None = None,
 ) -> dict[int, ValuesRequestMaterial]:
     """Материал заданий `context_values` для множества контекстов постоянным
     числом запросов.
 
     Схема — текущая (`frozen`) версия семьи `COALESCE(pending_family_id,
     work_family_id)` контекста. Контекст без такой семьи или без текущей версии
-    в результат не попадает (отсутствие ключа). Наименование, единица и статья —
+    в результат не попадает (отсутствие ключа). `requested_ordinals` — номера
+    запроса, одни на все контексты набора: пересекаются с активными параметрами
+    своей версии (лишнего номера в материале нет), `None` — все активные.
+    Наименование, единица и статья —
     те же, что у `semantic_request.load_request_material`; пути — по ВСЕМ
     членствам контекста независимо от `membership_state`, одним и тем же
     `chapter_paths`; членства без раздела (пустой путь) в список не входят.
@@ -277,38 +347,8 @@ def load_values_material(
     if not renderable:
         return {}
 
-    schema_ids = set(schema_of_family.values())
-    parameters_of: dict[int, list[tuple[int, int, str]]] = {sid: [] for sid in schema_ids}
-    for row in db.execute(
-        sa.select(
-            FamilyParameter.id, FamilyParameter.schema_id, FamilyParameter.ordinal,
-            FamilyParameter.name,
-        )
-        .where(FamilyParameter.schema_id.in_(schema_ids))
-        .order_by(FamilyParameter.schema_id, FamilyParameter.ordinal)
-    ).all():
-        parameters_of[row.schema_id].append((row.id, row.ordinal, row.name))
-
-    parameter_ids = [pid for params in parameters_of.values() for pid, _o, _n in params]
-    values_of: dict[int, list[str]] = {pid: [] for pid in parameter_ids}
-    if parameter_ids:
-        for row in db.execute(
-            sa.select(FamilyParameterValue.parameter_id, FamilyParameterValue.value)
-            .where(
-                FamilyParameterValue.parameter_id.in_(parameter_ids),
-                FamilyParameterValue.merged_into_id.is_(None),
-            )
-            .order_by(FamilyParameterValue.parameter_id, FamilyParameterValue.id)
-        ).all():
-            values_of[row.parameter_id].append(row.value)
-
-    schemas = {
-        sid: tuple(
-            SchemaParameterIn(ordinal=ordinal, name=name, values=tuple(values_of[pid]))
-            for pid, ordinal, name in params
-        )
-        for sid, params in parameters_of.items()
-    }
+    schemas = load_schema_parameters(db, set(schema_of_family.values()))
+    wanted = None if requested_ordinals is None else set(requested_ordinals)
 
     requests = load_request_material(db, renderable)
     result: dict[int, ValuesRequestMaterial] = {}
@@ -326,6 +366,9 @@ def load_values_material(
             article=request.article,
             paths=top_paths(non_empty),
             parameters=schemas[schema_id],
+            requested_ordinals=tuple(
+                p.ordinal for p in schemas[schema_id] if wanted is None or p.ordinal in wanted
+            ),
         )
     return result
 
@@ -362,7 +405,9 @@ def _schema_block_text(parameters: Sequence[SchemaParameterIn]) -> str:
     if not parameters:
         return f"{SCHEMA_BLOCK_HEADER}(параметров нет)"
     parts = [
-        f"Параметр {p.ordinal}: {p.name}\nЗначения:\n" + "\n".join(f"- {v}" for v in p.values)
+        f"Параметр {p.ordinal}: {p.name}\nЗначения:\n"
+        + "\n".join(f"- {v}" for v in p.values)
+        + (f"\n{RANGE_RULE_LINE}" if p.value_kind == ParameterValueKind.range.value else "")
         for p in parameters
     ]
     return SCHEMA_BLOCK_HEADER + "\n\n".join(parts)
@@ -431,10 +476,12 @@ def render_values_request(
     """Тело запроса `context_values`: system — блок промпта и блок схемы (метка
     кэша на блоке схемы: префикс общий для всех контекстов версии); user —
     наименование, единица, статья и до десяти путей. `candidates_hash` —
-    sha256 схемы. Детерминирован, в базу не ходит; параметры идут по `ordinal`,
-    значения — в порядке материала (по `id`), путей берётся не больше
-    `MAX_PATHS`."""
-    parameters = sorted(material.parameters, key=lambda p: p.ordinal)
+    sha256 запрошенных параметров. Детерминирован, в базу не ходит; блок схемы и
+    перечисление номеров формата ответа — только запрошенные параметры
+    (`requested_ordinals`, по умолчанию все), по `ordinal`; значения — в порядке
+    материала (по `id`), путей берётся не больше `MAX_PATHS`. Раздел параметра
+    с диапазонами несёт строку правила."""
+    parameters = material.requested_parameters()
     paths = material.paths[:MAX_PATHS]
     return _finish(
         model=settings.SEMANTIC_VALUES_MODEL,
@@ -461,7 +508,9 @@ def render_values_request(
 def render_request_for(db: Session, job: SemanticJob, *, settings: Settings) -> RenderedRequest:
     """Рендерит ТЕКУЩИЙ материал предмета задания: `family_schema` —
     `load_schema_material(job.family_id, job.schema_id)`; `context_values` —
-    `load_values_material([job.context_id])`; `family_suggestion` — путь
+    `load_values_material([job.context_id])` по номерам задания
+    (`requested_ordinals`, `NULL` — все активные параметры на момент рендера);
+    `family_suggestion` — путь
     «Семантических предложений» (`load_request_material` +
     `render_context_request`). Совпадение `job.schema_id` с текущей версией
     рендер не проверяет.
@@ -475,7 +524,9 @@ def render_request_for(db: Session, job: SemanticJob, *, settings: Settings) -> 
             load_schema_material(db, job.family_id, job.schema_id), settings=settings
         )
     if job.kind == SemanticJobKind.context_values.value:
-        material = load_values_material(db, [job.context_id]).get(job.context_id)
+        material = load_values_material(
+            db, [job.context_id], requested_ordinals=job.requested_ordinals
+        ).get(job.context_id)
         if material is None:
             raise SubjectNotRenderable(f"у контекста {job.context_id} нет схемы для значений")
         return render_values_request(material, settings=settings)

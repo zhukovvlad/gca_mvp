@@ -35,9 +35,7 @@ from config import Settings
 from config import settings as default_settings
 from models import (
     CatalogContext,
-    FamilyParameter,
     FamilyParameterSchema,
-    FamilyParameterValue,
     FamilyStatus,
     FamilySuggestion,
     SchemaStatus,
@@ -86,6 +84,7 @@ from services.semantic_reconcile import (
     families_awaiting_schema,
     reconcile_context_values,
     reconcile_family_schemas,
+    values_need,
     without_discarded_schemas,
     without_discarded_values,
 )
@@ -106,6 +105,7 @@ from services.variant_answer import (
 from services.variant_request import (
     EMPTY_NAMES_CANDIDATES_HASH,
     SchemaParameterIn,
+    load_schema_parameters,
     load_values_material,
     paths_hash_of,
     render_request_for,
@@ -230,12 +230,14 @@ def _cancel(db: Session, job: SemanticJob, reason: SemanticCancelReason) -> None
 @dataclass(frozen=True)
 class JobRender:
     """Текущий запрос предмета задания либо причина, по которой его нет.
-    `parameterless` — у задания значений в схеме нет параметров."""
+    `without_model` — у задания значений контексту нечего спрашивать: схема без
+    активных параметров или у него уже есть строки всех активных параметров
+    (спека 3в §2.4, «завершение без модели»)."""
 
     rendered: RenderedRequest | None
     cancel_reason: SemanticCancelReason | None = None
     candidates: tuple[CandidateFamily, ...] = ()
-    parameterless: bool = False
+    without_model: bool = False
     scope: DiscoveryScope | None = None
 
 
@@ -286,14 +288,27 @@ def render_job_request(db: Session, job: SemanticJob, *, settings: Settings) -> 
     if kind == SemanticJobKind.context_values.value:
         material = load_request_material(db, [job.context_id])[job.context_id]
         columns = _load_values_columns(db, [job.context_id])[job.context_id]
-        values_material = load_values_material(db, [job.context_id]).get(job.context_id)
+        values_material = load_values_material(
+            db, [job.context_id], requested_ordinals=job.requested_ordinals
+        ).get(job.context_id)
         if values_material is None or not _values_applicable(material, columns):
             return _not_renderable(SemanticCancelReason.not_applicable)
         if values_material.schema_id != job.schema_id:
             return _not_renderable(SemanticCancelReason.input_changed)
+        # Модели нечего спрашивать, когда задание без явного подмножества, а у
+        # контекста уже есть строки всех активных параметров и ему нужен вариант
+        # (у схемы без активных параметров строк нет вовсе): задание только
+        # назначает вариант. Задание с явным подмножеством (волна после
+        # расширения) спрашивает модель всегда.
+        need = values_need(db, job.context_id, values_material.schema_id)
+        without_model = (
+            job.requested_ordinals is None
+            and not need.ordinals
+            and (need.variant_due or not values_material.parameters)
+        )
         return JobRender(
             rendered=render_values_request(values_material, settings=settings),
-            parameterless=not values_material.parameters,
+            without_model=without_model,
         )
     if kind == SemanticJobKind.family_discovery.value:
         # Предмет — единица. Охват пуст и семей без категории нет — открывать
@@ -351,7 +366,7 @@ def claim_next(
             continue
         kind = SemanticJobKind(job.kind)
 
-        if current.parameterless:
+        if current.without_model:
             # Модели нечего спрашивать: тело никуда не уходит, поэтому ни
             # приватность, ни бюджет не применяются; попытки и резерва нет.
             token = uuid.uuid4()
@@ -668,30 +683,19 @@ def record_result(
     return published_id
 
 
-def _schema_parameters(db: Session, schema_id: int) -> tuple[SchemaParameterIn, ...]:
-    """Параметры версии схемы и их текущие значения (слитые исключены) — то, с
-    чем сверяется ответ значений. Версия замороженная, поэтому чтение без
-    блокировки; значения могут только прибавляться."""
-    parameters = db.execute(
-        sa.select(FamilyParameter.id, FamilyParameter.ordinal, FamilyParameter.name)
-        .where(FamilyParameter.schema_id == schema_id)
-        .order_by(FamilyParameter.ordinal)
-    ).all()
-    values: dict[int, list[str]] = {row.id: [] for row in parameters}
-    if values:
-        for row in db.execute(
-            sa.select(FamilyParameterValue.parameter_id, FamilyParameterValue.value)
-            .where(
-                FamilyParameterValue.parameter_id.in_(list(values)),
-                FamilyParameterValue.merged_into_id.is_(None),
-            )
-            .order_by(FamilyParameterValue.parameter_id, FamilyParameterValue.id)
-        ).all():
-            values[row.parameter_id].append(row.value)
-    return tuple(
-        SchemaParameterIn(ordinal=row.ordinal, name=row.name, values=tuple(values[row.id]))
-        for row in parameters
-    )
+def _requested_parameters(
+    db: Session, schema_id: int, requested_ordinals: Sequence[int] | None
+) -> tuple[SchemaParameterIn, ...]:
+    """Запрошенные параметры версии схемы и их текущие значения (слитые и
+    выведенные исключены) — то, с чем сверяется ответ значений: `None` — все
+    активные параметры версии, иначе только перечисленные (спека 3в §2.4). Версия
+    замороженная, поэтому чтение без блокировки; значения могут только
+    прибавляться."""
+    parameters = load_schema_parameters(db, [schema_id])[schema_id]
+    if requested_ordinals is None:
+        return parameters
+    wanted = set(requested_ordinals)
+    return tuple(p for p in parameters if p.ordinal in wanted)
 
 
 def _record_variant_result(
@@ -714,7 +718,8 @@ def _record_variant_result(
     assert claim.attempt_id is not None and claim.rendered is not None
     subject = db.execute(
         sa.select(
-            SemanticJob.context_id, SemanticJob.schema_id, SemanticJob.paths_hash
+            SemanticJob.context_id, SemanticJob.schema_id, SemanticJob.paths_hash,
+            SemanticJob.requested_ordinals,
         ).where(SemanticJob.id == claim.job_id)
     ).one()
     is_schema = claim.kind == SemanticJobKind.family_schema
@@ -726,7 +731,8 @@ def _record_variant_result(
             answer = parse_schema_answer(response.content)
         else:
             answer = parse_values_answer(
-                response.content, _schema_parameters(db, subject.schema_id)
+                response.content,
+                _requested_parameters(db, subject.schema_id, subject.requested_ordinals),
             )
     except AnswerSchemaError as exc:
         schema_error = exc
@@ -915,9 +921,11 @@ def _record_discovery_result(
 def complete_without_model(
     db: Session, claim: Claim, *, now: datetime, settings: Settings | None = None
 ) -> None:
-    """Завершает синтетический захват: ответ `{"values": []}` идёт в тот же
-    обработчик результата, что и ответ модели, — те же блокировки, вердикт,
-    переключение ожидающей семьи, промоушен и события; попытки и резерва нет.
+    """Завершает синтетический захват: пустой ответ по пустому подмножеству
+    идёт в тот же обработчик результата, что и ответ модели, — те же
+    блокировки, вердикт, вариант по сохранённым строкам активных главных
+    параметров, переключение ожидающей семьи, промоушен и события; попытки и
+    резерва нет.
     Коммитит сама. `expected_request_hash` — отпечаток задания, прошедший
     проверку при захвате. `now` — как у остальных записей исполнителя;
     `settings` по умолчанию — настройки приложения."""
@@ -926,6 +934,7 @@ def complete_without_model(
     subject = db.execute(
         sa.select(
             SemanticJob.context_id, SemanticJob.schema_id, SemanticJob.request_hash,
+            SemanticJob.paths_hash,
         ).where(SemanticJob.id == claim.job_id)
     ).one()
     apply_values(
@@ -933,9 +942,10 @@ def complete_without_model(
         context_id=subject.context_id,
         schema_id=subject.schema_id,
         answer=ValuesAnswer(items=()),
-        # У схемы без параметров путей нет: обработчик читает константу пустого
-        # списка, а не хэш задания.
-        paths_hash=paths_hash_of(()),
+        requested_ordinals=(),
+        # Пути варианта — пути задания; у схемы без активных параметров путей нет, и
+        # обработчик сам подставляет константу пустого списка.
+        paths_hash=subject.paths_hash or paths_hash_of(()),
         guard=JobGuard(
             job_id=claim.job_id,
             claim_token=claim.claim_token,
