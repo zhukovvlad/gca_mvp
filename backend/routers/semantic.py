@@ -50,6 +50,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import datetime as dt
+from decimal import Decimal, InvalidOperation
 from typing import Literal
 
 import sqlalchemy as sa
@@ -65,7 +66,15 @@ from auth import require_admin
 from config import settings as app_settings
 from crud.common import DomainError
 from database import get_db
-from models import NameRole, SemanticKind, SemanticState, User, WorkFamily
+from models import (
+    NameRole,
+    ParameterRole,
+    ParameterValueKind,
+    SemanticKind,
+    SemanticState,
+    User,
+    WorkFamily,
+)
 from routers.domain_errors import raise_domain_error
 from services import (
     context_operations,
@@ -73,6 +82,7 @@ from services import (
     family_categories,
     family_change,
     family_discovery,
+    schema_edit,
     semantic_decisions,
     work_families,
     work_variants,
@@ -149,6 +159,7 @@ _STATUS_CONFLICT = frozenset(
         work_variants.REFUSE_SCHEMA_NO_CURRENT,
         work_variants.REFUSE_MERGE_SOURCE_MERGED,
         work_variants.REFUSE_MERGE_VALUE_RETIRED,
+        schema_edit.REFUSE_SCHEMA_ORDINALS_EXHAUSTED,
         review_service.REFUSE_POSITION_NOT_POSITION,
         review_service.REFUSE_POSITION_HAS_STANDARDS,
         context_operations.REFUSE_CONTEXT_NOT_EMPTY,
@@ -184,6 +195,10 @@ _STATUS_UNPROCESSABLE = frozenset(
         work_variants.REFUSE_SCHEMA_VALUE_REMOVED,
         work_variants.REFUSE_SCHEMA_BLANK,
         work_variants.REFUSE_SCHEMA_BAD_ORDINALS,
+        schema_edit.REFUSE_SCHEMA_TOO_MANY_PARAMETERS,
+        schema_edit.REFUSE_SCHEMA_DUPLICATE_PARAMETER,
+        schema_edit.REFUSE_SCHEMA_BAD_RANGE,
+        schema_edit.REFUSE_SCHEMA_RANGE_TOO_MANY_VALUES,
         work_variants.REFUSE_MERGE_OTHER_PARAMETER,
         work_variants.REFUSE_MERGE_CYCLE,
         context_operations.REFUSE_DIFFERENT_BUCKET,
@@ -438,17 +453,37 @@ class AssignFamilyRequest(BaseModel):
     family_id: int | None = None
 
 
+class RangeBody(BaseModel):
+    """Границы диапазона параметра. Числа — строками (`Decimal`, как деньги
+    проекта); число JSON тоже допускается и разбирается через его запись."""
+
+    start: str | int | float
+    stop: str | int | float
+    step: str | int | float
+
+
 class SchemaParameterEdit(BaseModel):
-    ordinal: int
+    """Параметр в теле правки схемы (спека 3в §2.5): `ordinal = null` — новый."""
+
+    ordinal: int | None = None
     name: str
-    values: list[str]
+    role: ParameterRole = ParameterRole.main
+    value_kind: ParameterValueKind = ParameterValueKind.exact
+    closed: bool = False
+    values: list[str] = Field(default_factory=list)
+    range: RangeBody | None = None
 
 
-class UpdateSchemaRequest(BaseModel):
-    """Ручная правка схемы: параметры по `ordinal` с полными списками значений;
-    правила сравнения с текущей версией — у сервиса (`update_schema`)."""
+class EditSchemaRequest(BaseModel):
+    """Предпросмотр правки: полное желаемое состояние активных параметров."""
 
     parameters: list[SchemaParameterEdit]
+
+
+class UpdateSchemaRequest(EditSchemaRequest):
+    """Сохранение правки: то же тело и `preview_hash` предпросмотра."""
+
+    preview_hash: str
 
 
 class MergeValuesRequest(BaseModel):
@@ -1710,6 +1745,56 @@ def rebuild_schema_route(
     }
 
 
+def _decimal_of(value: str | int | float) -> Decimal:
+    """Число границы диапазона: строка или число JSON; не число и нефинитное
+    (`NaN`, `Infinity`) — `schema_bad_range`."""
+    try:
+        number = Decimal(str(value).strip())
+    except InvalidOperation:
+        number = Decimal("NaN")
+    if not number.is_finite():
+        raise WorkFamilyError(
+            schema_edit.REFUSE_SCHEMA_BAD_RANGE, "границы диапазона должны быть числами"
+        )
+    return number
+
+
+def _drafts_of(body: EditSchemaRequest) -> list[schema_edit.ParameterDraft]:
+    return [
+        schema_edit.ParameterDraft(
+            ordinal=parameter.ordinal,
+            name=parameter.name,
+            role=parameter.role,
+            value_kind=parameter.value_kind,
+            closed=parameter.closed,
+            values=tuple(parameter.values),
+            range=None
+            if parameter.range is None
+            else schema_edit.RangeSpec(
+                start=_decimal_of(parameter.range.start),
+                stop=_decimal_of(parameter.range.stop),
+                step=_decimal_of(parameter.range.step),
+            ),
+        )
+        for parameter in body.parameters
+    ]
+
+
+@router.post("/families/{family_id}/schema/edit-preview")
+def edit_preview_route(
+    family_id: int,
+    body: EditSchemaRequest,
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Следствия правки по телу и `preview_hash` для сохранения; ничего не пишет."""
+    with _mutating(db):
+        summary = schema_edit.preview_schema_edit(
+            db, family_id=family_id, drafts=_drafts_of(body)
+        )
+    return crud_work_variants.edit_summary_out(summary)
+
+
 @router.patch("/families/{family_id}/schema")
 def update_schema_route(
     family_id: int,
@@ -1717,18 +1802,12 @@ def update_schema_route(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
+    """Правка схемы на месте: тело и `preview_hash` предпросмотра; устаревший
+    хэш — `409 preview_changed`."""
     with _mutating(db):
-        work_variants.update_schema(
-            db,
-            family_id=family_id,
-            parameters=[
-                work_variants.ParameterEdit(
-                    ordinal=parameter.ordinal, name=parameter.name,
-                    values=tuple(parameter.values),
-                )
-                for parameter in body.parameters
-            ],
-            actor_id=admin.id,
+        schema_edit.apply_schema_edit(
+            db, family_id=family_id, drafts=_drafts_of(body),
+            preview_hash=body.preview_hash, actor_id=admin.id,
         )
     return _schema_response(db, family_id)
 

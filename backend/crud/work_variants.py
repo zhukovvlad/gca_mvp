@@ -36,6 +36,7 @@ from models import (
     WorkVariant,
     WorkVariantValue,
 )
+from services.schema_edit import EditSummary
 from services.semantic_cost import (
     RESERVE_FORMULA_VERSION,
     expected_cached_cost_known_prefix,
@@ -87,6 +88,67 @@ class SchemaOut(TypedDict):
     building: bool
     values_jobs_live: int
     parameters: list[ParameterOut]
+
+
+class AskedOut(TypedDict):
+    ordinal: int
+    name: str
+    contexts: int
+
+
+class ValueMoveOut(TypedDict):
+    parameter: str
+    from_value: str
+    to_value: str
+    contexts: int
+
+
+class RetiredOut(TypedDict):
+    parameter: str
+    value: str
+    contexts: int
+
+
+class EditSummaryOut(TypedDict):
+    """Следствия правки схемы на месте (спека 3в §2.5, §2.10): деньги строками,
+    `preview_hash` — для подтверждения сохранения."""
+
+    variants_before: int
+    variants_after_now: int
+    variants_pending_answers: bool
+    asked_by_parameter: list[AskedOut]
+    reserve_usd: str
+    expected_cached_usd: str
+    value_moves: list[ValueMoveOut]
+    retired: list[RetiredOut]
+    refreshing_contexts: int
+    repriced_pending_jobs: int
+    preview_hash: str
+
+
+def edit_summary_out(summary: EditSummary) -> EditSummaryOut:
+    return EditSummaryOut(
+        variants_before=summary.variants_before,
+        variants_after_now=summary.variants_after_now,
+        variants_pending_answers=summary.variants_pending_answers,
+        asked_by_parameter=[
+            AskedOut(ordinal=ordinal, name=name, contexts=contexts)
+            for ordinal, name, contexts in summary.asked_by_parameter
+        ],
+        reserve_usd=format(summary.reserve_usd, "f"),
+        expected_cached_usd=format(summary.expected_cached_usd, "f"),
+        value_moves=[
+            ValueMoveOut(parameter=parameter, from_value=source, to_value=target, contexts=contexts)
+            for parameter, source, target, contexts in summary.value_moves
+        ],
+        retired=[
+            RetiredOut(parameter=parameter, value=value, contexts=contexts)
+            for parameter, value, contexts in summary.retired
+        ],
+        refreshing_contexts=summary.refreshing_contexts,
+        repriced_pending_jobs=summary.repriced_pending_jobs,
+        preview_hash=summary.preview_hash,
+    )
 
 
 class VariantOut(TypedDict):

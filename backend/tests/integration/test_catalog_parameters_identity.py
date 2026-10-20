@@ -20,24 +20,31 @@ from models import (
 )
 from services.work_families import WorkFamilyError
 from services.work_variants import (
-    ParameterEdit,
     RecomputeResult,
     active_main_ordinals,
     bump_revision,
+    freeze_schema,
     get_or_create_variant,
     merge_parameter_values,
+    rebuild_schema,
     recompute_variants,
-    update_schema,
 )
+from tests.integration.parameters_edit_support import draft, edit, same_drafts
 from tests.integration.test_work_variants_api import BASE, _detail, _family_with_params
-from tests.integration.test_work_variants_core import _answer, _named, _table_rows
+from tests.integration.test_work_variants_core import (
+    _answer,
+    _named,
+    _parameter_in,
+    _schema_answer,
+    _table_rows,
+)
+from tests.integration.test_work_variants_material import _settings
 from tests.integration.test_work_variants_schema import _param, _value
 from tests.integration.test_work_variants_schema_life import (
     _active_world,
     _actor,
     _all_state,
     _Merge,
-    _same_edits,
     _second_context,
     _settle_context,
     _variant_of,
@@ -565,20 +572,17 @@ class TestRevision:
 
     def test_a_cosmetic_rename_adds_one(self, db_session, factories):
         world = _active_world(db_session, factories)
-        edits = _same_edits()
-        edits[0] = ParameterEdit(1, "ТОЛЩИНА", edits[0].values)
+        drafts = same_drafts()
+        drafts[0] = draft(1, "ТОЛЩИНА", *drafts[0].values)
 
-        update_schema(db_session, family_id=world.family.id, parameters=edits, actor_id=_actor(factories))
+        edit(db_session, world.family.id, drafts, _actor(factories))
 
         assert _revision(db_session, world.schema.id) == 1
 
-    def test_an_edit_without_renames_adds_nothing(self, db_session, factories):
+    def test_an_edit_without_changes_adds_nothing(self, db_session, factories):
         world = _active_world(db_session, factories)
 
-        update_schema(
-            db_session, family_id=world.family.id, parameters=_same_edits(),
-            actor_id=_actor(factories),
-        )
+        edit(db_session, world.family.id, same_drafts(), _actor(factories))
 
         assert _revision(db_session, world.schema.id) == 0
 
@@ -692,18 +696,22 @@ class TestRecomputeScope:
     семьи (спека 3в §2.3: «у которого вариант действующей версии»)."""
 
     def _two_versions(self, db, factories):
-        # Оба контекста получили варианты версии 1; затем структурная правка
-        # заводит версию 2, и только первый контекст получает вариант по ней.
-        # Второй остаётся в варианте версии 1 до ответа модели.
+        # Оба контекста получили варианты версии 1; затем пересборка заводит
+        # версию 2, и только первый контекст получает вариант по ней. Второй
+        # остаётся в варианте версии 1 до ответа модели.
         from types import SimpleNamespace
 
         world, second, first_v1, second_v1 = _two_contexts(db, factories)
-        edits = _same_edits()
-        edits[0] = ParameterEdit(1, edits[0].name, (*edits[0].values, "75 мм"))
-        current = update_schema(
-            db, family_id=world.family.id, parameters=edits, actor_id=_actor(factories)
+        building = rebuild_schema(db, family_id=world.family.id, actor_id=_actor(factories))
+        freeze_schema(
+            db, schema_id=building.id, guard=None, settings=_settings(),
+            answer=_schema_answer(
+                _parameter_in(1, "Толщина", "50 мм", "100 мм", "75 мм"),
+                _parameter_in(2, "Материал", "бетон", "кирпич"),
+            ),
         )
-        assert current.id != world.schema.id
+        current = db.get(FamilyParameterSchema, building.id)
+        assert current.status == "frozen" and current.id != world.schema.id
         new_world = SimpleNamespace(**{**vars(world), "schema": current})
         new_variant = _settle(db, new_world, world.context_id, "50 мм", "бетон")
         parameters = {

@@ -20,6 +20,7 @@ import routers.semantic as semantic_router
 import services.context_operations as context_operations_module
 import services.family_change as family_change_module
 import services.review as review_module
+import services.schema_edit as schema_edit_module
 import services.semantic_decisions as decisions_module
 import services.work_families as work_families_module
 import services.work_variants as work_variants_module
@@ -60,7 +61,7 @@ from tests.integration.test_work_variants_material import _uid
 from tests.integration.test_work_variants_position_kind import _human_position, _standard
 from tests.integration.test_work_variants_reconcile import _active_family as _schemaless_family
 from tests.integration.test_work_variants_schema import _family as _draft_family
-from tests.integration.test_work_variants_schema import _param, _value, _variant
+from tests.integration.test_work_variants_schema import _param, _schema, _value, _variant
 
 pytestmark = pytest.mark.integration
 
@@ -74,6 +75,7 @@ VARIANT_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", f"{BASE}/families/1/schema"),
     ("POST", f"{BASE}/families/1/schema/rebuild/preview"),
     ("POST", f"{BASE}/families/1/schema/rebuild"),
+    ("POST", f"{BASE}/families/1/schema/edit-preview"),
     ("PATCH", f"{BASE}/families/1/schema"),
     ("POST", f"{BASE}/families/1/schema/cancel"),
     ("POST", f"{BASE}/families/1/schema/values/merge"),
@@ -86,7 +88,7 @@ VARIANT_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", f"{BASE}/suggestions?queue=change"),
     ("POST", f"{BASE}/contexts/1/family"),
 )
-assert len(VARIANT_ROUTES) == 14
+assert len(VARIANT_ROUTES) == 15
 
 _PARAMS = ((1, "Толщина", ("50 мм", "100 мм")), (2, "Материал", ("бетон", "кирпич")))
 
@@ -208,6 +210,12 @@ _EXPECTED_STATUS = {
     "schema_value_removed": 422,
     "schema_blank": 422,
     "schema_bad_ordinals": 422,
+    "schema_too_many_parameters": 422,
+    "schema_duplicate_parameter": 422,
+    "schema_bad_range": 422,
+    "schema_range_too_many_values": 422,
+    "schema_ordinals_exhausted": 409,
+    "preview_changed": 409,
     "merge_values_other_parameter": 422,
     "merge_value_cycle": 422,
     "parameter_not_found": 404,
@@ -221,6 +229,7 @@ def _refusal_codes() -> dict[str, str]:
     for module in (
         work_families_module,
         work_variants_module,
+        schema_edit_module,
         review_module,
         context_operations_module,
     ):
@@ -834,13 +843,12 @@ class TestRebuildPreview:
         self._zero_tariffs(monkeypatch)
         before = self._preview(admin_client, db_session, scene.family.id)
 
-        edited = admin_client.patch(
-            f"{BASE}/families/{scene.family.id}/schema",
-            json=_edit(
-                (1, "Толщина", ("50 мм", "100 мм", "150 мм")), (2, "Материал", ("бетон", "кирпич"))
-            ),
-        )
-        assert edited.json()["version"] == 2
+        # правка на месте версию не меняет; новую версию заводит пересборка
+        scene.schema.status = "superseded"
+        scene.schema.superseded_at = scene.schema.frozen_at
+        db_session.flush()
+        _schema(db_session, factories, scene.family, version=2, status="frozen")
+        db_session.commit()
         after = self._preview(admin_client, db_session, scene.family.id)
 
         assert (before["reserve_usd"], before["context_count"]) == (
@@ -1107,22 +1115,36 @@ class TestRebuild:
 #  Ручная правка, отмена пересборки, слияние значений
 # ---------------------------------------------------------------------------
 
-def _edit(*parameters):
+def _edit(*parameters, preview_hash="x"):
+    """Тело правки: `(ordinal, имя, значения)` по параметру; `preview_hash` по
+    умолчанию заведомо неверный — проверки тела идут раньше сверки хэша."""
     return {
         "parameters": [
             {"ordinal": ordinal, "name": name, "values": list(values)}
             for ordinal, name, values in parameters
-        ]
+        ],
+        "preview_hash": preview_hash,
     }
+
+
+def _saved(client, family_id, *parameters):
+    """Предпросмотр и сохранение правки двумя вызовами, как это делает экран."""
+    body = _edit(*parameters)
+    preview = client.post(
+        f"{BASE}/families/{family_id}/schema/edit-preview", json={"parameters": body["parameters"]}
+    )
+    assert preview.status_code == 200, preview.text
+    body["preview_hash"] = preview.json()["preview_hash"]
+    return client.patch(f"{BASE}/families/{family_id}/schema", json=body)
 
 
 class TestSchemaEdit:
     def test_cosmetic_rename_keeps_the_version(self, admin_client, db_session, factories):
         scene = _family_with_params(db_session, factories)
 
-        response = admin_client.patch(
-            f"{BASE}/families/{scene.family.id}/schema",
-            json=_edit((1, "Толщина", ("50 мм", "100 мм")), (2, "Материал", ("Бетон", "кирпич"))),
+        response = _saved(
+            admin_client, scene.family.id,
+            (1, "Толщина", ("50 мм", "100 мм")), (2, "Материал", ("Бетон", "кирпич")),
         )
 
         assert response.status_code == 200, response.text
@@ -1130,19 +1152,17 @@ class TestSchemaEdit:
         assert body["version"] == 1
         assert [v["value"] for v in body["parameters"][1]["values"]] == ["Бетон", "кирпич"]
 
-    def test_added_value_makes_a_new_manual_version(self, admin_client, db_session, factories):
+    def test_added_value_stays_in_the_current_version(self, admin_client, db_session, factories):
         scene = _family_with_params(db_session, factories)
 
-        response = admin_client.patch(
-            f"{BASE}/families/{scene.family.id}/schema",
-            json=_edit(
-                (1, "Толщина", ("50 мм", "100 мм", "150 мм")), (2, "Материал", ("бетон", "кирпич"))
-            ),
+        response = _saved(
+            admin_client, scene.family.id,
+            (1, "Толщина", ("50 мм", "100 мм", "150 мм")), (2, "Материал", ("бетон", "кирпич")),
         )
 
         assert response.status_code == 200, response.text
         body = response.json()
-        assert (body["status"], body["version"]) == ("frozen", 2)
+        assert (body["status"], body["version"]) == ("frozen", 1)
         assert [v["value"] for v in body["parameters"][0]["values"]] == [
             "50 мм", "100 мм", "150 мм",
         ]
@@ -1171,7 +1191,7 @@ class TestSchemaEdit:
                 "schema_bad_ordinals", id="repeated-ordinal",
             ),
             pytest.param(
-                _edit((4, "Толщина", ("50 мм",))), "schema_bad_ordinals", id="ordinal-out-of-range",
+                _edit((4, "Толщина", ("50 мм",))), "schema_bad_ordinals", id="ordinal-not-active",
             ),
         ],
     )
@@ -1219,7 +1239,8 @@ class TestSchemaEdit:
         scene = _family_with_params(db_session, factories)
 
         response = admin_client.patch(
-            f"{BASE}/families/{scene.family.id}/schema", json={"parameters": [{"ordinal": 1}]}
+            f"{BASE}/families/{scene.family.id}/schema",
+            json={"parameters": [{"ordinal": 1}], "preview_hash": "x"},
         )
 
         assert response.status_code == 422

@@ -25,7 +25,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -52,7 +52,6 @@ from models import (
     FamilySuggestion,
     ParameterRole,
     ParameterValueKind,
-    SchemaOrigin,
     SchemaStatus,
     SemanticCancelReason,
     SemanticJob,
@@ -89,7 +88,6 @@ from services.semantic_reconcile import (
 from services.variant_answer import SchemaAnswer, ValuesAnswer
 from services.variant_request import (
     EMPTY_NAMES_CANDIDATES_HASH,
-    SchemaParameterIn,
     SubjectNotRenderable,
     paths_hash_of,
     render_request_for,
@@ -435,6 +433,145 @@ def _active_variant_count(db: Session, schema_id: int) -> int:
     ).scalar_one()
 
 
+def recompute_candidates(
+    db: Session, *, family_id: int, schema_id: int, context_ids: Sequence[int] | None = None
+) -> dict[int, int]:
+    """`{context_id: work_variant_id}` неархивных контекстов семьи с вариантом
+    версии `schema_id` (`context_ids` сужает выбор): те, кого пересчёт вариантов
+    может перевести."""
+    candidates = (
+        sa.select(CatalogContext.id, CatalogContext.work_variant_id)
+        .join(WorkVariant, WorkVariant.id == CatalogContext.work_variant_id)
+        .where(
+            CatalogContext.work_family_id == family_id,
+            CatalogContext.archived_at.is_(None),
+            WorkVariant.schema_id == schema_id,
+        )
+        .order_by(CatalogContext.id)
+    )
+    if context_ids is not None:
+        candidates = candidates.where(CatalogContext.id.in_(list(context_ids)))
+    return {row.id: row.work_variant_id for row in db.execute(candidates).all()}
+
+
+def answered_main_rows(
+    db: Session, context_ids: Collection[int], parameter_ids: Collection[int]
+) -> dict[int, dict[int, int | None]]:
+    """`{context_id: {parameter_id: value_id}}` строк значений параметров без
+    отметки «уточняется»: из них пересчёт вариантов собирает ключ."""
+    answered: dict[int, dict[int, int | None]] = {context_id: {} for context_id in context_ids}
+    if answered and parameter_ids:
+        for row in db.execute(
+            sa.select(
+                ContextParameterValue.context_id, ContextParameterValue.parameter_id,
+                ContextParameterValue.value_id,
+            ).where(
+                ContextParameterValue.context_id.in_(list(answered)),
+                ContextParameterValue.parameter_id.in_(list(parameter_ids)),
+                ContextParameterValue.refresh_requested_at.is_(None),
+            )
+        ).all():
+            answered[row.context_id][row.parameter_id] = row.value_id
+    return answered
+
+
+def project_recompute(
+    db: Session, *, schema_id: int, previous_of: Mapping[int, int],
+    main_ordinals: Collection[int], answered: Mapping[int, Mapping[int, int | None]],
+) -> RecomputeResult:
+    """Итог `recompute_variants`, ничего не записывая: `answered` — строки
+    контекстов `{context_id: {ordinal: value_id}}` такими, какими они будут, а
+    `main_ordinals` — активные главные параметры после правки. Целевой вариант
+    ключа ищется так же, как `_resolve_variant` (цепочка слияния, архивный
+    возвращается), число контекстов на вариантах — по всем контекстам, как у
+    `archive_variant_if_empty`."""
+    variants_before = _active_variant_count(db, schema_id)
+    main = set(main_ordinals)
+    key_of: dict[int, str] = {}
+    waiting = 0
+    for context_id in sorted(previous_of):
+        values = answered.get(context_id, {})
+        if set(values) != main:
+            waiting += 1
+            continue
+        key_of[context_id] = values_key_of(values)
+
+    target_of_key: dict[str, WorkVariant | None] = {}
+    if key_of:
+        found = {
+            variant.values_key: variant
+            for variant in db.execute(
+                sa.select(WorkVariant).where(
+                    WorkVariant.schema_id == schema_id,
+                    WorkVariant.values_key.in_(sorted(set(key_of.values()))),
+                )
+            ).scalars()
+        }
+        for key in set(key_of.values()):
+            variant = found.get(key)
+            seen: set[int] = set()
+            while variant is not None and variant.merged_into_id is not None:
+                if variant.id in seen:
+                    raise ValueError(f"цепочка слияния варианта {variant.id} замкнута")
+                seen.add(variant.id)
+                variant = db.get(WorkVariant, variant.merged_into_id)
+            target_of_key[key] = variant
+
+    moved_out: dict[int, int] = {}
+    moved_in: dict[int, int] = {}
+    new_keys: set[str] = set()
+    moved = 0
+    for context_id, key in key_of.items():
+        target = target_of_key[key]
+        if target is not None and target.id == previous_of[context_id]:
+            continue
+        moved += 1
+        moved_out[previous_of[context_id]] = moved_out.get(previous_of[context_id], 0) + 1
+        if target is None:
+            new_keys.add(key)
+        else:
+            moved_in[target.id] = moved_in.get(target.id, 0) + 1
+
+    involved = set(moved_out) | set(moved_in)
+    totals = (
+        dict(
+            db.execute(
+                sa.select(CatalogContext.work_variant_id, sa.func.count())
+                .where(CatalogContext.work_variant_id.in_(sorted(involved)))
+                .group_by(CatalogContext.work_variant_id)
+            ).all()
+        )
+        if involved
+        else {}
+    )
+    status_of = (
+        {
+            row.id: row.status
+            for row in db.execute(
+                sa.select(WorkVariant.id, WorkVariant.status).where(
+                    WorkVariant.id.in_(sorted(involved))
+                )
+            ).all()
+        }
+        if involved
+        else {}
+    )
+    after = variants_before + len(new_keys)
+    for variant_id in involved:
+        final = (
+            totals.get(variant_id, 0) - moved_out.get(variant_id, 0) + moved_in.get(variant_id, 0)
+        )
+        active = status_of[variant_id] == VariantStatus.active.value
+        if active and final == 0:
+            after -= 1
+        elif not active and final > 0:
+            after += 1
+    return RecomputeResult(
+        variants_before=variants_before, variants_after=after, moved_contexts=moved,
+        waiting_contexts=waiting,
+    )
+
+
 def recompute_variants(
     db: Session, *, family_id: int, schema_id: int, context_ids: Sequence[int] | None = None
 ) -> RecomputeResult:
@@ -452,37 +589,22 @@ def recompute_variants(
     `_resolve_variant` и `archive_variant_if_empty`. Ничего не коммитит и событий
     не пишет."""
     variants_before = _active_variant_count(db, schema_id)
-    candidates = (
-        sa.select(CatalogContext.id, CatalogContext.work_variant_id)
-        .join(WorkVariant, WorkVariant.id == CatalogContext.work_variant_id)
-        .where(
-            CatalogContext.work_family_id == family_id,
-            CatalogContext.archived_at.is_(None),
-            WorkVariant.schema_id == schema_id,
-        )
-        .order_by(CatalogContext.id)
+    previous_of = recompute_candidates(
+        db, family_id=family_id, schema_id=schema_id, context_ids=context_ids
     )
-    if context_ids is not None:
-        candidates = candidates.where(CatalogContext.id.in_(list(context_ids)))
-    previous_of = {row.id: row.work_variant_id for row in db.execute(candidates).all()}
     if previous_of:
         db.execute(_lock_contexts_statement(sorted(previous_of))).all()
 
     main = active_main_ordinals(db, schema_id)
     ordinal_of_parameter = {parameter_id: ordinal for ordinal, parameter_id in main.items()}
-    answered: dict[int, dict[int, int | None]] = {context_id: {} for context_id in previous_of}
-    if previous_of and main:
-        for row in db.execute(
-            sa.select(
-                ContextParameterValue.context_id, ContextParameterValue.parameter_id,
-                ContextParameterValue.value_id,
-            ).where(
-                ContextParameterValue.context_id.in_(list(previous_of)),
-                ContextParameterValue.parameter_id.in_(list(main.values())),
-                ContextParameterValue.refresh_requested_at.is_(None),
-            )
-        ).all():
-            answered[row.context_id][ordinal_of_parameter[row.parameter_id]] = row.value_id
+    answered: dict[int, dict[int, int | None]] = {
+        context_id: {
+            ordinal_of_parameter[parameter_id]: value_id for parameter_id, value_id in rows.items()
+        }
+        for context_id, rows in answered_main_rows(
+            db, list(previous_of), list(main.values())
+        ).items()
+    }
 
     moved = 0
     waiting = 0
@@ -626,11 +748,8 @@ def _check_schema_answer(answer: SchemaAnswer) -> None:
 def _write_frozen_schema(
     db: Session, *, schema: FamilyParameterSchema, current: FamilyParameterSchema | None,
     answer: SchemaAnswer, job_id: int | None,
-    origins: Mapping[tuple[int, str], str] | None = None,
-    default_value_origin: str = ValueOrigin.schema.value,
 ) -> dict[tuple[int, str], tuple[int, int, str]]:
-    """Общая часть заморозки: параметры и значения (`origin` по `(ordinal,
-    норма)` из `origins`, иначе `default_value_origin`), версия `building` ->
+    """Общая часть заморозки: параметры и значения (`origin = schema`), версия `building` ->
     `frozen`, прежняя текущая -> `superseded` (заморозка сохраняется), событие.
     Вызывающий уже взял блокировки и вынес вердикт. Возвращает записанные
     значения: `(ordinal, норма) -> (parameter_id, value_id, текст)`."""
@@ -652,7 +771,7 @@ def _write_frozen_schema(
             seen.add(norm)
             value_row = FamilyParameterValue(
                 parameter_id=row.id, value=text.strip(), value_norm=norm,
-                origin=(origins or {}).get((parameter.ordinal, norm), default_value_origin),
+                origin=ValueOrigin.schema.value,
             )
             db.add(value_row)
             written[(parameter.ordinal, norm)] = (row.id, value_row, text.strip())
@@ -719,8 +838,7 @@ def freeze_schema(
     Вердикт под блокировками: семья `active`, версия `building`, захват ещё
     наш, отпечаток текущий. Повторная заморозка уже `frozen`-версии —
     `not_applicable`. `guard=None` — вызов без задания, тогда вердикт — только
-    состояние семьи и версии. Ручные версии (`update_schema`) через неё не
-    идут: они пишутся общей `_write_frozen_schema`.
+    состояние семьи и версии.
 
     Raises:
         AnswerSchemaError: имя или значение пусто после нормализации — до любой
@@ -995,9 +1113,10 @@ def _extend_with_value(
 ) -> int:
     """Значение ответа модели: найденное возвращается, новое расширяет список и
     увеличивает `revision` версии. `apply_values` держит версию `FOR SHARE`;
-    повышение до `FOR NO KEY UPDATE` здесь безопасно, потому что каждый держатель
-    `FOR SHARE` версии (запись ответа, слияние значений) берёт семью
-    `FOR UPDATE` первым."""
+    повышение до `FOR NO KEY UPDATE` здесь безопасно, потому что единственный
+    держатель `FOR SHARE` версии (запись ответа) берёт семью `FOR UPDATE`
+    первым, а остальные писатели версии (правка, слияние значений) берут саму
+    версию `FOR UPDATE`."""
     value_id, created = get_or_create_value(
         db, parameter_id=parameter_id, text=text, origin=ValueOrigin.extension
     )
@@ -1571,9 +1690,6 @@ REFUSE_MERGE_SOURCE_MERGED = "merge_source_merged"
 REFUSE_MERGE_CYCLE = "merge_value_cycle"
 REFUSE_MERGE_VALUE_RETIRED = "merge_value_retired"
 
-_MAX_PARAMETERS = 3
-
-
 def _lock_family_for_schema_life(
     db: Session, family_id: int, *, require_active: bool
 ) -> None:
@@ -1690,206 +1806,6 @@ def cancel_schema_build(db: Session, *, family_id: int, actor_id: int) -> None:
         )
     cancel_building_version(db, schema)
     db.flush()
-
-
-@dataclass(frozen=True)
-class ParameterEdit:
-    """Параметр в ручной правке схемы: `ordinal` — его идентичность в версии."""
-
-    ordinal: int
-    name: str
-    values: tuple[str, ...]
-
-
-def _checked_edits(parameters: Sequence[ParameterEdit]) -> dict[int, ParameterEdit]:
-    ordinals = [parameter.ordinal for parameter in parameters]
-    if len(set(ordinals)) != len(ordinals) or any(
-        not 1 <= ordinal <= _MAX_PARAMETERS for ordinal in ordinals
-    ):
-        raise WorkFamilyError(
-            REFUSE_SCHEMA_BAD_ORDINALS,
-            f"ordinal параметров {sorted(ordinals)}: нужны различные числа от 1 до "
-            f"{_MAX_PARAMETERS}",
-        )
-    for parameter in parameters:
-        if not normalize_value(parameter.name):
-            raise WorkFamilyError(
-                REFUSE_SCHEMA_BLANK, f"имя параметра {parameter.ordinal} пусто"
-            )
-        if any(not normalize_value(value) for value in parameter.values):
-            raise WorkFamilyError(
-                REFUSE_SCHEMA_BLANK, f"значение параметра {parameter.ordinal} пусто"
-            )
-    return {parameter.ordinal: parameter for parameter in parameters}
-
-
-@dataclass
-class _EditPlan:
-    structural: bool
-    #: Косметика на месте: строки и их новый показываемый текст.
-    renames: list[tuple[FamilyParameter | FamilyParameterValue, str]]
-    #: `(ordinal, норма)` значений, которых нет в текущей версии, и происхождение
-    #: перенесённых.
-    added: set[tuple[int, str]]
-    origins: dict[tuple[int, str], str]
-
-
-def _plan_edit(
-    db: Session, current: FamilyParameterSchema, edits: Mapping[int, ParameterEdit]
-) -> _EditPlan:
-    """Сравнивает правку с текущей версией по `ordinal` и нормализованной форме;
-    слитые значения в сравнение не входят. Смысловое переименование параметра
-    и удаление значения — отказ."""
-    parameters = {
-        parameter.ordinal: parameter
-        for parameter in db.execute(
-            sa.select(FamilyParameter).where(FamilyParameter.schema_id == current.id)
-        ).scalars()
-    }
-    values_of: dict[int, list[FamilyParameterValue]] = {p.id: [] for p in parameters.values()}
-    for value in db.execute(
-        sa.select(FamilyParameterValue)
-        .where(
-            FamilyParameterValue.parameter_id.in_([p.id for p in parameters.values()]),
-            FamilyParameterValue.merged_into_id.is_(None),
-        )
-        .order_by(FamilyParameterValue.id)
-    ).scalars():
-        values_of[value.parameter_id].append(value)
-
-    plan = _EditPlan(
-        structural=set(edits) != set(parameters), renames=[], added=set(), origins={}
-    )
-    for ordinal in sorted(edits):
-        edit = edits[ordinal]
-        parameter = parameters.get(ordinal)
-        if parameter is None:
-            for text in edit.values:
-                plan.added.add((ordinal, normalize_value(text)))
-            continue
-        if normalize_value(edit.name) != parameter.name_norm:
-            raise WorkFamilyError(
-                REFUSE_SCHEMA_PARAMETER_RENAMED,
-                f"параметр {ordinal}: смысловое переименование — новый параметр, "
-                "а не правка имени",
-                ordinal=ordinal,
-            )
-        if parameter.name != edit.name.strip():
-            plan.renames.append((parameter, edit.name.strip()))
-        current_by_norm = {value.value_norm: value for value in values_of[parameter.id]}
-        text_by_norm: dict[str, str] = {}
-        for text in edit.values:
-            text_by_norm.setdefault(normalize_value(text), text.strip())
-        removed = set(current_by_norm) - set(text_by_norm)
-        if removed:
-            raise WorkFamilyError(
-                REFUSE_SCHEMA_VALUE_REMOVED,
-                f"параметр {ordinal}: значение удалить нельзя — только слить с другим",
-                ordinal=ordinal,
-            )
-        for norm, text in text_by_norm.items():
-            existing = current_by_norm.get(norm)
-            if existing is None:
-                plan.added.add((ordinal, norm))
-                continue
-            plan.origins[(ordinal, norm)] = existing.origin
-            if existing.value != text:
-                plan.renames.append((existing, text))
-    if plan.added:
-        plan.structural = True
-    return plan
-
-
-def update_schema(
-    db: Session, *, family_id: int, parameters: Sequence[ParameterEdit], actor_id: int
-) -> FamilyParameterSchema:
-    """Ручная правка схемы (спека §2.8). Косметика (та же нормализованная
-    форма) правит имена на месте: версия и задания не меняются. Добавление или
-    удаление параметра и добавление значения — новая версия `manual`,
-    замороженная сразу тем же путём записи, что у заморозки модели; контексты
-    семьи получают задания значений по ней. Возвращает текущую версию после
-    правки.
-
-    Raises:
-        WorkFamilyError: семьи нет или она не активна; у семьи есть пересборка
-            (`building`) или нет текущей версии; ordinal повторяются или вне
-            1..3; имя или значение пусто; смысловое переименование параметра;
-            удаление значения.
-    """
-    edits = _checked_edits(parameters)
-    _lock_family_for_schema_life(db, family_id, require_active=True)
-    building = db.execute(
-        sa.select(FamilyParameterSchema.id)
-        .where(
-            FamilyParameterSchema.family_id == family_id,
-            FamilyParameterSchema.status == SchemaStatus.building.value,
-        )
-        .limit(1)
-    ).first()
-    if building is not None:
-        raise WorkFamilyError(
-            REFUSE_SCHEMA_BUILDING,
-            f"у семьи {family_id} идёт пересборка схемы: сначала отмените её",
-            family_id=family_id,
-        )
-    current = db.execute(_lock_current_schema_statement(family_id)).scalar_one_or_none()
-    if current is None:
-        raise WorkFamilyError(
-            REFUSE_SCHEMA_NO_CURRENT, f"у семьи {family_id} нет текущей схемы",
-            family_id=family_id,
-        )
-    plan = _plan_edit(db, current, edits)
-    if not plan.structural:
-        for row, text in plan.renames:
-            if isinstance(row, FamilyParameter):
-                row.name = text
-            else:
-                row.value = text
-        db.flush()
-        if plan.renames:
-            bump_revision(db, current.id)
-            # Показываемый текст входит в запрос значений: задания со старым
-            # отпечатком заменяет сверка.
-            reconcile_or_defer(db, _family_context_ids(db, family_id))
-        return current
-
-    next_version = db.execute(
-        sa.select(sa.func.coalesce(sa.func.max(FamilyParameterSchema.version), 0) + 1).where(
-            FamilyParameterSchema.family_id == family_id
-        )
-    ).scalar_one()
-    schema = FamilyParameterSchema(
-        family_id=family_id, version=next_version, status=SchemaStatus.building.value,
-        origin=SchemaOrigin.manual.value, frozen_by=actor_id,
-    )
-    db.add(schema)
-    db.flush()
-    answer = SchemaAnswer(
-        parameters=tuple(
-            SchemaParameterIn(
-                ordinal=ordinal, name=edits[ordinal].name, values=tuple(edits[ordinal].values)
-            )
-            for ordinal in sorted(edits)
-        )
-    )
-    written = _write_frozen_schema(
-        db, schema=schema, current=current, answer=answer, job_id=None,
-        origins=plan.origins, default_value_origin=ValueOrigin.manual.value,
-    )
-    for key in sorted(plan.added):
-        parameter_id, value_id, text = written[key]
-        record_event(
-            db,
-            event_type="family_schema_value_added",
-            family_id=family_id,
-            actor_id=actor_id,
-            payload={
-                "parameter_id": parameter_id, "value_id": value_id, "value": text,
-                "origin": ValueOrigin.manual.value, "context_id": None,
-            },
-        )
-    reconcile_or_defer(db, _family_context_ids(db, family_id))
-    return schema
 
 
 def _lock_values_statement(value_ids: Sequence[int]):
@@ -2153,9 +2069,9 @@ __all__: Sequence[str] = (
     "FreezeOutcome",
     "JobGuard",
     "UnappliedReason",
-    "ParameterEdit",
     "RecomputeResult",
     "active_main_ordinals",
+    "answered_main_rows",
     "apply_values",
     "archive_variant_if_empty",
     "bump_revision",
@@ -2167,11 +2083,13 @@ __all__: Sequence[str] = (
     "get_or_create_value",
     "get_or_create_variant",
     "mark_context_not_work",
+    "mark_rows_for_refresh",
     "merge_parameter_values",
     "normalize_value",
+    "project_recompute",
     "rebuild_schema",
+    "recompute_candidates",
     "recompute_variants",
     "take_context_off_work",
-    "update_schema",
     "values_key_of",
 )

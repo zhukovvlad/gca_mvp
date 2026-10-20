@@ -30,7 +30,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
-from collections.abc import Collection, Iterator, Sequence
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -95,6 +95,7 @@ from services.variant_request import (
     EMPTY_NAMES_CANDIDATES_HASH,
     SCHEMA_PROMPT_VERSION,
     VALUES_PROMPT_VERSION,
+    SchemaParameterIn,
     ValuesRequestMaterial,
     load_schema_material,
     load_values_material,
@@ -156,6 +157,10 @@ RECONCILE_ALLOWLIST: frozenset[str] = frozenset(
         # «Не работа» контексту снимает семью и ставит `NOT_APPLICABLE`, сверку
         # зовёт сама.
         "services.work_variants",
+        # Правка схемы на месте: параметры, значения и строки значений контекстов,
+        # пересчёт вариантов; сверку заданий значений зовёт сама, без потолка
+        # события.
+        "services.schema_edit",
         # Слияние в Review и смена `kind` строки.
         "services.review",
         # Замена сметы удаляет позиции; контексты вытесненной сметы собираются
@@ -356,6 +361,10 @@ class _Plan:
     # Отпечатки заданий, не вызывающих модель (схема без параметров): в резерв
     # потолка дают 0, но считаются в числе контекстов события.
     free: set[Fingerprint] = field(default_factory=set)
+    # Номера параметров, о которых спросит задание значений отпечатка (при
+    # запросе всех активных — все они): правка схемы считает по ним, сколько
+    # контекстов спросят по каждому параметру.
+    asked: dict[Fingerprint, tuple[int, ...]] = field(default_factory=dict)
 
     def entries(self) -> list[tuple[Fingerprint, RenderedRequest]]:
         return [(new.fingerprint, new.rendered) for new in self.creates] + [
@@ -586,22 +595,12 @@ class ValuesNeed:
     variant_due: bool
 
 
-def _values_needs(
-    db: Session,
-    material: dict[int, ValuesRequestMaterial],
-    columns: dict[int, _ValuesColumns],
-) -> dict[int, ValuesNeed]:
-    """`ValuesNeed` контекстов набора одним запросом строк значений. Ветви:
-
-    - хэш путей варианта не совпал с путями контекста (пустой хэш — нет варианта
-      — тоже «не совпал») — все активные параметры (материал изменился, известное
-      неизвестно);
-    - иначе активные параметры, у которых нет строки в действующей версии
-      (строки схем других версий не в счёт) или она помечена
-      `refresh_requested_at`; архивные параметры сюда не попадают никогда.
-
-    `variant_due` — есть ожидание либо вариант не действующей версии (у
-    контекста без варианта версии нет, и он сюда же попадает)."""
+def load_value_rows(
+    db: Session, material: dict[int, ValuesRequestMaterial]
+) -> dict[int, dict[int, bool]]:
+    """Строки значений контекстов набора действующей версии одним запросом:
+    `{context_id: {ordinal: помечена ли «уточняется»}}`. Строки схем других
+    версий не в счёт."""
     rows: dict[int, dict[int, bool]] = {}
     if material:
         for row in db.execute(
@@ -616,21 +615,49 @@ def _values_needs(
         ).all():
             if row.schema_id == material[row.context_id].schema_id:
                 rows.setdefault(row.context_id, {})[row.ordinal] = row.marked
-    needs: dict[int, ValuesNeed] = {}
-    for context_id, values in material.items():
-        column = columns[context_id]
-        active = tuple(sorted(p.ordinal for p in values.parameters))
-        if column.variant_paths_hash != paths_hash_of(values.paths):
-            ordinals = active
-        else:
-            known = rows.get(context_id, {})
-            ordinals = tuple(o for o in active if o not in known or known[o])
-        needs[context_id] = ValuesNeed(
-            ordinals=ordinals,
-            variant_due=column.pending_family_id is not None
-            or column.variant_schema_id != values.schema_id,
-        )
-    return needs
+    return rows
+
+
+def values_need_of(
+    values: ValuesRequestMaterial, column: _ValuesColumns, known: Mapping[int, bool]
+) -> ValuesNeed:
+    """`ValuesNeed` одного контекста по его материалу, колонкам и строкам
+    (`known`: `{ordinal: помечена ли}`). Ветви:
+
+    - хэш путей варианта не совпал с путями контекста (пустой хэш — нет варианта
+      — тоже «не совпал») — все активные параметры (материал изменился, известное
+      неизвестно);
+    - иначе активные параметры, у которых нет строки в действующей версии
+      или она помечена `refresh_requested_at`; архивные параметры сюда не
+      попадают никогда.
+
+    `variant_due` — есть ожидание либо вариант не действующей версии (у
+    контекста без варианта версии нет, и он сюда же попадает). Чистая функция:
+    правка схемы считает по ней нужду контекстов до записи."""
+    active = tuple(sorted(p.ordinal for p in values.parameters))
+    if column.variant_paths_hash != paths_hash_of(values.paths):
+        ordinals = active
+    else:
+        ordinals = tuple(o for o in active if o not in known or known[o])
+    return ValuesNeed(
+        ordinals=ordinals,
+        variant_due=column.pending_family_id is not None
+        or column.variant_schema_id != values.schema_id,
+    )
+
+
+def _values_needs(
+    db: Session,
+    material: dict[int, ValuesRequestMaterial],
+    columns: dict[int, _ValuesColumns],
+) -> dict[int, ValuesNeed]:
+    """`ValuesNeed` контекстов набора одним запросом строк значений
+    (`load_value_rows`, `values_need_of`)."""
+    rows = load_value_rows(db, material)
+    return {
+        context_id: values_need_of(values, columns[context_id], rows.get(context_id, {}))
+        for context_id, values in material.items()
+    }
 
 
 def values_need(db: Session, context_id: int, schema_id: int) -> ValuesNeed:
@@ -716,8 +743,22 @@ def _plan_context_values(
     needs = _values_needs(
         db, {cid: values_material[cid] for cid in applicable}, columns
     )
+    _plan_values_jobs(material_by_context, values_material, applicable, needs, jobs, plan)
+
+
+def _plan_values_jobs(
+    material_by_context: dict[int, ContextRequestMaterial],
+    values_material: dict[int, ValuesRequestMaterial],
+    applicable: Collection[int],
+    needs: Mapping[int, ValuesNeed],
+    jobs: Collection[SemanticJob],
+    plan: _Plan,
+) -> None:
+    """Решения по заданиям значений, когда материал, применимость и нужда
+    контекстов уже известны. Чистая часть `_plan_context_values`: правка схемы
+    кормит её материалом и нуждой, какими они станут после правки."""
     jobs_by_context = _group_by(jobs, lambda job: job.context_id)
-    for context_id in ids:
+    for context_id in material_by_context:
         if context_id not in applicable:
             _plan_inapplicable(plan, jobs_by_context.get(context_id, []))
     for context_id in sorted(applicable):
@@ -740,8 +781,75 @@ def _plan_context_values(
             requested_ordinals=built.requested_ordinals,
         )
         _plan_postanovka(plan, current, _NewJob(fingerprint, rendered, row), revive_done=True)
+        plan.asked[fingerprint] = (
+            built.requested_ordinals
+            if built.requested_ordinals is not None
+            else tuple(sorted(p.ordinal for p in material.parameters))
+        )
         if not need.ordinals:
             plan.free.add(fingerprint)
+
+
+@dataclass(frozen=True)
+class ValuesPlanPreview:
+    """Что поставит сверка заданий значений: задания, которые она создаст или
+    вернёт в `pending` (`entries`: отпечаток, рендер, номера запроса, без
+    модели ли), и ждущие задания, которые она снимет, потому что их отпечаток
+    перестал быть текущим (`cancelled`: `pending` и `privacy_hold`)."""
+
+    entries: tuple[tuple[Fingerprint, RenderedRequest, tuple[int, ...], bool], ...]
+    cancelled: tuple[int, ...]
+
+
+def preview_values_plan(
+    db: Session,
+    context_ids: Collection[int],
+    *,
+    parameters: Sequence[SchemaParameterIn],
+    rows: Mapping[int, Mapping[int, bool]],
+) -> ValuesPlanPreview:
+    """План сверки заданий значений контекстов, ЕСЛИ активными параметрами
+    действующей версии станут `parameters`, а строки значений будут `rows`
+    (`{context_id: {ordinal: помечена ли «уточняется»}}`). Ничего не пишет: те же
+    применимость, нужда и таблица исходов, что у `reconcile_semantic_jobs`,
+    только материал подменён. Для предпросмотра правки схемы (спека 3в §2.5)."""
+    material_by_context = load_request_material(db, context_ids)
+    values_material = {
+        context_id: dataclasses.replace(
+            material, parameters=tuple(parameters),
+            requested_ordinals=tuple(sorted(p.ordinal for p in parameters)),
+        )
+        for context_id, material in load_values_material(db, list(material_by_context)).items()
+    }
+    columns = _load_values_columns(db, list(values_material)) if values_material else {}
+    applicable = {
+        cid
+        for cid, material in values_material.items()
+        if _values_applicable(material_by_context[cid], columns[cid])
+    }
+    needs = {
+        cid: values_need_of(values_material[cid], columns[cid], rows.get(cid, {}))
+        for cid in applicable
+    }
+    _suggestion_jobs, values_jobs = _split_jobs(_load_jobs_for_contexts(db, list(material_by_context)))
+    plan = _Plan()
+    _plan_values_jobs(material_by_context, values_material, applicable, needs, values_jobs, plan)
+    superseded = (
+        SemanticCancelReason.input_changed.value, SemanticCancelReason.stale_hold.value,
+    )
+    cancelled = tuple(
+        sorted(
+            job_id for ids, _statuses, reason in plan.cancels if reason in superseded
+            for job_id in ids
+        )
+    )
+    return ValuesPlanPreview(
+        entries=tuple(
+            (fingerprint, rendered, plan.asked[fingerprint], fingerprint in plan.free)
+            for fingerprint, rendered in plan.entries()
+        ),
+        cancelled=cancelled,
+    )
 
 
 # Версия схемы, которой ещё нет: на тело запроса `family_schema` номер версии не
