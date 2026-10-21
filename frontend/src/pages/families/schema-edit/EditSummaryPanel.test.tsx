@@ -75,6 +75,26 @@ describe("EditSummaryPanel: запросы к модели и деньги", () 
     expect(screen.getByText(/Резерв \$1,25, ожидаемая цена при попадании в кэш ≈ \$0,30\./)).toBeInTheDocument();
     expect(screen.queryByText("У модели ничего не запрашивается.")).not.toBeInTheDocument();
   });
+
+  it("после «у» число контекстов — в родительном падеже: 1 и 21 — «контекста», 2 и 44 — «контекстов»", () => {
+    show(
+      summaryOf({
+        asked_by_parameter: [
+          { ordinal: 1, name: "А", contexts: 1 },
+          { ordinal: 2, name: "Б", contexts: 21 },
+          { ordinal: 3, name: "В", contexts: 2 },
+          { ordinal: 4, name: "Г", contexts: 44 },
+        ],
+        refreshing_contexts: 44,
+      })
+    );
+
+    expect(screen.getByText("У модели запросится «А» — у 1 контекста.")).toBeInTheDocument();
+    expect(screen.getByText("У модели запросится «Б» — у 21 контекста.")).toBeInTheDocument();
+    expect(screen.getByText("У модели запросится «В» — у 2 контекстов.")).toBeInTheDocument();
+    expect(screen.getByText("У модели запросится «Г» — у 44 контекстов.")).toBeInTheDocument();
+    expect(screen.getByText(/У 44 контекстов значение уточняется/)).toBeInTheDocument();
+  });
 });
 
 describe("EditSummaryPanel: переносы, выведенные, уточняется", () => {

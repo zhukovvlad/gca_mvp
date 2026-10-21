@@ -11,6 +11,11 @@ function contexts(count: number): string {
   return `${count.toLocaleString("ru-RU")} ${pluralRu(count, "контекст", "контекста", "контекстов")}`;
 }
 
+/** После «у»: родительный падеж — «у 1 контекста», «у 2 контекстов». */
+function ofContexts(count: number): string {
+  return `${count.toLocaleString("ru-RU")} ${pluralRu(count, "контекста", "контекстов", "контекстов")}`;
+}
+
 function variantsLine(summary: SchemaEditSummary): string {
   const { variants_before: before, variants_after_now: after, variants_pending_answers: pending } = summary;
   if (pending) {
@@ -74,7 +79,7 @@ export function EditSummaryPanel({ summary, pending, refusal }: EditSummaryPanel
           <>
             {asked.map((entry) => (
               <li key={entry.ordinal}>
-                У модели запросится «{entry.name}» — у {contexts(entry.contexts)}.
+                У модели запросится «{entry.name}» — у {ofContexts(entry.contexts)}.
               </li>
             ))}
             <li>
@@ -105,7 +110,7 @@ export function EditSummaryPanel({ summary, pending, refusal }: EditSummaryPanel
         )}
         {summary.refreshing_contexts > 0 && (
           <li>
-            У {contexts(summary.refreshing_contexts)} значение уточняется: до ответа они остаются в прежнем
+            У {ofContexts(summary.refreshing_contexts)} значение уточняется: до ответа они остаются в прежнем
             варианте.
           </li>
         )}
