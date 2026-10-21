@@ -51,7 +51,13 @@ from models import (
     ValueSource,
     WorkFamily,
 )
-from services.parameter_ranges import build_range_values
+from services.parameter_ranges import (
+    RangeValue,
+    build_range_values,
+    containing_range,
+    parse_single_number,
+    range_for_number,
+)
 from services.semantic_cost import RESERVE_FORMULA_VERSION, tariffs_from
 from services.semantic_events import record_event
 from services.semantic_reconcile import (
@@ -177,6 +183,9 @@ class _ValueRow:
     value_norm: str
     merged: bool
     retired: bool
+    merged_into: int | None = None
+    range_lo: Decimal | None = None
+    range_hi: Decimal | None = None
 
     @property
     def active(self) -> bool:
@@ -195,6 +204,10 @@ class _RowState:
     off_list_text: str | None
     marked: bool
     context_live: bool
+    #: Контекст принадлежит семье правки (`COALESCE(pending_family_id, work_family_id)`).
+    #: Строки контекстов с ожиданием другой семьи в версии остаются, и значения,
+    #: на которые они ссылаются, перестройка обязана учитывать.
+    in_family: bool = True
 
 
 @dataclass(frozen=True)
@@ -207,7 +220,37 @@ class _State:
     values: dict[int, list[_ValueRow]]
     """Значения по `id` параметра, по возрастанию `id`."""
     rows: list[_RowState]
+    """Строки контекстов самой семьи."""
     context_ids: list[int]
+    schema_rows: list[_RowState] = field(default_factory=list)
+    """Все строки значений версии, каким бы семьям ни принадлежали их контексты."""
+
+
+def _read_values(db: Session, parameter_ids: Sequence[int]) -> dict[int, list[_ValueRow]]:
+    """Значения параметров по `id` параметра, по возрастанию `id`; слитые и
+    выведенные включены."""
+    values: dict[int, list[_ValueRow]] = {parameter_id: [] for parameter_id in parameter_ids}
+    if not values:
+        return values
+    for row in db.execute(
+        sa.select(
+            FamilyParameterValue.id, FamilyParameterValue.parameter_id,
+            FamilyParameterValue.value, FamilyParameterValue.value_norm,
+            FamilyParameterValue.merged_into_id, FamilyParameterValue.retired_at,
+            FamilyParameterValue.range_lo, FamilyParameterValue.range_hi,
+        )
+        .where(FamilyParameterValue.parameter_id.in_(list(values)))
+        .order_by(FamilyParameterValue.id)
+    ).all():
+        values[row.parameter_id].append(
+            _ValueRow(
+                id=row.id, parameter_id=row.parameter_id, value=row.value,
+                value_norm=row.value_norm, merged=row.merged_into_id is not None,
+                retired=row.retired_at is not None, merged_into=row.merged_into_id,
+                range_lo=row.range_lo, range_hi=row.range_hi,
+            )
+        )
+    return values
 
 
 def _read_state(db: Session, family_id: int, schema_id: int, revision: int) -> _State:
@@ -229,24 +272,7 @@ def _read_state(db: Session, family_id: int, schema_id: int, revision: int) -> _
             .order_by(FamilyParameter.ordinal)
         ).all()
     }
-    values: dict[int, list[_ValueRow]] = {parameter_id: [] for parameter_id in parameters}
-    if parameters:
-        for row in db.execute(
-            sa.select(
-                FamilyParameterValue.id, FamilyParameterValue.parameter_id,
-                FamilyParameterValue.value, FamilyParameterValue.value_norm,
-                FamilyParameterValue.merged_into_id, FamilyParameterValue.retired_at,
-            )
-            .where(FamilyParameterValue.parameter_id.in_(list(parameters)))
-            .order_by(FamilyParameterValue.id)
-        ).all():
-            values[row.parameter_id].append(
-                _ValueRow(
-                    id=row.id, parameter_id=row.parameter_id, value=row.value,
-                    value_norm=row.value_norm, merged=row.merged_into_id is not None,
-                    retired=row.retired_at is not None,
-                )
-            )
+    values = _read_values(db, list(parameters))
     family_context = sa.func.coalesce(
         CatalogContext.pending_family_id, CatalogContext.work_family_id
     )
@@ -255,11 +281,11 @@ def _read_state(db: Session, family_id: int, schema_id: int, revision: int) -> _
             sa.select(CatalogContext.id).where(family_context == family_id).order_by(CatalogContext.id)
         ).scalars()
     )
-    rows = [
+    schema_rows = [
         _RowState(
             context_id=row.context_id, parameter_id=row.parameter_id, ordinal=row.ordinal,
             value_id=row.value_id, source=row.source, off_list_text=row.off_list_text,
-            marked=row.marked, context_live=row.live,
+            marked=row.marked, context_live=row.live, in_family=bool(row.in_family),
         )
         for row in db.execute(
             sa.select(
@@ -268,18 +294,18 @@ def _read_state(db: Session, family_id: int, schema_id: int, revision: int) -> _
                 ContextParameterValue.source, ContextParameterValue.off_list_text,
                 ContextParameterValue.refresh_requested_at.is_not(None).label("marked"),
                 CatalogContext.archived_at.is_(None).label("live"),
+                (family_context == family_id).label("in_family"),
             )
             .join(FamilyParameter, FamilyParameter.id == ContextParameterValue.parameter_id)
             .join(CatalogContext, CatalogContext.id == ContextParameterValue.context_id)
-            .where(
-                ContextParameterValue.schema_id == schema_id, family_context == family_id
-            )
+            .where(ContextParameterValue.schema_id == schema_id)
             .order_by(ContextParameterValue.context_id, FamilyParameter.ordinal)
         ).all()
     ]
     return _State(
         family_id=family_id, schema_id=schema_id, revision=revision, parameters=parameters,
-        values=values, rows=rows, context_ids=context_ids,
+        values=values, rows=[row for row in schema_rows if row.in_family],
+        context_ids=context_ids, schema_rows=schema_rows,
     )
 
 
@@ -437,6 +463,62 @@ class _NewValue:
     built: bool = False
 
 
+@dataclass(frozen=True)
+class _Slot:
+    """Значение нового набора параметра: чем оно станет. `value_id` — значение,
+    которое его несёт (`None` — создаётся); `revive` — несущее выведено и
+    возвращается из истории. У значения, слитого человеком, несущее —
+    каноническое значение цепочки."""
+
+    text: str
+    norm: str
+    lo: Decimal | None
+    hi: Decimal | None
+    value_id: int | None
+    revive: bool
+    #: Значение строит система (диапазон), события `family_schema_value_added` нет.
+    built: bool
+    #: Текст несущего значения сейчас (`None` — значения ещё нет).
+    current_text: str | None = None
+
+
+@dataclass(frozen=True)
+class ValueResolution:
+    """Судьба одного прежнего активного значения при перестройке параметра
+    (спека 3в §2.6). `target_value_id` — значение, куда переносятся строки
+    контекстов; `None` — значение неразрешимо либо цель ещё не создана
+    (`target_label` назван тогда, когда цель есть). `unchanged` — цель совпадает
+    с источником: значение и его строки не трогаются."""
+
+    value_id: int
+    target_value_id: int | None
+    unchanged: bool
+    target_label: str | None = None
+
+
+@dataclass
+class _Move:
+    """Прежнее активное значение, которое перестройка выводит: `target` — куда
+    переносятся его строки (`None` — неразрешимо, строки сохраняют значение и
+    помечаются «уточняется»)."""
+
+    source: _ValueRow
+    target: _Slot | None
+    #: Строки контекстов, стоящие на источнике (любые контексты версии).
+    rows: list[_RowState]
+
+    @property
+    def live_contexts(self) -> list[int]:
+        return [row.context_id for row in self.rows if row.context_live]
+
+
+@dataclass
+class _Rebuild:
+    moves: list[_Move]
+    #: Несущие значения нового набора, чьи границы меняются: `(id, lo, hi)`.
+    bounds: list[tuple[int, Decimal | None, Decimal | None]]
+
+
 @dataclass
 class _ParameterPlan:
     ordinal: int
@@ -449,12 +531,18 @@ class _ParameterPlan:
     closed_to: bool | None = None
     value_renames: list[tuple[int, str]] = field(default_factory=list)
     new_values: list[_NewValue] = field(default_factory=list)
+    #: Смена вида, границ или шага существующего параметра (спека 3в §2.6).
+    rebuild: _Rebuild | None = None
+    #: Значения активного набора параметра после правки — в том порядке, в каком их
+    #: увидит запрос (только у перестройки).
+    texts_after: tuple[str, ...] | None = None
 
     @property
     def touched(self) -> bool:
         return bool(
             self.rename_to is not None or self.role_to is not None
             or self.closed_to is not None or self.value_renames or self.new_values
+            or self.rebuild is not None
         )
 
 
@@ -498,6 +586,195 @@ def _same_range(row: _ParameterRow, spec: RangeSpec) -> bool:
     )
 
 
+def _canonical_row(by_id: dict[int, _ValueRow], row: _ValueRow) -> _ValueRow:
+    """Значение, в которое слито `row`, по цепочке до не слитого."""
+    while row.merged_into is not None:
+        # цепочка не замыкается: `merge_parameter_values` отказывает слиянию в цикл
+        row = by_id[row.merged_into]
+    return row
+
+
+def _new_slots(
+    values: Sequence[_ValueRow], *, new_kind: ParameterValueKind, new_range: RangeSpec | None,
+    texts: Sequence[str],
+) -> tuple[list[_Slot], tuple[RangeValue, ...]]:
+    """Значения нового набора параметра и, для диапазонов, построенные системой
+    значения (по одному слоту на каждое, в том же порядке). Каждое ищется по
+    норме среди значений параметра: активное берётся, выведенное возвращается из
+    истории; слитое человеком синонимом у точного списка канонизируется (несущее —
+    каноническое значение цепочки, выведенное возвращается), а подпись диапазона,
+    совпавшая со слитым синонимом, отказывается (`schema_bad_range`): снять слияние
+    вариантов перестройка не может; нового нет — создаётся (спека 3в §2.6).
+
+    Raises:
+        WorkFamilyError: подпись диапазона совпала со значением, слитым человеком."""
+    by_norm = {value.value_norm: value for value in values}
+    by_id = {value.id: value for value in values}
+    slots: list[_Slot] = []
+    if new_kind == ParameterValueKind.range:
+        if new_range is None:
+            raise ValueError("у диапазона нет границ")
+        built = build_range_values(new_range.start, new_range.stop, new_range.step)
+        for item in built:
+            norm = normalize_value(item.label)
+            found = by_norm.get(norm)
+            if found is None:
+                slots.append(_Slot(item.label, norm, item.lo, item.hi, None, False, True))
+            elif found.merged:
+                target = _canonical_row(by_id, found)
+                raise WorkFamilyError(
+                    REFUSE_SCHEMA_BAD_RANGE,
+                    f"подпись диапазона «{item.label}» совпадает со значением, слитым в "
+                    f"«{target.value}»: выберите другие границы",
+                )
+            else:
+                slots.append(
+                    _Slot(
+                        item.label, norm, item.lo, item.hi, found.id, found.retired, True,
+                        found.value,
+                    )
+                )
+        return slots, built
+    seen: set[str] = set()
+    for text in texts:
+        norm = normalize_value(text)
+        if norm in seen:
+            continue
+        seen.add(norm)
+        found = by_norm.get(norm)
+        if found is None:
+            slots.append(_Slot(text.strip(), norm, None, None, None, False, False))
+        else:
+            carrier = _canonical_row(by_id, found) if found.merged else found
+            slots.append(
+                _Slot(
+                    carrier.value if found.merged else text.strip(),
+                    carrier.value_norm if found.merged else norm, None, None, carrier.id,
+                    carrier.retired, False, carrier.value,
+                )
+            )
+    return slots, ()
+
+
+def _resolve_rows(
+    values: Sequence[_ValueRow], *, old_kind: str, new_kind: ParameterValueKind,
+    slots: Sequence[_Slot], built: Sequence[RangeValue],
+) -> list[tuple[ValueResolution, _Slot | None]]:
+    """Судьба каждого прежнего активного значения (спека 3в §2.6): точное число —
+    в единственный новый диапазон, содержащий его; прежний диапазон — в
+    единственный новый, целиком содержащий его (бесконечные края учтены); иначе
+    (не число, делящийся диапазон, возврат диапазонов в точные) — неразрешимо.
+    Значение, которое несёт слот нового набора, остаётся как есть (`unchanged`)."""
+    carriers = {slot.value_id for slot in slots if slot.value_id is not None}
+    result: list[tuple[ValueResolution, _Slot | None]] = []
+    for value in values:
+        if not value.active:
+            continue
+        if value.id in carriers:
+            result.append((ValueResolution(value.id, value.id, True, value.value), None))
+            continue
+        index: int | None = None
+        if new_kind == ParameterValueKind.range:
+            if old_kind == ParameterValueKind.exact.value:
+                number = parse_single_number(value.value)
+                if number is not None:
+                    # набор покрывает всю ось: подходящий диапазон есть всегда
+                    index = built.index(range_for_number(built, number))
+            else:
+                target = containing_range(built, value.range_lo, value.range_hi)
+                index = None if target is None else built.index(target)
+        if index is None:
+            result.append((ValueResolution(value.id, None, False), None))
+        else:
+            slot = slots[index]
+            result.append(
+                (ValueResolution(value.id, slot.value_id, False, slot.text), slot)
+            )
+    return result
+
+
+def resolve_values(
+    db: Session, *, parameter_id: int, new_kind: ParameterValueKind,
+    new_range: RangeSpec | None,
+) -> tuple[ValueResolution, ...]:
+    """Судьба прежних активных значений параметра при переводе в `new_kind` с
+    границами `new_range` (спека 3в §2.6), по возрастанию `id` значения. Только
+    читает. Значение нового набора, которого ещё нет, называется `target_label`
+    при пустом `target_value_id`; возврат в точные без списка — все значения
+    неразрешимы.
+
+    Raises:
+        ValueError: у диапазона нет границ либо границы не образуют диапазон.
+        WorkFamilyError: `schema_bad_range` — подпись диапазона совпала со значением,
+            слитым человеком в другое.
+    """
+    old_kind = db.execute(
+        sa.select(FamilyParameter.value_kind).where(FamilyParameter.id == parameter_id)
+    ).scalar_one()
+    values = _read_values(db, [parameter_id])[parameter_id]
+    slots, built = _new_slots(values, new_kind=new_kind, new_range=new_range, texts=())
+    return tuple(
+        resolution
+        for resolution, _slot in _resolve_rows(
+            values, old_kind=old_kind, new_kind=new_kind, slots=slots, built=built
+        )
+    )
+
+
+def _plan_rebuild(
+    state: _State, plan: _ParameterPlan, draft: ParameterDraft, existing: _ParameterRow
+) -> None:
+    """Перестройка значений существующего параметра: новый набор, перенос или
+    вывод каждого прежнего значения, границы несущих значений (спека 3в §2.6)."""
+    values = state.values[existing.id]
+    by_id = {value.id: value for value in values}
+    slots, built = _new_slots(
+        values, new_kind=draft.value_kind, new_range=draft.range, texts=draft.values
+    )
+    resolved = _resolve_rows(
+        values, old_kind=existing.value_kind, new_kind=draft.value_kind, slots=slots,
+        built=built,
+    )
+    rows_of: dict[int, list[_RowState]] = {}
+    for row in state.schema_rows:
+        if row.parameter_id == existing.id and row.value_id is not None:
+            rows_of.setdefault(row.value_id, []).append(row)
+    moves = [
+        _Move(source=by_id[resolution.value_id], target=slot, rows=rows_of.get(resolution.value_id, []))
+        for resolution, slot in resolved
+        if not resolution.unchanged
+    ]
+    bounds: list[tuple[int, Decimal | None, Decimal | None]] = []
+    seen: set[int] = set()
+    for slot in slots:
+        if slot.value_id is None:
+            plan.new_values.append(
+                _NewValue(text=slot.text, norm=slot.norm, lo=slot.lo, hi=slot.hi, built=slot.built)
+            )
+            continue
+        if slot.value_id in seen:
+            continue
+        seen.add(slot.value_id)
+        if slot.revive:
+            plan.new_values.append(
+                _NewValue(
+                    text=slot.text, norm=slot.norm, lo=slot.lo, hi=slot.hi,
+                    revive_id=slot.value_id, built=slot.built,
+                )
+            )
+            continue
+        carrier = by_id[slot.value_id]
+        if slot.current_text != slot.text:
+            plan.value_renames.append((slot.value_id, slot.text))
+        if (carrier.range_lo, carrier.range_hi) != (slot.lo, slot.hi):
+            bounds.append((slot.value_id, slot.lo, slot.hi))
+    plan.rebuild = _Rebuild(moves=moves, bounds=bounds)
+    carried = dict(
+        sorted({slot.value_id: slot.text for slot in slots if slot.value_id is not None}.items())
+    )
+    plan.texts_after = (*carried.values(), *(slot.text for slot in slots if slot.value_id is None))
+
+
 def _plan_parameter(
     state: _State, draft: ParameterDraft, active_by_ordinal: dict[int, _ParameterRow]
 ) -> _ParameterPlan:
@@ -538,12 +815,15 @@ def _plan_parameter(
         plan.rename_to = draft.name
     if draft.role.value != existing.role:
         plan.role_to = draft.role.value
-    if draft.value_kind.value != existing.value_kind:
-        raise NotImplementedError("перестройка значений параметра — спека 3в §2.6")
+    if draft.value_kind.value != existing.value_kind or (
+        existing.value_kind == ParameterValueKind.range.value
+        and not _same_range(existing, draft.range)
+    ):
+        if draft.closed != existing.closed:
+            plan.closed_to = draft.closed
+        _plan_rebuild(state, plan, draft, existing)
+        return plan
     if existing.value_kind == ParameterValueKind.range.value:
-        assert draft.range is not None
-        if not _same_range(existing, draft.range):
-            raise NotImplementedError("перестройка значений параметра — спека 3в §2.6")
         return plan
 
     if draft.closed != existing.closed:
@@ -579,7 +859,7 @@ def _plan_rows(state: _State, plans: list[_ParameterPlan]) -> list[_RowPlan]:
     `none` и `off_list` — «уточняется» (спека 3в §2.5, §2.7)."""
     result: list[_RowPlan] = []
     for plan in plans:
-        if plan.existing is None or not plan.new_values:
+        if plan.existing is None or plan.rebuild is not None or not plan.new_values:
             continue
         added = {value.norm for value in plan.new_values}
         row_plan = _RowPlan(parameter_id=plan.existing.id, ordinal=plan.existing.ordinal)
@@ -678,14 +958,34 @@ def _build_plan(
             rows_after[context_id][row_plan.ordinal] = False
         for context_id in row_plan.mark:
             rows_after[context_id][row_plan.ordinal] = True
+    # Неразрешимое значение перестройки выводится, строки на нём помечаются.
+    rebuild_marked: set[int] = set()
+    rebuild_contexts: set[int] = set()
+    for plan in plans:
+        if plan.rebuild is None:
+            continue
+        for move in plan.rebuild.moves:
+            rebuild_contexts.update(row.context_id for row in move.rows)
+            if move.target is not None:
+                continue
+            for row in move.rows:
+                if row.context_id in rows_after:
+                    rows_after[row.context_id][plan.ordinal] = True
+                if row.context_live and not row.marked:
+                    rebuild_marked.add(row.context_id)
     touched_contexts = sorted(
-        {c for rp in row_plans for c, _n in rp.resolve} | {c for rp in row_plans for c in rp.mark}
+        {c for rp in row_plans for c, _n in rp.resolve}
+        | {c for rp in row_plans for c in rp.mark}
+        | rebuild_contexts
     )
 
     # Активные параметры после правки — в том виде, в каком их увидит запрос.
     parameters_after: list[SchemaParameterIn] = []
     for plan in sorted(plans, key=lambda p: p.ordinal):
-        if plan.existing is not None:
+        if plan.texts_after is not None:
+            texts = list(plan.texts_after)
+            kind = plan.draft.value_kind.value
+        elif plan.existing is not None:
             renamed = dict(plan.value_renames)
             ordered = [
                 (value.id, renamed.get(value.id, value.value))
@@ -725,7 +1025,11 @@ def _build_plan(
         p.ordinal for p in state.parameters.values() if not p.archived and p.role == "main"
     }
     resolved_main = any(rp.resolve and rp.ordinal in main_after for rp in row_plans)
-    recompute_needed = main_after != main_before or resolved_main
+    rebuilt_main = any(
+        plan.rebuild is not None and plan.rebuild.moves
+        for plan in plans
+    )
+    recompute_needed = main_after != main_before or resolved_main or rebuilt_main
 
     # Пересчёт вариантов: строки главных параметров после правки. У нового
     # главного параметра строк нет — контексты ждут ответа; значение, которое
@@ -744,7 +1048,12 @@ def _build_plan(
             db, list(previous_of), list(ordinal_of_parameter)
         ).items()
     }
-    placeholder = -1
+    placeholders: dict[tuple[int, str], int] = {}
+
+    def placeholder_of(parameter_id: int, norm: str) -> int:
+        """Один и тот же будущий `id` на одно и то же создаваемое значение."""
+        return placeholders.setdefault((parameter_id, norm), -1 - len(placeholders))
+
     for row_plan in row_plans:
         if row_plan.ordinal not in main_after:
             continue
@@ -754,9 +1063,23 @@ def _build_plan(
                 continue
             value_id = added[norm].revive_id
             if value_id is None:
-                value_id = placeholder
-                placeholder -= 1
+                value_id = placeholder_of(row_plan.parameter_id, norm)
             answered[context_id][row_plan.ordinal] = value_id
+    for plan in plans:
+        if plan.rebuild is None or plan.ordinal not in main_after:
+            continue
+        for move in plan.rebuild.moves:
+            for row in move.rows:
+                if row.context_id not in answered or row.marked:
+                    continue
+                if move.target is None:
+                    answered[row.context_id].pop(plan.ordinal, None)
+                elif move.target.value_id is not None:
+                    answered[row.context_id][plan.ordinal] = move.target.value_id
+                else:
+                    answered[row.context_id][plan.ordinal] = placeholder_of(
+                        plan.parameter_id, move.target.norm
+                    )
     projected = project_recompute(
         db, schema_id=state.schema_id, previous_of=previous_of, main_ordinals=main_after,
         answered=answered,
@@ -765,8 +1088,24 @@ def _build_plan(
     variants_after = projected.variants_after
     waiting = projected.waiting_contexts
 
-    marked = _marked_contexts(row_plans)
+    marked = _marked_contexts(row_plans) | rebuild_marked
+    value_moves = tuple(
+        (plan.draft.name, move.source.value, move.target.text, len(move.live_contexts))
+        for plan in sorted(plans, key=lambda p: p.ordinal)
+        if plan.rebuild is not None
+        for move in plan.rebuild.moves
+        if move.target is not None
+    )
+    retired = tuple(
+        (plan.draft.name, move.source.value, len(move.live_contexts))
+        for plan in sorted(plans, key=lambda p: p.ordinal)
+        if plan.rebuild is not None
+        for move in plan.rebuild.moves
+        if move.target is None
+    )
     summary_numbers = {
+        "moves": [list(item) for item in value_moves],
+        "retired": [list(item) for item in retired],
         "variants_before": variants_before,
         "variants_after_now": variants_after,
         "variants_pending_answers": waiting > 0,
@@ -811,8 +1150,8 @@ def _build_plan(
         ),
         reserve_usd=reserve,
         expected_cached_usd=cached,
-        value_moves=(),
-        retired=(),
+        value_moves=value_moves,
+        retired=retired,
         refreshing_contexts=len(marked),
         repriced_pending_jobs=len(values_plan.cancelled),
         preview_hash=preview_hash,
@@ -862,6 +1201,40 @@ def _changes_of(
             change["closed"] = {"from": plan.existing.closed, "to": plan.closed_to}
         if plan.value_renames:
             change["values_renamed"] = [text for _id, text in plan.value_renames]
+        if plan.rebuild is not None:
+            if plan.draft.value_kind.value != plan.existing.value_kind:
+                change["value_kind"] = {
+                    "from": plan.existing.value_kind, "to": plan.draft.value_kind.value,
+                }
+            change["range"] = {
+                "from": None
+                if plan.existing.range_from is None
+                else {
+                    "start": _norm_decimal(plan.existing.range_from),
+                    "stop": _norm_decimal(plan.existing.range_to),
+                    "step": _norm_decimal(plan.existing.range_step),
+                },
+                "to": None
+                if plan.draft.range is None
+                else {
+                    "start": _norm_decimal(plan.draft.range.start),
+                    "stop": _norm_decimal(plan.draft.range.stop),
+                    "step": _norm_decimal(plan.draft.range.step),
+                },
+            }
+            change["values_moved"] = [
+                {
+                    "from": move.source.value, "to": move.target.text,
+                    "contexts": len(move.live_contexts),
+                }
+                for move in plan.rebuild.moves
+                if move.target is not None
+            ]
+            change["values_retired"] = [
+                {"value": move.source.value, "contexts": len(move.live_contexts)}
+                for move in plan.rebuild.moves
+                if move.target is None
+            ]
         if plan.new_values:
             change["values_added"] = [
                 value.text for value in plan.new_values if value.revive_id is None
@@ -996,6 +1369,46 @@ def _lock_values_of_statement(parameter_ids: Sequence[int]):
     )
 
 
+def _write_rebuild(
+    db: Session, item: _ParameterPlan, value_ids: dict[tuple[int, str], int], now: datetime
+) -> None:
+    """Перестройка значений параметра (спека 3в §2.6): строки разрешённого значения
+    переводятся на цель с прежним источником, неразрешимое сохраняется в строках и
+    помечается «уточняется»; каждое прежнее значение выводится. Ни одного
+    `merged_into_id`. Контексты строк вызывающий уже держит."""
+    assert item.rebuild is not None and item.parameter_id is not None
+    parameter_id = item.parameter_id
+    unresolved: set[int] = set()
+    for move in item.rebuild.moves:
+        if move.target is None:
+            unresolved.update(row.context_id for row in move.rows)
+            continue
+        target_id = (
+            move.target.value_id
+            if move.target.value_id is not None
+            else value_ids[(parameter_id, move.target.norm)]
+        )
+        db.execute(
+            sa.update(ContextParameterValue)
+            .where(
+                ContextParameterValue.parameter_id == parameter_id,
+                ContextParameterValue.value_id == move.source.id,
+            )
+            .values(value_id=target_id)
+            .execution_options(synchronize_session=False)
+        )
+    if unresolved:
+        mark_rows_for_refresh(db, sorted(unresolved), parameter_id)
+    retired_ids = [move.source.id for move in item.rebuild.moves]
+    if retired_ids:
+        db.execute(
+            sa.update(FamilyParameterValue)
+            .where(FamilyParameterValue.id.in_(retired_ids))
+            .values(retired_at=now)
+            .execution_options(synchronize_session=False)
+        )
+
+
 def _write_plan(
     db: Session, plan: _EditPlan, *, family_id: int, schema_id: int, actor_id: int
 ) -> None:
@@ -1003,7 +1416,8 @@ def _write_plan(
     db.execute(_lock_parameters_statement(schema_id)).all()
     touched_exact = [
         p.parameter_id for p in plan.parameters
-        if p.parameter_id is not None and (p.new_values or p.value_renames)
+        if p.parameter_id is not None
+        and (p.new_values or p.value_renames or p.rebuild is not None)
     ]
     if touched_exact:
         db.execute(_lock_values_of_statement(touched_exact)).all()
@@ -1034,6 +1448,12 @@ def _write_plan(
                     values["role"] = item.role_to
                 if item.closed_to is not None:
                     values["closed"] = item.closed_to
+                if item.rebuild is not None:
+                    spec = item.draft.range
+                    values["value_kind"] = item.draft.value_kind.value
+                    values["range_from"] = None if spec is None else spec.start
+                    values["range_to"] = None if spec is None else spec.stop
+                    values["range_step"] = None if spec is None else spec.step
                 if item.existing.origin == ParameterOrigin.model.value:
                     values["origin"] = ParameterOrigin.human.value
                 db.execute(
@@ -1054,7 +1474,10 @@ def _write_plan(
                 db.execute(
                     sa.update(FamilyParameterValue)
                     .where(FamilyParameterValue.id == new_value.revive_id)
-                    .values(retired_at=None, value=new_value.text)
+                    .values(
+                        retired_at=None, value=new_value.text,
+                        range_lo=new_value.lo, range_hi=new_value.hi,
+                    )
                     .execution_options(synchronize_session=False)
                 )
                 value_id = new_value.revive_id
@@ -1069,6 +1492,14 @@ def _write_plan(
             value_ids[(parameter_id, new_value.norm)] = value_id
             if not new_value.built:
                 added_events.append((parameter_id, value_id, new_value.text))
+        if item.rebuild is not None:
+            for value_id, lo, hi in item.rebuild.bounds:
+                db.execute(
+                    sa.update(FamilyParameterValue)
+                    .where(FamilyParameterValue.id == value_id)
+                    .values(range_lo=lo, range_hi=hi)
+                    .execution_options(synchronize_session=False)
+                )
     for row in plan.archived:
         db.execute(
             sa.update(FamilyParameter)
@@ -1098,6 +1529,9 @@ def _write_plan(
             )
         if row_plan.mark:
             mark_rows_for_refresh(db, row_plan.mark, row_plan.parameter_id)
+    for item in plan.parameters:
+        if item.rebuild is not None:
+            _write_rebuild(db, item, value_ids, now)
     db.flush()
 
     variants_after = plan.summary.variants_after_now
@@ -1132,6 +1566,8 @@ __all__: Sequence[str] = (
     "EditSummary",
     "ParameterDraft",
     "RangeSpec",
+    "ValueResolution",
     "apply_schema_edit",
     "preview_schema_edit",
+    "resolve_values",
 )
