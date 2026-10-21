@@ -24,10 +24,12 @@ from sqlalchemy.orm import Session
 from config import settings
 from models import (
     CatalogContext,
+    ContextMember,
     ContextParameterValue,
     FamilyParameter,
     FamilyParameterSchema,
     FamilyParameterValue,
+    ParameterRole,
     SchemaStatus,
     SemanticJob,
     SemanticJobKind,
@@ -52,6 +54,7 @@ from services.variant_request import (
     render_schema_request,
     render_values_request,
 )
+from services.work_variants import normalize_value
 
 #: Версия схемы, которой у ещё не построенной схемы нет: тот же приём, что у
 #: сверки (`services/semantic_reconcile.py`) — рендер запроса схемы от
@@ -60,17 +63,53 @@ _UNBUILT_SCHEMA_ID = 0
 
 
 class ValueOut(TypedDict):
+    """Значение списка параметра. `contexts` и `rows` — живые (не архивные)
+    контексты со значением и их строки каталога; границы диапазона — строками
+    (`None` — «до …» и «… и более»). Выведенные из списка значения не отдаются,
+    поэтому `retired` у отданных всегда `False`."""
+
     id: int
     value: str
     origin: str
     merged_into_id: int | None
+    range_lo: str | None
+    range_hi: str | None
+    retired: bool
+    contexts: int
+    rows: int
+
+
+class RangeOut(TypedDict):
+    start: str
+    stop: str
+    step: str
+
+
+class OffListOut(TypedDict):
+    """Значения не из списка по норме текста: `text` — написание у большего числа
+    контекстов (при равенстве — первое по алфавиту), числа — по всем написаниям."""
+
+    text_norm: str
+    text: str
+    contexts: int
+    rows: int
 
 
 class ParameterOut(TypedDict):
+    """Активный параметр версии. `refreshing` — число живых контекстов, у которых
+    строка параметра помечена «уточняется»."""
+
     id: int
     ordinal: int
     name: str
     values: list[ValueOut]
+    role: str
+    value_kind: str
+    closed: bool
+    range: RangeOut | None
+    origin: str
+    off_list: list[OffListOut]
+    refreshing: int
 
 
 class SchemaOut(TypedDict):
@@ -79,7 +118,8 @@ class SchemaOut(TypedDict):
     `building`) и показанная версия остаётся прежней. `ready_to_build` — схему
     можно строить сейчас (перезапрос единицы окончен). `values_jobs_live` — число
     заданий значений в `pending`/`running` по текущей версии схемы семьи: пока оно
-    не ноль, количества контекстов в вариантах ещё меняются."""
+    не ноль, количества контекстов в вариантах ещё меняются. `revision` — счётчик
+    правок версии на месте (у семьи без версии — `0`)."""
 
     family_id: int
     status: str | None
@@ -88,6 +128,7 @@ class SchemaOut(TypedDict):
     building: bool
     values_jobs_live: int
     parameters: list[ParameterOut]
+    revision: int
 
 
 class AskedOut(TypedDict):
@@ -159,12 +200,19 @@ class VariantOut(TypedDict):
 
 
 class ContextValueOut(TypedDict):
+    """Строка значения карточки: главные параметры идут раньше второстепенных,
+    внутри роли — по номеру. `refreshing` — значение ждёт перезапроса,
+    `off_list_text` — текст не из списка (у строки `off_list`)."""
+
     parameter_id: int
     ordinal: int
     name: str
     value_id: int | None
     value: str | None
     source: str
+    role: str
+    refreshing: bool
+    off_list_text: str | None
 
 
 class PendingOut(TypedDict):
@@ -198,7 +246,8 @@ def family_exists(db: Session, family_id: int) -> bool:
 
 def schema_out(db: Session, family_id: int) -> SchemaOut | None:
     """Схема семьи; `None` — семьи нет. Слитые значения включены с
-    `merged_into_id` (экран показывает их синонимами цели)."""
+    `merged_into_id` (экран показывает их синонимами цели); выведенные значения
+    и архивные параметры не отдаются (спека 3в §2.10)."""
     if not family_exists(db, family_id):
         return None
     versions = db.execute(
@@ -206,6 +255,7 @@ def schema_out(db: Session, family_id: int) -> SchemaOut | None:
             FamilyParameterSchema.id,
             FamilyParameterSchema.version,
             FamilyParameterSchema.status,
+            FamilyParameterSchema.revision,
         ).where(
             FamilyParameterSchema.family_id == family_id,
             FamilyParameterSchema.status.in_(
@@ -227,6 +277,7 @@ def schema_out(db: Session, family_id: int) -> SchemaOut | None:
         building=building,
         values_jobs_live=_values_jobs_live(db, frozen.id) if frozen is not None else 0,
         parameters=parameters,
+        revision=frozen.revision if frozen is not None else 0,
     )
 
 
@@ -242,38 +293,160 @@ def _values_jobs_live(db: Session, schema_id: int) -> int:
     ).scalar_one()
 
 
+def _decimal_text(number: Decimal | None) -> str | None:
+    """Число границы строкой в канонической записи правки схемы (`50`, не `50.000`)."""
+    return None if number is None else format(number.normalize(), "f")
+
+
 def _parameters_of(db: Session, schema_id: int) -> list[ParameterOut]:
+    """Активные параметры версии со значениями, числами по значению и агрегатом
+    «не из списка». Постоянное число запросов: параметры со значениями — один,
+    числа контекстов и строк — один групповой запрос по строкам значений версии."""
     rows = db.execute(
         sa.select(
             FamilyParameter.id.label("parameter_id"),
             FamilyParameter.ordinal,
             FamilyParameter.name,
+            FamilyParameter.role,
+            FamilyParameter.value_kind,
+            FamilyParameter.closed,
+            FamilyParameter.range_from,
+            FamilyParameter.range_to,
+            FamilyParameter.range_step,
+            FamilyParameter.origin.label("parameter_origin"),
             FamilyParameterValue.id.label("value_id"),
             FamilyParameterValue.value,
             FamilyParameterValue.origin,
             FamilyParameterValue.merged_into_id,
+            FamilyParameterValue.range_lo,
+            FamilyParameterValue.range_hi,
         )
         .select_from(FamilyParameter)
-        .outerjoin(FamilyParameterValue, FamilyParameterValue.parameter_id == FamilyParameter.id)
-        .where(FamilyParameter.schema_id == schema_id)
+        .outerjoin(
+            FamilyParameterValue,
+            sa.and_(
+                FamilyParameterValue.parameter_id == FamilyParameter.id,
+                FamilyParameterValue.retired_at.is_(None),
+            ),
+        )
+        .where(FamilyParameter.schema_id == schema_id, FamilyParameter.archived_at.is_(None))
         .order_by(FamilyParameter.ordinal, FamilyParameterValue.id)
     ).all()
+    by_value, off_list, refreshing = _row_statistics(db, schema_id)
     parameters: dict[int, ParameterOut] = {}
     for row in rows:
         parameter = parameters.setdefault(
             row.parameter_id,
-            ParameterOut(id=row.parameter_id, ordinal=row.ordinal, name=row.name, values=[]),
+            ParameterOut(
+                id=row.parameter_id,
+                ordinal=row.ordinal,
+                name=row.name,
+                values=[],
+                role=row.role,
+                value_kind=row.value_kind,
+                closed=row.closed,
+                range=None
+                if row.range_from is None
+                else RangeOut(
+                    start=_decimal_text(row.range_from),
+                    stop=_decimal_text(row.range_to),
+                    step=_decimal_text(row.range_step),
+                ),
+                origin=row.parameter_origin,
+                off_list=off_list.get(row.parameter_id, []),
+                refreshing=refreshing.get(row.parameter_id, 0),
+            ),
         )
         if row.value_id is not None:
+            contexts, member_rows = by_value.get(row.value_id, (0, 0))
             parameter["values"].append(
                 ValueOut(
                     id=row.value_id,
                     value=row.value,
                     origin=row.origin,
                     merged_into_id=row.merged_into_id,
+                    range_lo=_decimal_text(row.range_lo),
+                    range_hi=_decimal_text(row.range_hi),
+                    retired=False,
+                    contexts=contexts,
+                    rows=member_rows,
                 )
             )
     return list(parameters.values())
+
+
+def _row_statistics(
+    db: Session, schema_id: int
+) -> tuple[dict[int, tuple[int, int]], dict[int, list[OffListOut]], dict[int, int]]:
+    """Числа по строкам значений версии одним групповым запросом: `{value_id:
+    (контексты, строки каталога)}`, агрегат «не из списка» по параметрам и
+    `{parameter_id: число контекстов «уточняется»}`. Считаются живые (не
+    архивные) контексты; строки каталога — членства контекста."""
+    members = (
+        sa.select(ContextMember.context_id, sa.func.count().label("n"))
+        .where(
+            ContextMember.context_id.in_(
+                sa.select(ContextParameterValue.context_id).where(
+                    ContextParameterValue.schema_id == schema_id
+                )
+            )
+        )
+        .group_by(ContextMember.context_id)
+        .subquery()
+    )
+    marked = ContextParameterValue.refresh_requested_at.is_not(None).label("marked")
+    groups = db.execute(
+        sa.select(
+            ContextParameterValue.parameter_id,
+            ContextParameterValue.value_id,
+            ContextParameterValue.off_list_text,
+            marked,
+            sa.func.count().label("contexts"),
+            sa.func.coalesce(sa.func.sum(members.c.n), 0).label("member_rows"),
+        )
+        .select_from(ContextParameterValue)
+        .join(CatalogContext, CatalogContext.id == ContextParameterValue.context_id)
+        .outerjoin(members, members.c.context_id == ContextParameterValue.context_id)
+        .where(ContextParameterValue.schema_id == schema_id, CatalogContext.archived_at.is_(None))
+        .group_by(
+            ContextParameterValue.parameter_id,
+            ContextParameterValue.value_id,
+            ContextParameterValue.off_list_text,
+            marked,
+        )
+    ).all()
+
+    by_value: dict[int, tuple[int, int]] = {}
+    refreshing: dict[int, int] = {}
+    spellings: dict[int, dict[str, dict[str, list[int]]]] = {}
+    for group in groups:
+        contexts, member_rows = int(group.contexts), int(group.member_rows)
+        if group.value_id is not None:
+            have = by_value.get(group.value_id, (0, 0))
+            by_value[group.value_id] = (have[0] + contexts, have[1] + member_rows)
+        if group.marked:
+            refreshing[group.parameter_id] = refreshing.get(group.parameter_id, 0) + contexts
+        if group.off_list_text is not None:
+            norm = normalize_value(group.off_list_text)
+            counts = spellings.setdefault(group.parameter_id, {}).setdefault(norm, {})
+            have_text = counts.setdefault(group.off_list_text, [0, 0])
+            have_text[0] += contexts
+            have_text[1] += member_rows
+
+    off_list: dict[int, list[OffListOut]] = {}
+    for parameter_id, by_norm in spellings.items():
+        entries = [
+            OffListOut(
+                text_norm=norm,
+                text=min(texts, key=lambda text: (-texts[text][0], text)),
+                contexts=sum(count[0] for count in texts.values()),
+                rows=sum(count[1] for count in texts.values()),
+            )
+            for norm, texts in by_norm.items()
+        ]
+        entries.sort(key=lambda entry: (-entry["contexts"], entry["text_norm"]))
+        off_list[parameter_id] = entries
+    return by_value, off_list, refreshing
 
 
 def parameter_family_id(db: Session, parameter_id: int) -> int | None:
@@ -291,8 +464,8 @@ def parameter_family_id(db: Session, parameter_id: int) -> int | None:
 
 def variants_out(db: Session, family_id: int) -> list[VariantOut] | None:
     """Варианты семьи, активные и архивные, по `id`; `None` — семьи нет.
-    `values` — тексты значений по порядку параметров версии варианта, `None` —
-    «не уточнено»; `contexts` — живые (не архивные) контексты, стоящие на варианте сейчас."""
+    `values` — тексты значений главных параметров по порядку (второстепенные
+    вариант не делят), `None` — «не уточнено»; `contexts` — живые (не архивные) контексты, стоящие на варианте сейчас."""
     if not family_exists(db, family_id):
         return None
     variants = db.execute(
@@ -310,7 +483,10 @@ def variants_out(db: Session, family_id: int) -> list[VariantOut] | None:
         .select_from(WorkVariantValue)
         .join(FamilyParameter, FamilyParameter.id == WorkVariantValue.parameter_id)
         .outerjoin(FamilyParameterValue, FamilyParameterValue.id == WorkVariantValue.value_id)
-        .where(WorkVariantValue.variant_id.in_(variant_ids))
+        .where(
+            WorkVariantValue.variant_id.in_(variant_ids),
+            FamilyParameter.role == ParameterRole.main.value,
+        )
         .order_by(WorkVariantValue.variant_id, FamilyParameter.ordinal)
     ).all():
         values_of[row.variant_id].append(row.value)
@@ -355,6 +531,9 @@ def context_variant_out(db: Session, context: CatalogContext) -> ContextVariantO
                 value_id=row.value_id,
                 value=row.value,
                 source=row.source,
+                role=row.role,
+                refreshing=row.refreshing,
+                off_list_text=row.off_list_text,
             )
             for row in db.execute(
                 sa.select(
@@ -364,6 +543,9 @@ def context_variant_out(db: Session, context: CatalogContext) -> ContextVariantO
                     ContextParameterValue.value_id,
                     FamilyParameterValue.value,
                     ContextParameterValue.source,
+                    FamilyParameter.role,
+                    ContextParameterValue.refresh_requested_at.is_not(None).label("refreshing"),
+                    ContextParameterValue.off_list_text,
                 )
                 .select_from(ContextParameterValue)
                 .join(FamilyParameter, FamilyParameter.id == ContextParameterValue.parameter_id)
@@ -371,8 +553,13 @@ def context_variant_out(db: Session, context: CatalogContext) -> ContextVariantO
                     FamilyParameterValue,
                     FamilyParameterValue.id == ContextParameterValue.value_id,
                 )
-                .where(ContextParameterValue.context_id == context.id)
-                .order_by(FamilyParameter.ordinal)
+                .where(
+                    ContextParameterValue.context_id == context.id,
+                    FamilyParameter.archived_at.is_(None),
+                )
+                .order_by(
+                    (FamilyParameter.role != ParameterRole.main.value), FamilyParameter.ordinal
+                )
             ).all()
         ]
     pending: PendingOut | None = None

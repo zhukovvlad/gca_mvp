@@ -73,15 +73,19 @@ from services.work_families import (
     WorkFamilyError,
 )
 from services.work_variants import (
+    REFUSE_PARAMETER_NOT_FOUND,
     REFUSE_SCHEMA_BAD_ORDINALS,
     REFUSE_SCHEMA_BLANK,
     REFUSE_SCHEMA_BUILDING,
     REFUSE_SCHEMA_NO_CURRENT,
     REFUSE_SCHEMA_PARAMETER_RENAMED,
     REFUSE_SCHEMA_VALUE_REMOVED,
+    REFUSE_VALUE_NOT_FOUND,
+    _active_variant_count,
     _lock_contexts_statement,
     _lock_current_schema_statement,
     _lock_family_for_schema_life,
+    _lock_values_statement,
     answered_main_rows,
     bump_revision,
     mark_rows_for_refresh,
@@ -96,6 +100,8 @@ REFUSE_SCHEMA_DUPLICATE_PARAMETER = "schema_duplicate_parameter"
 REFUSE_SCHEMA_BAD_RANGE = "schema_bad_range"
 REFUSE_SCHEMA_RANGE_TOO_MANY_VALUES = "schema_range_too_many_values"
 REFUSE_SCHEMA_ORDINALS_EXHAUSTED = "schema_ordinals_exhausted"
+REFUSE_OFF_LIST_NOT_FOUND = "off_list_not_found"
+REFUSE_OFF_LIST_TARGET_INVALID = "off_list_target_invalid"
 #: Тот же код, что у предпросмотров пересборки и автопринятия.
 REFUSE_PREVIEW_CHANGED = "preview_changed"
 
@@ -1561,6 +1567,133 @@ def _write_plan(
     )
 
 
+# ---------------------------------------------------------------------------
+#  «Слить с…»: значение не из списка относится к значению списка
+# ---------------------------------------------------------------------------
+
+def resolve_off_list(
+    db: Session, *, family_id: int, parameter_id: int, text_norm: str, target_value_id: int,
+    actor_id: int,
+) -> None:
+    """«Слить с…» (спека 3в §2.7): строки `off_list` параметра с текстом, чья норма
+    равна `text_norm`, получают значение `target_value_id`, источник `manual`;
+    список значений не меняется. У главного параметра затронутые контексты
+    пересчитываются по вариантам; снятая отметка «уточняется» заменяет ждущие
+    задания значений. Строки архивных контекстов остаются. `revision` растёт на
+    единицу, событие — `family_schema_edited` с изменением `off_list_resolved`.
+
+    Порядок блокировок: семья `FOR UPDATE`, действующая версия `FOR UPDATE`,
+    значение-цель, контексты по `id`, варианты (пересчёт), задания (сверка).
+
+    Raises:
+        WorkFamilyError: семьи нет или она не активна; у семьи пересборка или нет
+            текущей версии; параметра нет, он архивный или из другой версии
+            (`parameter_not_found`); цели нет (`value_not_found`); цель чужого
+            параметра, слитая или выведенная (`off_list_target_invalid`); строк
+            `off_list` с такой нормой нет (`off_list_not_found`).
+    """
+    schema_id = _require_editable(db, family_id, lock=True)
+    parameter = db.execute(
+        sa.select(FamilyParameter.ordinal, FamilyParameter.name, FamilyParameter.role).where(
+            FamilyParameter.id == parameter_id,
+            FamilyParameter.schema_id == schema_id,
+            FamilyParameter.archived_at.is_(None),
+        )
+    ).one_or_none()
+    if parameter is None:
+        raise WorkFamilyError(
+            REFUSE_PARAMETER_NOT_FOUND, f"параметр {parameter_id} не найден у семьи {family_id}",
+            parameter_id=parameter_id,
+        )
+    target = db.execute(_lock_values_statement([target_value_id])).scalar_one_or_none()
+    if target is None:
+        raise WorkFamilyError(
+            REFUSE_VALUE_NOT_FOUND, f"значение {target_value_id} не найдено",
+            value_id=target_value_id,
+        )
+    if (
+        target.parameter_id != parameter_id
+        or target.merged_into_id is not None
+        or target.retired_at is not None
+    ):
+        raise WorkFamilyError(
+            REFUSE_OFF_LIST_TARGET_INVALID,
+            f"значение {target_value_id} не годится: нужно активное значение параметра "
+            f"{parameter_id}",
+            value_id=target_value_id,
+        )
+
+    candidates = [
+        row
+        for row in db.execute(
+            sa.select(
+                ContextParameterValue.context_id, ContextParameterValue.off_list_text,
+                ContextParameterValue.refresh_requested_at.is_not(None).label("marked"),
+            )
+            .join(CatalogContext, CatalogContext.id == ContextParameterValue.context_id)
+            .where(
+                ContextParameterValue.parameter_id == parameter_id,
+                ContextParameterValue.source == ValueSource.off_list.value,
+                CatalogContext.archived_at.is_(None),
+            )
+            .order_by(ContextParameterValue.context_id)
+        ).all()
+        if normalize_value(row.off_list_text) == text_norm
+    ]
+    if not candidates:
+        raise WorkFamilyError(
+            REFUSE_OFF_LIST_NOT_FOUND,
+            f"у параметра {parameter_id} нет значений не из списка с нормой «{text_norm}»",
+            parameter_id=parameter_id,
+        )
+    context_ids = [row.context_id for row in candidates]
+    marked = [row.context_id for row in candidates if row.marked]
+    db.execute(_lock_contexts_statement(context_ids)).all()
+    db.execute(
+        sa.update(ContextParameterValue)
+        .where(
+            ContextParameterValue.context_id.in_(context_ids),
+            ContextParameterValue.parameter_id == parameter_id,
+        )
+        .values(
+            value_id=target_value_id, source=ValueSource.manual.value, off_list_text=None,
+            refresh_requested_at=None,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    db.flush()
+
+    if parameter.role == ParameterRole.main.value:
+        recomputed = recompute_variants(
+            db, family_id=family_id, schema_id=schema_id, context_ids=context_ids
+        )
+        variants_before, variants_after = recomputed.variants_before, recomputed.variants_after
+    else:
+        variants_before = variants_after = _active_variant_count(db, schema_id)
+    revision = bump_revision(db, schema_id)
+    jobs_enqueued = 0
+    if marked:
+        report = reconcile_context_values(db, marked, cap=NO_CAP, source="operation")
+        jobs_enqueued = report.created + report.revived
+    record_event(
+        db, event_type="family_schema_edited", family_id=family_id, actor_id=actor_id,
+        payload={
+            "schema_id": schema_id, "revision": revision,
+            "changes": [
+                {
+                    "ordinal": parameter.ordinal, "name": parameter.name,
+                    "off_list_resolved": {
+                        "text_norm": text_norm, "value_id": target_value_id,
+                        "value": target.value, "contexts": len(context_ids),
+                    },
+                }
+            ],
+            "variants_before": variants_before, "variants_after": variants_after,
+            "jobs_enqueued": jobs_enqueued,
+        },
+    )
+
+
 __all__: Sequence[str] = (
     "MAX_ACTIVE_PARAMETERS",
     "EditSummary",
@@ -1569,5 +1702,6 @@ __all__: Sequence[str] = (
     "ValueResolution",
     "apply_schema_edit",
     "preview_schema_edit",
+    "resolve_off_list",
     "resolve_values",
 )

@@ -117,6 +117,7 @@ _STATUS_NOT_FOUND = frozenset(
         context_operations.REFUSE_CONTEXT_NOT_FOUND,
         work_variants.REFUSE_PARAMETER_NOT_FOUND,
         work_variants.REFUSE_VALUE_NOT_FOUND,
+        schema_edit.REFUSE_OFF_LIST_NOT_FOUND,
         review_service.REFUSE_POSITION_NOT_FOUND,
     }
 )
@@ -199,6 +200,7 @@ _STATUS_UNPROCESSABLE = frozenset(
         schema_edit.REFUSE_SCHEMA_DUPLICATE_PARAMETER,
         schema_edit.REFUSE_SCHEMA_BAD_RANGE,
         schema_edit.REFUSE_SCHEMA_RANGE_TOO_MANY_VALUES,
+        schema_edit.REFUSE_OFF_LIST_TARGET_INVALID,
         work_variants.REFUSE_MERGE_OTHER_PARAMETER,
         work_variants.REFUSE_MERGE_CYCLE,
         context_operations.REFUSE_DIFFERENT_BUCKET,
@@ -489,6 +491,15 @@ class UpdateSchemaRequest(EditSchemaRequest):
 class MergeValuesRequest(BaseModel):
     parameter_id: int
     source_value_id: int
+    target_value_id: int
+
+
+class ResolveOffListRequest(BaseModel):
+    """«Слить с…»: нормализованный текст не из списка параметра и значение списка
+    (спека 3в §2.7, §2.10)."""
+
+    parameter_id: int
+    text_norm: str
     target_value_id: int
 
 
@@ -1808,6 +1819,23 @@ def update_schema_route(
         schema_edit.apply_schema_edit(
             db, family_id=family_id, drafts=_drafts_of(body),
             preview_hash=body.preview_hash, actor_id=admin.id,
+        )
+    return _schema_response(db, family_id)
+
+
+@router.post("/families/{family_id}/schema/off-list/resolve")
+def resolve_off_list_route(
+    family_id: int,
+    body: ResolveOffListRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """«Слить с…»: строки с текстом не из списка получают значение списка; ответ —
+    схема семьи."""
+    with _mutating(db):
+        schema_edit.resolve_off_list(
+            db, family_id=family_id, parameter_id=body.parameter_id,
+            text_norm=body.text_norm, target_value_id=body.target_value_id, actor_id=admin.id,
         )
     return _schema_response(db, family_id)
 

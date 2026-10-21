@@ -77,6 +77,7 @@ VARIANT_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", f"{BASE}/families/1/schema/rebuild"),
     ("POST", f"{BASE}/families/1/schema/edit-preview"),
     ("PATCH", f"{BASE}/families/1/schema"),
+    ("POST", f"{BASE}/families/1/schema/off-list/resolve"),
     ("POST", f"{BASE}/families/1/schema/cancel"),
     ("POST", f"{BASE}/families/1/schema/values/merge"),
     ("GET", f"{BASE}/families/1/variants"),
@@ -88,7 +89,7 @@ VARIANT_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", f"{BASE}/suggestions?queue=change"),
     ("POST", f"{BASE}/contexts/1/family"),
 )
-assert len(VARIANT_ROUTES) == 15
+assert len(VARIANT_ROUTES) == 16
 
 _PARAMS = ((1, "Толщина", ("50 мм", "100 мм")), (2, "Материал", ("бетон", "кирпич")))
 
@@ -218,6 +219,8 @@ _EXPECTED_STATUS = {
     "preview_changed": 409,
     "merge_values_other_parameter": 422,
     "merge_value_cycle": 422,
+    "off_list_not_found": 404,
+    "off_list_target_invalid": 422,
     "parameter_not_found": 404,
     "value_not_found": 404,
     "position_not_found": 404,
@@ -407,7 +410,7 @@ class TestSchemaRead:
         body = response.json()
         assert set(body) == {
             "family_id", "status", "version", "ready_to_build", "building",
-            "values_jobs_live", "parameters",
+            "values_jobs_live", "parameters", "revision",
         }
         assert body["family_id"] == scene.family.id
         assert (body["status"], body["version"], body["building"]) == ("frozen", 1, False)
@@ -418,7 +421,10 @@ class TestSchemaRead:
             ["бетон", "кирпич"],
         ]
         value = body["parameters"][0]["values"][0]
-        assert set(value) == {"id", "value", "origin", "merged_into_id"}
+        assert set(value) == {
+            "id", "value", "origin", "merged_into_id", "range_lo", "range_hi", "retired",
+            "contexts", "rows",
+        }
         assert value["origin"] == "schema"
         assert value["merged_into_id"] is None
 
@@ -2321,10 +2327,12 @@ class TestContextCard:
             {
                 "parameter_id": world.parameters[1], "ordinal": 1, "name": "Толщина",
                 "value_id": world.values[(1, "50 мм")], "value": "50 мм", "source": "name",
+                "role": "main", "refreshing": False, "off_list_text": None,
             },
             {
                 "parameter_id": world.parameters[2], "ordinal": 2, "name": "Материал",
                 "value_id": None, "value": None, "source": "none",
+                "role": "main", "refreshing": False, "off_list_text": None,
             },
         ]
 

@@ -1855,7 +1855,7 @@ def merge_parameter_values(
     же. Варианты, уже слитые раньше, — история и не трогаются.
 
     Raises:
-        WorkFamilyError: параметра или значения нет; значения разных
+        WorkFamilyError: параметра нет или он архивный; значения нет; значения разных
             параметров; источник уже слит; каноническая цель — сам источник
             или его предок; источник или каноническая цель выведены из
             списка (`REFUSE_MERGE_VALUE_RETIRED`).
@@ -1872,11 +1872,24 @@ def merge_parameter_values(
             REFUSE_PARAMETER_NOT_FOUND, f"параметр {parameter_id} не найден",
             parameter_id=parameter_id,
         )
-    schema_id, family_id, parameter_role = located
+    schema_id, family_id, _unlocked_role = located
     _lock_families(db, [family_id], exclusive=True)
     # Слияние всегда пишет в версию (`revision`), поэтому версия берётся
     # `FOR UPDATE` сразу, а не `FOR SHARE` с повышением.
     db.execute(_lock_schema_statement(schema_id, share=False)).scalar_one()
+    # Архивный параметр схема не отдаёт, а слияние переписало бы историю вариантов;
+    # признак и роль перечитываются под замками: правка архивирует параметр и меняет
+    # его роль под замком семьи, а от роли зависит, трогает ли слияние варианты.
+    parameter_role, archived_at = db.execute(
+        sa.select(FamilyParameter.role, FamilyParameter.archived_at).where(
+            FamilyParameter.id == parameter_id
+        )
+    ).one()
+    if archived_at is not None:
+        raise WorkFamilyError(
+            REFUSE_PARAMETER_NOT_FOUND, f"параметр {parameter_id} не найден",
+            parameter_id=parameter_id,
+        )
 
     found = {
         row.id: row
