@@ -2357,9 +2357,12 @@ export interface ContextsParams {
 export type VariantState = "with" | "without";
 
 /** По чему поставлено значение контекста по параметру схемы (`context_parameter_values.source`). */
-export type ContextValueSource = "name" | "path" | "manual" | "path_conflict" | "none";
+export type ContextValueSource = "name" | "path" | "manual" | "path_conflict" | "none" | "off_list";
 
-/** Значение параметра в варианте контекста; `value: null` — «не уточнено» или расхождение путей. */
+/**
+ * Значение параметра в варианте контекста; `value: null` — «не уточнено», расхождение путей
+ * или текст не из списка (`off_list_text`). Главные идут раньше второстепенных.
+ */
 export interface ContextValue {
   parameter_id: number;
   ordinal: number;
@@ -2367,6 +2370,11 @@ export interface ContextValue {
   value_id: number | null;
   value: string | null;
   source: ContextValueSource;
+  role: ParameterRole;
+  /** Значение ждёт перезапроса: «уточняется». */
+  refreshing: boolean;
+  /** Текст не из списка (у строки `off_list`). */
+  off_list_text: string | null;
 }
 
 /** Ожидающее назначение семьи: контекст с вариантом меняет семью только после значений по схеме цели. */
@@ -2868,6 +2876,11 @@ export interface ReaskPreview {
    * нет текущей схемы, оценка неполна (только задание схемы).
    */
   values_included?: boolean;
+  /**
+   * Только у пересборки схемы: стоимость значений посчитана по нынешним параметрам модели,
+   * а не по параметрам новой схемы, которых до ответа модели нет.
+   */
+  values_approximate?: boolean;
 }
 
 /** Происхождение значения параметра схемы (`family_parameter_values.origin`). */
@@ -2876,12 +2889,44 @@ export type SchemaValueOrigin = "schema" | "extension" | "manual";
 /** Статус варианта семьи (`work_variants.status`). */
 export type FamilyVariantStatus = "active" | "archived";
 
+/** Роль параметра: вариант строится только из главных (спека 3в §2.3). */
+export type ParameterRole = "main" | "secondary";
+
+/** Вид значений параметра: точные значения или диапазоны с границами и шагом. */
+export type ParameterValueKind = "exact" | "range";
+
+/** Чей параметр для пересборки схемы: построен моделью или добавлен/правлен человеком. */
+export type ParameterOrigin = "model" | "human";
+
 /** Значение параметра схемы; слитое несёт `merged_into_id` цели (экран показывает его синонимом). */
 export interface FamilySchemaValue {
   id: number;
   value: string;
   origin: SchemaValueOrigin;
   merged_into_id: number | null;
+  /** Границы значения диапазона, строками; `null` — «до …» и «… и более», а у точного значения обе. */
+  range_lo: string | null;
+  range_hi: string | null;
+  /** Выведенные значения в схеме не отдаются, поэтому у отданных всегда `false`. */
+  retired: boolean;
+  /** Живые контексты со значением и их строки каталога. */
+  contexts: number;
+  rows: number;
+}
+
+/** Границы диапазона параметра: числа — строками (`Decimal` сервера). */
+export interface SchemaRange {
+  start: string;
+  stop: string;
+  step: string;
+}
+
+/** Значение не из списка параметра: `text` — написание у большего числа контекстов. */
+export interface SchemaOffListEntry {
+  text_norm: string;
+  text: string;
+  contexts: number;
+  rows: number;
 }
 
 export interface FamilySchemaParameter {
@@ -2889,6 +2934,15 @@ export interface FamilySchemaParameter {
   ordinal: number;
   name: string;
   values: FamilySchemaValue[];
+  role: ParameterRole;
+  value_kind: ParameterValueKind;
+  /** «Только из списка»: у диапазонов всегда `true`. */
+  closed: boolean;
+  range: SchemaRange | null;
+  origin: ParameterOrigin;
+  off_list: SchemaOffListEntry[];
+  /** Живые контексты, у которых значение параметра помечено «уточняется». */
+  refreshing: number;
 }
 
 /**
@@ -2905,6 +2959,8 @@ export interface FamilySchema {
   /** Заданий значений в `pending`/`running` по текущей версии: пока не ноль, счётчики вариантов меняются. */
   values_jobs_live: number;
   parameters: FamilySchemaParameter[];
+  /** Счётчик правок действующей версии на месте (у семьи без версии — 0). */
+  revision: number;
 }
 
 /** Строка `GET /families/:id/variants`: `values` по порядку параметров, `null` — «не уточнено». */
@@ -2915,11 +2971,63 @@ export interface FamilyVariant {
   status: FamilyVariantStatus;
 }
 
-/** Параметр в теле `PATCH /families/:id/schema`: полный список значений, без слитых. */
-export interface SchemaEditParameter {
+/**
+ * Параметр в теле правки схемы (`POST …/schema/edit-preview`, `PATCH …/schema`): полное
+ * желаемое состояние активного параметра. `ordinal: null` — новый; у точного `range: null`,
+ * у диапазонов `values` пуст (подписи строит сервер).
+ */
+export interface SchemaEditDraft {
+  ordinal: number | null;
+  name: string;
+  role: ParameterRole;
+  value_kind: ParameterValueKind;
+  closed: boolean;
+  values: string[];
+  range: SchemaRange | null;
+}
+
+/** Число контекстов, у которых модель запросит параметр. */
+export interface SchemaEditAsked {
   ordinal: number;
   name: string;
-  values: string[];
+  contexts: number;
+}
+
+/** Перенос значения параметра при перестройке диапазонов. */
+export interface SchemaEditValueMove {
+  parameter: string;
+  from_value: string;
+  to_value: string;
+  contexts: number;
+}
+
+/** Значение, выведенное из списка в историю. */
+export interface SchemaEditRetired {
+  parameter: string;
+  value: string;
+  contexts: number;
+}
+
+/** Ответ `POST /families/:id/schema/edit-preview` (`crud/work_variants.py::EditSummaryOut`); деньги — строками. */
+export interface SchemaEditSummary {
+  variants_before: number;
+  variants_after_now: number;
+  variants_pending_answers: boolean;
+  asked_by_parameter: SchemaEditAsked[];
+  reserve_usd: string;
+  expected_cached_usd: string;
+  value_moves: SchemaEditValueMove[];
+  retired: SchemaEditRetired[];
+  refreshing_contexts: number;
+  repriced_pending_jobs: number;
+  preview_hash: string;
+}
+
+/** Тело `POST /families/:id/schema/off-list/resolve`. */
+export interface ResolveOffListInput {
+  parameter_id: number;
+  text_norm: string;
+  target_value_id: number;
 }
 
 export interface MergeValuesInput {

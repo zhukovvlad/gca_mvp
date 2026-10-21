@@ -48,6 +48,9 @@ function descriptionOf(target: PreviewTarget, unitLabel: string): string {
 const VALUES_NOT_INCLUDED_NOTICE =
   "Оценка не включает задания значений: у семьи пока нет схемы, их стоимость появится после заморозки схемы. Показанная сумма неполная.";
 
+const VALUES_APPROXIMATE_NOTICE =
+  "Оценка значений приближённая: параметров новой схемы до ответа модели нет, поэтому считаются нынешние параметры модели.";
+
 function confirmLabelOf(target: PreviewTarget): string {
   if (target.kind === "schema") return "Пересобрать";
   return target.kind === "batch" ? "Поставить" : "Поставить в очередь";
@@ -168,6 +171,12 @@ export function PreviewDialog({ target, unitLabel = "", onClose }: PreviewDialog
           {data && data.values_included === false && (
             <p role="note" className="rounded-md border border-warning-border bg-warning-soft px-3 py-2 text-sm text-warning-text">
               {VALUES_NOT_INCLUDED_NOTICE}
+            </p>
+          )}
+
+          {data && data.values_approximate === true && (
+            <p role="note" className="rounded-md border border-warning-border bg-warning-soft px-3 py-2 text-sm text-warning-text">
+              {VALUES_APPROXIMATE_NOTICE}
             </p>
           )}
 

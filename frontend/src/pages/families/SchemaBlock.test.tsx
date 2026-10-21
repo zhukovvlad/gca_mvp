@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { useReaskConfirm } from "@/services/queries";
 import { qk } from "@/services/queryKeys";
-import { SCHEMA_FAMILY_ID, handlerState } from "@/test/handlers";
+import { SCHEMA_FAMILY_ID, handlerState, schemaParameter, schemaValue } from "@/test/handlers";
 import { server } from "@/test/server";
 import { createTestQueryClient, renderWithProviders, waitForDialogFocus } from "@/test/utils";
 
@@ -713,12 +713,15 @@ describe("SchemaBlock: правка и слияние обновляют бло�
     await user.click(screen.getByRole("button", { name: "Править схему…" }));
     const dialog = await screen.findByRole("dialog");
     await waitForDialogFocus();
-    await user.type(within(dialog).getByLabelText("Значения параметра 2, по одному в строке"), "{Enter}1 мм");
+    await user.click(within(dialog).getByRole("button", { name: /^Толщина/ }));
+    await user.type(within(dialog).getByLabelText("Новое значение"), "1 мм{Enter}");
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "Сохранить схему" })).toBeEnabled(), LATER);
     await user.click(within(dialog).getByRole("button", { name: "Сохранить схему" }));
 
     expect(await screen.findByText("1 мм", {}, LATER)).toBeInTheDocument();
     expect(screen.getByText("1 мм").closest("li")).toHaveTextContent("вручную");
-    expect(screen.getByText("Версия схемы 3")).toBeInTheDocument();
+    // Правка пишется в действующую версию на месте: номер версии прежний.
+    expect(screen.getByText("Версия схемы 2")).toBeInTheDocument();
     expect(await screen.findByText("Схема сохранена.", {}, LATER)).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument(), LATER);
   });
@@ -789,5 +792,118 @@ describe("SchemaBlock: правка и слияние обновляют бло�
     await waitFor(() => {
       expect(screen.getByText("металло-черепица").closest("li")).toHaveTextContent("синоним «металлочерепица»");
     }, LATER);
+  });
+});
+
+describe("SchemaBlock: роли, вид и происхождение параметров (спека 3в §2.11)", () => {
+  function withSecondaryAndRange() {
+    const schema = handlerState.familySchemas[SCHEMA_FAMILY_ID];
+    schema.parameters.push(
+      schemaParameter(103, 3, "Армирование", [schemaValue(1301, "сетка"), schemaValue(1302, "фиброволокно")], {
+        role: "secondary",
+        origin: "human",
+        closed: true,
+      }),
+      schemaParameter(
+        104,
+        4,
+        "Класс, кг/м³",
+        [schemaValue(1401, "до 120", "manual"), schemaValue(1402, "120 и более", "manual")],
+        { role: "secondary", origin: "human", value_kind: "range", closed: true, range: { start: "120", stop: "120", step: "1" } }
+      )
+    );
+  }
+
+  it("параметры двумя группами: главные определяют вариант, второстепенные нет", async () => {
+    withSecondaryAndRange();
+    renderBlock();
+    await shown();
+
+    const main = screen.getByRole("region", { name: "Главные — определяют вариант" });
+    const secondary = screen.getByRole("region", { name: "Второстепенные — вариант не делят" });
+    expect(within(main).getByRole("heading", { name: "Материал" })).toBeInTheDocument();
+    expect(within(main).queryByRole("heading", { name: "Армирование" })).not.toBeInTheDocument();
+    expect(within(secondary).getByRole("heading", { name: "Армирование" })).toBeInTheDocument();
+    expect(within(secondary).getByRole("heading", { name: "Класс, кг/м³" })).toBeInTheDocument();
+  });
+
+  it("под именем — вид, чей параметр и «только из списка» словами, без кодов", async () => {
+    withSecondaryAndRange();
+    renderBlock();
+    await shown();
+
+    const secondary = screen.getByRole("region", { name: "Второстепенные — вариант не делят" });
+    const arm = within(secondary).getByRole("heading", { name: "Армирование" }).parentElement!;
+    expect(arm).toHaveTextContent("точные · ваш · только из списка");
+    const range = within(secondary).getByRole("heading", { name: "Класс, кг/м³" }).parentElement!;
+    expect(range).toHaveTextContent("диапазоны · ваш");
+    expect(range).not.toHaveTextContent("только из списка");
+    const mainParam = screen.getByRole("heading", { name: "Материал" }).parentElement!;
+    expect(mainParam).toHaveTextContent("точные · модели");
+    expect(document.body.textContent).not.toMatch(/secondary|\bhuman\b|\bexact\b|\brange\b/);
+  });
+
+  it("группы без параметров не рисуются", async () => {
+    renderBlock();
+    await shown();
+
+    expect(screen.getByRole("region", { name: "Главные — определяют вариант" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Второстепенные — вариант не делят" })).not.toBeInTheDocument();
+  });
+
+  it("«Слить значения…» недоступна, когда сливать нечего, кроме диапазонов: их значения строит система", async () => {
+    handlerState.familySchemas[SCHEMA_FAMILY_ID].parameters = [
+      schemaParameter(104, 1, "Класс, кг/м³", [schemaValue(1401, "до 120", "manual"), schemaValue(1402, "120 и более", "manual")], {
+        value_kind: "range",
+        closed: true,
+        range: { start: "120", stop: "120", step: "1" },
+      }),
+    ];
+    renderBlock();
+    await shown();
+
+    expect(screen.getByRole("button", { name: "Слить значения…" })).toBeDisabled();
+  });
+
+  it("«Править схему…» открывает окно «Список и редактор» по схеме блока", async () => {
+    withSecondaryAndRange();
+    const user = userEvent.setup();
+    renderBlock();
+    await shown();
+
+    await user.click(screen.getByRole("button", { name: "Править схему…" }));
+    const dialog = await screen.findByRole("dialog");
+    await waitForDialogFocus();
+
+    const secondary = within(dialog).getByRole("region", { name: "Второстепенные — вариант не делят" });
+    expect(within(secondary).getByRole("button", { name: /^Армирование/ })).toBeInTheDocument();
+    expect(within(dialog).getByText("4 из 10 параметров")).toBeInTheDocument();
+  });
+});
+
+describe("SchemaBlock: предпросмотр пересборки называет оценку приближённой", () => {
+  it("у семьи с текущей схемой — пометка «оценка значений приближённая», рядом с суммой", async () => {
+    const user = userEvent.setup();
+    renderBlock();
+    await shown();
+
+    await user.click(screen.getByRole("button", { name: "Пересобрать…" }));
+    const dialog = await screen.findByRole("dialog");
+
+    expect(await within(dialog).findByText(/Оценка значений приближённая/, {}, LATER)).toBeInTheDocument();
+    expect(within(dialog).getByText("$1,90")).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("values_approximate");
+  });
+
+  it("у семьи без схемы пометки нет: там другая оговорка — значения не входят в оценку", async () => {
+    const user = userEvent.setup();
+    renderBlock(activeFamilyWithoutSchema());
+    await screen.findByText("Схемы пока нет.", {}, LATER);
+
+    await user.click(screen.getByRole("button", { name: "Пересобрать…" }));
+    const dialog = await screen.findByRole("dialog");
+    await within(dialog).findByText(/Оценка не включает задания значений/, {}, LATER);
+
+    expect(within(dialog).queryByText(/Оценка значений приближённая/)).not.toBeInTheDocument();
   });
 });

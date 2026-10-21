@@ -28,7 +28,12 @@ import {
   FAMILY_STATUS_LABEL,
   jobErrorClassLabel,
   matchPlaceLabel,
+  MAX_SCHEMA_PARAMETERS,
   NAME_ROLE_LABEL,
+  PARAMETER_KIND_LABEL,
+  PARAMETER_ORIGIN_LABEL,
+  PARAMETER_ROLE_GROUP_LABEL,
+  PARAMETER_ROLE_LABEL,
   pluralRu,
   SEMANTIC_KIND_LABEL,
   SCHEMA_REFUSAL_LABEL,
@@ -36,7 +41,9 @@ import {
   schemaRefusalLabel,
   SEMANTIC_STATE_LABEL,
   VARIANT_STATUS_LABEL,
+  VALUE_REFRESHING_LABEL,
   VARIANT_VALUE_SOURCE_LABEL,
+  valueOffListLabel,
 } from "./labels";
 
 /**
@@ -271,6 +278,55 @@ describe("подписи схемы и вариантов", () => {
     }
   });
 
+  it("множество кодов отказов схемы — литерал: новый код без подписи или лишняя подпись роняют тест", () => {
+    expect(Object.keys(SCHEMA_REFUSAL_LABEL).sort()).toEqual(
+      [
+        "schema_parameter_renamed",
+        "schema_value_removed",
+        "schema_blank",
+        "schema_bad_ordinals",
+        "schema_too_many_parameters",
+        "schema_ordinals_exhausted",
+        "schema_duplicate_parameter",
+        "schema_bad_range",
+        "schema_range_too_many_values",
+        "schema_building",
+        "schema_no_building",
+        "schema_no_current",
+        "merge_values_other_parameter",
+        "merge_source_merged",
+        "merge_value_cycle",
+        "merge_value_retired",
+        "off_list_not_found",
+        "off_list_target_invalid",
+        "parameter_not_found",
+        "value_not_found",
+        "family_not_found",
+        "family_not_active",
+        "preview_changed",
+      ].sort()
+    );
+  });
+
+  it("каждый код фичи 3в получает свою подпись, различную у разных кодов", () => {
+    const codes = [
+      "schema_too_many_parameters",
+      "schema_ordinals_exhausted",
+      "schema_duplicate_parameter",
+      "schema_bad_range",
+      "schema_range_too_many_values",
+      "off_list_not_found",
+      "off_list_target_invalid",
+      "merge_value_retired",
+    ];
+    const labels = codes.map((code) => schemaRefusalLabel(code));
+    expect(new Set(labels).size).toBe(codes.length);
+    for (const label of labels) {
+      expect(label).not.toBe("Не удалось выполнить действие. Обновите экран и повторите.");
+      expect(label.length).toBeGreaterThan(20);
+    }
+  });
+
   it("неизвестный или отсутствующий код — общая подпись, не сам код", () => {
     const fallback = "Не удалось выполнить действие. Обновите экран и повторите.";
     expect(schemaRefusalLabel("some_future_code")).toBe(fallback);
@@ -279,7 +335,7 @@ describe("подписи схемы и вариантов", () => {
 });
 
 describe("подписи вариантов и отказов контекста", () => {
-  it.each(["name", "path", "manual", "path_conflict", "none"] as const)(
+  it.each(["name", "path", "manual", "path_conflict", "none", "off_list"] as const)(
     "источник значения %s имеет непустую подпись, не равную коду",
     (source) => {
       const label = VARIANT_VALUE_SOURCE_LABEL[source];
@@ -388,5 +444,26 @@ describe("подписи отказов открытия, категорий и 
     expect(discoveryNamesLabel(120)).toBe("имён: 120");
     expect(discoveryNamesLabel(0)).toBe("имён: 0");
     expect(discoveryNamesLabel(null)).toBe("имён: —");
+  });
+});
+
+describe("подписи окна правки схемы (спека 3в §2.11)", () => {
+  it("роли, группы списка и виды значений печатаются словами макета", () => {
+    expect(PARAMETER_ROLE_LABEL).toEqual({ main: "Главный", secondary: "Второстепенный" });
+    expect(PARAMETER_ROLE_GROUP_LABEL).toEqual({
+      main: "Главные — определяют вариант",
+      secondary: "Второстепенные — вариант не делят",
+    });
+    expect(PARAMETER_KIND_LABEL).toEqual({ exact: "Точные", range: "Диапазоны" });
+    expect(PARAMETER_ORIGIN_LABEL).toEqual({ model: "модели", human: "ваш" });
+  });
+
+  it("предел параметров — десять, как на сервере", () => {
+    expect(MAX_SCHEMA_PARAMETERS).toBe(10);
+  });
+
+  it("пометки строки значения карточки: «уточняется» и «не из списка: «…»»", () => {
+    expect(VALUE_REFRESHING_LABEL).toBe("уточняется");
+    expect(valueOffListLabel("5 см")).toBe("не из списка: «5 см»");
   });
 });

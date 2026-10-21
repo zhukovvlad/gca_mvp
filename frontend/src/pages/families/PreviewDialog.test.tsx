@@ -4,7 +4,7 @@ import { delay, http, HttpResponse } from "msw";
 import { describe, expect, it, vi } from "vitest";
 
 import { server } from "@/test/server";
-import { handlerState } from "@/test/handlers";
+import { SCHEMA_FAMILY_ID, handlerState } from "@/test/handlers";
 import { createTestQueryClient, renderWithProviders } from "@/test/utils";
 import type { PreviewTarget } from "@/types/domain";
 
@@ -294,5 +294,43 @@ describe("PreviewDialog — отмена", () => {
 
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(handlerState.reaskConfirmRequests).toEqual([]);
+  });
+});
+
+describe("PreviewDialog — пересборка схемы: оценка приближённая (спека 3в §2.8)", () => {
+  const SCHEMA: PreviewTarget = { kind: "schema", familyId: SCHEMA_FAMILY_ID };
+
+  it("values_approximate: пометка стоит рядом с суммой, кода на экране нет", async () => {
+    renderDialog(SCHEMA);
+
+    expect(await screen.findByText(/Оценка значений приближённая/)).toBeInTheDocument();
+    expect(screen.getByText(/считаются нынешние параметры модели/)).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("values_approximate");
+  });
+
+  it("ответ без values_approximate (или ложь) пометки не даёт", async () => {
+    server.use(
+      http.post("/api/v1/semantic/families/:id/schema/rebuild/preview", () =>
+        HttpResponse.json({
+          context_count: 3,
+          reserve_usd: "1.0000",
+          expected_cached_usd: "0.2000",
+          preview_hash: "h",
+          values_included: true,
+          values_approximate: false,
+        })
+      )
+    );
+    renderDialog(SCHEMA);
+
+    await screen.findByText("$1,00");
+    expect(screen.queryByText(/Оценка значений приближённая/)).not.toBeInTheDocument();
+  });
+
+  it("у перезапроса единицы пометки нет", async () => {
+    renderDialog(UNIT);
+
+    await screen.findByText("214");
+    expect(screen.queryByText(/Оценка значений приближённая/)).not.toBeInTheDocument();
   });
 });
