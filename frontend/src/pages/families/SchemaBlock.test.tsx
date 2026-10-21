@@ -1,4 +1,4 @@
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
@@ -366,9 +366,14 @@ describe("SchemaBlock: пересборка", () => {
     expect(await within(dialog).findByText("Пересобрать схему?", {}, LATER)).toBeInTheDocument();
     expect(
       within(dialog).getByText(
-        "Модель заново составит параметры и значения схемы семьи. Текущая схема остаётся в силе, пока новая не будет готова."
+        "Модель построит свою часть схемы заново. Текущая схема остаётся в силе, пока новая не будет готова."
       )
     ).toBeInTheDocument();
+    // Через родителя: схема из блока доходит до окна, оба параметра фикстуры — модели.
+    expect(await within(dialog).findByText("Материал", {}, LATER)).toBeInTheDocument();
+    expect(within(dialog).getByText("Толщина")).toBeInTheDocument();
+    expect(within(dialog).queryByText("Останутся — ваши")).not.toBeInTheDocument();
+    expect(within(dialog).getByText("Модель предложит до 3 новых параметров: занято 0 из 10.")).toBeInTheDocument();
     expect(await within(dialog).findByText("$1,90", {}, LATER)).toBeInTheDocument();
     expect(within(dialog).queryByText(/не включает задания значений/)).not.toBeInTheDocument();
     expect(handlerState.previewRequests).toEqual([`schema:${SCHEMA_FAMILY_ID}`]);
@@ -905,5 +910,33 @@ describe("SchemaBlock: предпросмотр пересборки назыв�
     await within(dialog).findByText(/Оценка не включает задания значений/, {}, LATER);
 
     expect(within(dialog).queryByText(/Оценка значений приближённая/)).not.toBeInTheDocument();
+  });
+});
+
+describe("SchemaBlock: окно пересборки читает схему блока", () => {
+  it("тот же ключ запроса: открытие окна при свежей схеме второго GET схемы не делает", async () => {
+    let schemaGets = 0;
+    server.use(
+      http.get("/api/v1/semantic/families/:id/schema", ({ params }) => {
+        schemaGets += 1;
+        return HttpResponse.json(handlerState.familySchemas[Number(params.id)]);
+      })
+    );
+    // Как в приложении (App.tsx, staleTime минута): второй наблюдатель того же ключа свежие данные не перечитывает.
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 60_000 }, mutations: { retry: false } },
+    });
+    const user = userEvent.setup();
+    renderWithProviders(<SchemaBlock family={family(SCHEMA_FAMILY_ID)} />, { queryClient });
+    await shown();
+    expect(schemaGets).toBe(1);
+
+    await user.click(screen.getByRole("button", { name: "Пересобрать…" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      await within(dialog).findByText("Модель предложит до 3 новых параметров: занято 0 из 10.", {}, LATER)
+    ).toBeInTheDocument();
+    expect(await within(dialog).findByText("$1,90", {}, LATER)).toBeInTheDocument();
+    expect(schemaGets).toBe(1);
   });
 });
