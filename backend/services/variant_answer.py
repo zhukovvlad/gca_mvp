@@ -189,10 +189,21 @@ VariantErrorCode = Literal[
     "bad_count",
     "bad_kind",
     "value_not_in_list",
+    "duplicate_name",
 ]
 
 MAX_PARAMETERS: Final = 3
+#: Активных параметров версии не больше десяти (спека 3в §2.2): параметры человека
+#: и модели вместе.
+MAX_ACTIVE_PARAMETERS: Final = 10
 MAX_VALUES_PER_PARAMETER: Final = 30
+
+
+def model_parameter_limit(human_count: int) -> int:
+    """Сколько параметров модель вправе предложить при `human_count` активных
+    параметрах человека: не больше трёх и не больше места до десяти (спека 3в
+    §2.8); отрицательным предел не бывает."""
+    return max(0, min(MAX_PARAMETERS, MAX_ACTIVE_PARAMETERS - human_count))
 
 ValueKind = Literal["value", "new", "conflict", "none"]
 _KINDS: Final = ("value", "new", "conflict", "none")
@@ -275,11 +286,12 @@ def _nonblank(value: object, where: str) -> str:
     return value
 
 
-def parse_schema_answer(raw: str) -> SchemaAnswer:
-    """Строгий разбор ответа `family_schema` (спека §2.3, §2.6).
+def parse_schema_answer(raw: str, *, limit: int) -> SchemaAnswer:
+    """Строгий разбор ответа `family_schema` (спека §2.3, §2.6, 3в §2.8).
 
     Обрамление, единственный объект и повтор ключа — как у фичи 2. Затем:
-    ключи верхнего уровня, число параметров (0-3), на каждый параметр — ключи,
+    ключи верхнего уровня, число параметров (0-`limit`, где `limit` —
+    `model_parameter_limit` материала задания), на каждый параметр — ключи,
     `ordinal`, имя, значения (1-30, каждое непустое); в конце `ordinal` обязаны
     образовать `1..N` без дублей и пропусков. Строки не нормализуются: имя и
     значения возвращаются как пришли (нормализация — при записи в базу)."""
@@ -288,8 +300,8 @@ def parse_schema_answer(raw: str) -> SchemaAnswer:
     obj = _object_of(raw)
     _check_keys(obj, ("parameters",), "ответ")
     items = _list_field(obj["parameters"], "parameters")
-    if len(items) > MAX_PARAMETERS:
-        raise _fail("bad_count", f"параметров {len(items)}, допустимо не больше {MAX_PARAMETERS}")
+    if len(items) > limit:
+        raise _fail("bad_count", f"параметров {len(items)}, допустимо не больше {limit}")
 
     parsed: list[SchemaParameterIn] = []
     for position, item in enumerate(items):
@@ -297,8 +309,8 @@ def parse_schema_answer(raw: str) -> SchemaAnswer:
         param = _dict_item(item, where)
         _check_keys(param, _SCHEMA_KEYS, where)
         ordinal = _int_field(param["ordinal"], f"{where}.ordinal")
-        if ordinal not in range(1, MAX_PARAMETERS + 1):
-            raise _fail("bad_ordinal", f"{where}: ordinal {ordinal} вне 1-{MAX_PARAMETERS}")
+        if ordinal not in range(1, limit + 1):
+            raise _fail("bad_ordinal", f"{where}: ordinal {ordinal} вне 1-{limit}")
         name = _nonblank(param["name"], f"{where}.name")
         values = _list_field(param["values"], f"{where}.values")
         if not 1 <= len(values) <= MAX_VALUES_PER_PARAMETER:

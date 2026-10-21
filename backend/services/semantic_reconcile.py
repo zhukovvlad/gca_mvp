@@ -1238,6 +1238,11 @@ def _plan_family_schemas(
                 fingerprint, rendered, unit_id=family.unit_id, prompt_version=SCHEMA_PROMPT_VERSION
             )
             _plan_postanovka(plan, current, _NewJob(fingerprint, rendered, row))
+            if material.model_limit == 0:
+                # Десять параметров человека не оставляют модели места (спека 3в
+                # §2.8): версия замораживается из них без вызова модели, как
+                # задание значений без вопросов, и стоит 0.
+                plan.free.add(fingerprint)
             continue
         _plan_inapplicable(plan, jobs)
         if not active or (family.id in with_frozen and family.id not in unbuilt):

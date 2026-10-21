@@ -36,6 +36,7 @@ from models import (
     FamilyParameterSchema,
     FamilyParameterValue,
     FamilySuggestion,
+    ParameterOrigin,
     ParameterValueKind,
     SchemaStatus,
     SemanticJob,
@@ -56,13 +57,14 @@ from services.semantic_rules import PLACE_DICTIONARY_VERSION
 from services.variant_answer import (
     SCHEMA_RESPONSE_FORMAT,
     VALUES_RESPONSE_FORMAT,
+    model_parameter_limit,
     values_response_format_for,
 )
 
 #: Версии текстов промптов — столбец аудита задания, в хэши не входят (как
 #: `semantic_request.PROMPT_VERSION`); смена текста промпта сопровождается
 #: инкрементом.
-SCHEMA_PROMPT_VERSION = 3
+SCHEMA_PROMPT_VERSION = 4
 VALUES_PROMPT_VERSION = 1
 
 #: Сколько путей разделов уходит модели вместе с наименованием (спека §2.3).
@@ -91,6 +93,15 @@ SCHEMA_PROMPT = """Ты помогаешь вести каталог строи�
 Ответ — только JSON без пояснений, по схеме:
 {"parameters": [{"ordinal": 1, "name": "<имя параметра>", "values": ["<значение>", ...]}]}
 Номера "ordinal" — 1, 2, 3 по порядку, без пропусков. Если подходящих параметров нет — {"parameters": []}."""
+
+#: Фрагменты `SCHEMA_PROMPT`, которые меняются, когда часть параметров уже задана
+#: человеком (спека 3в §2.8): предел числа параметров и перечень номеров. Без
+#: параметров человека тело остаётся прежним байт в байт.
+_LIMIT_FRAGMENT: Final = "Выбери от 0 до 3 ценовых параметров этой семьи."
+_ORDINALS_FRAGMENT: Final = 'Номера "ordinal" — 1, 2, 3 по порядку'
+_TASK_ANCHOR: Final = "\n\nЗадача:\n"
+for _fragment in (_LIMIT_FRAGMENT, _ORDINALS_FRAGMENT, _TASK_ANCHOR):
+    assert SCHEMA_PROMPT.count(_fragment) == 1, _fragment
 
 VALUES_PROMPT = """Ты помогаешь вести каталог строительных работ генподрядчика. У семьи работ уже ЗАКРЕПЛЕНЫ ценовые параметры и закрытые списки их значений (блок СХЕМА СЕМЬИ).
 Тебе дают ОДНУ строку: наименование, единицу, статью и до десяти путей разделов сметы, под которыми эта строка встречается (от самого частого; путь — от верхнего раздела к ближайшему).
@@ -131,6 +142,15 @@ class SchemaRequestMaterial:
     definition: str
     names: tuple[str, ...]
     """Наименования строк семьи, отсортированные, без повторов."""
+    human_parameters: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    """Активные параметры человека действующей версии схемы (имя и активные
+    значения), по возрастанию номера; пересборка переносит их в новую версию, и
+    модель их не предлагает (спека 3в §2.8). Пусто — запрос прежний."""
+
+    @property
+    def model_limit(self) -> int:
+        """Сколько параметров модель вправе предложить при таком материале."""
+        return model_parameter_limit(len(self.human_parameters))
 
 
 @dataclass(frozen=True)
@@ -245,7 +265,42 @@ def load_schema_material(db: Session, family_id: int, schema_id: int) -> SchemaR
         unit_code=family.unit_code,
         definition=family.definition,
         names=tuple(sorted(set(titles))),
+        human_parameters=load_human_parameters(db, family_id),
     )
+
+
+def load_human_parameters(
+    db: Session, family_id: int
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Активные параметры человека действующей версии схемы семьи по
+    возрастанию номера: имя и значения без слитых и выведенных. У семьи без
+    действующей версии их нет. Параметр архивный или построенный моделью не
+    входит: пересборка переносит только решения человека (спека 3в §2.8)."""
+    parameters = db.execute(
+        sa.select(FamilyParameter.id, FamilyParameter.name)
+        .join(FamilyParameterSchema, FamilyParameterSchema.id == FamilyParameter.schema_id)
+        .where(
+            FamilyParameterSchema.family_id == family_id,
+            FamilyParameterSchema.status == SchemaStatus.frozen.value,
+            FamilyParameter.origin == ParameterOrigin.human.value,
+            FamilyParameter.archived_at.is_(None),
+        )
+        .order_by(FamilyParameter.ordinal)
+    ).all()
+    if not parameters:
+        return ()
+    values_of: dict[int, list[str]] = {row.id: [] for row in parameters}
+    for row in db.execute(
+        sa.select(FamilyParameterValue.parameter_id, FamilyParameterValue.value)
+        .where(
+            FamilyParameterValue.parameter_id.in_(list(values_of)),
+            FamilyParameterValue.merged_into_id.is_(None),
+            FamilyParameterValue.retired_at.is_(None),
+        )
+        .order_by(FamilyParameterValue.parameter_id, FamilyParameterValue.id)
+    ).all():
+        values_of[row.parameter_id].append(row.value)
+    return tuple((row.name, tuple(values_of[row.id])) for row in parameters)
 
 
 def load_schema_parameters(
@@ -449,6 +504,31 @@ def _finish(
     )
 
 
+def schema_prompt_for(material: SchemaRequestMaterial) -> str:
+    """Текст системного блока запроса схемы. Без параметров человека — прежний
+    `SCHEMA_PROMPT` байт в байт. С ними (спека 3в §2.8): блок «уже заданы
+    человеком, не предлагай» перед задачей, предел «от 0 до N» и перечень номеров
+    1..N по месту, оставшемуся до десяти активных параметров."""
+    if not material.human_parameters:
+        return SCHEMA_PROMPT
+    limit = material.model_limit
+    listing = "\n".join(
+        f"- {name}: {', '.join(values)}" if values else f"- {name}"
+        for name, values in material.human_parameters
+    )
+    block = (
+        "\n\nУже заданы человеком, не предлагай их и не повторяй их по смыслу "
+        f"(параметр и его значения):\n{listing}"
+    )
+    prompt = SCHEMA_PROMPT.replace(
+        _LIMIT_FRAGMENT, f"Выбери от 0 до {limit} ценовых параметров этой семьи."
+    ).replace(
+        _ORDINALS_FRAGMENT,
+        'Номера "ordinal" — ' + ", ".join(str(n) for n in range(1, limit + 1)) + " по порядку",
+    )
+    return prompt.replace(_TASK_ANCHOR, block + _TASK_ANCHOR)
+
+
 def render_schema_request(
     material: SchemaRequestMaterial, *, settings: Settings
 ) -> RenderedRequest:
@@ -463,7 +543,11 @@ def render_schema_request(
         reasoning_effort=settings.SEMANTIC_VARIANTS_REASONING_EFFORT,
         response_format=SCHEMA_RESPONSE_FORMAT,
         system_blocks=[
-            {"type": "text", "text": SCHEMA_PROMPT, "cache_control": {"type": "ephemeral"}}
+            {
+                "type": "text",
+                "text": schema_prompt_for(material),
+                "cache_control": {"type": "ephemeral"},
+            }
         ],
         user_text=_schema_user_text(material, names),
         candidates_snapshot=names,

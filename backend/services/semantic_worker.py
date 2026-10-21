@@ -96,6 +96,7 @@ from services.semantic_request import (
     render_context_request,
 )
 from services.variant_answer import (
+    SchemaAnswer,
     ValuesAnswer,
     merge_chunks,
     parse_discovery_chunk,
@@ -105,10 +106,11 @@ from services.variant_answer import (
 from services.variant_request import (
     EMPTY_NAMES_CANDIDATES_HASH,
     SchemaParameterIn,
+    load_schema_material,
     load_schema_parameters,
     load_values_material,
     paths_hash_of,
-    render_request_for,
+    render_schema_request,
     render_values_request,
 )
 from services.work_variants import JobGuard, apply_values, freeze_schema
@@ -279,12 +281,15 @@ def render_job_request(db: Session, job: SemanticJob, *, settings: Settings) -> 
             return _not_renderable(SemanticCancelReason.not_applicable)
         # Семья существует (статус прочитан выше), поэтому материал схемы есть
         # всегда и `SubjectNotRenderable` здесь недостижим.
-        rendered = render_request_for(db, job, settings=settings)
+        material = load_schema_material(db, job.family_id, job.schema_id)
+        rendered = render_schema_request(material, settings=settings)
         if rendered.candidates_hash == EMPTY_NAMES_CANDIDATES_HASH:
             # Материал опустел (спека 3б §2.16 п. 2а): схема не строится из нуля
             # наименований; задание закрывается, версия остаётся `building`.
             return _not_renderable(SemanticCancelReason.not_applicable)
-        return JobRender(rendered=rendered)
+        # Десять параметров человека не оставляют модели места (спека 3в §2.8):
+        # версия замораживается из них одних, модель не вызывается.
+        return JobRender(rendered=rendered, without_model=material.model_limit == 0)
     if kind == SemanticJobKind.context_values.value:
         material = load_request_material(db, [job.context_id])[job.context_id]
         columns = _load_values_columns(db, [job.context_id])[job.context_id]
@@ -718,8 +723,8 @@ def _record_variant_result(
     assert claim.attempt_id is not None and claim.rendered is not None
     subject = db.execute(
         sa.select(
-            SemanticJob.context_id, SemanticJob.schema_id, SemanticJob.paths_hash,
-            SemanticJob.requested_ordinals,
+            SemanticJob.context_id, SemanticJob.family_id, SemanticJob.schema_id,
+            SemanticJob.paths_hash, SemanticJob.requested_ordinals,
         ).where(SemanticJob.id == claim.job_id)
     ).one()
     is_schema = claim.kind == SemanticJobKind.family_schema
@@ -728,7 +733,10 @@ def _record_variant_result(
     answer = None
     try:
         if is_schema:
-            answer = parse_schema_answer(response.content)
+            # Предел ответа — из того же материала, по которому `render_job_request`
+            # воспроизводит тело задания (спека 3в §2.8).
+            limit = load_schema_material(db, subject.family_id, subject.schema_id).model_limit
+            answer = parse_schema_answer(response.content, limit=limit)
         else:
             answer = parse_values_answer(
                 response.content,
@@ -918,6 +926,30 @@ def _record_discovery_result(
     db.commit()
 
 
+def complete_schema_without_model(
+    db: Session, job: SemanticJob, *, claim_token: UUID | None = None,
+    settings: Settings | None = None,
+) -> None:
+    """Замораживает версию задания схемы из одних параметров человека, не
+    вызывая модель (спека 3в §2.8: параметров человека десять, модели места нет).
+    Тот же обработчик заморозки, что у ответа модели: те же блокировки, вердикт
+    и перенос параметров; ответ — пустой. `claim_token` — токен захвата (по
+    умолчанию текущий токен задания); отпечаток — тот, что прошёл проверку при
+    захвате. Не коммитит: транзакцией владеет вызывающий."""
+    token = claim_token if claim_token is not None else job.claim_token
+    if token is None:
+        raise ValueError("у задания схемы нет захвата")
+    freeze_schema(
+        db,
+        schema_id=job.schema_id,
+        answer=SchemaAnswer(parameters=()),
+        guard=JobGuard(
+            job_id=job.id, claim_token=token, expected_request_hash=job.request_hash
+        ),
+        settings=settings if settings is not None else default_settings,
+    )
+
+
 def complete_without_model(
     db: Session, claim: Claim, *, now: datetime, settings: Settings | None = None
 ) -> None:
@@ -931,6 +963,15 @@ def complete_without_model(
     `settings` по умолчанию — настройки приложения."""
     if not claim.synthesized:
         raise ValueError("завершение без модели — только для синтетического захвата")
+    if claim.kind == SemanticJobKind.family_schema:
+        # Без блокировки: порядок «семья, версия, задание» берёт сама заморозка.
+        schema_job = db.get(SemanticJob, claim.job_id)
+        assert schema_job is not None  # задание захвачено и не удаляется
+        complete_schema_without_model(
+            db, schema_job, claim_token=claim.claim_token, settings=settings
+        )
+        db.commit()
+        return
     subject = db.execute(
         sa.select(
             SemanticJob.context_id, SemanticJob.schema_id, SemanticJob.request_hash,

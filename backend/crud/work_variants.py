@@ -29,6 +29,7 @@ from models import (
     FamilyParameter,
     FamilyParameterSchema,
     FamilyParameterValue,
+    ParameterOrigin,
     ParameterRole,
     SchemaStatus,
     SemanticJob,
@@ -628,6 +629,10 @@ class RebuildPreview:
     #: оценка неполна (только задание схемы). Определяется текущей версией,
     #: которая уже в хэше, поэтому в хэш не входит.
     values_included: bool
+    #: Оценка значений приблизительна: у новой схемы до ответа модели параметров
+    #: нет, и считаются нынешние параметры МОДЕЛИ действующей версии (спека 3в
+    #: §2.8). Истинно ровно тогда, когда значения вошли в оценку.
+    values_approximate: bool
 
 
 def _family_context_ids(db: Session, family_id: int) -> list[int]:
@@ -685,36 +690,60 @@ def _estimate(
 
 def rebuild_preview(db: Session, family_id: int) -> RebuildPreview | None:
     """Оценка пересборки схемы семьи: задание схемы плюс задания значений
-    контекстов семьи, тарифы каждого вида. Задания значений оцениваются по
-    текущей версии схемы (новой ещё нет); у семьи без текущей версии они в
-    оценку не входят. `None` — семьи нет. `preview_hash` — по входам оценки:
-    семья, текущая версия, наличие `building`, число контекстов, суммы и
-    тарифы обоих видов."""
+    контекстов семьи, тарифы каждого вида. Задание схемы при десяти параметрах
+    человека модели не уходит и стоит 0. Задания значений оцениваются по
+    нынешним параметрам МОДЕЛИ действующей версии как приближению (спека 3в
+    §2.8: у новой схемы до ответа параметров нет); у семьи без текущей версии
+    они в оценку не входят. `None` — семьи нет. `preview_hash` — по входам
+    оценки: семья, текущая версия и её `revision` (правка на месте меняет
+    оценку, не меняя номер версии), наличие `building`, число контекстов,
+    суммы и тарифы обоих видов."""
     if not family_exists(db, family_id):
         return None
     versions = db.execute(
-        sa.select(FamilyParameterSchema.version, FamilyParameterSchema.status).where(
+        sa.select(
+            FamilyParameterSchema.id, FamilyParameterSchema.version,
+            FamilyParameterSchema.status, FamilyParameterSchema.revision,
+        ).where(
             FamilyParameterSchema.family_id == family_id,
             FamilyParameterSchema.status.in_(
                 (SchemaStatus.frozen.value, SchemaStatus.building.value)
             ),
         )
     ).all()
-    current_version = next(
-        (row.version for row in versions if row.status == SchemaStatus.frozen.value), None
-    )
+    current = next((row for row in versions if row.status == SchemaStatus.frozen.value), None)
+    current_version = current.version if current is not None else None
     has_building = any(row.status == SchemaStatus.building.value for row in versions)
 
     context_ids = _family_context_ids(db, family_id)
-    entries: list[tuple[SemanticJobKind, RenderedRequest]] = [
-        (
-            SemanticJobKind.family_schema,
-            render_schema_request(
-                load_schema_material(db, family_id, _UNBUILT_SCHEMA_ID), settings=settings
-            ),
+    entries: list[tuple[SemanticJobKind, RenderedRequest]] = []
+    schema_material = load_schema_material(db, family_id, _UNBUILT_SCHEMA_ID)
+    if schema_material.model_limit > 0:
+        entries.append(
+            (
+                SemanticJobKind.family_schema,
+                render_schema_request(schema_material, settings=settings),
+            )
         )
-    ]
-    values_material = load_values_material(db, context_ids)
+    model_ordinals: tuple[int, ...] = ()
+    if current is not None:
+        model_ordinals = tuple(
+            db.execute(
+                sa.select(FamilyParameter.ordinal)
+                .where(
+                    FamilyParameter.schema_id == current.id,
+                    FamilyParameter.origin == ParameterOrigin.model.value,
+                    FamilyParameter.archived_at.is_(None),
+                )
+                .order_by(FamilyParameter.ordinal)
+            ).scalars()
+        )
+    # Параметров модели в действующей версии нет — спрашивать о значениях нечего.
+    values_material = (
+        load_values_material(db, context_ids, requested_ordinals=model_ordinals)
+        if model_ordinals
+        else {}
+    )
     for context_id in sorted(values_material):
         entries.append(
             (
@@ -728,6 +757,7 @@ def rebuild_preview(db: Session, family_id: int) -> RebuildPreview | None:
         {
             "family_id": family_id,
             "current_version": current_version,
+            "current_revision": current.revision if current is not None else None,
             "has_building": has_building,
             "contexts": len(context_ids),
             "reserve_usd": str(reserve),
@@ -746,4 +776,5 @@ def rebuild_preview(db: Session, family_id: int) -> RebuildPreview | None:
         expected_cached_usd=cached,
         preview_hash=hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
         values_included=current_version is not None,
+        values_approximate=current_version is not None,
     )

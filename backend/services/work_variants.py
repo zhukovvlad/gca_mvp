@@ -50,6 +50,7 @@ from models import (
     FamilyParameterValue,
     FamilyStatus,
     FamilySuggestion,
+    ParameterOrigin,
     ParameterRole,
     ParameterValueKind,
     SchemaStatus,
@@ -731,8 +732,31 @@ def _lock_current_schema_statement(family_id: int):
     )
 
 
-def _check_schema_answer(answer: SchemaAnswer) -> None:
+def _check_schema_answer(
+    db: Session, answer: SchemaAnswer, current: FamilyParameterSchema | None
+) -> None:
+    """Ответ модели не пишется, если в нём пустое имя или значение после
+    нормализации либо параметр с именем (по `normalize_value`) активного
+    параметра человека действующей версии: человек уже задал такой параметр, и
+    повтор — ошибка схемы ответа (спека 3в §2.8)."""
+    human_names: set[str] = set()
+    if current is not None:
+        human_names = {
+            normalize_value(name)
+            for name in db.execute(
+                sa.select(FamilyParameter.name).where(
+                    FamilyParameter.schema_id == current.id,
+                    FamilyParameter.origin == ParameterOrigin.human.value,
+                    FamilyParameter.archived_at.is_(None),
+                )
+            ).scalars()
+        }
     for parameter in answer.parameters:
+        if normalize_value(parameter.name) in human_names:
+            raise _schema_error(
+                "duplicate_name",
+                f"параметр {parameter.ordinal} повторяет параметр, заданный человеком",
+            )
         if not normalize_value(parameter.name):
             raise _schema_error(
                 "empty_value", f"имя параметра {parameter.ordinal} пусто после нормализации"
@@ -745,20 +769,120 @@ def _check_schema_answer(answer: SchemaAnswer) -> None:
                 )
 
 
+def _carry_human_parameters(
+    db: Session, *, schema: FamilyParameterSchema, current: FamilyParameterSchema
+) -> tuple[dict[int, int], dict[int, int], list[dict[str, object]]]:
+    """Параметры человека текущей версии переносятся в новую (спека 3в §2.8):
+    номера уплотняются в 1..H по порядку прежних; роль, вид, границы, «только из
+    списка», происхождение и активные значения (слитые и выведенные не
+    переносятся) копируются. Параметры модели прежней версии не переносятся.
+    Возвращает `({прежний id параметра: новый}, {прежний id значения: новый},
+    описание параметров для события)`."""
+    old_parameters = db.execute(
+        sa.select(FamilyParameter)
+        .where(
+            FamilyParameter.schema_id == current.id,
+            FamilyParameter.origin == ParameterOrigin.human.value,
+            FamilyParameter.archived_at.is_(None),
+        )
+        .order_by(FamilyParameter.ordinal)
+    ).scalars().all()
+    parameter_map: dict[int, int] = {}
+    value_map: dict[int, int] = {}
+    described: list[dict[str, object]] = []
+    for ordinal, old in enumerate(old_parameters, start=1):
+        row = FamilyParameter(
+            schema_id=schema.id, ordinal=ordinal, name=old.name, name_norm=old.name_norm,
+            role=old.role, value_kind=old.value_kind, closed=old.closed,
+            range_from=old.range_from, range_to=old.range_to, range_step=old.range_step,
+            origin=ParameterOrigin.human.value,
+        )
+        db.add(row)
+        db.flush()
+        parameter_map[old.id] = row.id
+        copied = 0
+        for old_value in db.execute(
+            sa.select(FamilyParameterValue)
+            .where(
+                FamilyParameterValue.parameter_id == old.id,
+                FamilyParameterValue.merged_into_id.is_(None),
+                FamilyParameterValue.retired_at.is_(None),
+            )
+            .order_by(FamilyParameterValue.id)
+        ).scalars():
+            value_row = FamilyParameterValue(
+                parameter_id=row.id, value=old_value.value, value_norm=old_value.value_norm,
+                origin=old_value.origin, range_lo=old_value.range_lo, range_hi=old_value.range_hi,
+            )
+            db.add(value_row)
+            db.flush()
+            value_map[old_value.id] = value_row.id
+            copied += 1
+        described.append({"name": row.name, "values": copied})
+    return parameter_map, value_map, described
+
+
+def _carry_human_rows(
+    db: Session, *, schema: FamilyParameterSchema, current: FamilyParameterSchema,
+    parameter_map: Mapping[int, int], value_map: Mapping[int, int],
+) -> None:
+    """Строки значений контекстов по параметрам человека копируются в новую
+    версию с переводом идентификаторов (спека 3в §2.8): значение без отметки,
+    «не уточнено», «разделы расходятся» и «не из списка» (с текстом). Строка
+    «уточняется» не копируется: она ссылается на выведенное значение, которого в
+    новой версии нет, и параметр становится недостающим. Значение строки без
+    отметки всегда активно (спека 3в §2.2), поэтому перевод по `value_map`
+    полон."""
+    if not parameter_map:
+        return
+    rows = db.execute(
+        sa.select(ContextParameterValue)
+        .where(
+            ContextParameterValue.schema_id == current.id,
+            ContextParameterValue.parameter_id.in_(list(parameter_map)),
+            ContextParameterValue.refresh_requested_at.is_(None),
+        )
+        .order_by(ContextParameterValue.context_id, ContextParameterValue.parameter_id)
+    ).scalars().all()
+    copies = [
+        {
+            "context_id": row.context_id, "schema_id": schema.id,
+            "parameter_id": parameter_map[row.parameter_id],
+            "value_id": value_map[row.value_id] if row.value_id is not None else None,
+            "source": row.source, "job_id": row.job_id, "created_at": row.created_at,
+            "off_list_text": row.off_list_text, "refresh_requested_at": None,
+        }
+        for row in rows
+    ]
+    if copies:
+        db.execute(sa.insert(ContextParameterValue), copies)
+        db.flush()
+
+
 def _write_frozen_schema(
     db: Session, *, schema: FamilyParameterSchema, current: FamilyParameterSchema | None,
     answer: SchemaAnswer, job_id: int | None,
-) -> dict[tuple[int, str], tuple[int, int, str]]:
-    """Общая часть заморозки: параметры и значения (`origin = schema`), версия `building` ->
-    `frozen`, прежняя текущая -> `superseded` (заморозка сохраняется), событие.
-    Вызывающий уже взял блокировки и вынес вердикт. Возвращает записанные
-    значения: `(ordinal, норма) -> (parameter_id, value_id, текст)`."""
+) -> None:
+    """Общая часть заморозки: параметры человека текущей версии с их значениями
+    и строками контекстов переносятся (номера 1..H), параметры ответа модели
+    получают номера H+1..H+N (`origin = schema`), версия `building` -> `frozen`,
+    прежняя текущая -> `superseded` (заморозка сохраняется), событие.
+    Вызывающий уже взял блокировки и вынес вердикт."""
     now = _now()
     described: list[dict[str, object]] = []
-    written: dict[tuple[int, str], tuple[int, FamilyParameterValue, str]] = {}
+    carried = 0
+    if current is not None:
+        parameter_map, value_map, described = _carry_human_parameters(
+            db, schema=schema, current=current
+        )
+        _carry_human_rows(
+            db, schema=schema, current=current, parameter_map=parameter_map, value_map=value_map
+        )
+        carried = len(parameter_map)
     for parameter in answer.parameters:
+        ordinal = carried + parameter.ordinal
         row = FamilyParameter(
-            schema_id=schema.id, ordinal=parameter.ordinal, name=parameter.name.strip(),
+            schema_id=schema.id, ordinal=ordinal, name=parameter.name.strip(),
             name_norm=normalize_value(parameter.name),
         )
         db.add(row)
@@ -774,7 +898,6 @@ def _write_frozen_schema(
                 origin=ValueOrigin.schema.value,
             )
             db.add(value_row)
-            written[(parameter.ordinal, norm)] = (row.id, value_row, text.strip())
         described.append({"name": row.name, "values": len(seen)})
     db.flush()
 
@@ -796,10 +919,6 @@ def _write_frozen_schema(
             "parameters": described, "job_id": job_id,
         },
     )
-    return {
-        key: (parameter_id, value_row.id, text)
-        for key, (parameter_id, value_row, text) in written.items()
-    }
 
 
 def _acquire_schema_locks(
@@ -891,7 +1010,7 @@ def freeze_schema(
             db.flush()
         return FreezeOutcome(applied=False, unapplied_reason=reason, schema_id=schema_id)
 
-    _check_schema_answer(answer)
+    _check_schema_answer(db, answer, current)
     _write_frozen_schema(
         db, schema=schema, current=current, answer=answer,
         job_id=job.id if job is not None else None,

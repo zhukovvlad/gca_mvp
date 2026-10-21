@@ -677,7 +677,7 @@ class TestRebuildPreview:
         body = response.json()
         assert set(body) == {
             "family_id", "context_count", "reserve_usd", "expected_cached_usd", "preview_hash",
-            "values_included",
+            "values_included", "values_approximate",
         }
         assert body["family_id"] == scene.family.id
         assert body["context_count"] == 2

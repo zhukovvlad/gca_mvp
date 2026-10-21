@@ -1727,6 +1727,7 @@ def rebuild_preview_route(
         "expected_cached_usd": crud_semantic_queue.money_str(preview.expected_cached_usd),
         "preview_hash": preview.preview_hash,
         "values_included": preview.values_included,
+        "values_approximate": preview.values_approximate,
     }
 
 

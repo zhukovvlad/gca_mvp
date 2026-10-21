@@ -66,6 +66,7 @@ from services.semantic_reconcile import (
     preview_values_plan,
     reconcile_context_values,
 )
+from services.variant_answer import MAX_ACTIVE_PARAMETERS as _MAX_ACTIVE_PARAMETERS
 from services.variant_request import SchemaParameterIn
 from services.work_families import (
     REFUSE_FAMILY_NOT_ACTIVE,
@@ -106,7 +107,7 @@ REFUSE_OFF_LIST_TARGET_INVALID = "off_list_target_invalid"
 REFUSE_PREVIEW_CHANGED = "preview_changed"
 
 #: Не больше десяти активных параметров на семью (спека 3в §2.2).
-MAX_ACTIVE_PARAMETERS = 10
+MAX_ACTIVE_PARAMETERS = _MAX_ACTIVE_PARAMETERS
 #: Номер параметра внутри версии — `1..100` (`ck_family_parameters_ordinal_range`).
 MAX_ORDINAL = 100
 #: Внутренних значений диапазона не больше двадцати восьми (спека 3в §2.2).
