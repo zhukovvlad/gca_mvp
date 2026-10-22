@@ -538,6 +538,23 @@ FK объявлены с `use_alter=True`, чтобы сортировка ме�
 (`'main'`, `'exact'`, `false`, `'model'`, `revision 0`) заполняют существующие
 сами, ни один `request_hash` не пересчитывается.
 
+**Что значат колонки `0022`** (спека 3в §2.2, §2.4–§2.7).
+`family_parameter_schemas.revision` растёт на единицу при каждой записи правки
+действующей версии на месте (`bump_revision`) и входит в хэш предпросмотра
+пересборки. `semantic_jobs.requested_ordinals` — номера параметров, значения
+которых запрошены у модели; `NULL` — все активные параметры на момент рендера. Строка контекста `source = 'off_list'` появляется, когда
+модель назвала значение, которого нет в закрытом списке (`closed`), либо
+не-число у параметра-диапазона: `value_id` пуст, текст в `off_list_text`;
+человек сливает такие строки с существующим значением («Слить с…»), и они
+становятся `manual`. `refresh_requested_at` — отметка «уточняется»: прежнее
+значение остаётся до ответа модели. Событие `family_schema_edited` несёт
+`schema_id`, `revision`, `changes` (по одной записи на параметр: `added`,
+`renamed`, `role`, `closed`, `value_kind`, `range`, `values_added`,
+`values_renamed`, `values_moved`, `values_retired`, `values_revived`,
+`archived`; слияние «не из списка» пишет одну запись с `off_list_resolved`),
+`variants_before`, `variants_after`, `jobs_enqueued`; обязательны только шесть
+верхних ключей, состав `changes` держит код `services/schema_edit.py`.
+
 **Трёхзначная логика CHECK** (`docs/pitfalls/db.md`): равносильности стоят
 голым равенством только на NOT NULL стороне; `CK_CONTEXT_PENDING` и
 `CK_CONTEXT_FAMILY_PROVENANCE` — один тотальный предикат из двух полных ветвей.
