@@ -26,7 +26,7 @@ from sqlalchemy import (
 from sqlalchemy import (
     text as sa_text,
 )
-from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import relationship
 
@@ -1484,6 +1484,9 @@ SEMANTIC_EVENT_TYPES = (
     "family_variants_merged",
     # Открытие семей (миграция 0021, спека 3б §2.8, §2.14): предмет — контекст.
     "context_reopened",
+    # Параметры семьи без предела (миграция 0022, спека 3в §2.5): правка схемы на
+    # месте; предмет — семья.
+    "family_schema_edited",
 )
 
 #: Десять списков значений `IN (...)` — тоже продублированы в миграции 0017
@@ -1534,7 +1537,8 @@ CK_EVENT_ONE_SUBJECT = "num_nonnulls(context_id, family_id) = 1"
 CK_EVENT_SUBJECT_BY_TYPE = (
     "(event_type IN ('family_created', 'family_updated', 'family_activated', "
     "'family_archived', 'family_merged', 'family_schema_frozen', "
-    "'family_schema_value_added', 'family_variants_merged')) = (family_id IS NOT NULL)"
+    "'family_schema_value_added', 'family_variants_merged', "
+    "'family_schema_edited')) = (family_id IS NOT NULL)"
 )
 CK_EVENT_PAYLOAD_NOT_EMPTY = "jsonb_typeof(payload) = 'object' AND payload <> '{}'::jsonb"
 
@@ -1582,6 +1586,28 @@ class ValueSource(str, enum.Enum):
     manual = "manual"
     path_conflict = "path_conflict"
     none = "none"
+    # Значение, которого нет в списке параметра (миграция 0022, спека 3в §2.7):
+    # текст лежит в `off_list_text`, ссылки на значение списка нет.
+    off_list = "off_list"
+
+
+class ParameterRole(str, enum.Enum):
+    """Роль параметра: вариант строится только из активных главных (спека 3в §2.3)."""
+    main = "main"
+    secondary = "secondary"
+
+
+class ParameterValueKind(str, enum.Enum):
+    """Вид значений параметра: точные значения или диапазоны с границами и шагом."""
+    exact = "exact"
+    range = "range"
+
+
+class ParameterOrigin(str, enum.Enum):
+    """Чей параметр для пересборки схемы: построенный моделью или добавленный
+    человеком (человеческие переносятся в новую версию)."""
+    model = "model"
+    human = "human"
 
 
 class SemanticJobKind(str, enum.Enum):
@@ -1598,6 +1624,9 @@ SCHEMA_ORIGINS = _sql_str_list(SchemaOrigin)
 VALUE_ORIGINS = _sql_str_list(ValueOrigin)
 VARIANT_STATUSES = _sql_str_list(VariantStatus)
 VALUE_SOURCES = _sql_str_list(ValueSource)
+PARAMETER_ROLES = _sql_str_list(ParameterRole)
+PARAMETER_VALUE_KINDS = _sql_str_list(ParameterValueKind)
+PARAMETER_ORIGINS = _sql_str_list(ParameterOrigin)
 VARIANT_SPLIT_HINTS = _sql_str_list(("path_conflict",))
 SEMANTIC_JOB_KINDS = _sql_str_list(SemanticJobKind)
 
@@ -1606,16 +1635,43 @@ CK_SCHEMA_FROZEN_AT_PAIR = "(status IN ('frozen', 'superseded')) = (frozen_at IS
 CK_SCHEMA_SUPERSEDED_AT_PAIR = "(status = 'superseded') = (superseded_at IS NOT NULL)"
 CK_SCHEMA_ORIGIN_FROZEN_BY_PAIR = "(origin = 'manual') = (frozen_by IS NOT NULL)"
 
-CK_PARAMETER_ORDINAL_RANGE = "ordinal BETWEEN 1 AND 3"
+#: Номер параметра в версии — 1..100 (миграция 0022; предел «не больше 10
+#: активных» держит сервис, схема держит только широкий диапазон номеров, которые
+#: не используются повторно и у архивных параметров).
+CK_PARAMETER_ORDINAL_RANGE = "ordinal BETWEEN 1 AND 100"
 CK_PARAMETER_NAME_NOT_BLANK = "btrim(name) <> ''"
+CK_PARAMETER_ROLE = f"role IN ({PARAMETER_ROLES})"
+CK_PARAMETER_VALUE_KIND = f"value_kind IN ({PARAMETER_VALUE_KINDS})"
+CK_PARAMETER_ORIGIN = f"origin IN ({PARAMETER_ORIGINS})"
+#: Форма диапазона: ОДИН тотальный предикат из двух полных ветвей (CHECK пропускает
+#: `NULL` как истину, `docs/pitfalls/db.md`). Ветвь `range` открывается атомом
+#: `range_step IS NOT NULL`, который при пустом шаге даёт `false`, а не `NULL`, и
+#: гасит `NULL` от `range_step > 0`; порядок атомов держит деление на `range_step`
+#: после проверки `range_step > 0`. Двадцать восемь шагов плюс крайние значения —
+#: предел значений параметра.
+CK_PARAMETER_RANGE_SHAPE = (
+    "(value_kind = 'exact' AND range_from IS NULL AND range_to IS NULL "
+    "AND range_step IS NULL) "
+    "OR (value_kind = 'range' AND range_from IS NOT NULL AND range_to IS NOT NULL "
+    "AND range_step IS NOT NULL AND range_step > 0 AND range_from < range_to "
+    "AND mod(range_to - range_from, range_step) = 0 "
+    "AND (range_to - range_from) / range_step <= 28 AND closed)"
+)
 
 CK_PARAMETER_VALUE_NOT_BLANK = "btrim(value) <> '' AND value_norm <> ''"
 CK_PARAMETER_VALUE_NOT_SELF_MERGED = "merged_into_id IS NULL OR merged_into_id <> id"
+CK_PARAMETER_VALUE_RANGE_ORDER = "range_lo IS NULL OR range_hi IS NULL OR range_lo < range_hi"
+#: Выведенное из списка значение не бывает слитым: перестройка значений ничего не
+#: сливает, а слитые остаются только синонимами, слитыми человеком.
+CK_PARAMETER_VALUE_RETIRED_NOT_MERGED = "retired_at IS NULL OR merged_into_id IS NULL"
 
 CK_VARIANT_ARCHIVED_PAIR = "(status = 'archived') = (archived_at IS NOT NULL)"
 CK_VARIANT_MERGED_NEEDS_ARCHIVED = "merged_into_id IS NULL OR status = 'archived'"
 
-CK_CONTEXT_VALUE_SOURCE_PAIR = "(value_id IS NULL) = (source IN ('path_conflict', 'none'))"
+CK_CONTEXT_VALUE_SOURCE_PAIR = (
+    "(value_id IS NULL) = (source IN ('path_conflict', 'none', 'off_list'))"
+)
+CK_CONTEXT_VALUE_OFF_LIST_TEXT = "(source = 'off_list') = (off_list_text IS NOT NULL)"
 
 #: Закрывает лазейку `MATCH SIMPLE`: составной FK `(work_variant_id,
 #: work_family_id)` при пустой семье пару не проверяет вовсе.
@@ -2327,6 +2383,9 @@ CK_SEMANTIC_JOBS_DISCOVERY_SUBJECT = (
 CK_SEMANTIC_JOBS_RESULT_SUGGESTION_KIND = (
     "result_suggestion_id IS NULL OR kind = 'family_suggestion'"
 )
+#: Номера параметров частичного запроса значений (миграция 0022, спека 3в §2.4):
+#: только у `context_values`.
+CK_SEMANTIC_JOBS_REQUESTED_ORDINALS = "requested_ordinals IS NULL OR kind = 'context_values'"
 
 CK_FAMILY_SUGGESTIONS_DECISION_AT_PAIR = "(decision IS NULL) = (decided_at IS NULL)"
 CK_FAMILY_SUGGESTIONS_PUBLISHED_NO_UNPUBLISHED_REASON = (
@@ -2451,6 +2510,9 @@ class SemanticJob(Base):
     batch_id = Column(
         BigInteger, ForeignKey("semantic_reconcile_batches.id", ondelete="SET NULL"), nullable=True
     )
+    # Номера параметров частичного запроса значений (спека 3в §2.4); не входит в
+    # уникальный индекс заданий: подмножество — часть тела запроса и его хэша.
+    requested_ordinals = Column(ARRAY(SmallInteger), nullable=True)
     # Оси запроса для журнала, вне ключа — NOT NULL (решение оркестратора
     # задачи 1: задание всегда создаётся из отрендеренного запроса).
     prompt_version = Column(Text, nullable=False)
@@ -2478,6 +2540,9 @@ class SemanticJob(Base):
         ),
         CheckConstraint(
             CK_SEMANTIC_JOBS_RESULT_SUGGESTION_KIND, name="ck_semantic_jobs_result_suggestion_kind"
+        ),
+        CheckConstraint(
+            CK_SEMANTIC_JOBS_REQUESTED_ORDINALS, name="ck_semantic_jobs_requested_ordinals"
         ),
         # UNIQUE (COALESCE(unit_id,-1)) WHERE kind = 'family_discovery' AND status IN
         # ('pending','running','privacy_hold') — raw SQL в миграции 0021
@@ -2669,7 +2734,8 @@ class SemanticWorkerState(Base):
 # значения и `job_id → SET NULL`; варианты и значения архивируются.
 
 class FamilyParameterSchema(Base):
-    """Версия схемы семьи: от 0 до 3 параметров с закрытыми списками значений.
+    """Версия схемы семьи: параметры с закрытыми списками значений (модель строит
+    до трёх, человек держит до десяти активных).
 
     Не больше одной `frozen` (текущая) и не больше одной `building`
     (пересборка) на семью — частичные уникальные индексы, raw SQL в миграции
@@ -2701,6 +2767,9 @@ class FamilyParameterSchema(Base):
     frozen_at = Column(DateTime(timezone=True), nullable=True)
     superseded_at = Column(DateTime(timezone=True), nullable=True)
     cancelled_at = Column(DateTime(timezone=True), nullable=True)
+    # Счётчик изменений действующей версии на месте (миграция 0022, спека 3в §2.2):
+    # растёт на единицу при каждой записи в версию и входит в хэш предпросмотра.
+    revision = Column(Integer, nullable=False, server_default=sa_text("0"))
 
     family = relationship("WorkFamily")
 
@@ -2724,7 +2793,8 @@ class FamilyParameterSchema(Base):
 
 
 class FamilyParameter(Base):
-    """Параметр версии схемы: порядковый номер 1..3 и имя."""
+    """Параметр версии схемы: порядковый номер 1..100 (в версии не используется
+    повторно, архивные параметры тоже держат номер), имя, роль, вид значений."""
     __tablename__ = "family_parameters"
 
     id = Column(BigInteger, primary_key=True)
@@ -2734,6 +2804,17 @@ class FamilyParameter(Base):
     ordinal = Column(SmallInteger, nullable=False)
     name = Column(Text, nullable=False)
     name_norm = Column(Text, nullable=False)
+    # Миграция 0022 (спека 3в §2.2): умолчания дают заполнение существующих строк.
+    role = Column(Text, nullable=False, server_default=sa_text("'main'"))
+    value_kind = Column(Text, nullable=False, server_default=sa_text("'exact'"))
+    # «Только из списка».
+    closed = Column(Boolean, nullable=False, server_default=sa_text("false"))
+    range_from = Column(Numeric, nullable=True)
+    range_to = Column(Numeric, nullable=True)
+    range_step = Column(Numeric, nullable=True)
+    origin = Column(Text, nullable=False, server_default=sa_text("'model'"))
+    # Убранный параметр архивируется, не удаляется.
+    archived_at = Column(DateTime(timezone=True), nullable=True)
 
     schema = relationship("FamilyParameterSchema")
 
@@ -2743,6 +2824,10 @@ class FamilyParameter(Base):
         UniqueConstraint("id", "schema_id", name="uq_family_parameters_id_schema"),
         CheckConstraint(CK_PARAMETER_ORDINAL_RANGE, name="ck_family_parameters_ordinal_range"),
         CheckConstraint(CK_PARAMETER_NAME_NOT_BLANK, name="ck_family_parameters_name_not_blank"),
+        CheckConstraint(CK_PARAMETER_ROLE, name="ck_family_parameters_role"),
+        CheckConstraint(CK_PARAMETER_VALUE_KIND, name="ck_family_parameters_value_kind"),
+        CheckConstraint(CK_PARAMETER_ORIGIN, name="ck_family_parameters_origin"),
+        CheckConstraint(CK_PARAMETER_RANGE_SHAPE, name="ck_family_parameters_range_shape"),
     )
 
 
@@ -2761,6 +2846,12 @@ class FamilyParameterValue(Base):
     # Слияние только внутри параметра — составной FK ниже.
     merged_into_id = Column(BigInteger, nullable=True)
     created_at = _created_at()
+    # Границы значения параметра-диапазона (миграция 0022, спека 3в §2.2):
+    # `range_lo` пуст у «до …», `range_hi` пуст у «… и более».
+    range_lo = Column(Numeric, nullable=True)
+    range_hi = Column(Numeric, nullable=True)
+    # Значение, ушедшее из списка без слияния.
+    retired_at = Column(DateTime(timezone=True), nullable=True)
 
     parameter = relationship("FamilyParameter")
 
@@ -2781,6 +2872,13 @@ class FamilyParameterValue(Base):
         ),
         CheckConstraint(
             CK_PARAMETER_VALUE_NOT_SELF_MERGED, name="ck_family_parameter_values_not_self_merged"
+        ),
+        CheckConstraint(
+            CK_PARAMETER_VALUE_RANGE_ORDER, name="ck_family_parameter_values_range_order"
+        ),
+        CheckConstraint(
+            CK_PARAMETER_VALUE_RETIRED_NOT_MERGED,
+            name="ck_family_parameter_values_retired_not_merged",
         ),
     )
 
@@ -2870,6 +2968,10 @@ class ContextParameterValue(Base):
     source = Column(Text, nullable=False)
     job_id = Column(BigInteger, ForeignKey("semantic_jobs.id", ondelete="SET NULL"), nullable=True)
     created_at = _created_at()
+    # Миграция 0022 (спека 3в §2.2): текст значения не из списка и отметка
+    # «уточняется» — значение ждёт перезапроса этого параметра.
+    off_list_text = Column(Text, nullable=True)
+    refresh_requested_at = Column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -2885,6 +2987,9 @@ class ContextParameterValue(Base):
         CheckConstraint(f"source IN ({VALUE_SOURCES})", name="ck_context_parameter_values_source"),
         CheckConstraint(
             CK_CONTEXT_VALUE_SOURCE_PAIR, name="ck_context_parameter_values_source_value_pair"
+        ),
+        CheckConstraint(
+            CK_CONTEXT_VALUE_OFF_LIST_TEXT, name="ck_context_parameter_values_off_list_text"
         ),
     )
 

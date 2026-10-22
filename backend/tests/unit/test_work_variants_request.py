@@ -206,7 +206,7 @@ def test_values_response_format_is_the_documented_literal():
 
 class TestPrompts:
     def test_prompt_versions(self):
-        assert SCHEMA_PROMPT_VERSION == 3
+        assert SCHEMA_PROMPT_VERSION == 4
         assert VALUES_PROMPT_VERSION == 1
 
     def test_schema_prompt_states_thirty_value_limit(self):

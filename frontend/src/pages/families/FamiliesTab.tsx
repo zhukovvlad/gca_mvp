@@ -50,6 +50,7 @@ import {
   useArchiveWorkFamily,
   useCreateWorkFamily,
   useFamilyCategories,
+  useFamilySchema,
   useMergeWorkFamilies,
   useUnits,
   useUnitBusyJobs,
@@ -59,7 +60,15 @@ import {
 import type { WorkFamily, WorkFamilyStatus } from "@/types/domain";
 
 import { FamilyCategoriesDialog } from "./FamilyCategoriesDialog";
-import { discoveryRefusalLabel, FAMILY_STATUS_LABEL } from "./labels";
+import {
+  discoveryRefusalLabel,
+  FAMILY_STATUS_LABEL,
+  MERGE_FAMILY_SCHEMA_FAILED,
+  MERGE_FAMILY_SCHEMA_LOADING,
+  MERGE_FAMILY_SCHEMA_LOSS_TITLE,
+  PARAMETER_ORIGIN_LABEL,
+  PARAMETER_ROLE_LABEL,
+} from "./labels";
 import { FetchingBar, ListSkeleton } from "./pending";
 import { RerunResetWarning, UnitCheckFailedWarning } from "./RerunResetWarning";
 import { SchemaBlock } from "./SchemaBlock";
@@ -717,6 +726,57 @@ function CreateFamilyDialog({ open, onOpenChange }: { open: boolean; onOpenChang
   );
 }
 
+/**
+ * Слияние отправляет семью-источник в архив вместе с её схемой: параметры, у которых нет места в
+ * схеме цели, пропадают (спека 3в §2.9). Окно называет те, что стоят дороже всего потерять —
+ * заведённые человеком и второстепенные, — по схеме источника из существующего маршрута.
+ */
+function MergeSchemaLoss({ schemaQ }: { schemaQ: ReturnType<typeof useFamilySchema> }) {
+  // «Не знаем» не равно «терять нечего»: пока схема источника не получена, окно так и говорит.
+  if (schemaQ.isPending) {
+    return (
+      <p role="status" className="rounded-md border border-info-border bg-info-soft px-3 py-2 text-sm text-info-text">
+        {MERGE_FAMILY_SCHEMA_LOADING}
+      </p>
+    );
+  }
+  if (schemaQ.isError) {
+    return (
+      <p role="alert" className="rounded-md border border-danger-border bg-danger-soft px-3 py-2 text-sm text-danger-text">
+        {MERGE_FAMILY_SCHEMA_FAILED}
+      </p>
+    );
+  }
+  const lost = schemaQ.data.parameters.filter(
+    (parameter) => parameter.origin === "human" || parameter.role === "secondary"
+  );
+  if (lost.length === 0) return null;
+  return (
+    <div
+      role="note"
+      className="grid gap-1 rounded-md border border-warning-border bg-warning-soft px-3 py-2 text-sm text-warning-text"
+    >
+      <p className="font-medium">{MERGE_FAMILY_SCHEMA_LOSS_TITLE}</p>
+      <ul className="grid list-disc gap-0.5 pl-4">
+        {lost.map((parameter) => (
+          <li key={parameter.id}>
+            {parameter.name}
+            <span className="text-xs">
+              {" · "}
+              {[
+                parameter.origin === "human" ? PARAMETER_ORIGIN_LABEL.human : null,
+                parameter.role === "secondary" ? PARAMETER_ROLE_LABEL.secondary.toLowerCase() : null,
+              ]
+                .filter((part) => part !== null)
+                .join(", ")}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function MergeFamilyDialog({
   family,
   onOpenChange,
@@ -727,6 +787,7 @@ function MergeFamilyDialog({
   const [targetId, setTargetId] = useState<number | null>(null);
   const activeFamilies = useWorkFamilies("active");
   const merge = useMergeWorkFamilies();
+  const schemaQ = useFamilySchema(family?.id ?? 0, { enabled: family !== null });
 
   const candidates = (activeFamilies.data ?? []).filter((f) => f.id !== family?.id);
 
@@ -751,6 +812,7 @@ function MergeFamilyDialog({
           </DialogDescription>
         </DialogHeader>
         {family && <RerunResetWarning family={family} />}
+        {family && <MergeSchemaLoss schemaQ={schemaQ} />}
         <div className="grid gap-2 py-4">
           <Label htmlFor="merge-target-family">Целевая семья</Label>
           <EntityCombobox
@@ -765,7 +827,7 @@ function MergeFamilyDialog({
           />
         </div>
         <DialogFooter>
-          <Button disabled={targetId === null} loading={merge.isPending} onClick={handleMerge}>
+          <Button disabled={targetId === null || !schemaQ.isSuccess} loading={merge.isPending} onClick={handleMerge}>
             Слить
           </Button>
         </DialogFooter>

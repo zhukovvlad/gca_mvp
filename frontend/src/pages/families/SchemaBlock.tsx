@@ -3,22 +3,41 @@ import { useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useCancelSchemaBuild, useFamilySchema } from "@/services/queries";
-import type { FamilySchema, FamilySchemaParameter, PreviewTarget, WorkFamily } from "@/types/domain";
+import type {
+  FamilySchema,
+  FamilySchemaParameter,
+  ParameterRole,
+  PreviewTarget,
+  WorkFamily,
+} from "@/types/domain";
 
 import { MergeValuesDialog } from "./MergeValuesDialog";
 import { ListSkeleton } from "./pending";
 import { PreviewDialog } from "./PreviewDialog";
 import { SchemaEditDialog } from "./SchemaEditDialog";
-import { SCHEMA_VALUE_ORIGIN_LABEL, valuesRecountLabel } from "./labels";
+import {
+  PARAMETER_KIND_LABEL,
+  PARAMETER_ORIGIN_LABEL,
+  PARAMETER_ROLE_GROUP_LABEL,
+  SCHEMA_VALUE_ORIGIN_LABEL,
+  valuesRecountLabel,
+} from "./labels";
 import { VariantsTable } from "./VariantsTable";
 
 const MARK_TINT = "border-warning-border bg-warning-soft text-warning-text";
+const ROLES: ParameterRole[] = ["main", "secondary"];
 
-function ParameterList({ parameter }: { parameter: FamilySchemaParameter }) {
+function ParameterValues({ parameter }: { parameter: FamilySchemaParameter }) {
   const byId = new Map(parameter.values.map((value) => [value.id, value]));
   return (
     <div className="grid gap-1">
       <h5 className="text-sm font-medium text-fg">{parameter.name}</h5>
+      <p className="text-xs text-fg-tertiary">
+        {PARAMETER_KIND_LABEL[parameter.value_kind].toLowerCase()}
+        {" · "}
+        {PARAMETER_ORIGIN_LABEL[parameter.origin]}
+        {parameter.value_kind === "exact" && parameter.closed && " · только из списка"}
+      </p>
       {parameter.values.length === 0 ? (
         <p className="text-xs text-fg-tertiary">Значений нет.</p>
       ) : (
@@ -43,10 +62,12 @@ function ParameterList({ parameter }: { parameter: FamilySchemaParameter }) {
   );
 }
 
-/** Можно ли слить значения: у какого-нибудь параметра не меньше двух несинонимичных. */
+/** Можно ли слить значения: у точного параметра не меньше двух несинонимичных (диапазоны строит система). */
 function hasMergeableValues(schema: FamilySchema): boolean {
   return schema.parameters.some(
-    (parameter) => parameter.values.filter((value) => value.merged_into_id === null).length >= 2
+    (parameter) =>
+      parameter.value_kind === "exact" &&
+      parameter.values.filter((value) => value.merged_into_id === null).length >= 2
   );
 }
 
@@ -106,9 +127,20 @@ export function SchemaBlock({ family }: { family: WorkFamily }) {
 
           {schema.parameters.length > 0 && (
             <div className="grid gap-3">
-              {schema.parameters.map((parameter) => (
-                <ParameterList key={parameter.id} parameter={parameter} />
-              ))}
+              {ROLES.map((role) => {
+                const group = schema.parameters.filter((parameter) => parameter.role === role);
+                if (group.length === 0) return null;
+                return (
+                  <section key={role} aria-label={PARAMETER_ROLE_GROUP_LABEL[role]} className="grid gap-2">
+                    <h5 className="text-xs font-normal tracking-wide text-fg-tertiary uppercase">
+                      {PARAMETER_ROLE_GROUP_LABEL[role]}
+                    </h5>
+                    {group.map((parameter) => (
+                      <ParameterValues key={parameter.id} parameter={parameter} />
+                    ))}
+                  </section>
+                );
+              })}
             </div>
           )}
 

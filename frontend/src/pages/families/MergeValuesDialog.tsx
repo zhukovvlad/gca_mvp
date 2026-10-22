@@ -25,6 +25,8 @@ interface MergeValuesDialogProps {
   schema: FamilySchema;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Параметр и источник, подставленные при открытии из меню «⋯» плашки значения. */
+  initial?: { parameterId: number; sourceId: number };
 }
 
 /**
@@ -32,20 +34,31 @@ interface MergeValuesDialogProps {
  * `2026-10-02-catalog-variants-design.md` §2.8). Варианты источника переезжают к цели,
  * само значение остаётся синонимом цели.
  */
-export function MergeValuesDialog({ schema, open, onOpenChange }: MergeValuesDialogProps) {
+export function MergeValuesDialog({ schema, open, onOpenChange, initial }: MergeValuesDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
-        <MergeValuesForm schema={schema} onDone={() => onOpenChange(false)} />
+        <MergeValuesForm schema={schema} initial={initial} onDone={() => onOpenChange(false)} />
       </DialogContent>
     </Dialog>
   );
 }
 
-function MergeValuesForm({ schema, onDone }: { schema: FamilySchema; onDone: () => void }) {
-  const mergeable = schema.parameters.filter((parameter) => liveValues(parameter.values).length >= 2);
-  const [parameterId, setParameterId] = useState<number | null>(null);
-  const [sourceId, setSourceId] = useState<number | null>(null);
+function MergeValuesForm({
+  schema,
+  initial,
+  onDone,
+}: {
+  schema: FamilySchema;
+  initial?: { parameterId: number; sourceId: number };
+  onDone: () => void;
+}) {
+  // Значения диапазонов строит система по границам: сливаются только точные.
+  const mergeable = schema.parameters.filter(
+    (parameter) => parameter.value_kind === "exact" && liveValues(parameter.values).length >= 2
+  );
+  const [parameterId, setParameterId] = useState<number | null>(initial?.parameterId ?? null);
+  const [sourceId, setSourceId] = useState<number | null>(initial?.sourceId ?? null);
   const [targetId, setTargetId] = useState<number | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
   const merge = useMergeValues();
@@ -55,6 +68,8 @@ function MergeValuesForm({ schema, onDone }: { schema: FamilySchema; onDone: () 
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    // Окно слияния открывается изнутри окна правки: без этого `submit` всплыл бы по дереву React в его форму.
+    e.stopPropagation();
     if (parameterId === null || sourceId === null || targetId === null) return;
     setRefusal(null);
     merge.mutate(

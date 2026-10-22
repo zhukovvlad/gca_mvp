@@ -87,6 +87,16 @@ def _load_migration_0021():
     return module
 
 
+def _load_migration_0022():
+    import importlib.util
+
+    path = next(BACKEND_ROOT.glob("alembic/versions/*0022-catalog_parameters.py"))
+    spec = importlib.util.spec_from_file_location("_migration_0022_discovery_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 @contextlib.contextmanager
 def rejected_by(session, constraint: str | set[str]):
     """Блок обязан закончиться `IntegrityError` от названного ограничения — имя
@@ -1016,15 +1026,19 @@ class TestParityWithMigration:
             "family_activated", "family_archived", "family_merged",
             "context_variant_assigned", "context_family_pending", "context_not_work",
             "family_schema_frozen", "family_schema_value_added", "family_variants_merged",
-            "context_reopened",
+            "context_reopened", "family_schema_edited",
         }),
     ]
+
+    #: Списки, которые миграция 0022 переписала: текущее значение живёт в ней.
+    _REWRITTEN_BY_0022 = frozenset({"SEMANTIC_EVENT_TYPES_SQL"})
 
     @pytest.mark.parametrize(
         ("model_expr", "name", "independent"), _IN_CASES, ids=[case[1] for case in _IN_CASES]
     )
     def test_in_list_matches_migration_and_independent_literal(self, model_expr, name, independent):
-        assert model_expr == getattr(_load_migration_0021(), name)
+        owner = _load_migration_0022() if name in self._REWRITTEN_BY_0022 else _load_migration_0021()
+        assert model_expr == getattr(owner, name)
         parsed = {piece.strip().strip("'") for piece in model_expr.split(",")}
         assert parsed == independent
 
@@ -1440,8 +1454,11 @@ def _seed_three_job_kinds(conn) -> dict:
     return {"family": family_id}
 
 
-def _jobs_snapshot(conn):
-    return conn.execute(sa.text("SELECT * FROM semantic_jobs ORDER BY id")).all()
+def _jobs_snapshot(conn, columns=None):
+    """Строки заданий; `columns` — перечень колонок снимка «до»: миграции позже 0021
+    добавляют колонки, а сравниваются только колонки, существовавшие до `upgrade`."""
+    selected = ", ".join(columns) if columns else "*"
+    return conn.execute(sa.text(f"SELECT {selected} FROM semantic_jobs ORDER BY id")).all()
 
 
 @pytest.mark.migration_roundtrip
@@ -1462,7 +1479,7 @@ class TestUpgradeAndDowngrade:
                 command.upgrade(cfg, "head")
 
                 with engine.connect() as conn:
-                    after = _jobs_snapshot(conn)
+                    after = _jobs_snapshot(conn, before[0]._fields)
                     categories = conn.execute(
                         sa.text(
                             "SELECT seed_key, definition, created_by FROM family_categories "

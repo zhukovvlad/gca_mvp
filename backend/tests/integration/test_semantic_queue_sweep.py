@@ -97,11 +97,12 @@ class TestSweepFunction:
         перезапрашивал бы его модель каждые пять минут)."""
         from services.variant_request import load_values_material, paths_hash_of
         from tests.integration.test_work_variants_core import _attach_variant
-        from tests.integration.test_work_variants_reconcile import _job, _values_hash
+        from tests.integration.test_work_variants_reconcile import _job, _known_rows, _values_hash
         from tests.integration.test_work_variants_schema import _variant
 
         db = committing_db
         world = _world(db, committing_factories)
+        _known_rows(db, world.context_id, world.schema)
         paths = load_values_material(db, [world.context_id])[world.context_id].paths
         _attach_variant(
             db, world.context_id, _variant(db, world.family, world.schema),

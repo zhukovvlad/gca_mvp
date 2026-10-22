@@ -14,11 +14,17 @@ from services.variant_answer import (
     SchemaAnswer,
     ValueItem,
     ValuesAnswer,
-    parse_schema_answer,
+    model_parameter_limit,
     parse_values_answer,
     values_response_format_for,
 )
+from services.variant_answer import parse_schema_answer as _parse_schema_answer
 from services.variant_request import SchemaParameterIn
+
+
+def parse_schema_answer(raw: str, *, limit: int = 3) -> SchemaAnswer:
+    """Разбор ответа схемы при пределе без параметров человека (три)."""
+    return _parse_schema_answer(raw, limit=limit)
 
 
 def _param(ordinal: int, name: str, values: list[str]) -> dict:
@@ -268,6 +274,42 @@ class TestParseSchemaAnswer:
         raw = _schema_raw([_param(1, "a", ["x"]), _param(3, "b", ["y"])])
         _expect("bad_ordinal", parse_schema_answer, raw)
         _expect("bad_ordinal", parse_schema_answer, _schema_raw([_param(2, "a", ["x"])]))
+
+    @pytest.mark.parametrize(
+        ("limit", "count", "accepted"),
+        [(3, 3, True), (3, 4, False), (2, 2, True), (2, 3, False), (1, 1, True), (1, 2, False),
+         (0, 0, True), (0, 1, False)],
+    )
+    def test_answer_is_bounded_by_the_limit_of_the_job(self, limit, count, accepted):
+        raw = _schema_raw([_param(i, f"p{i}", ["x"]) for i in range(1, count + 1)])
+        if accepted:
+            assert len(parse_schema_answer(raw, limit=limit).parameters) == count
+        else:
+            _expect("bad_count", lambda r: _parse_schema_answer(r, limit=limit), raw)
+
+    def test_ordinal_above_the_limit_is_bad_ordinal_even_with_few_parameters(self):
+        raw = _schema_raw([_param(3, "p", ["x"])])
+        _expect("bad_ordinal", lambda r: _parse_schema_answer(r, limit=2), raw)
+        assert parse_schema_answer(_schema_raw([_param(1, "p", ["x"])]), limit=2)
+
+    def test_ordinal_above_the_limit_is_reported_before_the_rest_of_the_item(self):
+        # Номер вне 1..limit проверяется при самом параметре, до его значений:
+        # пустой список значений у того же параметра ошибку номера не заслоняет.
+        # Номер 3 при пределе 2 лежит внутри прежних 1..3 — проверка по трём
+        # пропустила бы его к значениям и вернула bad_count.
+        raw = _schema_raw([_param(3, "p", [])])
+        _expect("bad_ordinal", lambda r: _parse_schema_answer(r, limit=2), raw)
+        _expect("bad_count", lambda r: _parse_schema_answer(r, limit=3), raw)
+
+    def test_the_limit_is_required(self):
+        with pytest.raises(TypeError):
+            _parse_schema_answer('{"parameters": []}')  # type: ignore[call-arg]
+
+    @pytest.mark.parametrize(
+        ("human", "limit"), [(0, 3), (1, 3), (3, 3), (7, 3), (8, 2), (9, 1), (10, 0), (11, 0)]
+    )
+    def test_model_parameter_limit(self, human, limit):
+        assert model_parameter_limit(human) == limit
 
     def test_duplicate_json_key_is_not_json(self):
         raw = '{"parameters": [], "parameters": []}'

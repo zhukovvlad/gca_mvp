@@ -2,7 +2,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-import { SCHEMA_FAMILY_ID, handlerState } from "@/test/handlers";
+import { SCHEMA_FAMILY_ID, handlerState, schemaParameter, schemaValue } from "@/test/handlers";
 import { renderWithProviders, waitForDialogFocus } from "@/test/utils";
 
 import { MergeValuesDialog } from "./MergeValuesDialog";
@@ -210,5 +210,88 @@ describe("MergeValuesDialog: отказы сервера — подпись по
     expect(document.body.textContent).not.toContain(code);
     expect(document.body.textContent).not.toContain("server text must not reach the screen");
     expect(onOpenChange).not.toHaveBeenCalled();
+  });
+});
+
+describe("MergeValuesDialog: подстановка и диапазоны (спека 3в §2.11)", () => {
+  it("открытое из «⋯» плашки окно несёт выбранные параметр и источник; цель выбирает человек", async () => {
+    renderWithProviders(
+      <MergeValuesDialog
+        schema={handlerState.familySchemas[SCHEMA_FAMILY_ID]}
+        open
+        onOpenChange={vi.fn()}
+        initial={{ parameterId: 101, sourceId: 1003 }}
+      />
+    );
+    const dialog = await opened();
+
+    expect(within(dialog).getByRole("combobox", { name: "Параметр" })).toHaveTextContent("Материал");
+    expect(within(dialog).getByRole("combobox", { name: "Источник" })).toHaveTextContent("металло-черепица");
+    expect(within(dialog).getByRole("combobox", { name: "Цель" })).not.toHaveTextContent("металлочерепица");
+    expect(within(dialog).getByRole("button", { name: "Слить" })).toBeDisabled();
+  });
+
+  it("с подставленными параметром и источником достаточно выбрать цель: запрос несёт все три id", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <MergeValuesDialog
+        schema={handlerState.familySchemas[SCHEMA_FAMILY_ID]}
+        open
+        onOpenChange={vi.fn()}
+        initial={{ parameterId: 101, sourceId: 1003 }}
+      />
+    );
+    const dialog = await opened();
+
+    await pick(user, dialog, "Цель", "металлочерепица");
+    await user.click(within(dialog).getByRole("button", { name: "Слить" }));
+
+    await waitFor(() => expect(handlerState.schemaRequests).toHaveLength(1), LATER);
+    expect(handlerState.schemaRequests[0].body).toEqual({
+      parameter_id: 101,
+      source_value_id: 1003,
+      target_value_id: 1002,
+    });
+  });
+
+  it("без подстановки поля пусты, как раньше", async () => {
+    renderDialog();
+    const dialog = await opened();
+
+    expect(within(dialog).getByRole("combobox", { name: "Источник" })).toBeDisabled();
+  });
+
+  it("параметр с диапазонами в выборе не предлагается: их значения строит система", async () => {
+    const schema = handlerState.familySchemas[SCHEMA_FAMILY_ID];
+    schema.parameters.push(
+      schemaParameter(104, 3, "Диапазон, мм", [schemaValue(1401, "до 2", "manual"), schemaValue(1402, "2 и более", "manual")], {
+        value_kind: "range",
+        closed: true,
+        range: { start: "2", stop: "2", step: "1" },
+      })
+    );
+    const user = userEvent.setup();
+    renderDialog();
+    const dialog = await opened();
+
+    await user.click(within(dialog).getByRole("combobox", { name: "Параметр" }));
+
+    expect(await screen.findByRole("option", { name: "Материал" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Диапазон, мм" })).not.toBeInTheDocument();
+  });
+
+  it("отказ merge_value_retired — подпись, кода нет", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+    const dialog = await opened();
+    await chooseMaterialMerge(user, dialog);
+    handlerState.schemaRefusal = { action: "merge", code: "merge_value_retired", status: 409 };
+
+    await user.click(within(dialog).getByRole("button", { name: "Слить" }));
+
+    expect(await within(dialog).findByRole("alert", {}, LATER)).toHaveTextContent(
+      "Значение выведено из списка: его нельзя слить и нельзя выбрать целью слияния."
+    );
+    expect(document.body.textContent).not.toContain("merge_value_retired");
   });
 });

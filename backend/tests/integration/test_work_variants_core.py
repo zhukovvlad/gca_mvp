@@ -1686,6 +1686,9 @@ class TestStep7EventAndJob:
                 "1": {"value_id": world.values[(1, "50 мм")], "source": "name"},
                 "2": {"value_id": None, "source": "none"},
             },
+            # Ответ покрыл все параметры: отвеченные — оба, сохранённых нет.
+            "answered_ordinals": [1, 2],
+            "kept_ordinals": [],
             "promoted": True,
             "reactivated_variant": False,
         }

@@ -103,11 +103,12 @@ class TestEventLabelsSyncWithBackend:
             f"{sorted(extra_on_frontend)}"
         )
 
-    def test_backend_list_has_exactly_22_events(self):
-        # Пятнадцать из спеки §2.5, шесть из спеки вариантов §2.13 и `context_reopened`
-        # из спеки открытия семей §2.14 — если число
-        # сдвинулось, обе стороны обязаны сдвинуться СОГЛАСОВАННО, а не по одной.
-        assert len(SEMANTIC_EVENT_TYPES) == 22
+    def test_backend_list_has_exactly_23_events(self):
+        # Пятнадцать из спеки §2.5, шесть из спеки вариантов §2.13, `context_reopened`
+        # из спеки открытия семей §2.14 и `family_schema_edited` из спеки параметров
+        # семьи §2.5 — если число сдвинулось, обе стороны обязаны сдвинуться
+        # СОГЛАСОВАННО, а не по одной.
+        assert len(SEMANTIC_EVENT_TYPES) == 23
 
     def test_no_duplicate_keys_on_either_side(self):
         frontend_keys = _read_event_label_keys()

@@ -1984,8 +1984,8 @@ describe("ContextCard — вариант, ожидание, смена семь�
   const WITH_VARIANT: ContextVariantData = {
     variant_id: 7,
     values: [
-      { parameter_id: 11, ordinal: 1, name: "Материал", value_id: 101, value: "профнастил", source: "name" as const },
-      { parameter_id: 12, ordinal: 2, name: "Толщина", value_id: 104, value: "0,5 мм", source: "path" as const },
+      { parameter_id: 11, ordinal: 1, name: "Материал", value_id: 101, value: "профнастил", source: "name" as const , role: "main" as const, refreshing: false, off_list_text: null },
+      { parameter_id: 12, ordinal: 2, name: "Толщина", value_id: 104, value: "0,5 мм", source: "path" as const , role: "main" as const, refreshing: false, off_list_text: null },
     ],
     split_hint: false,
     pending: null,
@@ -2014,6 +2014,46 @@ describe("ContextCard — вариант, ожидание, смена семь�
       expect(material.closest("li")).toHaveTextContent("профнастил");
       expect(material.closest("li")).toHaveTextContent("по наименованию");
       expect(screen.getByText("Толщина").closest("li")).toHaveTextContent("по разделам");
+    });
+
+    it("карточка разделяет главные и второстепенные, помечает «уточняется» и текст не из списка", async () => {
+      contextFixture(ORDINARY_CONTEXT_ID).variant = {
+        ...WITH_VARIANT,
+        values: [
+          { ...WITH_VARIANT.values[0], refreshing: true },
+          {
+            parameter_id: 14,
+            ordinal: 4,
+            name: "Армирование",
+            value_id: 140,
+            value: "120–140",
+            source: "name" as const,
+            role: "secondary" as const,
+            refreshing: false,
+            off_list_text: null,
+          },
+          {
+            parameter_id: 15,
+            ordinal: 5,
+            name: "Толщина стяжки",
+            value_id: null,
+            value: null,
+            source: "off_list" as const,
+            role: "secondary" as const,
+            refreshing: false,
+            off_list_text: "5 см",
+          },
+        ],
+      };
+      await openOrdinary();
+
+      const variantRow = (await screen.findByText("Вариант", {}, LATER)).nextElementSibling as HTMLElement;
+      expect(variantRow).toHaveTextContent("Материал: профнастил");
+      expect(variantRow).toHaveTextContent("уточняется");
+      expect(variantRow).not.toHaveTextContent("Армирование");
+      const secondaryRow = screen.getByText("Второстепенные").nextElementSibling as HTMLElement;
+      expect(secondaryRow).toHaveTextContent("Армирование: 120–140");
+      expect(secondaryRow).toHaveTextContent("Толщина стяжки: не из списка: «5 см»");
     });
 
     it("«к делению: разделы расходятся» ведёт на вкладку «Членства»", async () => {
@@ -2130,7 +2170,7 @@ describe("ContextCard — вариант, ожидание, смена семь�
           ...WITH_VARIANT,
           variant_id: 9,
           values: [
-            { parameter_id: 21, ordinal: 1, name: "Покрытие", value_id: 201, value: "оцинковка", source: "name" as const },
+            { parameter_id: 21, ordinal: 1, name: "Покрытие", value_id: 201, value: "оцинковка", source: "name" as const , role: "main" as const, refreshing: false, off_list_text: null },
           ],
           pending: null,
         };

@@ -78,7 +78,9 @@ describe("SchemaBlock — ожидание действий", () => {
     await user.click(screen.getByRole("button", { name: "Править схему…" }));
     const dialog = await screen.findByRole("dialog");
     await waitForDialogFocus();
-    await user.type(within(dialog).getByLabelText("Значения параметра 2, по одному в строке"), "{Enter}1 мм");
+    await user.click(within(dialog).getByRole("button", { name: /^Толщина/ }));
+    await user.type(within(dialog).getByLabelText("Новое значение"), "1 мм{Enter}");
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "Сохранить схему" })).toBeEnabled(), LATER);
     const hold = holdRequests("patch", "/api/v1/semantic/families/:id/schema");
 
     await user.click(within(dialog).getByRole("button", { name: "Сохранить схему" }));

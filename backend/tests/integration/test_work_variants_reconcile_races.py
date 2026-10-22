@@ -408,19 +408,18 @@ class TestReconcileSkipsAParentHeldByAnOperationWaitingForItsJob:
     def test_a_current_schema_held_by_a_cosmetic_edit(
         self, committing_db, committing_factories, committing_session_factory
     ):
-        from services.work_variants import ParameterEdit, update_schema
-        from tests.integration.test_work_variants_schema_life import _same_edits
+        from tests.integration.parameters_edit_support import draft, edit, same_drafts
 
         db = committing_db
         world, values_job = self._stale_values_world(db, committing_factories)
         actor = committing_factories.UserFactory.create().id
         db.commit()
         stale_id, family_id, context_id = values_job.id, world.family.id, world.context_id
-        edits = _same_edits()
-        edits[0] = ParameterEdit(1, edits[0].name.upper(), edits[0].values)
+        drafts = same_drafts()
+        drafts[0] = draft(1, drafts[0].name.upper(), *drafts[0].values)
 
         def cosmetic(session):
-            return update_schema(session, family_id=family_id, parameters=edits, actor_id=actor)
+            return edit(session, family_id, drafts, actor)
 
         self._run(committing_session_factory, context_id, cosmetic, settled_on="semantic_jobs")
         with committing_session_factory() as probe:
