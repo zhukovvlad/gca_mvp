@@ -220,6 +220,31 @@ class TestResolveValues:
             "1": ("до 2", None, False),
         }
 
+    def test_negative_numbers_go_to_the_range_that_holds_them(self, db_session, factories):
+        world = _active_world(
+            db_session, factories,
+            ((1, "Диаметр", ["-5", "−3", "-10", "-11", "5", "-5-3"]),),
+        )
+        row = _parameter(db_session, world.schema.id, 1)
+        ids = {label: value.id for label, value in _values(db_session, row.id).items()}
+
+        resolutions = resolve_values(
+            db_session, parameter_id=row.id, new_kind=ParameterValueKind.range,
+            new_range=RangeSpec(Decimal(-10), Decimal(10), Decimal(10)),
+        )
+
+        got = {
+            label: _resolution_of(resolutions, vid).target_label for label, vid in ids.items()
+        }
+        assert got == {
+            "-5": "-10–0",
+            "−3": "-10–0",
+            "-10": "-10–0",
+            "-11": "до -10",
+            "5": "0–10",
+            "-5-3": None,
+        }
+
     def test_the_way_back_to_exact_resolves_nothing(self, db_session, factories):
         world, _contexts, _variants, _actor_id = _ranged_scene(db_session, factories)
         row = _parameter(db_session, world.schema.id, 1)

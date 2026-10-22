@@ -21,7 +21,7 @@ import sqlalchemy as sa
 
 import services.semantic_worker as worker
 from config import settings as app_settings
-from crud.work_variants import rebuild_preview
+from crud.work_variants import context_variant_out, rebuild_preview
 from models import (
     CatalogContext,
     ContextParameterValue,
@@ -40,12 +40,22 @@ from services.semantic_worker import process_one
 from services.variant_answer import SchemaAnswer
 from services.variant_request import (
     SCHEMA_PROMPT,
+    SchemaParameterIn,
     SchemaRequestMaterial,
     load_schema_material,
+    load_values_material,
+    paths_hash_of,
     render_schema_request,
     schema_prompt_for,
 )
-from services.work_variants import bump_revision, freeze_schema, rebuild_schema
+from services.work_families import WorkFamilyError
+from services.work_variants import (
+    apply_values,
+    bump_revision,
+    freeze_schema,
+    merge_parameter_values,
+    rebuild_schema,
+)
 from tests.integration.parameters_edit_support import PARAMS, draft, edit, same_drafts
 from tests.integration.test_work_variants_core import _answer, _named, _world
 from tests.integration.test_work_variants_material import (
@@ -57,6 +67,7 @@ from tests.integration.test_work_variants_material import (
 from tests.integration.test_work_variants_schema import _family, _param, _schema, _value
 from tests.integration.test_work_variants_schema_life import (
     _active_world,
+    _actor,
     _second_context,
     _settle_context,
 )
@@ -907,6 +918,99 @@ class TestFrozenVersionCarriesHumanParameters:
         assert _rows(db_session, context_id, new.id) == {}
         assert values_need(db_session, context_id, new.id).ordinals == (1,)
 
+    def _merge_scene(self, db, factories):
+        """Материал — параметр модели: «газоблок» ещё отдельное значение, контекст
+        назвал его."""
+        world = _active_world(
+            db, factories, ((1, "Материал", ["газобетон", "газоблок", "кирпич"]),)
+        )
+        _settle_context(db, world, world.context_id, _answer(_named(1, "газоблок")))
+        return world
+
+    def _origin(self, db, parameter_id):
+        db.expire_all()
+        return db.get(FamilyParameter, parameter_id).origin
+
+    def test_merging_values_of_a_model_parameter_makes_it_human_and_the_rebuild_keeps_it(
+        self, db_session, factories
+    ):
+        """Правка значений человеком делает параметр человеческим (спека 3в §2.5), и
+        пересборка переносит его вместе со значениями строк контекстов (§2.8)."""
+        world = self._merge_scene(db_session, factories)
+        assert self._origin(db_session, world.parameters[1]) == "model"
+
+        merge_parameter_values(
+            db_session, parameter_id=world.parameters[1],
+            source_value_id=world.values[(1, "газоблок")],
+            target_value_id=world.values[(1, "газобетон")], actor_id=_actor(factories),
+        )
+
+        assert self._origin(db_session, world.parameters[1]) == "human"
+        _rebuild(db_session, world.family.id)
+        new = _freeze_empty(db_session, world.family.id)
+        assert _parameters_of(db_session, new.id) == [(1, "Материал", "human")]
+        assert _rows(db_session, world.context_id, new.id) == {1: ("газобетон", "name", None)}
+        carried = db_session.execute(
+            sa.select(FamilyParameterValue.value)
+            .join(FamilyParameter, FamilyParameter.id == FamilyParameterValue.parameter_id)
+            .where(
+                FamilyParameter.schema_id == new.id,
+                FamilyParameterValue.merged_into_id.is_(None),
+            )
+            .order_by(FamilyParameterValue.id)
+        ).scalars().all()
+        assert carried == ["газобетон", "кирпич"]
+
+    def test_merging_values_of_a_human_parameter_changes_nothing_else_on_it(
+        self, db_session, factories
+    ):
+        world = self._merge_scene(db_session, factories)
+        _humanize(db_session, world, 1)
+        before = tuple(db_session.execute(
+            sa.select(
+                FamilyParameter.name, FamilyParameter.role, FamilyParameter.value_kind,
+                FamilyParameter.closed, FamilyParameter.origin, FamilyParameter.archived_at,
+            ).where(FamilyParameter.id == world.parameters[1])
+        ).one())
+
+        merge_parameter_values(
+            db_session, parameter_id=world.parameters[1],
+            source_value_id=world.values[(1, "газоблок")],
+            target_value_id=world.values[(1, "газобетон")], actor_id=_actor(factories),
+        )
+
+        after = tuple(db_session.execute(
+            sa.select(
+                FamilyParameter.name, FamilyParameter.role, FamilyParameter.value_kind,
+                FamilyParameter.closed, FamilyParameter.origin, FamilyParameter.archived_at,
+            ).where(FamilyParameter.id == world.parameters[1])
+        ).one())
+        assert after == before
+        assert after[4] == "human"
+
+    def test_a_refused_merge_leaves_a_model_parameter_a_model_one(self, db_session, factories):
+        world = self._merge_scene(db_session, factories)
+        merge_parameter_values(
+            db_session, parameter_id=world.parameters[1],
+            source_value_id=world.values[(1, "кирпич")],
+            target_value_id=world.values[(1, "газобетон")], actor_id=_actor(factories),
+        )
+        db_session.execute(
+            sa.update(FamilyParameter).where(FamilyParameter.id == world.parameters[1])
+            .values(origin="model")
+        )
+        db_session.flush()
+
+        with pytest.raises(WorkFamilyError) as raised:
+            merge_parameter_values(
+                db_session, parameter_id=world.parameters[1],
+                source_value_id=world.values[(1, "кирпич")],
+                target_value_id=world.values[(1, "газоблок")], actor_id=_actor(factories),
+            )
+
+        assert raised.value.code == "merge_source_merged"
+        assert self._origin(db_session, world.parameters[1]) == "model"
+
     def test_when_nothing_is_missing_the_values_job_completes_without_the_model(
         self, db_session, factories
     ):
@@ -938,6 +1042,144 @@ class TestFrozenVersionCarriesHumanParameters:
         db_session.expire_all()
         variant = db_session.get(WorkVariant, db_session.get(CatalogContext, context_id).work_variant_id)
         assert variant.schema_id == new.id
+
+
+class TestCardAcrossARebuild:
+    """Карточка контекста показывает значения одной версии схемы (спека 3в §2.8,
+    §2.10): между заморозкой новой версии и первым ответом по ней вариант контекста
+    ещё из прежней, и копии строк человека в новой версии карточку не дублируют."""
+
+    def _scene(self, db, factories):
+        world = _active_world(
+            db, factories,
+            ((1, "Толщина", ["50 мм", "100 мм"]), (2, "Материал", ["бетон", "кирпич"])),
+        )
+        _humanize(db, world, 1)
+        _settle_context(db, world, world.context_id, _answer(_named(1, "50 мм"), _named(2, "бетон")))
+        return world
+
+    def _card(self, db, context_id):
+        db.expire_all()
+        card = context_variant_out(db, db.get(CatalogContext, context_id))
+        return [(v["ordinal"], v["parameter_id"]) for v in card["values"]]
+
+    def _parameter_ids(self, db, schema_id):
+        return {
+            row.ordinal: row.id
+            for row in db.execute(
+                sa.select(FamilyParameter.id, FamilyParameter.ordinal).where(
+                    FamilyParameter.schema_id == schema_id
+                )
+            ).all()
+        }
+
+    def test_between_the_freeze_and_the_first_answer_the_card_shows_the_old_version_only(
+        self, db_session, factories
+    ):
+        world = self._scene(db_session, factories)
+        old_ids = self._parameter_ids(db_session, world.schema.id)
+        _rebuild(db_session, world.family.id)
+        new = _freeze_empty(db_session, world.family.id)
+        new_ids = self._parameter_ids(db_session, new.id)
+        # предусловие: копия строки человека в новой версии есть, ответа по ней нет
+        assert _rows(db_session, world.context_id, new.id) == {1: ("50 мм", "name", None)}
+        assert db_session.get(CatalogContext, world.context_id).work_variant_id is not None
+
+        card = self._card(db_session, world.context_id)
+
+        assert sorted(card) == [(1, old_ids[1]), (2, old_ids[2])]
+        assert new_ids[1] not in {parameter_id for _ordinal, parameter_id in card}
+
+    def test_after_the_answer_the_card_shows_the_new_version_only(self, db_session, factories):
+        world = self._scene(db_session, factories)
+        _rebuild(db_session, world.family.id)
+        new = _freeze_empty(db_session, world.family.id)
+        new_ids = self._parameter_ids(db_session, new.id)
+
+        outcome = apply_values(
+            db_session, context_id=world.context_id, schema_id=new.id, answer=_answer(),
+            paths_hash=paths_hash_of(
+                load_values_material(db_session, [world.context_id])[world.context_id].paths
+            ),
+            guard=None, settings=_settings(), requested_ordinals=(),
+        )
+        assert outcome.applied
+        assert db_session.get(CatalogContext, world.context_id).work_variant_id is not None
+
+        card = self._card(db_session, world.context_id)
+
+        assert card == [(1, new_ids[1])]
+
+    def test_a_variant_whose_version_lost_its_rows_shows_the_current_version(
+        self, db_session, factories
+    ):
+        """Ответ по недостающему параметру удалил строки прежней версии, а главный
+        параметр человека в новой версии снова «уточняется» — вариант остаётся
+        прежним, карточка показывает строки действующей версии, а не пустой список."""
+        world = self._scene(db_session, factories)
+        old_variant = db_session.get(CatalogContext, world.context_id).work_variant_id
+        _rebuild(db_session, world.family.id)
+        building = _building_of(db_session, world.family.id)
+        # строки прежней версии у другого контекста не делают её «версией с
+        # строками» для этого (выборка коррелирована по контексту)
+        other = _second_context(db_session, factories, world)
+        _settle_context(db_session, world, other, _answer(_named(1, "100 мм"), _named(2, "кирпич")))
+        outcome = freeze_schema(
+            db_session, schema_id=building.id,
+            answer=SchemaAnswer(
+                parameters=(SchemaParameterIn(ordinal=1, name="Материал", values=("бетон",)),)
+            ),
+            guard=None, settings=S,
+        )
+        assert outcome.applied
+        new = _frozen_of(db_session, world.family.id)
+        new_ids = self._parameter_ids(db_session, new.id)
+        db_session.execute(
+            sa.update(ContextParameterValue)
+            .where(
+                ContextParameterValue.context_id == world.context_id,
+                ContextParameterValue.parameter_id == new_ids[1],
+            )
+            .values(refresh_requested_at=sa.func.now())
+        )
+        db_session.flush()
+        applied = apply_values(
+            db_session, context_id=world.context_id, schema_id=new.id,
+            answer=_answer(_named(2, "бетон")),
+            paths_hash=paths_hash_of(
+                load_values_material(db_session, [world.context_id])[world.context_id].paths
+            ),
+            guard=None, settings=_settings(), requested_ordinals=(2,),
+        )
+        assert applied.applied
+        db_session.expire_all()
+        assert db_session.get(CatalogContext, world.context_id).work_variant_id == old_variant
+        assert _rows(db_session, world.context_id, world.schema.id) == {}
+        assert _rows(db_session, other, world.schema.id) != {}
+
+        card = self._card(db_session, world.context_id)
+
+        assert sorted(card) == [(1, new_ids[1]), (2, new_ids[2])]
+
+    def test_a_context_without_a_variant_shows_the_current_version_only(
+        self, db_session, factories
+    ):
+        world = self._scene(db_session, factories)
+        old_ids = self._parameter_ids(db_session, world.schema.id)
+        db_session.execute(
+            sa.update(CatalogContext).where(CatalogContext.id == world.context_id)
+            .values(work_variant_id=None, variant_at=None, variant_paths_hash=None)
+        )
+        db_session.flush()
+        before_rebuild = self._card(db_session, world.context_id)
+        _rebuild(db_session, world.family.id)
+        new = _freeze_empty(db_session, world.family.id)
+        new_ids = self._parameter_ids(db_session, new.id)
+
+        after_rebuild = self._card(db_session, world.context_id)
+
+        assert sorted(before_rebuild) == [(1, old_ids[1]), (2, old_ids[2])]
+        assert after_rebuild == [(1, new_ids[1])]
 
 
 def _context_of(db, factories, family):

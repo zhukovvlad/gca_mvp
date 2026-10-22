@@ -32,7 +32,7 @@ _EN_DASH: Final = "–"
 # — второе слово («кг/м3»).
 _UNIT_WORD = r"[^\W\d_]+[\d²³]?"
 _NUMBER_RE: Final = re.compile(
-    rf"(?P<number>\d+(?:[.,]\d+)?)(?:\s*{_UNIT_WORD}(?:/{_UNIT_WORD})*)?"
+    rf"(?P<number>[-−]?\d+(?:[.,]\d+)?)(?:\s*{_UNIT_WORD}(?:/{_UNIT_WORD})*)?"
 )
 
 
@@ -54,13 +54,15 @@ def _number_text(number: Decimal) -> str:
 
 def parse_single_number(text: str) -> Decimal | None:
     """Единственное число в тексте ответа: запятая или точка как разделитель,
-    после числа необязательное слово единицы («4 мм», «131,73 кг/м3», «5,1»).
+    после числа необязательное слово единицы («4 мм», «131,73 кг/м3», «5,1»);
+    знак минус (в том числе типографский «−») допустим только прямо перед
+    числом («-5»).
     Любое другое — `None`: «до 100 мм», «от 40 мм», «40-50», «1/2», пустая
     строка, «В25»."""
     match = _NUMBER_RE.fullmatch(text.strip())
     if match is None:
         return None
-    return Decimal(match.group("number").replace(",", "."))
+    return Decimal(match.group("number").replace("−", "-").replace(",", "."))
 
 
 def build_range_values(start: Decimal, stop: Decimal, step: Decimal) -> tuple[RangeValue, ...]:

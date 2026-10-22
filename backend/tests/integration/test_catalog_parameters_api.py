@@ -701,7 +701,7 @@ class TestResolveOffList:
             if lock not in first_seen:
                 first_seen.append(lock)
         order = ["work_families", "family_parameter_schemas", "family_parameter_values",
-                 "catalog_contexts", "work_variants"]
+                 "catalog_contexts", "work_variants", "semantic_jobs"]
         tables = [table for table, _mode in first_seen]
         assert [mode for _table, mode in first_seen] == ["UPDATE"] * len(first_seen)
         assert tables == [table for table in order if table in tables]

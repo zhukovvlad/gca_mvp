@@ -49,6 +49,26 @@ class TestParseSingleNumber:
     def test_anything_else_is_not_a_number(self, text):
         assert parse_single_number(text) is None
 
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("-5", D("-5")),
+            ("−5", D("-5")),
+            ("-0,5", D("-0.5")),
+            ("-5 мм", D("-5")),
+            ("  -7  ", D("-7")),
+        ],
+    )
+    def test_leading_minus_right_before_the_number_makes_it_negative(self, text, expected):
+        assert parse_single_number(text) == expected
+
+    @pytest.mark.parametrize(
+        "text",
+        ["-2/2", "10-20", "--5", "- 5", "5-", "-", "−", "-,5", "-5-3", "+5"],
+    )
+    def test_minus_anywhere_else_is_not_a_number(self, text):
+        assert parse_single_number(text) is None
+
     def test_result_is_decimal_not_float(self):
         assert isinstance(parse_single_number("0,1"), Decimal)
         assert parse_single_number("0,1") == D("0.1")

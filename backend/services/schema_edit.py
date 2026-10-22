@@ -89,6 +89,7 @@ from services.work_variants import (
     _lock_values_statement,
     answered_main_rows,
     bump_revision,
+    invalidate_values_jobs,
     mark_rows_for_refresh,
     normalize_value,
     project_recompute,
@@ -1580,11 +1581,14 @@ def resolve_off_list(
     равна `text_norm`, получают значение `target_value_id`, источник `manual`;
     список значений не меняется. У главного параметра затронутые контексты
     пересчитываются по вариантам; снятая отметка «уточняется» заменяет ждущие
-    задания значений. Строки архивных контекстов остаются. `revision` растёт на
+    задания значений. Открытые задания значений затронутых контекстов, спросившие
+    параметр, закрываются как устаревшие (`invalidate_values_jobs`): их ответ не
+    затрёт решение. Строки архивных контекстов остаются. `revision` растёт на
     единицу, событие — `family_schema_edited` с изменением `off_list_resolved`.
 
     Порядок блокировок: семья `FOR UPDATE`, действующая версия `FOR UPDATE`,
-    значение-цель, контексты по `id`, варианты (пересчёт), задания (сверка).
+    значение-цель, контексты по `id`, варианты (пересчёт), задания (закрытие
+    устаревших, сверка).
 
     Raises:
         WorkFamilyError: семьи нет или она не активна; у семьи пересборка или нет
@@ -1672,6 +1676,11 @@ def resolve_off_list(
     else:
         variants_before = variants_after = _active_variant_count(db, schema_id)
     revision = bump_revision(db, schema_id)
+    # Задания (замки заданий — последними, как у сверки), уже спросившие этот параметр, устарели: их ответ не должен затереть
+    # решение человека.
+    invalidate_values_jobs(
+        db, context_ids=context_ids, schema_id=schema_id, ordinal=parameter.ordinal
+    )
     jobs_enqueued = 0
     if marked:
         report = reconcile_context_values(db, marked, cap=NO_CAP, source="operation")

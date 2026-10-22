@@ -456,12 +456,13 @@ class AssignFamilyRequest(BaseModel):
 
 
 class RangeBody(BaseModel):
-    """Границы диапазона параметра. Числа — строками (`Decimal`, как деньги
-    проекта); число JSON тоже допускается и разбирается через его запись."""
+    """Границы диапазона параметра. Числа — только строками (`Decimal`, как деньги
+    проекта): число JSON проходит через `float` до проверки точности, поэтому
+    валидация его отклоняет."""
 
-    start: str | int | float
-    stop: str | int | float
-    step: str | int | float
+    start: str
+    stop: str
+    step: str
 
 
 class SchemaParameterEdit(BaseModel):
@@ -1757,11 +1758,11 @@ def rebuild_schema_route(
     }
 
 
-def _decimal_of(value: str | int | float) -> Decimal:
-    """Число границы диапазона: строка или число JSON; не число и нефинитное
+def _decimal_of(value: str) -> Decimal:
+    """Число границы диапазона из строки; не число и нефинитное
     (`NaN`, `Infinity`) — `schema_bad_range`."""
     try:
-        number = Decimal(str(value).strip())
+        number = Decimal(value.strip())
     except InvalidOperation:
         number = Decimal("NaN")
     if not number.is_finite():

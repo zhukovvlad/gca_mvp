@@ -1745,21 +1745,61 @@ class TestEditRoutes:
         assert response.status_code == 409, response.text
         assert _detail(response)["code"] == "schema_ordinals_exhausted"
 
-    def test_range_numbers_may_be_strings_or_numbers(self, admin_client, db_session, factories):
+    @pytest.mark.parametrize(
+        ("bounds", "field"),
+        [
+            pytest.param((120, "200", "40"), "start", id="start-int"),
+            pytest.param(("120", 200.0, "40"), "stop", id="stop-float"),
+            pytest.param(("0.1", "0.3", 0.1), "step", id="step-float"),
+            pytest.param(("0.1", "0.3", 1), "step", id="step-int"),
+        ],
+    )
+    def test_a_json_number_as_a_range_bound_is_refused(
+        self, admin_client, db_session, factories, bounds, field
+    ):
+        """Границы диапазона в теле — только строки (спека 3в §2.5, §2.10): число
+        JSON проходит через `float` до проверки точности и не принимается."""
+        scene = _family_with_params(db_session, factories)
+        db_session.commit()
+        before = _all_state(db_session)
+        parameters = (*_SAME, _ranged("Диаметр", *bounds))
+
+        preview = _preview(admin_client, scene.family.id, *parameters)
+        patch = admin_client.patch(
+            f"{BASE}/families/{scene.family.id}/schema",
+            json=_body(*parameters, preview_hash="x"),
+        )
+
+        for response in (preview, patch):
+            assert response.status_code == 422, response.text
+            assert field in {str(part) for item in response.json()["detail"] for part in item["loc"]}
+        assert _all_state(db_session) == before
+
+    def test_range_numbers_as_strings_are_accepted(self, admin_client, db_session, factories):
         scene = _family_with_params(db_session, factories)
         db_session.commit()
 
-        as_text = _preview(
-            admin_client, scene.family.id, *_SAME, _ranged("Диаметр", "120", "200", "40")
-        )
-        as_numbers = _preview(
-            admin_client, scene.family.id, *_SAME, _ranged("Диаметр", 120, 200.0, 40)
+        response = _preview(
+            admin_client, scene.family.id, *_SAME, _ranged("Диаметр", "0.1", "0.3", "0.1")
         )
 
-        assert as_text.status_code == as_numbers.status_code == 200, (
-            as_text.text, as_numbers.text,
+        assert response.status_code == 200, response.text
+
+    def test_a_string_bound_beyond_float_precision_is_refused_with_the_code(
+        self, admin_client, db_session, factories
+    ):
+        """Строка «0.10000000000000001» — 17 значащих знаков: отказ по точности, а не
+        молчаливое округление до «0.1»."""
+        scene = _family_with_params(db_session, factories)
+        db_session.commit()
+
+        response = _preview(
+            admin_client, scene.family.id, *_SAME,
+            _ranged("Диаметр", "0.10000000000000001", "0.3", "0.1"),
         )
-        assert as_text.json()["preview_hash"] == as_numbers.json()["preview_hash"]
+
+        assert response.status_code == 422, response.text
+        assert _detail(response)["code"] == "schema_bad_range"
 
     @pytest.mark.parametrize("bad", ["NaN", "Infinity", "abc", ""])
     def test_a_range_number_that_is_not_finite_is_refused_with_the_code(

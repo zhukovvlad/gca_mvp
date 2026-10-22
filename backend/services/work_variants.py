@@ -702,6 +702,54 @@ def _close_job_unapplied(job: SemanticJob, reason: UnappliedReason) -> None:
     job.claim_token = None
 
 
+def invalidate_values_jobs(
+    db: Session, *, context_ids: Sequence[int], schema_id: int, ordinal: int
+) -> int:
+    """Открытые (`pending`, `running`, `privacy_hold`) задания значений версии
+    `schema_id` у контекстов `context_ids`, которые запрашивают параметр `ordinal`, закрываются
+    как устаревшие: `cancelled / input_changed`, токен снят — как закрывает свой
+    результат `_close_job_unapplied`. Выполняющееся задание теряет захват, и его
+    результат отбрасывается (`lost_claim`), так что ответ модели не затирает
+    решение человека, принятое между захватом и ответом (спека 3в §2.7).
+    Вызывающий держит замки контекстов; задания берутся `FOR UPDATE` по `id`, как
+    их берёт сверка. Возвращает число закрытых заданий."""
+    if not context_ids:
+        return 0
+    job_ids = db.execute(
+        sa.select(SemanticJob.id)
+        .where(
+            SemanticJob.context_id.in_(list(context_ids)),
+            SemanticJob.schema_id == schema_id,
+            SemanticJob.status.in_(
+                (
+                    SemanticJobStatus.pending.value,
+                    SemanticJobStatus.running.value,
+                    SemanticJobStatus.privacy_hold.value,
+                )
+            ),
+            sa.or_(
+                SemanticJob.requested_ordinals.is_(None),
+                SemanticJob.requested_ordinals.contains([ordinal]),
+            ),
+        )
+        .order_by(SemanticJob.id)
+        .with_for_update()
+    ).scalars().all()
+    if not job_ids:
+        return 0
+    db.execute(
+        sa.update(SemanticJob)
+        .where(SemanticJob.id.in_(job_ids))
+        .values(
+            status=SemanticJobStatus.cancelled.value,
+            cancel_reason=SemanticCancelReason.input_changed.value,
+            claim_token=None,
+        )
+    )
+    db.flush()
+    return len(job_ids)
+
+
 def _owns(job: SemanticJob, guard: JobGuard) -> bool:
     # Токен непуст ровно при `running` (CHECK пары статуса и токена), поэтому
     # совпавший токен уже означает статус `running`.
@@ -2177,6 +2225,13 @@ def merge_parameter_values(
         .values(value_id=canonical_id)
     )
     source_value.merged_into_id = canonical_id
+    # Правка значений человеком делает параметр модели параметром человека
+    # (спека 3в §2.5): пересборка такой параметр сохраняет (§2.8).
+    db.execute(
+        sa.update(FamilyParameter)
+        .where(FamilyParameter.id == parameter_id)
+        .values(origin=ParameterOrigin.human.value)
+    )
     db.flush()
     bump_revision(db, schema_id)
     record_event(
@@ -2213,6 +2268,7 @@ __all__: Sequence[str] = (
     "clear_variant",
     "freeze_schema",
     "get_or_create_value",
+    "invalidate_values_jobs",
     "get_or_create_variant",
     "mark_context_not_work",
     "mark_rows_for_refresh",

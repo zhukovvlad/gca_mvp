@@ -19,7 +19,7 @@ from decimal import Decimal
 from typing import TypedDict
 
 import sqlalchemy as sa
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from config import settings
 from models import (
@@ -520,10 +520,42 @@ def variants_out(db: Session, family_id: int) -> list[VariantOut] | None:
 def context_variant_out(db: Session, context: CatalogContext) -> ContextVariantOut:
     """Вариант контекста для карточки: значения с источником каждого, пометка
     «к делению», ожидание, состояние задания значений. Задание значений читается
-    всегда — один запрос на любую карточку; сверх него с вариантом добавляется один
-    запрос значений, с ожиданием — ещё один (имя ожидаемой семьи)."""
+    всегда — один запрос на любую карточку; сверх него с вариантом или семьёй
+    добавляется один запрос значений, с ожиданием — ещё один (имя ожидаемой семьи).
+
+    Значения берутся ровно одной версии схемы (спека 3в §2.10): версии нынешнего
+    варианта контекста, если у контекста есть строки этой версии, иначе действующей
+    версии семьи контекста (так же у контекста без варианта). Между заморозкой
+    новой версии и первым ответом по ней вариант остаётся прежним, а копии строк
+    человека уже лежат в новой версии — в карточку они не попадают; когда строки
+    версии варианта уже заменены ответом, а вариант ещё прежний, показывается
+    действующая версия."""
     values: list[ContextValueOut] = []
-    if context.work_variant_id is not None:
+    if context.work_variant_id is not None or context.work_family_id is not None:
+        variant_schema_id = (
+            sa.select(WorkVariant.schema_id)
+            .where(WorkVariant.id == context.work_variant_id)
+            .scalar_subquery()
+        )
+        current_schema_id = (
+            sa.select(FamilyParameterSchema.id)
+            .where(
+                FamilyParameterSchema.family_id == context.work_family_id,
+                FamilyParameterSchema.status == SchemaStatus.frozen.value,
+            )
+            .scalar_subquery()
+        )
+        in_variant_schema = aliased(ContextParameterValue)
+        shown_schema_id = sa.case(
+            (
+                sa.exists().where(
+                    in_variant_schema.context_id == context.id,
+                    in_variant_schema.schema_id == variant_schema_id,
+                ),
+                variant_schema_id,
+            ),
+            else_=current_schema_id,
+        )
         values = [
             ContextValueOut(
                 parameter_id=row.parameter_id,
@@ -556,6 +588,7 @@ def context_variant_out(db: Session, context: CatalogContext) -> ContextVariantO
                 )
                 .where(
                     ContextParameterValue.context_id == context.id,
+                    ContextParameterValue.schema_id == shown_schema_id,
                     FamilyParameter.archived_at.is_(None),
                 )
                 .order_by(

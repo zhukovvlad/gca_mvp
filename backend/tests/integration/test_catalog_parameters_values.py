@@ -32,6 +32,7 @@ from models import (
     SemanticJobKind,
     WorkVariant,
 )
+from services.schema_edit import resolve_off_list
 from services.semantic_answer import AnswerSchemaError
 from services.semantic_client import ModelResponse
 from services.semantic_decisions import _mark_batch_jobs
@@ -56,7 +57,7 @@ from services.variant_request import (
     render_schema_request,
     render_values_request,
 )
-from services.work_variants import JobGuard, apply_values
+from services.work_variants import JobGuard, apply_values, normalize_value
 from tests.integration.test_semantic_queue_schema import _batch
 from tests.integration.test_work_variants_core import (
     _answer,
@@ -69,6 +70,7 @@ from tests.integration.test_work_variants_material import _settings, _uid
 from tests.integration.test_work_variants_schema import _param, _schema, _value, _variant
 from tests.integration.test_work_variants_schema_life import (
     _active_world,
+    _actor,
     _paths_hash,
     _second_context,
     _settle_context,
@@ -1162,6 +1164,42 @@ class TestApplyPartial:
         row = _rows(db_session, world.context_id)[1]
         assert (row.value_id, row.source, row.off_list_text) == (ids[label], "path", None)
 
+    @pytest.mark.parametrize(
+        ("text", "label", "source"),
+        [
+            ("-5", f"-20{_DASH}0", "path"),
+            ("−5 мм", f"-20{_DASH}0", "path"),
+            ("-20", f"-20{_DASH}0", "path"),
+            ("-21", "до -20", "path"),
+            ("5", f"0{_DASH}20", "path"),
+            ("-5-3", None, "off_list"),
+        ],
+    )
+    def test_a_negative_number_for_a_range_parameter_is_assigned_to_its_range(
+        self, db_session, factories, text, label, source
+    ):
+        world = _active_world(db_session, factories)
+        ids = _make_range(
+            db_session, world, 1,
+            (
+                ("до -20", None, Decimal(-20)),
+                (f"-20{_DASH}0", Decimal(-20), Decimal(0)),
+                (f"0{_DASH}20", Decimal(0), Decimal(20)),
+                ("20 и более", Decimal(20), None),
+            ),
+        )
+        _settle_context(
+            db_session, world, world.context_id,
+            _answer((1, "none", None, None), _named(2, "бетон")),
+        )
+        _mark(db_session, world.context_id, world.parameters[1])
+
+        _apply(db_session, world, world.context_id, _answer((1, "new", text, "path")), ordinals=(1,))
+
+        row = _rows(db_session, world.context_id)[1]
+        expected_id = None if label is None else ids[label]
+        assert (row.value_id, row.source) == (expected_id, source)
+
     @pytest.mark.parametrize("text", ["до 100 мм", "от 40 мм", "40-50", "1/2", "В25"])
     def test_a_text_that_is_not_one_number_for_a_range_parameter_is_off_list(
         self, db_session, factories, text
@@ -1448,6 +1486,291 @@ class TestApplyPartial:
 # ---------------------------------------------------------------------------
 #  Опросчик: путь `claim_next` -> `record_result`
 # ---------------------------------------------------------------------------
+
+class TestAnswerAfterAHumanDecision:
+    """Ответ модели не затирает решение человека «Слить с…» (спека 3в §2.7): задания
+    значений, уже спросившие параметр, делаются недействительными в той же
+    транзакции — выполняющееся теряет захват, и его ответ отбрасывается."""
+
+    def _one_parameter_scene(self, db, factories):
+        """Единственный закрытый параметр «Материал»; контекст назвал «газобетон» —
+        значение не из списка, строка помечена «уточняется»."""
+        world = _active_world(db, factories, ((1, "Материал", ["бетон", "кирпич"]),))
+        _update_parameter(db, world.parameters[1], closed=True)
+        _settle_context(db, world, world.context_id, _answer((1, "new", "газобетон", "name")))
+        _mark(db, world.context_id, world.parameters[1])
+        assert _rows(db, world.context_id)[1].source == "off_list"
+        return world
+
+    def _resolve(self, db, factories, world, target="кирпич"):
+        resolve_off_list(
+            db, family_id=world.family.id, parameter_id=world.parameters[1],
+            text_norm=normalize_value("газобетон"), target_value_id=world.values[(1, target)],
+            actor_id=_actor(factories),
+        )
+
+    def _two_parameter_scene(self, db, factories):
+        """«Толщина» закрытая, контекст назвал «75 мм» (не из списка); у обоих
+        параметров строки помечены «уточняется»."""
+        world = _active_world(db, factories)
+        _update_parameter(db, world.parameters[1], closed=True)
+        _settle_context(
+            db, world, world.context_id,
+            _answer((1, "new", "75 мм", "name"), _named(2, "бетон")),
+        )
+        _mark(db, world.context_id, world.parameters[1])
+        _mark(db, world.context_id, world.parameters[2])
+        return world
+
+    def _resolve_thickness(self, db, factories, world):
+        resolve_off_list(
+            db, family_id=world.family.id, parameter_id=world.parameters[1],
+            text_norm=normalize_value("75 мм"), target_value_id=world.values[(1, "100 мм")],
+            actor_id=_actor(factories),
+        )
+
+    def _job(self, db, job_id):
+        db.expire_all()
+        return db.get(SemanticJob, job_id)
+
+    def test_a_decision_made_after_the_claim_survives_the_answer(self, db_session, factories):
+        world = self._one_parameter_scene(db_session, factories)
+        job, guard = _job_for(db_session, world, world.context_id, (1,), status="running")
+        self._resolve(db_session, factories, world)
+        decided = _rows(db_session, world.context_id)[1]
+        assert (decided.source, decided.value_id, decided.refresh_requested_at) == (
+            "manual", world.values[(1, "кирпич")], None,
+        )
+        variant_before = _context(db_session, world.context_id).work_variant_id
+
+        outcome = _apply(
+            db_session, world, world.context_id,
+            _answer((1, "new", "газобетон", "path")), guard=guard,
+        )
+
+        assert outcome.applied is False
+        assert outcome.unapplied_reason == "lost_claim"
+        row = _rows(db_session, world.context_id)[1]
+        assert (row.source, row.value_id, row.off_list_text, row.refresh_requested_at) == (
+            "manual", world.values[(1, "кирпич")], None, None,
+        )
+        assert _context(db_session, world.context_id).work_variant_id == variant_before
+        variant = db_session.get(WorkVariant, variant_before)
+        assert variant.values_key == f"1={world.values[(1, 'кирпич')]}"
+        closed = self._job(db_session, job.id)
+        assert (closed.status, closed.cancel_reason, closed.claim_token) == (
+            "cancelled", "input_changed", None,
+        )
+
+    def test_a_decision_made_after_the_claim_keeps_the_list_of_values(
+        self, db_session, factories
+    ):
+        """Параметр открытый: ответ «новое значение» дописал бы значение в список, но
+        ответ потерявшего захват задания не пишется вовсе."""
+        world = self._one_parameter_scene(db_session, factories)
+        _update_parameter(db_session, world.parameters[1], closed=False)
+        job, guard = _job_for(db_session, world, world.context_id, (1,), status="running")
+        self._resolve(db_session, factories, world)
+        values_before = _table_rows(
+            db_session, FamilyParameterValue,
+            FamilyParameterValue.parameter_id == world.parameters[1],
+        )
+
+        outcome = _apply(
+            db_session, world, world.context_id,
+            _answer((1, "new", "керамзит", "path")), guard=guard,
+        )
+
+        assert outcome.applied is False
+        assert _table_rows(
+            db_session, FamilyParameterValue,
+            FamilyParameterValue.parameter_id == world.parameters[1],
+        ) == values_before
+        assert _rows(db_session, world.context_id)[1].source == "manual"
+
+    def test_a_pending_job_asking_the_parameter_is_cancelled(self, db_session, factories):
+        world = self._one_parameter_scene(db_session, factories)
+        job, _guard = _job_for(db_session, world, world.context_id, (1,), status="pending")
+
+        self._resolve(db_session, factories, world)
+
+        closed = self._job(db_session, job.id)
+        assert (closed.status, closed.cancel_reason) == ("cancelled", "input_changed")
+
+    def test_a_job_held_for_privacy_asking_the_parameter_is_cancelled(
+        self, db_session, factories
+    ):
+        """Удержанное по приватности задание после снятия удержания вернулось бы в
+        очередь и затёрло бы решение: оно закрывается так же, как `pending`."""
+        world = self._one_parameter_scene(db_session, factories)
+        job, _guard = _job_for(db_session, world, world.context_id, (1,), status="pending")
+        job.status = "privacy_hold"
+        job.privacy_matches = [{"text": "x", "kind": "name", "where": "context"}]
+        db_session.flush()
+
+        self._resolve(db_session, factories, world)
+
+        closed = self._job(db_session, job.id)
+        assert (closed.status, closed.cancel_reason) == ("cancelled", "input_changed")
+
+    def test_a_job_asking_only_another_parameter_stays_open(self, db_session, factories):
+        world = self._two_parameter_scene(db_session, factories)
+        job, guard = _job_for(db_session, world, world.context_id, (2,), status="running")
+
+        self._resolve_thickness(db_session, factories, world)
+
+        kept = self._job(db_session, job.id)
+        assert (kept.status, kept.claim_token) == ("running", guard.claim_token)
+        outcome = _apply(
+            db_session, world, world.context_id, _answer(_named(2, "кирпич", "path")),
+            guard=guard,
+        )
+        assert outcome.applied is True
+        rows = _rows(db_session, world.context_id)
+        assert (rows[1].source, rows[1].value_id) == ("manual", world.values[(1, "100 мм")])
+        assert (rows[2].source, rows[2].value_id) == ("path", world.values[(2, "кирпич")])
+
+    def test_a_job_of_a_context_the_decision_did_not_touch_stays_open(
+        self, db_session, factories
+    ):
+        world = self._two_parameter_scene(db_session, factories)
+        other = _second_context(db_session, factories, world)
+        _settle(db_session, world, other)
+        job, guard = _job_for(db_session, world, other, (1, 2), status="running")
+
+        self._resolve_thickness(db_session, factories, world)
+
+        kept = self._job(db_session, job.id)
+        assert (kept.status, kept.claim_token) == ("running", guard.claim_token)
+
+    def test_the_job_is_replaced_by_one_asking_what_is_still_missing(
+        self, db_session, factories
+    ):
+        world = self._two_parameter_scene(db_session, factories)
+        job, _guard = _job_for(db_session, world, world.context_id, (1, 2), status="running")
+
+        self._resolve_thickness(db_session, factories, world)
+
+        assert self._job(db_session, job.id).status == "cancelled"
+        live = [
+            j for j in _values_jobs(db_session, world.context_id)
+            if j.status in ("pending", "running") and j.id != job.id
+        ]
+        assert [list(j.requested_ordinals) for j in live] == [[2]]
+
+    def test_a_job_of_another_version_stays_open(self, db_session, factories):
+        """Задание того же контекста по другой версии схемы (номер параметра тот же)
+        решение по действующей версии не закрывает."""
+        world = self._one_parameter_scene(db_session, factories)
+        other = _schema(db_session, factories, world.family, version=7, status="superseded")
+        job, guard = _job_for(db_session, world, world.context_id, (1,), status="running")
+        job.schema_id = other.id
+        db_session.flush()
+
+        self._resolve(db_session, factories, world)
+
+        kept = self._job(db_session, job.id)
+        assert (kept.status, kept.claim_token) == ("running", guard.claim_token)
+
+    def test_with_changed_paths_the_closed_job_is_replaced_at_once(self, db_session, factories):
+        """Пути контекста изменились, задание «все параметры» выполняется: решение
+        снимает с него захват, и сверка в той же транзакции снова ставит запрос по
+        всем параметрам (§2.4; то же задание возвращается в очередь) — нужда не
+        ждёт обхода, а ответ прежнего захвата не пишется."""
+        world = self._one_parameter_scene(db_session, factories)
+        _context(db_session, world.context_id).variant_paths_hash = "0" * 64
+        db_session.flush()
+        job, guard = _job_for(db_session, world, world.context_id, (1,), status="running")
+        assert job.requested_ordinals is None
+
+        self._resolve(db_session, factories, world)
+
+        live = [
+            (j.status, j.requested_ordinals, j.claim_token)
+            for j in _values_jobs(db_session, world.context_id)
+            if j.status in ("pending", "running")
+        ]
+        assert live == [("pending", None, None)]
+        outcome = _apply(
+            db_session, world, world.context_id,
+            _answer((1, "new", "газобетон", "path")), guard=guard,
+        )
+        assert outcome.unapplied_reason == "lost_claim"
+
+    def test_without_a_decision_the_answer_replaces_the_marked_row(self, db_session, factories):
+        """Соседний вход: отметка на месте, решения человека нет — ответ пишется."""
+        world = self._one_parameter_scene(db_session, factories)
+        job, guard = _job_for(db_session, world, world.context_id, (1,), status="running")
+
+        outcome = _apply(
+            db_session, world, world.context_id,
+            _answer((1, "value", "кирпич", "path")), guard=guard,
+        )
+
+        assert outcome.applied is True
+        row = _rows(db_session, world.context_id)[1]
+        assert (row.source, row.value_id, row.refresh_requested_at) == (
+            "path", world.values[(1, "кирпич")], None,
+        )
+
+    def test_a_manual_row_marked_again_is_replaced_by_the_answer(self, db_session, factories):
+        """Соседний вход: решение человека, но строка снова «уточняется» (волна
+        перезапроса) — модель спрашивали по ней заново, ответ пишется."""
+        world = self._one_parameter_scene(db_session, factories)
+        self._resolve(db_session, factories, world)
+        _mark(db_session, world.context_id, world.parameters[1])
+
+        _apply(
+            db_session, world, world.context_id,
+            _answer((1, "value", "бетон", "path")), ordinals=(1,),
+        )
+
+        row = _rows(db_session, world.context_id)[1]
+        assert (row.source, row.value_id, row.refresh_requested_at) == (
+            "path", world.values[(1, "бетон")], None,
+        )
+
+    def test_a_decision_is_asked_again_when_the_paths_changed(self, db_session, factories):
+        """Соседний вход: решение принято давно, материал контекста изменился
+        (хэш путей разошёлся) — спрашиваются все параметры (§2.4), ответ пишется."""
+        world = self._one_parameter_scene(db_session, factories)
+        self._resolve(db_session, factories, world)
+        assert _need(db_session, world) == ((), False)
+        _context(db_session, world.context_id).variant_paths_hash = "0" * 64
+        db_session.flush()
+        ordinals, _due = _need(db_session, world)
+        assert ordinals == (1,)
+
+        outcome = _apply(
+            db_session, world, world.context_id,
+            _answer((1, "value", "бетон", "path")), ordinals=ordinals,
+        )
+
+        assert outcome.applied is True
+        row = _rows(db_session, world.context_id)[1]
+        assert (row.source, row.value_id) == ("path", world.values[(1, "бетон")])
+
+    def test_an_unmarked_model_row_asked_again_is_replaced(self, db_session, factories):
+        """Соседний вход: строка без отметки, но не решение человека (источник
+        модели) — материал изменился, спрошены все параметры, ответ пишется."""
+        world = _active_world(db_session, factories)
+        _settle_context(
+            db_session, world, world.context_id, _answer(_named(1, "50 мм"), _named(2, "бетон")),
+        )
+        context = _context(db_session, world.context_id)
+        context.variant_paths_hash = "0" * 64
+        db_session.flush()
+        assert _need(db_session, world)[0] == (1, 2)
+
+        _apply(
+            db_session, world, world.context_id,
+            _answer(_named(1, "100 мм", "path"), _named(2, "кирпич", "path")), ordinals=(1, 2),
+        )
+
+        rows = _rows(db_session, world.context_id)
+        assert (rows[1].source, rows[1].value_id) == ("path", world.values[(1, "100 мм")])
+        assert (rows[2].source, rows[2].value_id) == ("path", world.values[(2, "кирпич")])
+
 
 class TestWorkerPartialPath:
     def _partial_scene(self, db, factories):
