@@ -77,3 +77,34 @@ describe("VariantsTable", () => {
     expect(document.body.textContent).not.toContain("family_not_found");
   });
 });
+
+describe("VariantsTable: подпись из главных параметров (спека 3в §2.3)", () => {
+  it("набор содержит только значения, которые отдал сервер (главные): второстепенных в подписи нет", async () => {
+    // Сервер отдаёт у варианта только главные; экран не достраивает подпись из схемы.
+    handlerState.familyVariants[SCHEMA_FAMILY_ID] = [
+      { id: 9, values: ["B25", "W8", "балки"], contexts: 7, status: "active" },
+    ];
+    handlerState.familySchemas[SCHEMA_FAMILY_ID].parameters.push({
+      ...handlerState.familySchemas[SCHEMA_FAMILY_ID].parameters[0],
+      id: 105,
+      ordinal: 4,
+      name: "Армирование",
+      role: "secondary",
+    });
+    renderWithProviders(<VariantsTable familyId={SCHEMA_FAMILY_ID} />);
+    await screen.findByRole("table", { name: "Варианты семьи" }, LATER);
+
+    const rows = rowsOfTable();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toHaveTextContent(/^B25 · W8 · балки/);
+    expect(rows[0]).not.toHaveTextContent("Армирование");
+  });
+
+  it("вариант без главных значений читается «не уточнено», а не пустой подписью", async () => {
+    handlerState.familyVariants[SCHEMA_FAMILY_ID] = [{ id: 9, values: [], contexts: 2, status: "active" }];
+    renderWithProviders(<VariantsTable familyId={SCHEMA_FAMILY_ID} />);
+    await screen.findByRole("table", { name: "Варианты семьи" }, LATER);
+
+    expect(rowsOfTable()[0]).toHaveTextContent("не уточнено");
+  });
+});

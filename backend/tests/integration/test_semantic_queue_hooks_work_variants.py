@@ -5,7 +5,7 @@
 (`apply_values`) и заморозка схемы (`freeze_schema`); затем смена семьи
 (`services.family_change`: `request_family_change`, `cancel_pending_family`) и
 «не работа» контексту (`mark_context_not_work`); жизнь схемы
-(`rebuild_schema`, `update_schema`, `merge_parameter_values`); слияние семей
+(`rebuild_schema`, `apply_schema_edit`, `merge_parameter_values`); слияние семей
 (`merge_families`), глобальная пометка строки (`set_position_kind_global`),
 массовое автопринятие (`apply_auto_accept`) и вход путей контекста при импорте.
 Каждая зовёт сверку в той же транзакции, до коммита вызывающего. Тест точки
@@ -31,6 +31,7 @@ import pytest
 import sqlalchemy as sa
 
 import services.family_change  # noqa: F401  # модуль под проверкой: его точки названы ниже
+import services.schema_edit  # noqa: F401  # модуль под проверкой: его точки названы ниже
 import services.work_variants  # noqa: F401  # модуль под проверкой: его точки названы ниже
 from config import settings
 from models import CatalogContext, ImportJobStatus, SemanticJob, WorkFamily
@@ -38,13 +39,12 @@ from services.family_change import apply_auto_accept, cancel_pending_family, req
 from services.review import set_position_kind_global
 from services.variant_request import load_values_material, paths_hash_of, render_values_request
 from services.work_variants import (
-    ParameterEdit,
     apply_values,
     cancel_schema_build,
     mark_context_not_work,
     rebuild_schema,
-    update_schema,
 )
+from tests.integration.parameters_edit_support import draft, edit, same_drafts
 from tests.integration.test_semantic_queue_hooks_import import _context_of, _Env, _rows
 from tests.integration.test_work_variants_auto_accept import _deploy_scene, _hash
 from tests.integration.test_work_variants_core import (
@@ -78,7 +78,6 @@ from tests.integration.test_work_variants_schema_life import (
     _actor,
     _jobs,
     _Merge,
-    _same_edits,
     _schemas,
     _second_context,
 )
@@ -445,22 +444,20 @@ class TestRebuildSchemaReconciles:
         assert _jobs(db_session, "family_schema") == []
 
 
-class TestUpdateSchemaReconciles:
-    def test_a_new_version_queues_values_jobs_for_the_contexts_of_the_family(
+class TestApplySchemaEditReconciles:
+    def test_a_new_parameter_queues_values_jobs_for_the_contexts_of_the_family(
         self, db_session, factories
     ):
         actor = _actor(factories)
         world = _active_world(db_session, factories)
         second = _second_context(db_session, factories, world)
-        edits = _same_edits() + [ParameterEdit(3, "Армирование", ("сетка",))]
+        drafts = [*same_drafts(), draft(None, "Армирование", "сетка")]
 
-        schema = update_schema(
-            db_session, family_id=world.family.id, parameters=edits, actor_id=actor
-        )
+        edit(db_session, world.family.id, drafts, actor)
 
         jobs = _values_jobs(db_session)
         assert sorted(job.context_id for job in jobs) == sorted([world.context_id, second])
-        assert {job.schema_id for job in jobs} == {schema.id}
+        assert {job.schema_id for job in jobs} == {world.schema.id}
 
     def test_a_cosmetic_edit_replaces_a_pending_job_built_on_the_old_text(
         self, db_session, factories
@@ -469,10 +466,10 @@ class TestUpdateSchemaReconciles:
         world = _active_world(db_session, factories)
         assert _apply_reconcile(db_session, world.context_id)
         [old_job] = _values_jobs(db_session, context_id=world.context_id)
-        edits = _same_edits()
-        edits[0] = ParameterEdit(1, "ТОЛЩИНА", edits[0].values)
+        drafts = same_drafts()
+        drafts[0] = draft(1, "ТОЛЩИНА", *drafts[0].values)
 
-        update_schema(db_session, family_id=world.family.id, parameters=edits, actor_id=actor)
+        edit(db_session, world.family.id, drafts, actor)
 
         jobs = _values_jobs(db_session)
         assert {job.id: job.status for job in jobs}[old_job.id] == "cancelled"

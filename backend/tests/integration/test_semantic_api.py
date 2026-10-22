@@ -423,7 +423,9 @@ WORK_VARIANT_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
         ("GET", f"{BASE}/families/{{family_id}}/schema"),
         ("POST", f"{BASE}/families/{{family_id}}/schema/rebuild/preview"),
         ("POST", f"{BASE}/families/{{family_id}}/schema/rebuild"),
+        ("POST", f"{BASE}/families/{{family_id}}/schema/edit-preview"),
         ("PATCH", f"{BASE}/families/{{family_id}}/schema"),
+        ("POST", f"{BASE}/families/{{family_id}}/schema/off-list/resolve"),
         ("POST", f"{BASE}/families/{{family_id}}/schema/cancel"),
         ("POST", f"{BASE}/families/{{family_id}}/schema/values/merge"),
         ("GET", f"{BASE}/families/{{family_id}}/variants"),
@@ -434,7 +436,7 @@ WORK_VARIANT_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
         ("POST", f"{BASE}/auto-accept"),
     }
 )
-assert len(WORK_VARIANT_ROUTE_TEMPLATES) == 12
+assert len(WORK_VARIANT_ROUTE_TEMPLATES) == 14
 
 #: Маршруты справочника категорий семей (спека `2026-10-09-catalog-discovery-design.md`
 #: §2.12) — ШАБЛОНАМИ пути, независимо от `app.routes`. Права на них перебирает

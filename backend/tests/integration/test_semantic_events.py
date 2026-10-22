@@ -202,6 +202,10 @@ _SAMPLE_BUILDERS: dict[str, Callable[[int, int], dict[str, object]]] = {
     "context_reopened": lambda ctx_id, fam_id: {
         "from_state": "NOT_APPLICABLE", "to_state": "SUGGESTED",
     },
+    "family_schema_edited": lambda ctx_id, fam_id: {
+        "schema_id": 3, "revision": 1, "changes": [{"op": "rename", "ordinal": 1}],
+        "variants_before": 4, "variants_after": 4, "jobs_enqueued": 0,
+    },
 }
 
 
@@ -258,6 +262,12 @@ _EXPECTED_REQUIRED_KEYS: dict[str, frozenset[str]] = {
         {"parameter_id", "source_value_id", "target_value_id", "merged_variants"}
     ),
     "context_reopened": frozenset({"from_state", "to_state"}),
+    "family_schema_edited": frozenset(
+        {
+            "schema_id", "revision", "changes", "variants_before", "variants_after",
+            "jobs_enqueued",
+        }
+    ),
 }
 
 _EXPECTED_ENUM_VALUES: dict[tuple[str, str], frozenset[str]] = {
@@ -283,8 +293,8 @@ _EXPECTED_ENUM_VALUES: dict[tuple[str, str], frozenset[str]] = {
 }
 
 
-class TestExactlyTwentyTwoTypes:
-    def test_event_required_keys_has_exactly_twenty_two_types(self):
+class TestExactlyTwentyThreeTypes:
+    def test_event_required_keys_has_exactly_twenty_three_types(self):
         expected_types = {
             "context_created", "context_split", "context_merged", "members_moved",
             "members_marked_stale", "kind_set", "name_role_set",
@@ -293,11 +303,11 @@ class TestExactlyTwentyTwoTypes:
             "family_archived", "family_merged",
             "context_variant_assigned", "context_family_pending", "context_not_work",
             "family_schema_frozen", "family_schema_value_added", "family_variants_merged",
-            "context_reopened",
+            "context_reopened", "family_schema_edited",
         }
-        assert len(expected_types) == 22
+        assert len(expected_types) == 23
         assert set(EVENT_REQUIRED_KEYS) == expected_types
-        assert len(EVENT_REQUIRED_KEYS) == 22
+        assert len(EVENT_REQUIRED_KEYS) == 23
 
 
 class TestRequiredKeysMatchIndependentLiteral:
@@ -309,7 +319,7 @@ class TestRequiredKeysMatchIndependentLiteral:
     равенство словарей."""
 
     def test_event_required_keys_equals_independent_literal(self):
-        assert len(_EXPECTED_REQUIRED_KEYS) == 22
+        assert len(_EXPECTED_REQUIRED_KEYS) == 23
         assert EVENT_REQUIRED_KEYS == _EXPECTED_REQUIRED_KEYS
 
 
@@ -682,7 +692,7 @@ class TestExternalCrossCheckWithSchema:
         match = re.search(r"event_type IN \(([^)]*)\)", CK_EVENT_SUBJECT_BY_TYPE)
         assert match is not None
         parsed = {piece.strip().strip("'") for piece in match.group(1).split(",")}
-        assert len(parsed) == 8
+        assert len(parsed) == 9
         assert parsed == set(FAMILY_EVENT_TYPES)
 
     def test_union_equals_check_event_type_values(self):
@@ -693,7 +703,7 @@ class TestExternalCrossCheckWithSchema:
         parsed = {
             piece.strip().strip("'") for piece in SEMANTIC_EVENT_TYPES_SQL.split(",")
         }
-        assert len(parsed) == 22
+        assert len(parsed) == 23
         assert parsed == (FAMILY_EVENT_TYPES | CONTEXT_EVENT_TYPES)
 
     def test_family_and_context_types_are_disjoint(self):

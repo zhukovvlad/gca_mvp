@@ -62,7 +62,8 @@ import type {
   MergeValuesInput,
   PositionMarkKind,
   PreviewTarget,
-  SchemaEditParameter,
+  ResolveOffListInput,
+  SchemaEditDraft,
   PrivacyMatch,
   StaleGroupTransferInput,
   SuggestionsParams,
@@ -2370,9 +2371,10 @@ function schemaIsBusy(schema: FamilySchema | undefined): boolean {
   return schema !== undefined && (schema.building || schema.values_jobs_live > 0);
 }
 
-export function useFamilySchema(familyId: number) {
+export function useFamilySchema(familyId: number, { enabled = true }: { enabled?: boolean } = {}) {
   const qc = useQueryClient();
   const query = useQuery({
+    enabled,
     queryKey: qk.workFamilies.schema(familyId),
     queryFn: () => semanticApi.getFamilySchema(familyId),
     refetchInterval: (q) => (schemaIsBusy(q.state.data) ? SCHEMA_BUILD_POLL_MS : false),
@@ -2458,11 +2460,44 @@ export function useCancelSchemaBuild() {
 export function useUpdateSchema() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ familyId, parameters }: { familyId: number; parameters: SchemaEditParameter[] }) =>
-      semanticApi.updateSchema(familyId, parameters),
+    mutationFn: ({
+      familyId,
+      parameters,
+      previewHash,
+    }: {
+      familyId: number;
+      parameters: SchemaEditDraft[];
+      previewHash: string;
+    }) => semanticApi.updateSchema(familyId, parameters, previewHash),
     onSuccess: (_, { familyId }) => {
       invalidateSchema(qc, familyId);
       toast.success("Схема сохранена.");
+    },
+    onError: (error, { familyId }) => {
+      // Схема ушла вперёд от показанной сводки: окно пересчитывает сводку по перечитанной схеме.
+      if (apiErrorCode(error) === "preview_changed") {
+        qc.invalidateQueries({ queryKey: qk.workFamilies.schema(familyId) });
+      }
+    },
+  });
+}
+
+/**
+ * «Слить с…» у значения не из списка: строки с этим текстом получают значение списка. Отказ
+ * показывает вызвавший блок подписью по коду; схема перечитывается и при отказе — состояние
+ * могло уйти вперёд.
+ */
+export function useResolveOffList() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ familyId, ...input }: { familyId: number } & ResolveOffListInput) =>
+      semanticApi.resolveOffList(familyId, input),
+    onSuccess: (_, { familyId }) => {
+      invalidateSchema(qc, familyId);
+      toast.success("Значение не из списка отнесено к значению списка.");
+    },
+    onError: (_error, { familyId }) => {
+      qc.invalidateQueries({ queryKey: qk.workFamilies.schema(familyId) });
     },
   });
 }

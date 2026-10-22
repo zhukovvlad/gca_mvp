@@ -55,7 +55,10 @@ import type {
   ProjectPassport,
   QueueStatus,
   FamilySchema,
+  FamilySchemaParameter,
   FamilySchemaValue,
+  SchemaEditDraft,
+  SchemaEditSummary,
   FamilyVariant,
   ReaskPreview,
   RoundImportJob,
@@ -595,6 +598,18 @@ interface HandlerState {
    * оценкой, пересчитанной под замком, — здесь с последней показанной.
    */
   schemaPreviewHashes: Record<number, string>;
+  /**
+   * Предпросмотр правки схемы (`POST …/schema/edit-preview`): тела запросов по порядку прихода.
+   * Отдельно от `schemaRequests`: предпросмотр уходит при каждом изменении тела, а тесты считают
+   * запросы действий.
+   */
+  schemaEditPreviews: Array<{ familyId: number; body: Record<string, unknown> }>;
+  /** Поля сводки предпросмотра, которыми тест перекрывает ответ обработчика. */
+  schemaEditSummary: Partial<SchemaEditSummary> | null;
+  /** Ждёт перед ответом на предпросмотр: управляемый промис вместо `sleep` в тестах гонки ответов. */
+  schemaEditPreviewGate: ((body: Record<string, unknown>) => Promise<void>) | null;
+  /** Следующий выданный `id` параметра при добавлении в правке. */
+  nextSchemaParameterId: number;
 
   /** Открытие семей и черновики (спека 3б §2.12): состояние сервера и журнал запросов. */
   discovery: DiscoveryFixtureState;
@@ -714,7 +729,7 @@ export function draftsViewFixture(overrides: Partial<DiscoveryDraftsView> = {}):
   };
 }
 
-type SchemaAction = "rebuild" | "update" | "cancel" | "merge";
+type SchemaAction = "rebuild" | "update" | "cancel" | "merge" | "resolve";
 type ContextAction = "family" | "cancel-pending" | "not-work" | "position-kind" | "reopen";
 
 // ---------------------------------------------------------------------------
@@ -2050,8 +2065,57 @@ export const handlerState: HandlerState = {
   schemaRefusal: null,
   schemaRequests: [],
   schemaPreviewHashes: {},
+  schemaEditPreviews: [],
+  schemaEditSummary: null,
+  schemaEditPreviewGate: null,
+  nextSchemaParameterId: 900,
   discovery: initialDiscovery(),
 };
+
+/** Значение параметра схемы: поля расширенного ответа по умолчанию нулевые (`crud/work_variants.py::ValueOut`). */
+export function schemaValue(
+  id: number,
+  value: string,
+  origin: FamilySchemaValue["origin"] = "schema",
+  extra: Partial<FamilySchemaValue> = {}
+): FamilySchemaValue {
+  return {
+    id,
+    value,
+    origin,
+    merged_into_id: null,
+    range_lo: null,
+    range_hi: null,
+    retired: false,
+    contexts: 0,
+    rows: 0,
+    ...extra,
+  };
+}
+
+/** Параметр схемы: главный, точный, параметр модели (`crud/work_variants.py::ParameterOut`). */
+export function schemaParameter(
+  id: number,
+  ordinal: number,
+  name: string,
+  values: FamilySchemaValue[],
+  extra: Partial<FamilySchemaParameter> = {}
+): FamilySchemaParameter {
+  return {
+    id,
+    ordinal,
+    name,
+    values,
+    role: "main",
+    value_kind: "exact",
+    closed: false,
+    range: null,
+    origin: "model",
+    off_list: [],
+    refreshing: 0,
+    ...extra,
+  };
+}
 
 /** Схемы и варианты фикстуры: у активной семьи «Кровельные работы» (`SCHEMA_FAMILY_ID`) схема из двух параметров, у прочих схемы нет. */
 function emptySchema(familyId: number): FamilySchema {
@@ -2063,6 +2127,7 @@ function emptySchema(familyId: number): FamilySchema {
     building: false,
     values_jobs_live: 0,
     parameters: [],
+    revision: 0,
   };
 }
 
@@ -2075,26 +2140,17 @@ function initialFamilySchemas(): Record<number, FamilySchema> {
       ready_to_build: true,
       building: false,
       values_jobs_live: 0,
+      revision: 1,
       parameters: [
-        {
-          id: 101,
-          ordinal: 1,
-          name: "Материал",
-          values: [
-            { id: 1001, value: "профнастил", origin: "schema", merged_into_id: null },
-            { id: 1002, value: "металлочерепица", origin: "schema", merged_into_id: null },
-            { id: 1003, value: "металло-черепица", origin: "extension", merged_into_id: null },
-          ],
-        },
-        {
-          id: 102,
-          ordinal: 2,
-          name: "Толщина",
-          values: [
-            { id: 1004, value: "0,5 мм", origin: "schema", merged_into_id: null },
-            { id: 1005, value: "0,7 мм", origin: "manual", merged_into_id: null },
-          ],
-        },
+        schemaParameter(101, 1, "Материал", [
+          schemaValue(1001, "профнастил", "schema", { contexts: 3, rows: 40 }),
+          schemaValue(1002, "металлочерепица", "schema", { contexts: 1, rows: 9 }),
+          schemaValue(1003, "металло-черепица", "extension"),
+        ]),
+        schemaParameter(102, 2, "Толщина", [
+          schemaValue(1004, "0,5 мм", "schema", { contexts: 2, rows: 12 }),
+          schemaValue(1005, "0,7 мм", "manual"),
+        ]),
       ],
     },
   };
@@ -2138,6 +2194,194 @@ function normalizeValue(text: string): string {
 
 function schemaFamilyOf(familyId: number): WorkFamily | undefined {
   return handlerState.workFamilies.find((f) => f.id === familyId);
+}
+
+/** Предел активных параметров схемы (`schema_edit.MAX_ACTIVE_PARAMETERS`). */
+const MAX_SCHEMA_PARAMETERS_SERVER = 10;
+/** Предел внутренних диапазонов (`schema_edit`: «больше 28 внутренних» — отказ). */
+const MAX_RANGE_INNER_SERVER = 28;
+/** Контекстов у семьи в сводке предпросмотра: число условное, тесты сверяют его с экраном. */
+export const SCHEMA_PREVIEW_CONTEXTS = 12;
+
+function decimalOf(text: string): number | null {
+  const trimmed = String(text).trim();
+  if (!/^-?\d+(\.\d+)?$/.test(trimmed)) return null;
+  return Number(trimmed);
+}
+
+/** Запись числа в подписи диапазона: десятичная запятая, без лишних нулей. */
+function rangeNumber(value: number): string {
+  return String(Math.round(value * 1e6) / 1e6).replace(".", ",");
+}
+
+/** Подписи значений диапазона: «до A», «A–B» с шагом, «Z и более» (спека 3в §2.6). */
+function rangeLabels(start: number, stop: number, step: number): string[] {
+  const labels = [`до ${rangeNumber(start)}`];
+  const inner = Math.round((stop - start) / step);
+  for (let i = 0; i < inner; i += 1) {
+    labels.push(`${rangeNumber(start + i * step)}–${rangeNumber(start + (i + 1) * step)}`);
+  }
+  labels.push(`${rangeNumber(stop)} и более`);
+  return labels;
+}
+
+/** Границы диапазона из тела; "bad" — не числа или неверны (`schema_bad_range`), "many" — больше 28 внутренних. */
+function rangeBounds(draft: SchemaEditDraft): { start: number; stop: number; step: number } | "bad" | "many" {
+  const start = draft.range ? decimalOf(draft.range.start) : null;
+  const stop = draft.range ? decimalOf(draft.range.stop) : null;
+  const step = draft.range ? decimalOf(draft.range.step) : null;
+  if (start === null || stop === null || step === null || start >= stop || step <= 0) return "bad";
+  const inner = Math.round(((stop - start) / step) * 1e6) / 1e6;
+  if (!Number.isInteger(inner)) return "bad";
+  if (inner > MAX_RANGE_INNER_SERVER) return "many";
+  return { start, stop, step };
+}
+
+/** Отказы проверки правки по порядку сервиса: код и статус, либо `null`. */
+function schemaEditRefusalOf(
+  drafts: SchemaEditDraft[],
+  current: FamilySchema
+): { code: string; status: number } | null {
+  if (drafts.length > MAX_SCHEMA_PARAMETERS_SERVER) return { code: "schema_too_many_parameters", status: 422 };
+  if (drafts.some((d) => !normalizeValue(d.name) || d.values.some((v) => !normalizeValue(v)))) {
+    return { code: "schema_blank", status: 422 };
+  }
+  const names = drafts.map((d) => normalizeValue(d.name));
+  if (new Set(names).size !== names.length) return { code: "schema_duplicate_parameter", status: 422 };
+  for (const draft of drafts) {
+    if (draft.ordinal === null) continue;
+    const existing = current.parameters.find((p) => p.ordinal === draft.ordinal);
+    if (!existing) return { code: "schema_bad_ordinals", status: 422 };
+    if (normalizeValue(existing.name) !== normalizeValue(draft.name)) {
+      return { code: "schema_parameter_renamed", status: 422 };
+    }
+    if (draft.value_kind === "exact" && existing.value_kind === "exact") {
+      const sent = new Set(draft.values.map(normalizeValue));
+      const removed = existing.values.some((v) => v.merged_into_id === null && !sent.has(normalizeValue(v.value)));
+      if (removed) return { code: "schema_value_removed", status: 422 };
+    }
+  }
+  for (const draft of drafts) {
+    if (draft.value_kind !== "range") continue;
+    const bounds = rangeBounds(draft);
+    if (bounds === "bad") return { code: "schema_bad_range", status: 422 };
+    if (bounds === "many") return { code: "schema_range_too_many_values", status: 422 };
+  }
+  return null;
+}
+
+/** `preview_hash` предпросмотра: тело, действующая версия и её `revision` (спека 3в §2.5). */
+function schemaEditHash(familyId: number, current: FamilySchema, drafts: SchemaEditDraft[]): string {
+  return `edit-${familyId}-${current.version}-r${current.revision}-${JSON.stringify(drafts)}`;
+}
+
+/** Сводка правки: варианты не меняются, пока не добавлен главный параметр; запрашивается только новый параметр. */
+function schemaEditSummaryOf(
+  familyId: number,
+  current: FamilySchema,
+  drafts: SchemaEditDraft[]
+): SchemaEditSummary {
+  const variants = handlerState.familyVariants[familyId] ?? [];
+  const before = variants.filter((v) => v.status === "active").length;
+  const addedMain = drafts.some((d) => d.ordinal === null && d.role === "main");
+  let nextOrdinal = Math.max(0, ...current.parameters.map((p) => p.ordinal));
+  const asked = drafts
+    .filter((d) => d.ordinal === null)
+    .map((d) => {
+      nextOrdinal += 1;
+      return { ordinal: nextOrdinal, name: d.name.trim(), contexts: SCHEMA_PREVIEW_CONTEXTS };
+    });
+  const moves: SchemaEditSummary["value_moves"] = [];
+  const retired: SchemaEditSummary["retired"] = [];
+  for (const draft of drafts) {
+    const existing = draft.ordinal === null ? undefined : current.parameters.find((p) => p.ordinal === draft.ordinal);
+    if (!existing || existing.value_kind !== "exact" || draft.value_kind !== "range") continue;
+    const bounds = rangeBounds(draft);
+    if (bounds === "bad" || bounds === "many") continue;
+    const labels = rangeLabels(bounds.start, bounds.stop, bounds.step);
+    for (const value of existing.values.filter((v) => v.merged_into_id === null)) {
+      const number = decimalOf(value.value.replace(",", "."));
+      if (number === null) continue;
+      const index =
+        number < bounds.start
+          ? 0
+          : number >= bounds.stop
+            ? labels.length - 1
+            : 1 + Math.floor((number - bounds.start) / bounds.step);
+      moves.push({ parameter: existing.name, from_value: value.value, to_value: labels[index], contexts: value.contexts });
+      retired.push({ parameter: existing.name, value: value.value, contexts: value.contexts });
+    }
+  }
+  return {
+    variants_before: before,
+    variants_after_now: before,
+    variants_pending_answers: addedMain,
+    asked_by_parameter: asked,
+    reserve_usd: asked.length > 0 ? "0.4200" : "0",
+    expected_cached_usd: asked.length > 0 ? "0.0600" : "0",
+    value_moves: moves,
+    retired,
+    refreshing_contexts: 0,
+    repriced_pending_jobs: 0,
+    preview_hash: schemaEditHash(familyId, current, drafts),
+    ...handlerState.schemaEditSummary,
+  };
+}
+
+/** Применение правки на месте: параметры по номерам, затронутый параметр модели становится человеческим, `revision` растёт. */
+function applySchemaEdit(current: FamilySchema, drafts: SchemaEditDraft[]): FamilySchema {
+  let nextOrdinal = Math.max(0, ...current.parameters.map((p) => p.ordinal));
+  const parameters: FamilySchemaParameter[] = drafts.map((draft) => {
+    const existing = draft.ordinal === null ? undefined : current.parameters.find((p) => p.ordinal === draft.ordinal);
+    const ordinal = existing?.ordinal ?? (nextOrdinal += 1);
+    const merged = (existing?.values ?? []).filter((v) => v.merged_into_id !== null);
+    let values: FamilySchemaValue[];
+    let range: FamilySchemaParameter["range"] = null;
+    if (draft.value_kind === "range") {
+      const bounds = rangeBounds(draft) as { start: number; stop: number; step: number };
+      range = { start: String(bounds.start), stop: String(bounds.stop), step: String(bounds.step) };
+      values = rangeLabels(bounds.start, bounds.stop, bounds.step).map((label) => {
+        const found = existing?.values.find((v) => v.merged_into_id === null && v.value === label);
+        if (found) return found;
+        handlerState.nextSchemaValueId += 1;
+        return schemaValue(handlerState.nextSchemaValueId, label, "manual");
+      });
+    } else {
+      values = draft.values.map((text) => {
+        const found = existing?.values.find(
+          (v) => v.merged_into_id === null && normalizeValue(v.value) === normalizeValue(text)
+        );
+        if (found) return { ...found, value: text.trim() };
+        handlerState.nextSchemaValueId += 1;
+        return schemaValue(handlerState.nextSchemaValueId, text.trim(), "manual");
+      });
+    }
+    const shapeOf = (p: { name: string; role: string; value_kind: string; closed: boolean }, texts: string[]) =>
+      JSON.stringify([p.name, p.role, p.value_kind, p.closed, texts]);
+    const touched =
+      !existing ||
+      shapeOf(existing, existing.values.filter((v) => v.merged_into_id === null).map((v) => v.value)) !==
+        shapeOf(
+          { name: draft.name.trim(), role: draft.role, value_kind: draft.value_kind, closed: draft.value_kind === "range" ? true : draft.closed },
+          values.map((v) => v.value)
+        );
+    return schemaParameter(
+      existing?.id ?? (handlerState.nextSchemaParameterId += 1),
+      ordinal,
+      draft.name.trim(),
+      [...values, ...merged],
+      {
+        role: draft.role,
+        value_kind: draft.value_kind,
+        closed: draft.value_kind === "range" ? true : draft.closed,
+        range,
+        origin: touched ? "human" : (existing?.origin ?? "human"),
+        off_list: existing?.off_list ?? [],
+        refreshing: existing?.refreshing ?? 0,
+      }
+    );
+  });
+  return { ...current, parameters, revision: current.revision + 1 };
 }
 
 /** Каноническое значение по цепочке `merged_into_id` (`canonical_value_id` сервиса). */
@@ -2405,6 +2649,10 @@ export function resetHandlerState() {
   handlerState.nextSchemaValueId = 2000;
   handlerState.schemaRefusal = null;
   handlerState.schemaRequests = [];
+  handlerState.schemaEditPreviews = [];
+  handlerState.schemaEditSummary = null;
+  handlerState.schemaEditPreviewGate = null;
+  handlerState.nextSchemaParameterId = 900;
   handlerState.schemaPreviewHashes = {};
   handlerState.discovery = initialDiscovery();
 }
@@ -5064,6 +5312,8 @@ export const handlers = [
       ...preview,
       // Оценка неполна, пока у семьи нет текущей схемы (`crud/work_variants.py::rebuild_preview`).
       values_included: schemaOf(familyId).version !== null,
+      // Значения оцениваются по нынешним параметрам модели, пока они вошли в оценку (спека 3в §2.8).
+      values_approximate: schemaOf(familyId).version !== null,
     });
   }),
   http.post("/api/v1/semantic/families/:id/schema/rebuild", async ({ params, request }) => {
@@ -5089,78 +5339,71 @@ export const handlers = [
       status: "building",
     });
   }),
-  http.patch("/api/v1/semantic/families/:id/schema", async ({ params, request }) => {
+  http.post("/api/v1/semantic/families/:id/schema/edit-preview", async ({ params, request }) => {
     const familyId = Number(params.id);
-    const body = (await request.json()) as {
-      parameters: Array<{ ordinal: number; name: string; values: string[] }>;
-    };
-    handlerState.schemaRequests.push({ action: "update", familyId, body });
-    const refusal = takeSchemaRefusal("update");
-    if (refusal) return refusal;
-    // `_checked_edits` — до замка семьи: номера различны и в 1..3 (пропуски и пустой список
-    // допустимы), имена и значения непусты.
-    const ordinals = body.parameters.map((p) => p.ordinal);
-    if (new Set(ordinals).size !== ordinals.length || ordinals.some((o) => o < 1 || o > 3)) {
-      return schemaRefusalResponse("schema_bad_ordinals", 422);
-    }
-    if (body.parameters.some((p) => !normalizeValue(p.name) || p.values.some((v) => !normalizeValue(v)))) {
-      return schemaRefusalResponse("schema_blank", 422);
-    }
-    // `update_schema`: семья есть и активна, пересборки нет, текущая версия есть.
+    const body = (await request.json()) as { parameters: SchemaEditDraft[] };
+    handlerState.schemaEditPreviews.push({ familyId, body });
+    if (handlerState.schemaEditPreviewGate) await handlerState.schemaEditPreviewGate(body);
+    // Порядок сервиса: семья есть и активна, версия есть и не `building`, затем проверки тела.
     const family = schemaFamilyOf(familyId);
     if (!family) return schemaRefusalResponse("family_not_found", 404);
     if (family.status !== "active") return schemaRefusalResponse("family_not_active", 409);
     const current = schemaOf(familyId);
     if (current.building) return schemaRefusalResponse("schema_building", 409);
     if (current.version === null) return schemaRefusalResponse("schema_no_current", 409);
-    // `_plan_edit`, по номерам по возрастанию: другое имя по тому же номеру — смысловое
-    // переименование; пропавшее живое значение — удаление (только слияние).
-    for (const edit of [...body.parameters].sort((a, b) => a.ordinal - b.ordinal)) {
-      const existing = current.parameters.find((p) => p.ordinal === edit.ordinal);
-      if (!existing) continue;
-      if (normalizeValue(existing.name) !== normalizeValue(edit.name)) {
-        return schemaRefusalResponse("schema_parameter_renamed", 422);
-      }
-      const sent = new Set(edit.values.map(normalizeValue));
-      const removed = existing.values.some(
-        (v) => v.merged_into_id === null && !sent.has(normalizeValue(v.value))
-      );
-      if (removed) return schemaRefusalResponse("schema_value_removed", 422);
+    const refusal = schemaEditRefusalOf(body.parameters, current);
+    if (refusal) return schemaRefusalResponse(refusal.code, refusal.status);
+    return HttpResponse.json(schemaEditSummaryOf(familyId, current, body.parameters));
+  }),
+  http.patch("/api/v1/semantic/families/:id/schema", async ({ params, request }) => {
+    const familyId = Number(params.id);
+    const body = (await request.json()) as { parameters: SchemaEditDraft[]; preview_hash: string };
+    handlerState.schemaRequests.push({ action: "update", familyId, body });
+    const refusal = takeSchemaRefusal("update");
+    if (refusal) return refusal;
+    const family = schemaFamilyOf(familyId);
+    if (!family) return schemaRefusalResponse("family_not_found", 404);
+    if (family.status !== "active") return schemaRefusalResponse("family_not_active", 409);
+    const current = schemaOf(familyId);
+    if (current.building) return schemaRefusalResponse("schema_building", 409);
+    if (current.version === null) return schemaRefusalResponse("schema_no_current", 409);
+    const invalid = schemaEditRefusalOf(body.parameters, current);
+    if (invalid) return schemaRefusalResponse(invalid.code, invalid.status);
+    // Сверка под замком семьи: хэш пересчитывается по телу и нынешней `revision`.
+    if (body.preview_hash !== schemaEditHash(familyId, current, body.parameters)) {
+      return schemaRefusalResponse("preview_changed", 409);
     }
-    const currentOrdinals = new Set(current.parameters.map((p) => p.ordinal));
-    let structural =
-      currentOrdinals.size !== ordinals.length || ordinals.some((o) => !currentOrdinals.has(o));
-    const parameters = [...body.parameters]
-      .sort((a, b) => a.ordinal - b.ordinal)
-      .map((edit) => {
-        const existing = current.parameters.find((p) => p.ordinal === edit.ordinal);
-        const merged = (existing?.values ?? []).filter((v) => v.merged_into_id !== null);
-        const live = edit.values.map((text) => {
-          const found = existing?.values.find(
-            (v) => v.merged_into_id === null && normalizeValue(v.value) === normalizeValue(text)
-          );
-          if (found) return { ...found, value: text.trim() };
-          structural = true;
-          handlerState.nextSchemaValueId += 1;
-          return {
-            id: handlerState.nextSchemaValueId,
-            value: text.trim(),
-            origin: "manual" as const,
-            merged_into_id: null,
-          };
-        });
-        return {
-          id: existing?.id ?? 900 + edit.ordinal,
-          ordinal: edit.ordinal,
-          name: edit.name.trim(),
-          values: [...live, ...merged],
-        };
-      });
+    const next = applySchemaEdit(current, body.parameters);
+    handlerState.familySchemas[familyId] = next;
+    return HttpResponse.json(next);
+  }),
+  http.post("/api/v1/semantic/families/:id/schema/off-list/resolve", async ({ params, request }) => {
+    const familyId = Number(params.id);
+    const body = (await request.json()) as { parameter_id: number; text_norm: string; target_value_id: number };
+    handlerState.schemaRequests.push({ action: "resolve", familyId, body });
+    const refusal = takeSchemaRefusal("resolve");
+    if (refusal) return refusal;
+    const current = schemaOf(familyId);
+    const parameter = current.parameters.find((p) => p.id === body.parameter_id);
+    if (!schemaFamilyOf(familyId) || !parameter) return schemaRefusalResponse("parameter_not_found", 404);
+    const entry = parameter.off_list.find((e) => e.text_norm === body.text_norm);
+    if (!entry) return schemaRefusalResponse("off_list_not_found", 404);
+    const target = parameter.values.find((v) => v.id === body.target_value_id);
+    if (!target || target.merged_into_id !== null) return schemaRefusalResponse("off_list_target_invalid", 422);
     const next: FamilySchema = {
       ...current,
-      status: "frozen",
-      version: (current.version ?? 0) + (structural ? 1 : 0),
-      parameters,
+      revision: current.revision + 1,
+      parameters: current.parameters.map((p) =>
+        p.id !== parameter.id
+          ? p
+          : {
+              ...p,
+              off_list: p.off_list.filter((e) => e.text_norm !== body.text_norm),
+              values: p.values.map((v) =>
+                v.id === target.id ? { ...v, contexts: v.contexts + entry.contexts, rows: v.rows + entry.rows } : v
+              ),
+            }
+      ),
     };
     handlerState.familySchemas[familyId] = next;
     return HttpResponse.json(next);
@@ -5211,6 +5454,8 @@ export const handlers = [
 
     handlerState.familySchemas[familyId] = {
       ...current,
+      // Слияние — писатель действующей версии на месте: `revision` растёт (спека 3в §2.2).
+      revision: current.revision + 1,
       parameters: current.parameters.map((p) =>
         p.id !== parameter.id
           ? p
@@ -5222,11 +5467,14 @@ export const handlers = [
     };
     // Варианты (§2.8): набор с целью уже есть — контексты переезжают к нему, источник
     // архивируется (архивная цель возвращается в `active`); иначе набор переписывается на месте.
+    // Набор варианта — значения ГЛАВНЫХ параметров (спека 3в §2.3): позиция — среди главных,
+    // у второстепенного параметра варианты не меняются.
+    const mainIndex = current.parameters.filter((p) => p.role === "main").findIndex((p) => p.id === parameter.id);
     const variants = (handlerState.familyVariants[familyId] ?? []).map((v) => ({ ...v, values: [...v.values] }));
     const mergedVariants: Array<{ source_variant_id: number; target_variant_id: number }> = [];
     for (const variant of variants) {
-      if (variant.values[parameterIndex] !== source.value) continue;
-      const wanted = variant.values.map((text, i) => (i === parameterIndex ? target.value : text));
+      if (mainIndex < 0 || variant.values[mainIndex] !== source.value) continue;
+      const wanted = variant.values.map((text, i) => (i === mainIndex ? target.value : text));
       const existing = variants.find(
         (other) => other.id !== variant.id && other.values.every((text, i) => text === wanted[i])
       );

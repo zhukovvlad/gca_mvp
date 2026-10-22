@@ -4,8 +4,9 @@
 
 Таблица §2.14 — единственный источник истины для ``EVENT_REQUIRED_KEYS``:
 пятнадцать типов событий, каждому — свой набор обязательных ключей payload;
-шесть типов миграции 0019 (спека вариантов §2.13) и `context_reopened` миграции
-0021 (спека 3б §2.14) добавлены в те же реестры.
+шесть типов миграции 0019 (спека вариантов §2.13), `context_reopened` миграции
+0021 (спека 3б §2.14) и `family_schema_edited` миграции 0022 (спека 3в §2.5)
+добавлены в те же реестры.
 Схема (миграция 0017, задача 1) держит закрытый список ``event_type`` и
 равносильность «тип ↔ предмет» (``CK_EVENT_SUBJECT_BY_TYPE``); состав ключей
 payload схемой не выражается — его держит валидатор здесь, ДО того, как
@@ -53,9 +54,9 @@ class SemanticEventError(Exception):
     закрытого множества. Кидается ДО того, как что-либо достигает базы."""
 
 
-#: Ровно восемь типов, предмет которых — семья: пять из спеки §2.14 и три из
-#: спеки вариантов §2.13 (равно множеству `CK_EVENT_SUBJECT_BY_TYPE` — сверка
-#: внешняя, тестом).
+#: Ровно девять типов, предмет которых — семья: пять из спеки §2.14, три из
+#: спеки вариантов §2.13 и `family_schema_edited` (спека 3в §2.5); равно множеству
+#: `CK_EVENT_SUBJECT_BY_TYPE` — сверка внешняя, тестом.
 FAMILY_EVENT_TYPES: frozenset[str] = frozenset(
     {
         "family_created",
@@ -66,6 +67,7 @@ FAMILY_EVENT_TYPES: frozenset[str] = frozenset(
         "family_schema_frozen",
         "family_schema_value_added",
         "family_variants_merged",
+        "family_schema_edited",
     }
 )
 
@@ -134,6 +136,14 @@ EVENT_REQUIRED_KEYS: dict[str, frozenset[str]] = {
     ),
     "family_variants_merged": frozenset(
         {"parameter_id", "source_value_id", "target_value_id", "merged_variants"}
+    ),
+    # Спека 3в §2.5: правка схемы на месте — версия, номер правки, перечень
+    # изменений, число вариантов до и после, число поставленных заданий.
+    "family_schema_edited": frozenset(
+        {
+            "schema_id", "revision", "changes", "variants_before", "variants_after",
+            "jobs_enqueued",
+        }
     ),
 }
 

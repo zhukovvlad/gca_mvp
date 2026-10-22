@@ -714,6 +714,7 @@ class TestEventSubjectByTypeExpression:
             "family_created", "family_updated", "family_activated",
             "family_archived", "family_merged",
             "family_schema_frozen", "family_schema_value_added", "family_variants_merged",
+            "family_schema_edited",
         }
         assert parsed == expected_family_types
 

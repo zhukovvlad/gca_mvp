@@ -4,7 +4,7 @@ import { delay, http, HttpResponse } from "msw";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { FamiliesTab } from "@/pages/families/FamiliesTab";
-import { handlerState } from "@/test/handlers";
+import { SCHEMA_FAMILY_ID, handlerState, schemaParameter, schemaValue } from "@/test/handlers";
 import { server } from "@/test/server";
 import { renderWithProviders } from "@/test/utils";
 
@@ -683,5 +683,127 @@ describe("FamiliesTab", () => {
     expect(await screen.findByRole("heading", { name: "Схема и варианты" })).toBeInTheDocument();
     expect(await screen.findByText("Версия схемы 2", {}, { timeout: 8000 })).toBeInTheDocument();
     expect(await screen.findByRole("table", { name: "Варианты семьи" }, { timeout: 8000 })).toBeInTheDocument();
+  });
+});
+
+describe("FamiliesTab: окно слияния семей называет параметры, которые пропадут (спека 3в §2.9)", () => {
+  async function openMergeOfSchemaFamily() {
+    const user = userEvent.setup();
+    await renderTab();
+    await user.click(screen.getByRole("combobox", { name: "Статус" }));
+    await user.click(await screen.findByRole("option", { name: "активна" }));
+    await user.click(await screen.findByText("Кровельные работы", {}, { timeout: 8000 }));
+    await screen.findByLabelText("Определение");
+    await user.click(screen.getByRole("button", { name: "Слить" }));
+    return await screen.findByRole("dialog");
+  }
+
+  it("параметры источника человека или второстепенные перечислены «пропадут вместе со схемой»", async () => {
+    const schema = handlerState.familySchemas[SCHEMA_FAMILY_ID];
+    schema.parameters.push(
+      schemaParameter(103, 3, "Армирование", [schemaValue(1301, "сетка")], { role: "secondary", origin: "model" }),
+      schemaParameter(104, 4, "Тип гидроизоляции", [schemaValue(1401, "оклеечная")], { origin: "human" })
+    );
+
+    const dialog = await openMergeOfSchemaFamily();
+
+    const note = await within(dialog).findByRole("note", {}, { timeout: 8000 });
+    expect(note).toHaveTextContent("Пропадут вместе со схемой семьи-источника:");
+    expect(within(note).getByText(/Армирование/)).toHaveTextContent("второстепенный");
+    expect(within(note).getByText(/Тип гидроизоляции/)).toHaveTextContent("ваш");
+    // Параметры модели, главные и не правленные, в перечне не нужны: у цели свои.
+    expect(within(note).queryByText(/Материал/)).not.toBeInTheDocument();
+    expect(within(note).queryByText(/Толщина/)).not.toBeInTheDocument();
+  });
+
+  it("у источника только главные параметры модели перечня нет", async () => {
+    const dialog = await openMergeOfSchemaFamily();
+    await within(dialog).findByText("Целевая семья");
+    // Схема источника прочитана тем же маршрутом, что и блок схемы: перечня всё равно нет.
+    await waitFor(() => expect(within(dialog).queryByRole("note")).not.toBeInTheDocument());
+    expect(within(dialog).queryByText("Пропадут вместе со схемой семьи-источника:")).not.toBeInTheDocument();
+  });
+});
+
+describe("FamiliesTab: окно слияния — схема источника читается только у открытого окна", () => {
+  it("панель семьи без окна слияния не запрашивает схему несуществующей семьи 0", async () => {
+    // Ревью задачи 8, реревью 1: `enabled: family !== null` у `useFamilySchema` — иначе закрытое
+    // окно слияния запрашивало бы `/families/0/schema` при каждом открытии панели.
+    const requested: string[] = [];
+    server.events.on("request:start", ({ request }) => {
+      requested.push(new URL(request.url).pathname);
+    });
+    try {
+      const user = userEvent.setup();
+      await renderTab();
+      await user.click(screen.getByRole("combobox", { name: "Статус" }));
+      await user.click(await screen.findByRole("option", { name: "активна" }));
+      await user.click(await screen.findByText("Кровельные работы", {}, { timeout: 8000 }));
+      await screen.findByLabelText("Определение");
+      await waitFor(() => expect(requested).toContain(`/api/v1/semantic/families/${SCHEMA_FAMILY_ID}/schema`), {
+        timeout: 8000,
+      });
+    } finally {
+      server.events.removeAllListeners("request:start");
+    }
+
+    expect(requested).not.toContain("/api/v1/semantic/families/0/schema");
+  });
+});
+
+describe("FamiliesTab: окно слияния — состояние схемы источника (спека 3в §2.9)", () => {
+  /** Окно слияния «Кровельных работ» с выбранной целью; `setup` готовит ответ схемы до открытия панели. */
+  async function openMergeWithTarget(setup?: () => void) {
+    const base = handlerState.workFamilies.find((f) => f.id === SCHEMA_FAMILY_ID)!;
+    handlerState.workFamilies.push({ ...base, id: 990, title: "Другая активная семья" });
+    setup?.();
+    const user = userEvent.setup();
+    await renderTab();
+    await user.click(screen.getByRole("combobox", { name: "Статус" }));
+    await user.click(await screen.findByRole("option", { name: "активна" }));
+    await user.click(await screen.findByText("Кровельные работы", {}, { timeout: 8000 }));
+    await user.click(await screen.findByRole("button", { name: "Слить" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("combobox", { name: "Целевая семья" }));
+    await user.click(await screen.findByRole("option", { name: "Другая активная семья" }));
+    return dialog;
+  }
+
+  it("схема источника ещё грузится: подпись называет состояние, «Слить» недоступна даже при выбранной цели", async () => {
+    const dialog = await openMergeWithTarget(() =>
+      server.use(
+        http.get("/api/v1/semantic/families/:id/schema", async () => {
+          await delay("infinite");
+          return HttpResponse.json({});
+        })
+      )
+    );
+
+    expect(within(dialog).getByText(/Загружаю схему семьи-источника/)).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Слить" })).toBeDisabled();
+    expect(within(dialog).queryByText("Пропадут вместе со схемой семьи-источника:")).not.toBeInTheDocument();
+  });
+
+  it("запрос схемы источника упал: подпись об ошибке, «Слить» недоступна", async () => {
+    const dialog = await openMergeWithTarget(() =>
+      server.use(
+        http.get("/api/v1/semantic/families/:id/schema", () =>
+          HttpResponse.json({ detail: { code: "boom" } }, { status: 500 })
+        )
+      )
+    );
+
+    expect(await within(dialog).findByText(/Не удалось получить схему семьи-источника/, {}, { timeout: 8000 })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Слить" })).toBeDisabled();
+    expect(within(dialog).queryByText(/Загружаю схему/)).not.toBeInTheDocument();
+  });
+
+  it("соседний случай: схема пришла, пропадать нечего — ни подписей, ни перечня, «Слить» доступна", async () => {
+    const dialog = await openMergeWithTarget();
+
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "Слить" })).toBeEnabled());
+    expect(within(dialog).queryByText(/Загружаю схему/)).not.toBeInTheDocument();
+    expect(within(dialog).queryByText(/Не удалось получить схему/)).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("note")).not.toBeInTheDocument();
   });
 });

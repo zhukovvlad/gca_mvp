@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { renderWithProviders } from "@/test/utils";
-import type { ContextVariantData } from "@/types/domain";
+import type { ContextValue, ContextVariantData } from "@/types/domain";
 
 import { ContextVariant } from "./ContextVariant";
 
@@ -13,13 +13,21 @@ import { ContextVariant } from "./ContextVariant";
  * с переходом к членствам, пометка «вариант пересчитывается».
  */
 
+/** Значение карточки: роль «главный», без пометок — поля, которых тест не называет. */
+function val(
+  value: Pick<ContextValue, "parameter_id" | "ordinal" | "name" | "value_id" | "value" | "source"> &
+    Partial<ContextValue>
+): ContextValue {
+  return { role: "main", refreshing: false, off_list_text: null, ...value };
+}
+
 function variantOf(overrides: Partial<ContextVariantData> = {}): ContextVariantData {
   return {
     variant_id: 7,
     values: [
-      { parameter_id: 11, ordinal: 1, name: "Материал", value_id: 101, value: "металлочерепица", source: "name" },
-      { parameter_id: 12, ordinal: 2, name: "Толщина", value_id: 104, value: "0,5 мм", source: "path" },
-      { parameter_id: 13, ordinal: 3, name: "Цвет", value_id: 109, value: "RAL 3005", source: "manual" },
+      val({ parameter_id: 11, ordinal: 1, name: "Материал", value_id: 101, value: "металлочерепица", source: "name" }),
+      val({ parameter_id: 12, ordinal: 2, name: "Толщина", value_id: 104, value: "0,5 мм", source: "path" }),
+      val({ parameter_id: 13, ordinal: 3, name: "Цвет", value_id: 109, value: "RAL 3005", source: "manual" }),
     ],
     split_hint: false,
     pending: null,
@@ -51,8 +59,8 @@ describe("ContextVariant: значения", () => {
     renderVariant(
       variantOf({
         values: [
-          { parameter_id: 11, ordinal: 1, name: "Материал", value_id: null, value: null, source: "none" },
-          { parameter_id: 12, ordinal: 2, name: "Толщина", value_id: null, value: null, source: "path_conflict" },
+          val({ parameter_id: 11, ordinal: 1, name: "Материал", value_id: null, value: null, source: "none" }),
+          val({ parameter_id: 12, ordinal: 2, name: "Толщина", value_id: null, value: null, source: "path_conflict" }),
         ],
       })
     );
@@ -68,9 +76,9 @@ describe("ContextVariant: значения", () => {
     renderVariant(
       variantOf({
         values: [
-          { parameter_id: 11, ordinal: 1, name: "Материал", value_id: 101, value: "металлочерепица", source: "name" },
-          { parameter_id: 12, ordinal: 2, name: "Толщина", value_id: null, value: null, source: "path_conflict" },
-          { parameter_id: 13, ordinal: 3, name: "Цвет", value_id: null, value: null, source: "none" },
+          val({ parameter_id: 11, ordinal: 1, name: "Материал", value_id: 101, value: "металлочерепица", source: "name" }),
+          val({ parameter_id: 12, ordinal: 2, name: "Толщина", value_id: null, value: null, source: "path_conflict" }),
+          val({ parameter_id: 13, ordinal: 3, name: "Цвет", value_id: null, value: null, source: "none" }),
         ],
       })
     );
@@ -144,5 +152,105 @@ describe("ContextVariant: пометки", () => {
     renderVariant(variantOf({ values_job_status: "privacy_hold" }));
 
     expect(document.body.textContent).not.toMatch(/privacy_hold|running|pending/);
+  });
+});
+
+describe("ContextVariant: главные и второстепенные раздельно (спека 3в §2.11)", () => {
+  const MAIN = val({ parameter_id: 11, ordinal: 1, name: "Класс бетона", value_id: 101, value: "B25", source: "name" });
+  const SECONDARY = val({
+    parameter_id: 14,
+    ordinal: 4,
+    name: "Армирование",
+    value_id: 140,
+    value: "120–140",
+    source: "name",
+    role: "secondary",
+  });
+
+  it("главные стоят в строке «Вариант», второстепенные — отдельной строкой «Второстепенные» ниже", () => {
+    renderVariant(variantOf({ values: [MAIN, SECONDARY] }));
+
+    const variantRow = screen.getByText("Вариант").nextElementSibling as HTMLElement;
+    expect(variantRow).toHaveTextContent("Класс бетона: B25");
+    expect(variantRow).not.toHaveTextContent("Армирование");
+    const secondaryRow = screen.getByText("Второстепенные").nextElementSibling as HTMLElement;
+    expect(secondaryRow).toHaveTextContent("Армирование: 120–140");
+    expect(secondaryRow).toHaveTextContent("по наименованию");
+    expect(secondaryRow).not.toHaveTextContent("Класс бетона");
+  });
+
+  it("без второстепенных строки «Второстепенные» нет", () => {
+    renderVariant(variantOf({ values: [MAIN] }));
+
+    expect(screen.queryByText("Второстепенные")).not.toBeInTheDocument();
+  });
+
+  it("только второстепенные: вариант читается «не уточнено», второстепенные — ниже", () => {
+    renderVariant(variantOf({ values: [SECONDARY] }));
+
+    expect(screen.getByText("Вариант").nextElementSibling).toHaveTextContent(/^не уточнено$/);
+    expect(screen.getByText("Второстепенные").nextElementSibling).toHaveTextContent("Армирование: 120–140");
+  });
+
+  it("значение, которое ждёт перезапроса, помечено «уточняется»; без ожидания пометки нет", () => {
+    renderVariant(
+      variantOf({
+        values: [
+          val({ ...MAIN, refreshing: true }),
+          val({ parameter_id: 12, ordinal: 2, name: "Тип", value_id: 102, value: "балки", source: "name" }),
+        ],
+      })
+    );
+
+    expect(screen.getByText("Класс бетона").closest("li")).toHaveTextContent("уточняется");
+    expect(screen.getByText("Тип").closest("li")).not.toHaveTextContent("уточняется");
+  });
+
+  it("текст не из списка читается «не из списка: «…»» вместо «не уточнено», без слова источника", () => {
+    renderVariant(
+      variantOf({
+        values: [
+          val({
+            parameter_id: 11,
+            ordinal: 1,
+            name: "Толщина",
+            value_id: null,
+            value: null,
+            source: "off_list",
+            off_list_text: "5 см",
+          }),
+        ],
+      })
+    );
+
+    const item = screen.getByText("Толщина").closest("li")!;
+    expect(item).toHaveTextContent("Толщина: не из списка: «5 см»");
+    expect(item).not.toHaveTextContent("не уточнено");
+    // Без слова источника: хвост «· не из списка» повторил бы саму пометку.
+    expect(item).toHaveTextContent(/^Толщина: не из списка: «5 см»$/);
+    expect(document.body.textContent).not.toMatch(/off_list/);
+  });
+
+  it("значение с текстом не из списка и пометкой «уточняется» несёт обе", () => {
+    renderVariant(
+      variantOf({
+        values: [
+          val({
+            parameter_id: 11,
+            ordinal: 1,
+            name: "Толщина",
+            value_id: null,
+            value: null,
+            source: "off_list",
+            off_list_text: "5 см",
+            refreshing: true,
+          }),
+        ],
+      })
+    );
+
+    const item = screen.getByText("Толщина").closest("li")!;
+    expect(item).toHaveTextContent("не из списка: «5 см»");
+    expect(item).toHaveTextContent("уточняется");
   });
 });

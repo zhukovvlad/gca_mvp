@@ -7,6 +7,9 @@ import type {
   FamilySource,
   FamilyVariantStatus,
   NameRole,
+  ParameterOrigin,
+  ParameterRole,
+  ParameterValueKind,
   SchemaValueOrigin,
   SemanticKind,
   SemanticState,
@@ -70,7 +73,14 @@ export const VARIANT_VALUE_SOURCE_LABEL: Record<ContextValueSource, string> = {
   manual: "вручную",
   path_conflict: "разделы расходятся",
   none: "не уточнено",
+  off_list: "не из списка",
 };
+
+/** Пометки строки значения карточки контекста (спека 3в §2.11). */
+export const VALUE_REFRESHING_LABEL = "уточняется";
+export function valueOffListLabel(text: string): string {
+  return `не из списка: «${text}»`;
+}
 
 /** Фильтр очереди контекстов по наличию варианта. */
 export const VARIANT_STATE_LABEL: Record<VariantState, string> = {
@@ -250,7 +260,17 @@ export const SCHEMA_REFUSAL_LABEL: Record<string, string> = {
     "Параметр нельзя переименовать по смыслу: это новый параметр. Допустима только правка написания.",
   schema_value_removed: "Значение нельзя удалить — только слить с другим.",
   schema_blank: "Имя параметра и его значения не должны быть пустыми.",
-  schema_bad_ordinals: "Параметров может быть от одного до трёх, номера не повторяются.",
+  schema_bad_ordinals: "Параметра с таким номером среди действующих нет: обновите экран.",
+  schema_too_many_parameters: "Параметров может быть не больше десяти.",
+  schema_ordinals_exhausted: "У схемы кончились номера параметров: пересоберите схему.",
+  schema_duplicate_parameter: "Два параметра называются одинаково: имена должны различаться.",
+  schema_bad_range:
+    "Границы диапазона неверны: нижняя должна быть меньше верхней, шаг больше нуля, а число шагов целым.",
+  schema_range_too_many_values: "В диапазоне слишком много значений: увеличьте шаг или сузьте границы.",
+  off_list_not_found: "Такого значения не из списка больше нет: обновите экран.",
+  off_list_target_invalid:
+    "Целью может быть только действующее значение этого же параметра: слитое или выведенное не подходит.",
+  merge_value_retired: "Значение выведено из списка: его нельзя слить и нельзя выбрать целью слияния.",
   schema_building: "У семьи идёт пересборка схемы: сначала отмените её.",
   schema_no_building: "Пересборка уже не идёт: отменять нечего.",
   schema_no_current: "У семьи ещё нет схемы.",
@@ -267,6 +287,51 @@ export const SCHEMA_REFUSAL_LABEL: Record<string, string> = {
 export function schemaRefusalLabel(code: string | undefined): string {
   return (code !== undefined && SCHEMA_REFUSAL_LABEL[code]) || SCHEMA_REFUSAL_FALLBACK;
 }
+
+/** Предел активных параметров схемы семьи (спека 3в §2.2); тот же держит сервер. */
+export const MAX_SCHEMA_PARAMETERS = 10;
+
+/** Группы списка параметров окна правки и блока схемы (спека 3в §2.11). */
+export const PARAMETER_ROLE_GROUP_LABEL: Record<ParameterRole, string> = {
+  main: "Главные — определяют вариант",
+  secondary: "Второстепенные — вариант не делят",
+};
+
+export const PARAMETER_ROLE_LABEL: Record<ParameterRole, string> = {
+  main: "Главный",
+  secondary: "Второстепенный",
+};
+
+export const PARAMETER_ROLE_HINT =
+  "Главный параметр делит семью на варианты, и у каждого варианта свой норматив. Второстепенный записывается у строки и виден рядом с ценой, но вариант не делит.";
+
+export const PARAMETER_KIND_LABEL: Record<ParameterValueKind, string> = {
+  exact: "Точные",
+  range: "Диапазоны",
+};
+
+/** Чей параметр: «правлен вами» — параметр модели, которого касается несохранённая правка. */
+export const PARAMETER_ORIGIN_LABEL: Record<ParameterOrigin, string> = {
+  model: "модели",
+  human: "ваш",
+};
+export const PARAMETER_ORIGIN_EDITED_LABEL = "модели · правлен вами";
+export const PARAMETER_NEW_LABEL = "новый";
+
+/** Показывается вместо сводки, пока сервер не ответил на предпросмотр правки. */
+export const SCHEMA_EDIT_PENDING_LABEL = "Считаю, что изменит правка…";
+
+/** Сохранение отказано `preview_changed`: сводка пересчитана, правка в окне осталась. */
+export const SCHEMA_EDIT_PREVIEW_CHANGED_NOTICE =
+  "Схема изменилась, пока окно было открыто. Сводка пересчитана: проверьте её и сохраните ещё раз — ваша правка осталась.";
+
+/** Окно слияния семей: параметры источника, у которых нет аналога в схеме цели (спека 3в §2.9). */
+export const MERGE_FAMILY_SCHEMA_LOSS_TITLE =
+  "Пропадут вместе со схемой семьи-источника:";
+export const MERGE_FAMILY_SCHEMA_LOADING =
+  "Загружаю схему семьи-источника: что пропадёт при слиянии, пока неизвестно.";
+export const MERGE_FAMILY_SCHEMA_FAILED =
+  "Не удалось получить схему семьи-источника: что пропадёт при слиянии, неизвестно. Закройте окно и откройте его заново.";
 
 /**
  * `work_category_source` не заведён отдельным типом в `types/domain.ts`
@@ -358,7 +423,8 @@ export type SemanticEventType =
   | "family_schema_frozen"
   | "family_schema_value_added"
   | "family_variants_merged"
-  | "context_reopened";
+  | "context_reopened"
+  | "family_schema_edited";
 
 /** Рантайм-список значений {@link SemanticEventType} — тот же порядок, для перебора тестами. */
 export const EVENT_TYPE_VALUES: readonly SemanticEventType[] = [
@@ -384,6 +450,7 @@ export const EVENT_TYPE_VALUES: readonly SemanticEventType[] = [
   "family_schema_value_added",
   "family_variants_merged",
   "context_reopened",
+  "family_schema_edited",
 ];
 
 export const EVENT_LABEL: Record<SemanticEventType, string> = {
@@ -409,6 +476,7 @@ export const EVENT_LABEL: Record<SemanticEventType, string> = {
   family_schema_value_added: "значение схемы добавлено",
   family_variants_merged: "значения схемы слиты",
   context_reopened: "возвращено в разбор",
+  family_schema_edited: "схема изменена",
 };
 
 /** Подпись события журнала; неизвестный код (будущее событие) — сам код, не падает. */

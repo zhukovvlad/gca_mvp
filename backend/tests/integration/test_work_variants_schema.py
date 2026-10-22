@@ -112,17 +112,29 @@ def _migration_0021():
     return _load_migration("*0021-catalog_discovery.py", "_migration_0021")
 
 
+def _migration_0022():
+    return _load_migration("*0022-catalog_parameters.py", "_migration_0022")
+
+
 #: Литералы, которые миграция 0021 переписала: их текущее значение живёт в ней, а
 #: не в 0019 (0019 хранит прежнее — для возврата `downgrade`).
 _REWRITTEN_BY_0021 = frozenset(
+    {"SEMANTIC_JOB_KINDS", "CK_SEMANTIC_JOBS_CONTEXT_SUBJECT", "CK_SEMANTIC_JOBS_SCHEMA_ID_BY_KIND"}
+)
+
+#: То же для миграции 0022: список источников значений, номер параметра, пара
+#: «значение ⇔ источник» и журнал (список типов и предмет по типу).
+_REWRITTEN_BY_0022 = frozenset(
     {
-        "SEMANTIC_JOB_KINDS", "SEMANTIC_EVENT_TYPES_SQL",
-        "CK_SEMANTIC_JOBS_CONTEXT_SUBJECT", "CK_SEMANTIC_JOBS_SCHEMA_ID_BY_KIND",
+        "VALUE_SOURCES", "SEMANTIC_EVENT_TYPES_SQL", "CK_PARAMETER_ORDINAL_RANGE",
+        "CK_CONTEXT_VALUE_SOURCE_PAIR", "CK_EVENT_SUBJECT_BY_TYPE",
     }
 )
 
 
 def _current_migration_for(name: str):
+    if name in _REWRITTEN_BY_0022:
+        return _migration_0022()
     return _migration_0021() if name in _REWRITTEN_BY_0021 else _migration_0019()
 
 
@@ -390,13 +402,13 @@ class TestSchemaVersionRules:
 # ---------------------------------------------------------------------------
 
 class TestParameters:
-    @pytest.mark.parametrize("ordinal", [0, 4])
+    @pytest.mark.parametrize("ordinal", [0, 101])
     def test_ordinal_outside_range_rejected(self, db_session, factories, ordinal):
         schema = _schema(db_session, factories)
         with rejected(db_session, contains='"ck_family_parameters_ordinal_range"'):
             _param(db_session, schema, ordinal)
 
-    @pytest.mark.parametrize("ordinal", [1, 3])
+    @pytest.mark.parametrize("ordinal", [1, 100])
     def test_ordinal_range_edges_pass(self, db_session, factories, ordinal):
         assert _param(db_session, _schema(db_session, factories), ordinal).id is not None
 
@@ -1279,7 +1291,7 @@ class TestJournalNewTypes:
         with rejected(db_session, contains='"ck_semantic_events_event_type"'):
             _event(db_session, "context_bogus", context_id=context.id)
 
-    def test_event_types_cover_the_spec_and_nothing_more_than_22(self):
+    def test_event_types_cover_the_spec_and_nothing_more_than_23(self):
         independent = {
             "context_created", "context_split", "context_merged", "members_moved",
             "members_marked_stale", "kind_set", "name_role_set", "context_family_assigned",
@@ -1287,11 +1299,11 @@ class TestJournalNewTypes:
             "family_activated", "family_archived", "family_merged",
             "context_variant_assigned", "context_family_pending", "context_not_work",
             "family_schema_frozen", "family_schema_value_added", "family_variants_merged",
-            "context_reopened",
+            "context_reopened", "family_schema_edited",
         }
-        assert len(independent) == 22
+        assert len(independent) == 23
         assert set(SEMANTIC_EVENT_TYPES) == independent
-        assert len(SEMANTIC_EVENT_TYPES) == 22
+        assert len(SEMANTIC_EVENT_TYPES) == 23
 
     def test_old_event_types_keep_their_subjects(self, db_session, factories):
         family = _family(db_session)
@@ -1625,7 +1637,10 @@ class TestParityWithMigration:
         (SCHEMA_ORIGINS, "SCHEMA_ORIGINS", {"model", "manual"}),
         (VALUE_ORIGINS, "VALUE_ORIGINS", {"schema", "extension", "manual"}),
         (VARIANT_STATUSES, "VARIANT_STATUSES", {"active", "archived"}),
-        (VALUE_SOURCES, "VALUE_SOURCES", {"name", "path", "manual", "path_conflict", "none"}),
+        (
+            VALUE_SOURCES, "VALUE_SOURCES",
+            {"name", "path", "manual", "path_conflict", "none", "off_list"},
+        ),
         (VARIANT_SPLIT_HINTS, "VARIANT_SPLIT_HINTS", {"path_conflict"}),
         (
             SEMANTIC_JOB_KINDS, "SEMANTIC_JOB_KINDS",
@@ -1648,7 +1663,7 @@ class TestParityWithMigration:
                 "family_activated", "family_archived", "family_merged",
                 "context_variant_assigned", "context_family_pending", "context_not_work",
                 "family_schema_frozen", "family_schema_value_added", "family_variants_merged",
-                "context_reopened",
+                "context_reopened", "family_schema_edited",
             },
         ),
     ]
@@ -1672,7 +1687,7 @@ class TestParityWithMigration:
          "(status = 'superseded') = (superseded_at IS NOT NULL)"),
         (CK_SCHEMA_ORIGIN_FROZEN_BY_PAIR, "CK_SCHEMA_ORIGIN_FROZEN_BY_PAIR",
          "(origin = 'manual') = (frozen_by IS NOT NULL)"),
-        (CK_PARAMETER_ORDINAL_RANGE, "CK_PARAMETER_ORDINAL_RANGE", "ordinal BETWEEN 1 AND 3"),
+        (CK_PARAMETER_ORDINAL_RANGE, "CK_PARAMETER_ORDINAL_RANGE", "ordinal BETWEEN 1 AND 100"),
         (CK_PARAMETER_NAME_NOT_BLANK, "CK_PARAMETER_NAME_NOT_BLANK", "btrim(name) <> ''"),
         (CK_PARAMETER_VALUE_NOT_BLANK, "CK_PARAMETER_VALUE_NOT_BLANK",
          "btrim(value) <> '' AND value_norm <> ''"),
@@ -1683,7 +1698,7 @@ class TestParityWithMigration:
         (CK_VARIANT_MERGED_NEEDS_ARCHIVED, "CK_VARIANT_MERGED_NEEDS_ARCHIVED",
          "merged_into_id IS NULL OR status = 'archived'"),
         (CK_CONTEXT_VALUE_SOURCE_PAIR, "CK_CONTEXT_VALUE_SOURCE_PAIR",
-         "(value_id IS NULL) = (source IN ('path_conflict', 'none'))"),
+         "(value_id IS NULL) = (source IN ('path_conflict', 'none', 'off_list'))"),
         (CK_CONTEXT_VARIANT_NEEDS_FAMILY, "CK_CONTEXT_VARIANT_NEEDS_FAMILY",
          "work_variant_id IS NULL OR work_family_id IS NOT NULL"),
         (CK_CONTEXT_VARIANT_AT_PAIR, "CK_CONTEXT_VARIANT_AT_PAIR",
@@ -1721,7 +1736,8 @@ class TestParityWithMigration:
             CK_EVENT_SUBJECT_BY_TYPE, "CK_EVENT_SUBJECT_BY_TYPE",
             "(event_type IN ('family_created', 'family_updated', 'family_activated', "
             "'family_archived', 'family_merged', 'family_schema_frozen', "
-            "'family_schema_value_added', 'family_variants_merged')) = (family_id IS NOT NULL)",
+            "'family_schema_value_added', 'family_variants_merged', "
+            "'family_schema_edited')) = (family_id IS NOT NULL)",
         ),
     ]
 
@@ -1746,7 +1762,7 @@ class TestParityWithMigration:
         assert parsed == {
             "family_created", "family_updated", "family_activated", "family_archived",
             "family_merged", "family_schema_frozen", "family_schema_value_added",
-            "family_variants_merged",
+            "family_variants_merged", "family_schema_edited",
         }
 
 

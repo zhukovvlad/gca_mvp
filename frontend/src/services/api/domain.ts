@@ -41,7 +41,9 @@ import type {
   PositionKindResult,
   PositionMarkKind,
   RebuildSchemaResult,
-  SchemaEditParameter,
+  ResolveOffListInput,
+  SchemaEditDraft,
+  SchemaEditSummary,
   JobsStatus,
   PrivacyMatch,
   QueueStatus,
@@ -802,9 +804,26 @@ export const semanticApi = {
       })
       .then((r) => r.data),
 
-  updateSchema: (familyId: number, parameters: SchemaEditParameter[]): Promise<FamilySchema> =>
+  schemaEditPreview: (familyId: number, parameters: SchemaEditDraft[]): Promise<SchemaEditSummary> =>
     api
-      .patch<FamilySchema>(`/v1/semantic/families/${familyId}/schema`, { parameters })
+      .post<SchemaEditSummary>(`/v1/semantic/families/${familyId}/schema/edit-preview`, { parameters })
+      .then((r) => r.data),
+
+  updateSchema: (
+    familyId: number,
+    parameters: SchemaEditDraft[],
+    previewHash: string
+  ): Promise<FamilySchema> =>
+    api
+      .patch<FamilySchema>(`/v1/semantic/families/${familyId}/schema`, {
+        parameters,
+        preview_hash: previewHash,
+      })
+      .then((r) => r.data),
+
+  resolveOffList: (familyId: number, input: ResolveOffListInput): Promise<FamilySchema> =>
+    api
+      .post<FamilySchema>(`/v1/semantic/families/${familyId}/schema/off-list/resolve`, input)
       .then((r) => r.data),
 
   cancelSchemaBuild: (familyId: number): Promise<FamilySchema> =>

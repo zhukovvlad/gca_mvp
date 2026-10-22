@@ -652,6 +652,27 @@ class TestSchemaReadyToBuild:
 _MANY_PATHS = [((f"Р{i:02d}",), i) for i in range(1, 13)]
 
 
+def _known_rows(db, context_id, schema):
+    """Строки значений контекста по всем параметрам версии (первое значение
+    списка): контексту, у которого они есть, спрашивать нечего."""
+    for parameter_id in db.execute(
+        sa.text("SELECT id FROM family_parameters WHERE schema_id = :s"), {"s": schema.id}
+    ).scalars().all():
+        value_id = db.execute(
+            sa.text(
+                "SELECT id FROM family_parameter_values WHERE parameter_id = :p ORDER BY id LIMIT 1"
+            ),
+            {"p": parameter_id},
+        ).scalar_one()
+        db.add(
+            ContextParameterValue(
+                context_id=context_id, schema_id=schema.id, parameter_id=parameter_id,
+                value_id=value_id, source="name",
+            )
+        )
+    db.flush()
+
+
 class TestValuesNeeded:
     def _world(self, db, factories, *, params=((1, "Толщина", ["50 мм", "100 мм"]),)):
         family = _active_family(db)
@@ -659,6 +680,7 @@ class TestValuesNeeded:
         context_id = _context(db, factories, family=family, path_specs=_MANY_PATHS)
         variant = _variant(db, family, schema)
         paths = load_values_material(db, [context_id])[context_id].paths
+        _known_rows(db, context_id, schema)
         return SimpleNamespace(
             family=family, schema=schema, context_id=context_id, variant=variant, paths=paths
         )
