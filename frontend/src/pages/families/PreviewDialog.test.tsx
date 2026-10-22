@@ -420,6 +420,14 @@ describe("PreviewDialog — пересборка схемы: что остане
     ]);
   });
 
+  it("число строк — с разделителем разрядов, как в окне правки: «1 117 строк»", async () => {
+    setParameters([modelParam(1, "Количество слоёв", [schemaValue(100, "1", "schema", { rows: 1117 })])]);
+    renderDialog(SCHEMA);
+
+    const replaced = await screen.findByRole("region", { name: /Заменятся/ });
+    expect(replaced.textContent).toMatch(/1\u00a0117 строк/);
+  });
+
   it("оценка не получена, схема есть: рамка «Что произойдёт» со строкой про параметры остаётся, чисел оценки нет", async () => {
     server.use(
       http.post("/api/v1/semantic/families/:id/schema/rebuild/preview", () => new HttpResponse(null, { status: 500 }))

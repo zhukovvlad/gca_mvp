@@ -62,7 +62,7 @@ function descriptionOf(target: PreviewTarget, unitLabel: string): string {
 }
 
 const valuesLabel = (n: number) => `${n} ${pluralRu(n, "значение", "значения", "значений")}`;
-const rowsLabel = (n: number) => `${n} ${pluralRu(n, "строка", "строки", "строк")}`;
+const rowsLabel = (n: number) => `${n.toLocaleString("ru-RU")} ${pluralRu(n, "строка", "строки", "строк")}`;
 
 /** Число параметров, которое модель предлагает за раз (спека 3в §2.8). */
 const MODEL_PARAMETERS_PER_REBUILD = 3;
