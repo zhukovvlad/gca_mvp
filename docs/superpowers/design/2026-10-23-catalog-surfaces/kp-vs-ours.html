@@ -253,7 +253,7 @@ function setPart(i){
 }
 const C = {}; for (const [k,v] of Object.entries(M.contracts)) C[+k] = v;
 const S = { view:'A', idx:false, filter:'all', openArt:null, selArt:null, sel:null, exp:null, edits:{},
-  sort:{ art:null, line:null, file:null, stage:null }, pins:{}, pinEdit:null, vat:false };   // sort: {k, dir} или null — порядок по умолчанию
+  sort:{ art:null, line:null, file:null, stage:null }, pins:{}, pinEdit:null, famRung:{}, vat:false };   // sort: {k, dir} или null — порядок по умолчанию
 const VATR = M.meta.vat;                                  // ставка НДС самого КП
 const V = () => S.vat ? 1 + VATR/100 : 1;                 // все суммы считаются без НДС; с НДС — по ставке КП
 const VL = () => S.vat ? `с НДС ${VATR} %` : 'без НДС';
@@ -296,17 +296,38 @@ const median = a => { const s=[...a].sort((x,y)=>x-y), n=s.length; return n? (n%
 
 // ---------- расчёт ----------
 let R = [];   // строки с расчётом
+// Системы: ступень выбирается ОДНА на всю семью внутри КП, чтобы КП и история складывали одинаковый
+// состав работ (замечание ревью к редакции 1: на широкой ступени история брала всю семью, а КП — только
+// строки, сами ушедшие на эту ступень). На ступени строки семьи делятся по её ключу; у группы — договоры ступени.
+const sysKey = (l, lv) => lv==='v' ? l.rk : lv==='p' ? l.fam+'|'+(l.p1?l.p1[1]:'') : l.fam;
+function sysPlan(){
+  const fams = {}, plan = {};
+  for (const l of M.lines) if (l.sys && l.st==='ok' && l.m2!=null) (fams[l.fam] ||= []).push(l);
+  for (const [f, ls] of Object.entries(fams)){
+    const labels = ls[0].rungs.map(([lv,sc])=>[lv,sc]);
+    const groupsAt = i => { const [lv,sc] = labels[i], g = {};
+      for (const l of ls){ const j = l.rungs.findIndex(([a,b])=>a===lv&&b===sc); (g[sysKey(l,lv)] ||= { lines:[], src:l.rungs[j][2] }).lines.push(l); }
+      return g; };
+    let auto = labels.findIndex((_,i)=>Object.values(groupsAt(i)).every(g=>g.src.length>=2));
+    if (auto<0) auto = labels.findIndex((_,i)=>Object.values(groupsAt(i)).every(g=>g.src.length>=1));
+    if (auto<0) auto = labels.length-1;
+    const man = S.famRung[S.part+'|'+f], i = man!=null ? man : auto;
+    plan[f] = { auto, i, labels, groups: groupsAt(i) };
+  }
+  return plan;
+}
 function compute(){
-  // системы: строки КП одного ключа лестницы сравниваются суммой на м²
-  const grp = {};
-  for (const l of M.lines) if (l.sys && l.st==='ok' && l.m2!=null) (grp[l.key] ||= []).push(l);
+  const plan = sysPlan();
   R = M.lines.map(l => {
     const r = { l, st:l.st };
     if (l.st!=='ok') { r.val=(l.tnet||0)*V(); return r; }
-    const ed0 = S.edits[l.id];
-    r.autoI = l.rungs.findIndex(([lv,sc]) => lv===l.lv && sc===l.sc);
-    r.ri = ed0 && ed0.rung!=null ? ed0.rung : r.autoI; r.manualRung = r.ri!==r.autoI;
+    const ed0 = S.edits[l.id], P = l.sys && l.m2!=null ? plan[l.fam] : null;
+    if (P){ const at = lab => l.rungs.findIndex(([a,b])=>a===lab[0]&&b===lab[1]);
+      r.autoI = at(P.labels[P.auto]); r.ri = at(P.labels[P.i]); r.grp = P.groups[sysKey(l, P.labels[P.i][0])]; }
+    else { r.autoI = l.rungs.findIndex(([lv,sc]) => lv===l.lv && sc===l.sc); r.ri = ed0 && ed0.rung!=null ? ed0.rung : r.autoI; }
+    r.manualRung = r.ri!==r.autoI;
     [r.lv, r.sc] = l.rungs[r.ri];
+    if (!l.rungs[r.ri][2].length) { r.st='nohist'; r.val=(l.tnet||0)*V(); return r; }
     const src = l.rungs[r.ri][2].map(([c,v]) => [c, v*k(c)*V()]);
     const vals = src.map(x=>x[1]), cls = src.filter(([c])=>C[c].cls===CLS).map(x=>x[1]);
     r.src = src; r.min = Math.min(...vals); r.max = Math.max(...vals); r.med = median(vals);
@@ -317,7 +338,7 @@ function compute(){
     let rt, q;
     if (l.sys) {
       if (l.m2==null) { r.st='noprice'; r.val=0; return r; }
-      const g = grp[l.key], gs = g.reduce((s,x)=>s+x.m2,0); rt = gs*V(); q = AREA; r.share = l.m2/gs; r.gn = g.length;
+      const g = r.grp.lines, gs = g.reduce((s,x)=>s+x.m2,0); rt = gs*V(); q = AREA; r.share = l.m2/gs; r.gn = g.length;
     } else { rt = l.net*V(); q = l.q; r.share = 1; }
     r.rt = rt; r.ratio = rt / r.med;
     // Разные единицы учёта ничего не убирают из вилки — только подсвечиваются (решение пользователя 22.10.2026):
@@ -550,7 +571,7 @@ function ladderBox(r){
     const tag = auto ? '<span class="xs t3"> · авто</span>' : '';
     return n ? `<button type="button" role="radio" aria-checked="${used}" class="st pick ${used?'used':'thin'}" data-rung="${l.id}:${i}"><span>${used?'●':'○'}</span><span>${nm[lv]} · ${sc==='cls'?esc(CLS):'все классы'}${tag}</span><span class="mono">${n} дог.</span></button>`
              : `<div class="st"><span>○</span><span>${nm[lv]} · ${sc==='cls'?esc(CLS):'все классы'}</span><span class="mono">0 дог.</span></div>`; }).join('')}</div>
-    <p class="hint">Автоматически берётся первая ступень сверху, где не меньше 2 договоров. Нажмите на другую ступень, чтобы сравнить по ней — вилка, наша расценка и отклонение пересчитаются.${r.manualRung?` <button class="btn ghost" data-rung="${l.id}:auto" style="height:auto;padding:0;text-decoration:underline">Вернуть автоматическую</button>`:''}</p>`;
+    <p class="hint">${l.sys?`Для системы ступень одна на всю семью «${esc(l.fam)}» в этом КП: КП и наши договоры складывают одинаковый состав работ. `:''}Автоматически берётся первая ступень сверху, где не меньше 2 договоров. Нажмите на другую ступень, чтобы сравнить по ней — вилка, наша расценка и отклонение пересчитаются.${r.manualRung?` <button class="btn ghost" data-rung="${l.id}:auto" style="height:auto;padding:0;text-decoration:underline">Вернуть автоматическую</button>`:''}</p>`;
 }
 
 // ---------- комментарий подрядчику ----------
@@ -566,22 +587,27 @@ function cmCase(r){
 // (решение 23.10.2026: за верхнюю границу он зацепится). Про «дешевле» не пишем, что цена низкая.
 // Модели те же правила: верхней границы и вилки у неё нет даже меткой.
 function cmVals(r){
-  // подрядчику — в его единице и его цене: у систем это цена за компл, а не наши ₽/м² объекта
-  const un = r.l.sys ? '₽ за '+u(r.l.u) : '₽ за '+u(r.l.u);
-  const target0 = r.agr!=null ? r.agr : r.our, target = r.l.sys ? target0*AREA*r.share : target0;
-  const kpv = r.l.sys ? r.l.net*V() : r.rt;
+  // Текст подрядчику не зависит от переключателей экрана: всегда без НДС, а цена источника — та, что
+  // записана в договоре (замечание ревью к редакции 1: с ИПЦ фраза «в договоре стоила X» цитировала
+  // число, которого в договоре не было). Приведённая цель называется отдельно, с рядом и датой.
+  // Подрядчику — в его единице: у систем это цена за компл, а не наши ₽/м² объекта.
+  const un = '₽ за '+u(r.l.u), ky = r.l.sys ? AREA*r.share : 1;
   const sc = r.src.find(([c,v])=>Math.abs(v-r.our)<1e-9);
   const ci = sc ? C[sc[0]] : null, own = ci && ci.ct===M.meta.ct;
+  const raw = sc ? r.l.rungs[r.ri][2].find(([c])=>c===sc[0])[1] : null;      // как в договоре: нетто, без приведения
+  const targetNet = (r.agr!=null ? r.agr : r.our) / V();                       // цель: нетто, с приведением, если оно включено
+  const indexed = S.idx && ci && Math.abs(ci.k-1)>1e-9 && r.agr==null;
   const where = !ci ? 'по нашим договорам' : own ? `в нашем договоре с вами по объекту ${ci.obj}, ${ci.y} г.,` : `в нашем договоре по объекту ${ci.obj}, ${ci.y} г.,`;
-  // у систем договор-источник даёт цену на м² своего объекта — называем её и пересчёт на этот объект
-  const per = r.l.sys ? `${rate(target0)} ₽ на м² объекта — для вашего объекта это ${rate(target)} ₽` : `${rate(target)} ${un}`;
-  return { un, where, own, kp:rate(kpv), our:rate(target), per, agreed:r.agr!=null, vat:VL() };
+  const histTxt = raw==null ? `${rate(targetNet*ky)} ${un}`
+    : r.l.sys ? `${rate(raw)} ₽ на м² объекта — для вашего объекта это ${rate(raw*ky)} ₽` : `${rate(raw)} ${un}`;
+  const idxTxt = indexed ? `; с учётом инфляции (ИПЦ Росстата, к ${M.meta.date.split('-').reverse().slice(1).join('.')}) — ${rate(targetNet*ky)} ₽` : '';
+  return { un, where, own, kp:rate((r.l.sys ? r.l.net : r.rt/V())), our:rate(targetNet*ky), per: histTxt+' без НДС'+idxTxt, agreed:r.agr!=null, vat:'без НДС' };
 }
 function tplComment(r){
   const k=cmCase(r); if (!k) return ''; const v=cmVals(r);
   return {
     over: v.agreed ? `Согласовано: ${v.our} ${v.un} ${v.vat}. Просим отразить в следующей редакции КП.`
-                   : `Ваша цена — ${v.kp} ${v.un}. ${v.where.charAt(0).toUpperCase()+v.where.slice(1)} эта работа стоила ${v.per} ${v.vat}. Просим снизить до ${v.our} или обосновать разницу.`,
+                   : `Ваша цена — ${v.kp} ${v.un}. ${v.where.charAt(0).toUpperCase()+v.where.slice(1)} эта работа стоила ${v.per}. Просим снизить до ${v.our} или обосновать разницу.`,
     below:`Просим подтвердить, что в цену ${v.kp} ${v.un} включены все работы и материалы по ведомости.`,
     kpodd:`Цена ${v.kp} ${v.un} похожа на цену за весь объём, а не за единицу. Уточните, пожалуйста, единицу учёта.`,
     histodd:`Просим расшифровать, что входит в цену ${v.kp} ${v.un} и за какую единицу она дана.`
@@ -591,7 +617,7 @@ function aiComment(r){
   const k=cmCase(r); if (!k) return ''; const v=cmVals(r), w=r.l.fam||'эта работа';
   return {
     over: v.agreed ? `По позиции «${w}» фиксируем договорённость: ${v.our} ${v.un} ${v.vat}. Просим учесть её в следующей редакции КП.`
-                   : `По позиции «${w}» ваше предложение — ${v.kp} ${v.un}. ${v.where.charAt(0).toUpperCase()+v.where.slice(1)} мы заключали её по ${v.per} (${v.vat})${v.own?' — это ваша же цена':''}. Предлагаем выйти на ${v.our}; если разница чем-то обусловлена, покажите расчёт.`,
+                   : `По позиции «${w}» ваше предложение — ${v.kp} ${v.un}. ${v.where.charAt(0).toUpperCase()+v.where.slice(1)} мы заключали её по ${v.per}${v.own?' — это ваша же цена':''}. Предлагаем выйти на ${v.our}; если разница чем-то обусловлена, покажите расчёт.`,
     below:`По позиции «${w}» подтвердите, пожалуйста, что цена ${v.kp} ${v.un} учитывает весь объём работ и материалов по ведомости — чтобы позже не возникло допработ.`,
     kpodd:`По позиции «${w}» цена ${v.kp} ${v.un} выглядит как цена за весь объём. Уточните, пожалуйста, за что именно она указана — за единицу или за всё.`,
     histodd:`По позиции «${w}» просим расшифровать цену ${v.kp} ${v.un}: что в неё входит и за какую единицу она дана.`
@@ -743,6 +769,8 @@ page.addEventListener('click', e=>{
   const po=t.closest('[data-part-open]'); if (po){ setPart(+po.dataset.partOpen); S.view=S.pview||'A'; S.openArt=null; S.selArt=null; S.sel=null; S.exp=null; render(); return; }
   const ps=t.closest('[data-part]'); if (ps){ setPart(+ps.dataset.part); S.sel=null; S.exp=null; S.selArt=null; render(); return; }
   const rg=t.closest('[data-rung]'); if (rg){ const [id,i]=rg.dataset.rung.split(':'); const e=(S.edits[id] ||= {});
+    const sl = M.lines.find(x=>x.id===+id);
+    if (sl && sl.sys && sl.m2!=null){ busy('Пересчитываем систему по выбранной ступени…', ()=>{ S.famRung[S.part+'|'+sl.fam] = i==='auto' ? null : +i; }); return; }
     busy('Пересчитываем по выбранной ступени…', ()=>{ e.rung = i==='auto' ? null : +i; });   // новая ступень — новая нижняя граница; договорённость не трогается
     return; }
   const so=t.closest('[data-sort]'); if (so){ const [sc,key]=so.dataset.sort.split(':'), cur=S.sort[sc];
