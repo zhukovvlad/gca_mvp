@@ -14,25 +14,45 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 
 import sqlalchemy as sa
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
+from crud.analytics import latest_estimates
+from crud.project_passport import CATEGORY_TOTALS
 from models import (
     CatalogContext,
     CatalogPosition,
     ContextBucket,
     ContextMember,
+    ContextParameterValue,
+    Contract,
+    Estimate,
+    FamilyParameter,
+    FamilyParameterSchema,
+    FamilyParameterValue,
     Lot,
+    ObjectModel,
+    ParameterRole,
     PositionItem,
     Proposal,
+    RateClass,
     ReconcileBatchStatus,
+    SchemaStatus,
     SemanticJob,
     SemanticJobKind,
     SemanticJobStatus,
     SemanticReconcileBatch,
     SemanticWorkerState,
+    UnitOfMeasure,
+    WorkCategory,
+    WorkFamily,
+    WorkVariant,
+    WorkVariantValue,
 )
+from services.our_price import HistoryContract, HistoryLine, KpLine, LineKey
+from services.our_price_money import CategoryRow
 
 #: Задание разбирается прямо сейчас (спека 4а §2.11).
 _LIVE_STATUSES = (SemanticJobStatus.pending.value, SemanticJobStatus.running.value)
@@ -196,3 +216,445 @@ def catalog_signal(db: Session, estimate_ids: Sequence[int]) -> dict[int, Catalo
             waiting_admin=stuck or held or (live and paused),
         )
     return signals
+
+
+# ---------------------------------------------------------------------------
+#  Предикаты цены и веса в SQL
+# ---------------------------------------------------------------------------
+
+
+def _finite_positive(column: sa.ColumnElement) -> sa.ColumnElement[bool]:
+    """«Конечно и больше нуля» без `NULL`: `IS NOT NULL` стоит первым конъюнктом,
+    и на пустом входе итог `FALSE`, а не `NULL` (`FALSE AND NULL = FALSE`). Голое
+    `> 0` пропустило бы `'NaN'::numeric` и `'Infinity'::numeric`."""
+    return sa.and_(
+        column.is_not(None),
+        column > 0,
+        column != Decimal("NaN"),
+        column != Decimal("Infinity"),
+    )
+
+
+def _price_ok(column: sa.ColumnElement) -> sa.ColumnElement[bool]:
+    """Цена пригодна: конечна и больше нуля. SQL-сторона `money.price.is_price`;
+    согласие с ней держит тест против независимого оракула."""
+    return _finite_positive(column)
+
+
+def _weight_ok(column: sa.ColumnElement) -> sa.ColumnElement[bool]:
+    """Вес пригоден: та же форма, другой факт (объём строки, а не цена). Отдельная
+    функция, как `money.price.is_weight`: правила могут разойтись, и менять
+    придётся одно место."""
+    return _finite_positive(column)
+
+
+#: Вес строки: предложенный объём, а при его отсутствии — объём заказчика.
+_WEIGHT = sa.func.coalesce(PositionItem.suggested_quantity, PositionItem.quantity)
+
+_UNKNOWN_LABEL = "не уточнено"
+_LABEL_SEPARATOR = " · "
+
+
+@dataclass(frozen=True)
+class KpLineRow:
+    """Строка КП с семантикой для экрана: числа для ядра и подписи для таблицы."""
+
+    line: KpLine
+    title: str
+    unit: str | None
+    quantity: Decimal | None
+    section_ref: str | None
+    article_root_id: int | None
+    family_title: str | None
+    variant_label: str | None
+    secondary: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
+class ArticleMeta:
+    id: int
+    code: str
+    title: str
+    sort_order: int
+
+
+@dataclass(frozen=True)
+class _VariantInfo:
+    family_id: int
+    family_title: str
+    first_main: tuple[int, int | None] | None
+    label: str
+
+
+def _variant_infos(db: Session, variant_ids: Sequence[int]) -> dict[int, _VariantInfo]:
+    """Ключ и подпись каждого варианта тремя запросами, сколько бы вариантов ни
+    было: заголовки (семья, версия схемы варианта, действующая версия семьи),
+    активные главные параметры версий и значения вариантов.
+
+    Первый главный параметр — у варианта на действующей (`frozen`) версии, чьих
+    активных главных параметров два и больше; у варианта на замещённой версии
+    его нет (значения разных версий по идентификатору несопоставимы). Подпись
+    строится по собственной версии варианта: «Семья · знач1 · знач2», «не
+    уточнено» для пустого значения.
+    """
+    ids = sorted(set(variant_ids))
+    current = aliased(FamilyParameterSchema)
+    heads = db.execute(
+        sa.select(
+            WorkVariant.id,
+            WorkVariant.family_id,
+            WorkVariant.schema_id,
+            WorkFamily.title,
+            current.id.label("current_schema_id"),
+        )
+        .select_from(WorkVariant)
+        .join(WorkFamily, WorkFamily.id == WorkVariant.family_id)
+        .outerjoin(
+            current,
+            sa.and_(
+                current.family_id == WorkVariant.family_id,
+                current.status == SchemaStatus.frozen.value,
+            ),
+        )
+        .where(WorkVariant.id.in_(ids))
+    ).all()
+    schema_ids = sorted({head.schema_id for head in heads})
+    mains: dict[int, list[int]] = defaultdict(list)
+    for schema_id, parameter_id in db.execute(
+        sa.select(FamilyParameter.schema_id, FamilyParameter.id)
+        .where(
+            FamilyParameter.schema_id.in_(schema_ids),
+            FamilyParameter.role == ParameterRole.main.value,
+            FamilyParameter.archived_at.is_(None),
+        )
+        .order_by(FamilyParameter.schema_id, FamilyParameter.ordinal)
+    ).all():
+        mains[schema_id].append(parameter_id)
+    values: dict[int, dict[int, tuple[int | None, str | None]]] = defaultdict(dict)
+    for variant_id, parameter_id, value_id, text in db.execute(
+        sa.select(
+            WorkVariantValue.variant_id,
+            WorkVariantValue.parameter_id,
+            WorkVariantValue.value_id,
+            FamilyParameterValue.value,
+        )
+        .select_from(WorkVariantValue)
+        .outerjoin(FamilyParameterValue, FamilyParameterValue.id == WorkVariantValue.value_id)
+        .where(WorkVariantValue.variant_id.in_(ids))
+    ).all():
+        values[variant_id][parameter_id] = (value_id, text)
+
+    infos: dict[int, _VariantInfo] = {}
+    for head in heads:
+        parameters = mains.get(head.schema_id, [])
+        own = values.get(head.id, {})
+        first_main = None
+        if head.current_schema_id == head.schema_id and len(parameters) >= 2:
+            first_main = (parameters[0], own.get(parameters[0], (None, None))[0])
+        parts = [head.title] + [own.get(parameter_id, (None, None))[1] or _UNKNOWN_LABEL for parameter_id in parameters]
+        infos[head.id] = _VariantInfo(
+            family_id=head.family_id,
+            family_title=head.title,
+            first_main=first_main,
+            label=_LABEL_SEPARATOR.join(parts),
+        )
+    return infos
+
+
+def _line_key(info: _VariantInfo, variant_id: int) -> LineKey:
+    return LineKey(family_id=info.family_id, variant_id=variant_id, first_main=info.first_main)
+
+
+def load_history(db: Session, *, exclude_object_id: int) -> tuple[list[HistoryContract], list[HistoryLine]]:
+    """Последние сметы договоров и их строки с вариантом (спека 4а §2.3).
+
+    В историю не входят смета оферты (`contract_id IS NULL`: её отсекает
+    соединение с договорами) и договор объекта тендера; дата подписания состав не ограничивает. Строка истории — строка
+    последней сметы без глав, чей контекст несёт вариант и не архивирован; цена
+    и вес проходят предикаты в SQL (у системы — предикат на сумме строки).
+    Строка с неизвестной базой НДС остаётся: она нужна ядру для названия
+    причины выпадения договора.
+    """
+    latest = latest_estimates()
+    contract_rows = db.execute(
+        sa.select(
+            Contract.id,
+            latest.c.estimate_id,
+            Contract.contract_number,
+            ObjectModel.title,
+            Contract.signed_date,
+            Contract.rate_class_id,
+            RateClass.title,
+            Contract.contractor_id,
+            ObjectModel.area_total_sp,
+        )
+        .select_from(latest)
+        .join(Contract, Contract.id == latest.c.contract_id)
+        .join(ObjectModel, ObjectModel.id == Contract.object_id)
+        .join(RateClass, RateClass.id == Contract.rate_class_id)
+        .where(Contract.object_id != exclude_object_id)
+        .order_by(Contract.id)
+    ).all()
+    contracts = [
+        HistoryContract(
+            contract_id=row[0],
+            estimate_id=row[1],
+            number=row[2],
+            object_title=row[3],
+            year=row[4].year,
+            rate_class_id=row[5],
+            rate_class_title=row[6],
+            contractor_id=row[7],
+            area=row[8],
+        )
+        for row in contract_rows
+    ]
+
+    is_system = CatalogContext.semantic_kind == "SYSTEM"
+    suitable = sa.or_(
+        sa.and_(is_system, _price_ok(PositionItem.total_cost_total)),
+        sa.and_(sa.not_(is_system), _price_ok(PositionItem.unit_cost_total), _weight_ok(_WEIGHT)),
+    )
+    line_rows = db.execute(
+        sa.select(
+            Contract.id,
+            CatalogContext.work_variant_id,
+            is_system,
+            PositionItem.unit_cost_total,
+            PositionItem.total_cost_total,
+            _WEIGHT,
+            sa.func.coalesce(Estimate.vat_rate_base_override, Proposal.vat_rate),
+        )
+        .select_from(PositionItem)
+        .join(Proposal, Proposal.id == PositionItem.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .join(Estimate, Estimate.id == Lot.estimate_id)
+        .join(latest, latest.c.estimate_id == Estimate.id)
+        .join(Contract, Contract.id == latest.c.contract_id)
+        .join(ContextMember, ContextMember.position_item_id == PositionItem.id)
+        .join(CatalogContext, CatalogContext.id == ContextMember.context_id)
+        .where(
+            Contract.object_id != exclude_object_id,
+            PositionItem.is_chapter.is_(False),
+            CatalogContext.work_variant_id.is_not(None),
+            CatalogContext.archived_at.is_(None),
+            suitable,
+        )
+        .order_by(Contract.id, PositionItem.id)
+    ).all()
+    infos = _variant_infos(db, [row[1] for row in line_rows])
+    lines = [
+        HistoryLine(
+            contract_id=row[0],
+            key=_line_key(infos[row[1]], row[1]),
+            is_system=row[2],
+            unit_price=row[3],
+            total=row[4],
+            weight=row[5],
+            vat_base=row[6],
+        )
+        for row in line_rows
+    ]
+    return contracts, lines
+
+
+def load_kp_lines(db: Session, estimate_ids: Sequence[int]) -> dict[int, list[KpLineRow]]:
+    """Строки КП заданных смет (не главы) с семантикой и сигналом каталога.
+
+    Строки отдаются все, без предикатов цены и веса: пригодность решает ядро.
+    Число запросов не зависит от числа строк: строки, сигнал каталога, три
+    запроса вариантов, второстепенные параметры и дерево статей. Строка без
+    членства или без варианта — `key = None`, `variant_label = None`; название
+    семьи берётся у любого контекста, у которого она есть.
+    """
+    result: dict[int, list[KpLineRow]] = {estimate_id: [] for estimate_id in estimate_ids}
+    if not result:
+        return result
+    chapter = aliased(PositionItem)
+    rows = db.execute(
+        sa.select(
+            Lot.estimate_id,
+            PositionItem.id,
+            PositionItem.job_title_in_proposal,
+            UnitOfMeasure.symbol,
+            PositionItem.quantity,
+            PositionItem.item_number_in_proposal,
+            PositionItem.position_key_in_proposal,
+            PositionItem.unit_cost_total,
+            PositionItem.total_cost_total,
+            _WEIGHT,
+            chapter.work_category_id,
+            CatalogContext.id,
+            CatalogContext.work_variant_id,
+            CatalogContext.semantic_kind,
+            WorkFamily.title,
+        )
+        .select_from(PositionItem)
+        .join(Proposal, Proposal.id == PositionItem.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .outerjoin(UnitOfMeasure, UnitOfMeasure.id == PositionItem.unit_id)
+        # составной FK держит главу и строку в одном предложении
+        .outerjoin(chapter, chapter.id == PositionItem.chapter_item_id)
+        .outerjoin(ContextMember, ContextMember.position_item_id == PositionItem.id)
+        .outerjoin(CatalogContext, CatalogContext.id == ContextMember.context_id)
+        .outerjoin(WorkFamily, WorkFamily.id == CatalogContext.work_family_id)
+        .where(Lot.estimate_id.in_(list(estimate_ids)), PositionItem.is_chapter.is_(False))
+        .order_by(Lot.estimate_id, PositionItem.id)
+    ).all()
+    signals = catalog_signal(db, estimate_ids)
+    infos = _variant_infos(db, [row[12] for row in rows if row[12] is not None])
+    secondary = _secondary_values(db, [row[11] for row in rows if row[11] is not None])
+    root_of, _ = category_roots(db)
+    for row in rows:
+        (
+            estimate_id,
+            item_id,
+            title,
+            unit,
+            quantity,
+            number,
+            key_text,
+            unit_price,
+            total,
+            weight,
+            category_id,
+            context_id,
+            variant_id,
+            kind,
+            family_title,
+        ) = row
+        info = infos.get(variant_id) if variant_id is not None else None
+        signal = signals.get(item_id, CatalogSignal(False, False))
+        result[estimate_id].append(
+            KpLineRow(
+                line=KpLine(
+                    position_item_id=item_id,
+                    unit_price=unit_price,
+                    total=total,
+                    weight=weight,
+                    key=_line_key(info, variant_id) if info is not None else None,
+                    is_system=kind == "SYSTEM",
+                    in_progress=signal.in_progress,
+                    waiting_admin=signal.waiting_admin,
+                ),
+                title=title,
+                unit=unit,
+                quantity=quantity,
+                section_ref=number or key_text,
+                article_root_id=root_of.get(category_id) if category_id is not None else None,
+                family_title=family_title,
+                variant_label=info.label if info is not None else None,
+                secondary=secondary.get(context_id, ()) if context_id is not None else (),
+            )
+        )
+    return result
+
+
+def _secondary_values(db: Session, context_ids: Sequence[int]) -> dict[int, tuple[tuple[str, str], ...]]:
+    """Пары «параметр, значение» второстепенных активных параметров контекстов
+    по номеру параметра; пустое значение читается «не уточнено», текст не из
+    списка — «не из списка: «текст»», как его показывает каталог семей."""
+    rows = db.execute(
+        sa.select(
+            ContextParameterValue.context_id,
+            FamilyParameter.name,
+            FamilyParameterValue.value,
+            ContextParameterValue.off_list_text,
+        )
+        .select_from(ContextParameterValue)
+        .join(FamilyParameter, FamilyParameter.id == ContextParameterValue.parameter_id)
+        .outerjoin(FamilyParameterValue, FamilyParameterValue.id == ContextParameterValue.value_id)
+        .where(
+            ContextParameterValue.context_id.in_(sorted(set(context_ids))),
+            FamilyParameter.role == ParameterRole.secondary.value,
+            FamilyParameter.archived_at.is_(None),
+        )
+        .order_by(ContextParameterValue.context_id, FamilyParameter.ordinal)
+    ).all()
+    grouped: dict[int, list[tuple[str, str]]] = defaultdict(list)
+    for context_id, name, value, off_list in rows:
+        text = value or (f"не из списка: «{off_list}»" if off_list else _UNKNOWN_LABEL)
+        grouped[context_id].append((name, text))
+    return {context_id: tuple(pairs) for context_id, pairs in grouped.items()}
+
+
+def kp_vat_bases(db: Session, estimate_ids: Sequence[int]) -> dict[int, Decimal | None]:
+    """База НДС смет КП: `vat_rate_base_override`, иначе единая ставка всех
+    предложений сметы; разногласие или неизвестная ставка — `None` (AGENTS.md §4).
+    Своя копия правила свода по этапам; согласие с ним держит тест."""
+    ids = list(estimate_ids)
+    overrides = dict(
+        db.execute(sa.select(Estimate.id, Estimate.vat_rate_base_override).where(Estimate.id.in_(ids))).all()
+    )
+    declared: dict[int, set[Decimal | None]] = {estimate_id: set() for estimate_id in ids}
+    for estimate_id, rate in db.execute(
+        sa.select(Lot.estimate_id, Proposal.vat_rate)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .where(Lot.estimate_id.in_(ids))
+    ).all():
+        declared[estimate_id].add(rate)
+    bases: dict[int, Decimal | None] = {}
+    for estimate_id in ids:
+        override = overrides.get(estimate_id)
+        rates = declared[estimate_id]
+        if override is not None:
+            bases[estimate_id] = override
+        elif len(rates) == 1:
+            bases[estimate_id] = next(iter(rates))
+        else:
+            bases[estimate_id] = None
+    return bases
+
+
+def category_rows(db: Session, estimate_ids: Sequence[int]) -> list[CategoryRow]:
+    """Строки `v_category_totals` заданных смет как есть: по одной на предложение
+    (и источник суммы), без накопления — его делает ядро. Базу НДС несёт сама
+    строка VIEW."""
+    if not estimate_ids:
+        return []
+    rows = db.execute(
+        sa.select(
+            CATEGORY_TOTALS.c.estimate_id,
+            CATEGORY_TOTALS.c.work_category_id,
+            CATEGORY_TOTALS.c.vat_rate_base,
+            CATEGORY_TOTALS.c.amount,
+        )
+        .where(CATEGORY_TOTALS.c.estimate_id.in_(list(estimate_ids)))
+        .order_by(
+            CATEGORY_TOTALS.c.estimate_id,
+            CATEGORY_TOTALS.c.proposal_id,
+            CATEGORY_TOTALS.c.work_category_id,
+            CATEGORY_TOTALS.c.source,
+        )
+    ).all()
+    return [CategoryRow(estimate_id=r[0], work_category_id=r[1], vat_base=r[2], amount=r[3]) for r in rows]
+
+
+def category_roots(db: Session) -> tuple[dict[int, int], dict[int, ArticleMeta]]:
+    """Корень каждой статьи классификатора (корень — сам себе) и описание корней.
+    Порядок статей экрана — `sort_order` корня. Дерево читается одним запросом."""
+    rows = db.execute(
+        sa.select(
+            WorkCategory.id,
+            WorkCategory.parent_id,
+            WorkCategory.code,
+            WorkCategory.title,
+            WorkCategory.sort_order,
+        )
+    ).all()
+    parent = {row[0]: row[1] for row in rows}
+
+    def root(category_id: int) -> int:
+        seen = {category_id}
+        while parent[category_id] is not None:
+            category_id = parent[category_id]
+            if category_id in seen:
+                raise ValueError(f"цикл в дереве статей у {category_id}")
+            seen.add(category_id)
+        return category_id
+
+    root_of = {category_id: root(category_id) for category_id in parent}
+    meta = {
+        row[0]: ArticleMeta(id=row[0], code=row[2], title=row[3], sort_order=row[4]) for row in rows if row[1] is None
+    }
+    return root_of, meta
