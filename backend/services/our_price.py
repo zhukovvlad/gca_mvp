@@ -447,6 +447,66 @@ def _rung_rates(history: HistoryIndex, key: LineKey, rung: Rung, *, tender_class
     )
 
 
+@dataclass(frozen=True)
+class _Comparison:
+    state: LineState
+    threshold_met: bool
+    range: RateRange
+    ours: Decimal
+    ours_from_all_classes: bool
+    position: Literal["above", "in", "below"]
+    mismatch: Mismatch | None
+    to_ours: Decimal
+    bargain: Decimal | None
+    below: Decimal | None
+
+
+def _compare(
+    history: HistoryIndex,
+    price: Decimal,
+    rung_rates: Sequence[ContractRate],
+    *,
+    quantity: Decimal,
+    tender_class_id: int,
+) -> _Comparison:
+    """Цена против ставок ступени; `quantity` — вес работы или площадь для системы."""
+    price_range = rate_range(rung_rates)
+    class_rates = [r for r in rung_rates if history.contract(r.contract_id).rate_class_id == tender_class_id]
+    ours = min(r.net for r in (class_rates or rung_rates))
+
+    if price > price_range.max:
+        position: Literal["above", "in", "below"] = "above"
+    elif price < price_range.min:
+        position = "below"
+    else:
+        position = "in"
+
+    mismatch = unit_mismatch(price, rung_rates)
+    with localcontext(_CONTEXT):
+        to_ours = (price - ours) * quantity
+        if mismatch is None:
+            state = LineState.comparable
+            bargain: Decimal | None = max(_ZERO, to_ours)
+            below = (price - price_range.min) * quantity if price < price_range.min else None
+        else:
+            state = LineState.unit_mismatch
+            bargain = None
+            below = None
+
+    return _Comparison(
+        state=state,
+        threshold_met=len(rung_rates) >= RUNG_THRESHOLD,
+        range=price_range,
+        ours=ours,
+        ours_from_all_classes=not class_rates,
+        position=position,
+        mismatch=mismatch,
+        to_ours=to_ours,
+        bargain=bargain,
+        below=below,
+    )
+
+
 def _evaluate_work(
     line: KpLine,
     history: HistoryIndex,
@@ -483,50 +543,156 @@ def _evaluate_work(
             rungs=counts,
         )
 
-    threshold_met = len(rung_rates) >= RUNG_THRESHOLD
-    price_range = rate_range(rung_rates)
-    class_rates = [r for r in rung_rates if history.contract(r.contract_id).rate_class_id == tender_class_id]
-    ours_from_all = not class_rates
-    ours = min(r.net for r in (class_rates or rung_rates))
-
-    if kp_unit_net > price_range.max:
-        position: Literal["above", "in", "below"] = "above"
-    elif kp_unit_net < price_range.min:
-        position = "below"
-    else:
-        position = "in"
-
-    mismatch = unit_mismatch(kp_unit_net, rung_rates)
-    with localcontext(_CONTEXT):
-        to_ours = (kp_unit_net - ours) * line.weight
-        if mismatch is None:
-            state = LineState.comparable
-            bargain: Decimal | None = max(_ZERO, to_ours)
-            below = (kp_unit_net - price_range.min) * line.weight if kp_unit_net < price_range.min else None
-        else:
-            state = LineState.unit_mismatch
-            bargain = None
-            below = None
-
+    cmp = _compare(history, kp_unit_net, rung_rates, quantity=line.weight, tender_class_id=tender_class_id)
     return _result(
         line,
-        state,
+        cmp.state,
         kp_unit_net,
         kp_total_net,
         rung=rung,
         auto=not chosen,
-        threshold_met=threshold_met,
+        threshold_met=cmp.threshold_met,
         rungs=counts,
         contracts=tuple(rung_rates),
-        range=price_range,
-        ours=ours,
-        ours_from_all_classes=ours_from_all,
-        position=position,
-        to_ours=to_ours,
-        bargain=bargain,
-        below=below,
-        mismatch=mismatch,
+        range=cmp.range,
+        ours=cmp.ours,
+        ours_from_all_classes=cmp.ours_from_all_classes,
+        position=cmp.position,
+        to_ours=cmp.to_ours,
+        bargain=cmp.bargain,
+        below=cmp.below,
+        mismatch=cmp.mismatch,
     )
+
+
+# --- системы: одна ступень на семью внутри КП ----------------------------------------
+
+
+@dataclass(frozen=True)
+class _SystemEntry:
+    line: KpLine
+    key: LineKey
+    kp_unit_net: Decimal | None
+    kp_total_net: Decimal
+
+
+def _system_rates(
+    history: HistoryIndex, rung: Rung, key_value: Hashable, *, tender_class_id: int
+) -> list[ContractRate]:
+    return history.rates(
+        rung.level,
+        key_value,
+        is_system=True,
+        class_id=tender_class_id if rung.scope == "cls" else None,
+    )
+
+
+def _line_part(amount: Decimal | None, line_net: Decimal, group_net: Decimal) -> Decimal | None:
+    """Доля группового денежного итога строки: одно деление, без поправки остатка."""
+    return None if amount is None else amount * line_net / group_net
+
+
+def _evaluate_family(
+    entries: Sequence[_SystemEntry],
+    history: HistoryIndex,
+    *,
+    tender_area: Decimal,
+    tender_class_id: int,
+    choice: RungChoice | None,
+    first_group_index: int,
+) -> tuple[dict[int, LineResult], list[GroupResult]]:
+    """Одна ступень на всю семью: строки делятся по ключу ступени, группа — одна цена."""
+    rungs = (
+        RUNG_ORDER
+        if all(entry.key.first_main is not None for entry in entries)
+        else tuple(rung for rung in RUNG_ORDER if rung.level != "p")
+    )
+    partitions: dict[Level, dict[Hashable, list[_SystemEntry]]] = {}
+    for level in {rung.level for rung in rungs}:
+        by_key: dict[Hashable, list[_SystemEntry]] = {}
+        for entry in entries:
+            by_key.setdefault(entry.key.at(level), []).append(entry)
+        partitions[level] = by_key
+    counts: dict[Rung, dict[Hashable, int]] = {
+        rung: {
+            key_value: len(_system_rates(history, rung, key_value, tender_class_id=tender_class_id))
+            for key_value in partitions[rung.level]
+        }
+        for rung in rungs
+    }
+
+    chosen = choice is not None and any(entry.line.position_item_id == choice.position_item_id for entry in entries)
+    if chosen:
+        if choice.rung not in rungs:
+            raise ValueError(f"у семьи {entries[0].key.family_id} нет ступени {choice.rung}")
+        rung = choice.rung
+    else:
+        rung = RUNG_ORDER[-1]
+        for threshold in (RUNG_THRESHOLD, 1):
+            met = next((r for r in rungs if min(counts[r].values()) >= threshold), None)
+            if met is not None:
+                rung = met
+                break
+
+    results: dict[int, LineResult] = {}
+    groups: list[GroupResult] = []
+    for key_value, members in partitions[rung.level].items():
+        group_index = first_group_index + len(groups)
+        with localcontext(_CONTEXT):
+            group_net = sum((m.kp_total_net for m in members), _ZERO)
+            per_sqm = group_net / tender_area
+        rates = _system_rates(history, rung, key_value, tender_class_id=tender_class_id)
+        cmp = (
+            _compare(history, per_sqm, rates, quantity=tender_area, tender_class_id=tender_class_id) if rates else None
+        )
+        groups.append(
+            GroupResult(
+                family_id=members[0].key.family_id,
+                key=key_value,
+                rung=rung,
+                state=cmp.state if cmp else LineState.no_history,
+                lines=tuple(m.line.position_item_id for m in members),
+                net=group_net,
+                per_sqm=per_sqm,
+                to_ours=cmp.to_ours if cmp else None,
+                bargain=cmp.bargain if cmp else None,
+                below=cmp.below if cmp else None,
+            )
+        )
+        for member in members:
+            line_counts = tuple(RungCount(r, counts[r][member.key.at(r.level)]) for r in rungs)
+            with localcontext(_CONTEXT):
+                share = member.kp_total_net / group_net
+                fields = dict(
+                    rung=rung,
+                    auto=not chosen,
+                    rungs=line_counts,
+                    group_index=group_index,
+                    group_lines=len(members),
+                    share=share,
+                    group_per_sqm=per_sqm,
+                )
+                if cmp is not None:
+                    fields.update(
+                        threshold_met=cmp.threshold_met,
+                        contracts=tuple(rates),
+                        range=cmp.range,
+                        ours=cmp.ours,
+                        ours_from_all_classes=cmp.ours_from_all_classes,
+                        position=cmp.position,
+                        to_ours=_line_part(cmp.to_ours, member.kp_total_net, group_net),
+                        bargain=_line_part(cmp.bargain, member.kp_total_net, group_net),
+                        below=_line_part(cmp.below, member.kp_total_net, group_net),
+                        mismatch=cmp.mismatch,
+                    )
+            results[member.line.position_item_id] = _result(
+                member.line,
+                cmp.state if cmp else LineState.no_history,
+                member.kp_unit_net,
+                member.kp_total_net,
+                **fields,
+            )
+    return results, groups
 
 
 def evaluate_offer(
@@ -540,6 +706,7 @@ def evaluate_offer(
 ) -> OfferEvaluation:
     """Состояние и сравнение каждой строки КП; порядок проверок — спека §2.7."""
     results: dict[int, LineResult] = {}
+    family_entries: dict[int, list[_SystemEntry]] = {}
     for line in lines:
         kp_unit_net = _net(line.unit_price, kp_vat_base)
         kp_total_net = _net(line.total, kp_vat_base)
@@ -549,15 +716,25 @@ def evaluate_offer(
             state = LineState.in_progress
         elif kp_vat_base is None:
             state = LineState.unknown_vat_base
-        elif not line.is_system and not (is_price(line.unit_price) and is_weight(line.weight)):
+        elif line.is_system:
+            if not is_price(line.total):
+                state = LineState.no_price
+            elif not is_price(tender_area):
+                state = LineState.no_area
+            elif line.key is None:
+                state = LineState.no_variant
+        elif not (is_price(line.unit_price) and is_weight(line.weight)):
             state = LineState.no_price
         elif line.key is None:
             state = LineState.no_variant
-        elif line.is_system:
-            raise NotImplementedError("системы сравниваются группами")
 
         if state is not None:
             results[line.position_item_id] = _result(line, state, kp_unit_net, kp_total_net)
+        elif line.is_system:
+            assert line.key is not None and kp_total_net is not None
+            family_entries.setdefault(line.key.family_id, []).append(
+                _SystemEntry(line, line.key, kp_unit_net, kp_total_net)
+            )
         else:
             assert kp_unit_net is not None
             results[line.position_item_id] = _evaluate_work(
@@ -568,13 +745,30 @@ def evaluate_offer(
                 tender_class_id=tender_class_id,
                 choice=choice,
             )
-    return OfferEvaluation(lines=results, groups=())
+
+    groups: list[GroupResult] = []
+    for entries in family_entries.values():
+        assert tender_area is not None
+        family_results, family_groups = _evaluate_family(
+            entries,
+            history,
+            tender_area=tender_area,
+            tender_class_id=tender_class_id,
+            choice=choice,
+            first_group_index=len(groups),
+        )
+        results.update(family_results)
+        groups.extend(family_groups)
+
+    ordered = {line.position_item_id: results[line.position_item_id] for line in lines}
+    return OfferEvaluation(lines=ordered, groups=tuple(groups))
 
 
 # --- суммы ------------------------------------------------------------------------
 
 
-def _totals(results: Iterable[LineResult]) -> OfferTotals:
+def _totals(results: Iterable[LineResult], groups: Sequence[GroupResult] | None = None) -> OfferTotals:
+    """Суммы по строкам; с `groups` деньги систем берутся по группе один раз, а не по долям."""
     bargain = _ZERO
     below = _ZERO
     below_lines = 0
@@ -586,10 +780,12 @@ def _totals(results: Iterable[LineResult]) -> OfferTotals:
         for result in results:
             amount = result.kp_total_net
             if result.state is LineState.comparable:
-                if result.bargain is not None:
+                by_group = groups is not None and result.group_index is not None
+                if result.bargain is not None and not by_group:
                     bargain += result.bargain
                 if result.below is not None:
-                    below += result.below
+                    if not by_group:
+                        below += result.below
                     below_lines += 1
             elif result.state is LineState.unit_mismatch:
                 mismatch_lines += 1
@@ -600,6 +796,13 @@ def _totals(results: Iterable[LineResult]) -> OfferTotals:
                 bucket[0] += 1
                 if amount is not None:
                     bucket[1] += amount
+
+        for group in groups or ():
+            if group.state is LineState.comparable:
+                if group.bargain is not None:
+                    bargain += group.bargain
+                if group.below is not None:
+                    below += group.below
 
         not_comparable = {
             state: StateBucket(
@@ -626,7 +829,7 @@ def _totals(results: Iterable[LineResult]) -> OfferTotals:
 
 def offer_totals(evaluation: OfferEvaluation) -> OfferTotals:
     """Итоги участника по всем строкам КП."""
-    return _totals(evaluation.lines.values())
+    return _totals(evaluation.lines.values(), evaluation.groups)
 
 
 def lines_totals(evaluation: OfferEvaluation, position_item_ids: Iterable[int]) -> OfferTotals:
