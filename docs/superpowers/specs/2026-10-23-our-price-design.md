@@ -327,8 +327,9 @@ Codex в PR #72; макет —
 - Параметры запроса `inflation_series_id` (необязательный) — без него ответ
   номинальный, и ключей приведения в нём нет (`AGENTS.md` §10).
 - **Целевой месяц** — месяц `tender_rounds.held_on`; если даты нет — месяц
-  `data_prepared_on_date` сметы КП; если нет обеих — отказ 422
-  `inflation_target_missing` (дизайн 3.13).
+  самой поздней `data_prepared_on_date` среди смет КП этапа (цель одна на
+  этап, поэтому цифры участника на экране этапа и в его разборе совпадают);
+  если нет обеих — отказ 422 `inflation_target_missing` (дизайн 3.13).
 - **Период договора** — правило `_estimate_period` (`crud/comparison.py:578`):
   исходная смета — `COALESCE(data_prepared_on_date, signed_date)`,
   допсоглашение — только `data_prepared_on_date`. **Последняя смета-ДС без
@@ -407,18 +408,51 @@ Codex в PR #72; макет —
   history: {contracts: [{id, number, object_title, year, rate_class, contractor_id, area|null}],
             shown_rate: rate|null,  /* одна ставка всех участников с известной базой, иначе null (§2.9) */
             per_sqm: [{contract_id, net, shown|null}]},
-  inflation: {...как у сравнения...} | отсутствует,
+  inflation: {...как у сравнения..., sentence} | отсутствует,
   participants: [{offer_id, estimate_id|null, contractor: {id, title}, vat_rate|null,
                   state: "ok"|"no_estimate"|"unknown_vat_base",
-                  per_sqm: {net, shown}|null, ours_with_contractor: int,
+                  per_sqm: {net, shown}|null,
+                  per_sqm_reason: "no_area"|"unknown_vat_base"|null,
+                  class_median_pct: "0.0"|null,                /* ₽/м² КП к медиане ₽/м² договоров класса, % */
+                  ours_with_contractor: int,
                   totals: {bargain, below, below_lines, unit_mismatch_lines, unit_mismatch_amount,
-                           not_comparable: {total, by_state: {...}}}  /* каждое — {net, shown} */}],
+                           not_comparable: {total, by_state: {<состояние>: {lines, amount}}}}
+                         | null}],  /* суммы — {net, shown}; счётчики — числа */
   articles: [{work_category_id|null, code, title, sort_order,
               ours_class_per_sqm: {min, max}|null,           /* {net, shown|null} — shown по history.shown_rate */
               cells: [{offer_id, per_sqm, whole, unit_mismatch_lines,
-                       ours_class_per_sqm: {min, max}|null}]}]  /* в ставке ЭТОГО участника */
+                       ours_class_per_sqm: {min, max}|null}]}],  /* в ставке ЭТОГО участника */
+  total: {work_category_id: null, code: null, title, sort_order: null,
+          ours_class_per_sqm, cells}  /* строка «Итого на м² объекта» — та же форма, что у статьи, не её элемент */
 }
 ```
+
+Уточнения формы (план 4а, решение 7):
+
+- **`progress`** — по всем строкам (без глав) всех смет КП этапа: `lines_total` —
+  их число; `in_progress` — строки с сигналом §2.11; `waiting_admin` — строки,
+  у которых нет варианта, нет `in_progress` и поднят флаг «ждёт решения
+  администратора» (задание в `error`/`privacy_hold`, удержанная пачка, захват
+  на паузе при живом задании). Этап без смет — три нуля.
+- **`per_sqm_reason`** — причина пустого `per_sqm` полем, а не веткой текста:
+  база КП неизвестна — `unknown_vat_base` (побеждает), иначе площадь объекта
+  не проходит предикат цены — `no_area`, иначе `null`; у участника без сметы —
+  `null`, причину несёт `state`.
+- **Участник без сметы** — `vat_rate`, `per_sqm`, `class_median_pct`, `totals`
+  — `null`, ячейки статей пусты; `ours_with_contractor` считается. **Участник с
+  неизвестной базой** — те же поля `null` **целиком**, а не частичной суммой:
+  единица неполноты — целое (`AGENTS.md` §6).
+- **`class_median_pct`** — `(₽/м² КП / медиана ₽/м² договоров класса тендера − 1)
+  · 100`, строкой с одним знаком; `null`, если договоров класса нет, медиана
+  не положительна или `per_sqm` участника `null` (`no_area`).
+- **Договор истории без сумм** (у последней сметы нет строк `v_category_totals`
+  или все суммы этих строк пусты) не входит ни в вилку класса, ни в `history.per_sqm`, ни в медиану: суммы
+  «нет» — не ноль. У КП смета без строк — `0` (сумма пустого, как у свода по
+  этапам).
+- **`totals.not_comparable.by_state`** — только состояния, у которых есть строки;
+  `amount` — сумма нетто строк состояния в паре `{net, shown}`.
+- **`inflation.sentence`** — подпись ряда и месяца, собранная той же функцией,
+  что подпись оси сравнения.
 
 **`GET /api/v1/tenders/{tender_id}/rounds/{round_id}/our-price/offers/{offer_id}`**
 `?inflation_series_id=` — разбор участника: шапка как выше для одного

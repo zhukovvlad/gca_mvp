@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from auth import get_current_user, require_admin
 from config import settings
 from crud import changes_export as crud_changes_export
+from crud import our_price as crud_our_price
 from crud import position_drilldown as crud_position_drilldown
 from crud import round_unallocated as crud_ru
 from crud import stage_summary as crud_stage_summary
@@ -132,6 +133,20 @@ def stage_summary(tender_id: int, offers: list[int] = Query(default=[]), db: Ses
     """
     try:
         return decimal_json(crud_stage_summary.build_stage_summary(db, tender_id, offers))
+    except DomainError as e:
+        raise_domain_error(e)
+
+
+@router.get("/{tender_id}/rounds/{round_id}/our-price")
+def our_price_round(tender_id: int, round_id: int,
+                    inflation_series_id: int | None = Query(default=None), db: Session = Depends(get_db)):
+    """Экран этапа «Против нашей цены» (спека 4а §2.12): участники этапа против
+    последних смет договоров других объектов. Только чтение, `member` читает —
+    права несёт `get_current_user` маршрутизатора. Отказы приведения по ИПЦ
+    уезжают кодированным `detail` через `raise_domain_error`."""
+    try:
+        return decimal_json(crud_our_price.build_round_view(
+            db, tender_id, round_id, inflation_series_id=inflation_series_id))
     except DomainError as e:
         raise_domain_error(e)
 
