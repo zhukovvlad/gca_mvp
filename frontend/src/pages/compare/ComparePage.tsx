@@ -28,11 +28,8 @@ import { formatDate, formatSharePercent } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { InflationControls } from "@/components/inflation/InflationControls";
 import { InflationLevelsBar } from "@/components/inflation/InflationLevelsBar";
-import {
-  AMENDMENT_DATE_CODE,
-  InflationRefusalBanner,
-  MISSING_YEARS_CODE,
-} from "@/components/inflation/InflationRefusalBanner";
+import { InflationRefusalBanner } from "@/components/inflation/InflationRefusalBanner";
+import { AMENDMENT_DATE_CODE, MISSING_YEARS_CODE } from "@/components/inflation/refusalCodes";
 import {
   InflationSeriesDialog,
   type InflationSeriesTarget,

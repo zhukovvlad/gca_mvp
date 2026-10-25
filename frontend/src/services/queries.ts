@@ -33,6 +33,8 @@ import type { AdminUserCreateInput, AdminUserUpdateInput } from "@/types/admin";
 import type {
   AcceptTargetDecisionInput,
   ActivateDiscoveryInput,
+  RungLevel,
+  RungScope,
   ArchiveContextInput,
   AssignFamilyInput,
   ChangeGroup,
@@ -2662,5 +2664,152 @@ export function useUnitPrivacyRelease() {
       );
     },
     onError: onJobDecisionError(qc),
+  });
+}
+
+// ---------------------------------------------------------------------------
+//  «Против нашей цены» (спека 4а §2.11, §2.12)
+// ---------------------------------------------------------------------------
+
+export const OUR_PRICE_POLL_MS = 5000;
+
+/**
+ * Опрос, пока каталог ещё разбирает строки КП: сигнал — `progress.in_progress`
+ * собственного ответа запроса (§2.11). Погас — интервала нет; в фоне не опрашиваем.
+ */
+function ourPricePollInterval(data: { progress: { in_progress: number } } | undefined) {
+  return data !== undefined && data.progress.in_progress > 0 ? OUR_PRICE_POLL_MS : false;
+}
+
+/**
+ * Прежние данные на время смены ряда ИПЦ (или ступени): запрос прошлого ключа
+ * отличается от нового только хвостом — рядом, у панели ещё и ступенью. Любое
+ * другое различие (этап, участник, строка) — скелет, а не чужие цифры.
+ */
+function keepOurPricePrevious<T>(
+  key: readonly unknown[],
+  previous: T | undefined,
+  previousKey: readonly unknown[] | undefined,
+  volatileTail: number
+): T | undefined {
+  if (previousKey === undefined) return undefined;
+  const stable = key.length - volatileTail;
+  return key.slice(0, stable).every((part, i) => part === previousKey[i]) ? previous : undefined;
+}
+
+/**
+ * Экран этапа «Против нашей цены» (спека 4а §2.12). Опрашивается, пока
+ * `progress.in_progress > 0`. Если новый ответ разобрал больше строк, чем прошлый
+ * ответ ТОГО ЖЕ ключа, закешированные разборы участников этого этапа
+ * инвалидируются: их числа устарели вместе с каталогом.
+ */
+export function useOurPriceRound(
+  tenderId: number,
+  roundId: number,
+  seriesId: number | null,
+  opts?: { enabled?: boolean }
+) {
+  const qc = useQueryClient();
+  const queryKey = qk.tenders.ourPriceRound(tenderId, roundId, seriesId);
+  const query = useQuery({
+    queryKey,
+    queryFn: () => tendersApi.ourPriceRound(tenderId, roundId, seriesId),
+    enabled: opts?.enabled ?? true,
+    retry: false,
+    refetchInterval: (q) => ourPricePollInterval(q.state.data),
+    refetchIntervalInBackground: false,
+    placeholderData: (previous, previousQuery) =>
+      keepOurPricePrevious(queryKey, previous, previousQuery?.queryKey, 1),
+  });
+
+  // Число разобранных строк прошлого ответа по ключу; в кеше запроса его нет.
+  const parsedByKey = useRef(new Map<string, number>());
+  const { data, dataUpdatedAt, isPlaceholderData } = query;
+  useEffect(() => {
+    if (data === undefined || isPlaceholderData) return;
+    const parsed = data.progress.lines_total - data.progress.in_progress;
+    const keyText = JSON.stringify(queryKey);
+    const previous = parsedByKey.current.get(keyText);
+    parsedByKey.current.set(keyText, parsed);
+    if (previous !== undefined && parsed > previous) {
+      qc.invalidateQueries({ queryKey: qk.tenders.ourPriceOffersOfRound(tenderId, roundId) });
+    }
+    // Новый ответ — это смена `dataUpdatedAt`; сами данные могут совпасть по значению.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dataUpdatedAt, isPlaceholderData]);
+
+  return query;
+}
+
+/**
+ * Разбор участника (спека 4а §2.12). Опрашивается, пока в его строках есть
+ * `in_progress`; каждый новый ответ после первого инвалидирует панели строк
+ * этого участника: открытая перезапросится, закрытые неактивны.
+ */
+export function useOurPriceOffer(
+  tenderId: number,
+  roundId: number,
+  offerId: number,
+  seriesId: number | null,
+  opts?: { enabled?: boolean }
+) {
+  const qc = useQueryClient();
+  const queryKey = qk.tenders.ourPriceOffer(tenderId, roundId, offerId, seriesId);
+  const query = useQuery({
+    queryKey,
+    queryFn: () => tendersApi.ourPriceOffer(tenderId, roundId, offerId, seriesId),
+    enabled: opts?.enabled ?? true,
+    retry: false,
+    refetchInterval: (q) => ourPricePollInterval(q.state.data),
+    refetchIntervalInBackground: false,
+    placeholderData: (previous, previousQuery) =>
+      keepOurPricePrevious(queryKey, previous, previousQuery?.queryKey, 1),
+  });
+
+  const answeredKeys = useRef(new Set<string>());
+  const { data, dataUpdatedAt, isPlaceholderData } = query;
+  useEffect(() => {
+    if (data === undefined || isPlaceholderData) return;
+    const keyText = JSON.stringify(queryKey);
+    const isFirstAnswer = !answeredKeys.current.has(keyText);
+    answeredKeys.current.add(keyText);
+    if (!isFirstAnswer) {
+      qc.invalidateQueries({ queryKey: qk.tenders.ourPriceLinesOfOffer(tenderId, roundId, offerId) });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dataUpdatedAt, isPlaceholderData]);
+
+  return query;
+}
+
+/**
+ * Панель строки и предпросмотр ступени (спека 4а §2.12). Сама не опрашивает:
+ * её перезапрашивает новый ответ разбора. `rung = null` — автоматическая ступень.
+ */
+export function useOurPriceLine(
+  tenderId: number,
+  roundId: number,
+  offerId: number,
+  positionItemId: number | null,
+  rung: { level: RungLevel; scope: RungScope } | null,
+  seriesId: number | null
+) {
+  const queryKey = qk.tenders.ourPriceLine(
+    tenderId,
+    roundId,
+    offerId,
+    positionItemId ?? 0,
+    rung?.level ?? null,
+    rung?.scope ?? null,
+    seriesId
+  );
+  return useQuery({
+    queryKey,
+    queryFn: () =>
+      tendersApi.ourPriceLine(tenderId, roundId, offerId, positionItemId as number, rung, seriesId),
+    enabled: positionItemId !== null,
+    retry: false,
+    placeholderData: (previous, previousQuery) =>
+      keepOurPricePrevious(queryKey, previous, previousQuery?.queryKey, 3),
   });
 }

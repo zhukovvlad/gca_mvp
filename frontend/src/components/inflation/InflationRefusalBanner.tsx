@@ -2,6 +2,8 @@ import { AlertTriangle } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 
+import { MISSING_YEARS_CODE, TARGET_MISSING_CODE } from "./refusalCodes";
+
 interface InflationRefusalBannerProps {
   /** Машинный код отказа: он выбирает ПОВЕДЕНИЕ, а не только текст. */
   code: string;
@@ -14,15 +16,17 @@ interface InflationRefusalBannerProps {
   /** Кнопка правки — только `admin` (§2.10, DoD 35). */
   canEdit: boolean;
   onFillMissingYears: (years: number[]) => void;
+  /**
+   * Лежит ли месяц приведения в адресе страницы. У сравнения — да (по умолчанию);
+   * на экранах «Против нашей цены» месяца в адресе нет, и фразы про него не будет.
+   */
+  monthInAddress?: boolean;
 }
-
-export const MISSING_YEARS_CODE = "missing_inflation_years";
-export const AMENDMENT_DATE_CODE = "amendment_date_missing";
 
 /**
  * Баннер отказа приведения (спека §2.9, §2.12).
  *
- * **Общий каркас, ДВА разных текста по коду, и кнопка только у одного из них.**
+ * **Общий каркас, ТРИ разных текста по коду, и кнопка только у одного из них.**
  * У `missing_inflation_years` есть «Заполнить недостающие годы»: система уже знает
  * и ряд, и годы, и отправлять человека искать раздел значит перекладывать на него
  * работу, которую она сделала сама. У `amendment_date_missing` кнопки НЕТ —
@@ -46,6 +50,7 @@ export function InflationRefusalBanner({
   missingYears,
   canEdit,
   onFillMissingYears,
+  monthInAddress = true,
 }: InflationRefusalBannerProps) {
   const canFill =
     code === MISSING_YEARS_CODE && canEdit && (missingYears?.length ?? 0) > 0;
@@ -63,8 +68,9 @@ export function InflationRefusalBanner({
           {code === MISSING_YEARS_CODE && seriesName && ` Выбран ряд «${seriesName}».`}
         </p>
         <p className="mt-1 text-xs">
-          Числа показаны номинально, без приведения. Выбранные ряд и месяц остались в
-          адресе.
+          Числа показаны номинально, без приведения.
+          {monthInAddress && code !== TARGET_MISSING_CODE &&
+            " Выбранные ряд и месяц остались в адресе."}
         </p>
       </div>
       {canFill && (

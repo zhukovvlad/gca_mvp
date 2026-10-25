@@ -3298,3 +3298,212 @@ export interface JobsResponse {
   items: JobRow[];
   unit_groups: UnitHoldGroup[];
 }
+
+// ---------------------------------------------------------------------------
+//  «Против нашей цены» (спека 4а 2026-10-23-our-price-design.md §2.12)
+//  Имена полей — как в JSON ответа. Деньги — строки `Decimal`, арифметики над
+//  ними на клиенте нет: `net` и `shown` считает сервер.
+// ---------------------------------------------------------------------------
+
+/** Сумма или ставка в двух видах: нетто и в ставке КП (`null`, пока ставка неизвестна). */
+export interface MoneyPair {
+  net: Decimal;
+  shown: Decimal | null;
+}
+
+export type OurPriceLineState =
+  | "in_progress"
+  | "unknown_vat_base"
+  | "no_price"
+  | "no_area"
+  | "no_variant"
+  | "no_history"
+  | "unit_mismatch"
+  | "comparable";
+
+export type RungLevel = "v" | "p" | "f";
+export type RungScope = "cls" | "all";
+
+export type OurPriceParticipantState = "ok" | "no_estimate" | "unknown_vat_base";
+
+export interface OurPriceProgress {
+  lines_total: number;
+  in_progress: number;
+  waiting_admin: number;
+}
+
+export interface OurPriceTender {
+  id: number;
+  title: string;
+  object: { id: number; title: string; area_total_sp: Decimal | null };
+  rate_class: { id: number; title: string };
+}
+
+export interface OurPriceRoundHead {
+  id: number;
+  stage_no: number;
+  label: string | null;
+  held_on: string | null;
+}
+
+export interface OurPriceHistoryContract {
+  id: number;
+  number: string;
+  object_title: string;
+  year: number;
+  rate_class: { id: number; title: string };
+  contractor_id: number;
+  area: Decimal | null;
+}
+
+export interface OurPriceHistory {
+  contracts: OurPriceHistoryContract[];
+  /** Одна ставка всех участников с известной базой, иначе `null` (спека §2.9). */
+  shown_rate: Decimal | null;
+  per_sqm: Array<{ contract_id: number } & MoneyPair>;
+}
+
+/** Метаданные приведения плюс подпись ряда и месяца; ключа нет без ряда в запросе. */
+export interface OurPriceInflation extends ComparisonInflation {
+  sentence: string;
+}
+
+export interface OurPriceNotComparable {
+  total: MoneyPair | null;
+  by_state: Partial<Record<OurPriceLineState, { lines: number; amount: MoneyPair | null }>>;
+}
+
+export interface OurPriceTotals {
+  bargain: MoneyPair | null;
+  below: MoneyPair | null;
+  below_lines: number;
+  unit_mismatch_lines: number;
+  unit_mismatch_amount: MoneyPair | null;
+  not_comparable: OurPriceNotComparable;
+}
+
+export interface OurPriceParticipant {
+  offer_id: number;
+  estimate_id: number | null;
+  contractor: { id: number; title: string };
+  vat_rate: Decimal | null;
+  state: OurPriceParticipantState;
+  per_sqm: MoneyPair | null;
+  per_sqm_reason: "no_area" | "unknown_vat_base" | null;
+  class_median_pct: string | null;
+  ours_with_contractor: number;
+  totals: OurPriceTotals | null;
+}
+
+export interface OurPriceFork {
+  min: MoneyPair;
+  max: MoneyPair;
+}
+
+export interface OurPriceCell {
+  per_sqm: MoneyPair | null;
+  whole: MoneyPair | null;
+  unit_mismatch_lines: number;
+  ours_class_per_sqm: OurPriceFork | null;
+}
+
+export interface OurPriceArticleHead {
+  work_category_id: number | null;
+  code: string | null;
+  title: string;
+  sort_order: number | null;
+}
+
+/** Статья экрана этапа: ячейка на каждого участника. Строка «Итого» — той же формы. */
+export interface OurPriceRoundArticle extends OurPriceArticleHead {
+  ours_class_per_sqm: OurPriceFork | null;
+  cells: Array<{ offer_id: number } & OurPriceCell>;
+}
+
+/** Статья разбора участника: поля ячейки этапа для него самого и суммы по строкам. */
+export interface OurPriceOfferArticle extends OurPriceArticleHead, OurPriceCell {
+  lines_totals: OurPriceTotals | null;
+}
+
+export interface OurPriceLine {
+  position_item_id: number;
+  article_id: number | null;
+  title: string;
+  unit: string | null;
+  quantity: Decimal | null;
+  section_ref: string | null;
+  family: string | null;
+  variant_label: string | null;
+  secondary: Array<{ name: string; value: string }>;
+  state: OurPriceLineState;
+  waiting_admin: boolean;
+  kind: "work" | "system";
+  kp: { unit_price: MoneyPair | null; total: MoneyPair | null };
+  rung: { level: RungLevel; scope: RungScope; auto: boolean; threshold_met: boolean } | null;
+  rungs: Array<{ level: RungLevel; scope: RungScope; contracts: number }>;
+  range: { min: MoneyPair; max: MoneyPair; median: MoneyPair } | null;
+  ours: { value: MoneyPair; from_all_classes: boolean } | null;
+  position: "above" | "in" | "below" | null;
+  to_ours: MoneyPair | null;
+  bargain: MoneyPair | null;
+  below: MoneyPair | null;
+  group: { lines: number; share: Decimal; kp_per_sqm: MoneyPair | null } | null;
+  unit_mismatch: {
+    kp_ratio: Decimal | null;
+    contracts: Array<{ contract_id: number; ratio: Decimal }>;
+  } | null;
+}
+
+/** Ответ экрана этапа (`GET .../rounds/:id/our-price`). */
+export interface OurPriceRound {
+  tender: OurPriceTender;
+  round: OurPriceRoundHead;
+  progress: OurPriceProgress;
+  history: OurPriceHistory;
+  inflation?: OurPriceInflation;
+  participants: OurPriceParticipant[];
+  articles: OurPriceRoundArticle[];
+  total: OurPriceRoundArticle;
+}
+
+/** Ответ разбора участника (`GET .../our-price/offers/:id`). */
+export interface OurPriceOffer {
+  tender: OurPriceTender;
+  round: OurPriceRoundHead;
+  progress: OurPriceProgress;
+  history: OurPriceHistory;
+  inflation?: OurPriceInflation;
+  /** Один элемент: сам участник. */
+  participants: OurPriceParticipant[];
+  articles: OurPriceOfferArticle[];
+  total: OurPriceArticleHead & OurPriceCell;
+  lines: OurPriceLine[];
+}
+
+export interface OurPriceRungContract {
+  contract_id: number;
+  object_title: string;
+  number: string;
+  year: number;
+  rate_class: { id: number; title: string };
+  contractor_id: number;
+  rate: MoneyPair;
+  is_lower_bound: boolean;
+  with_this_contractor: boolean;
+  ratio: Decimal | null;
+}
+
+export interface OurPriceVatDropped {
+  contract_id: number;
+  object_title: string;
+  number: string;
+  year: number;
+}
+
+/** Панель строки и предпросмотр ступени (`GET .../offers/:id/lines/:pid`). */
+export interface OurPriceLineView {
+  line: OurPriceLine;
+  group_lines: OurPriceLine[];
+  contracts: OurPriceRungContract[];
+  vat_dropped: OurPriceVatDropped[];
+}
