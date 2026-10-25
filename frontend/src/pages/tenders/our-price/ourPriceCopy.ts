@@ -340,3 +340,7 @@ export const UNIT_WARN_TAIL =
 export function contractsShort(n: number): string {
   return `${n} дог.`;
 }
+
+/** Входы на экраны 4а с карточки тендера: кнопка панели этапа и пункт меню ячейки КП. */
+export const OUR_PRICE_ENTRY_LABEL = "Против нашей цены";
+export const OUR_PRICE_ENTRY_NO_ESTIMATES = "В этапе нет КП со сметой";
