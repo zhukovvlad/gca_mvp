@@ -13,6 +13,7 @@ import { qk } from "@/services/queryKeys";
 
 import { CatalogProgressAlert } from "./CatalogProgressAlert";
 import { InflationRefusalSection } from "./InflationRefusalSection";
+import { LineSheet } from "./LineSheet";
 import type { VatView } from "./money";
 import { OfferArticlesTable } from "./OfferArticlesTable";
 import { OfferTiles, type OfferFilter } from "./OfferTiles";
@@ -71,6 +72,13 @@ export default function OurPriceOfferPage() {
 
   const [filter, setFilter] = useState<OfferFilter>("all");
   const [openLine, setOpenLine] = useState<number | null>(null);
+  // Страница не пересоздаётся при смене участника: фильтр плиток и открытая строка — его, не соседа.
+  const [stateOfOffer, setStateOfOffer] = useState(offerId);
+  if (stateOfOffer !== offerId) {
+    setStateOfOffer(offerId);
+    setFilter("all");
+    setOpenLine(null);
+  }
 
   const backLink = <Button render={<Link to={`/tenders/${tenderId}`} />}>{BACK_LABEL}</Button>;
 
@@ -207,6 +215,18 @@ export default function OurPriceOfferPage() {
           />
         </div>
       </RecalcOverlay>
+
+      <LineSheet
+        tenderId={tenderId}
+        roundId={roundId}
+        offerId={offerId}
+        positionItemId={openLine}
+        // При отказе ИПЦ экран стоит на номинальных цифрах — панель за тем же рядом получила бы тот же отказ.
+        seriesId={refused ? null : seriesId}
+        vat={view}
+        vatRate={participant.vat_rate}
+        onClose={() => setOpenLine(null)}
+      />
     </div>
   );
 }

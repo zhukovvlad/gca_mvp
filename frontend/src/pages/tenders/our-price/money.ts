@@ -27,6 +27,16 @@ export function formatSigned(value: Decimal): string {
   return /^0([.,]0+)?\s/.test(text) ? text : `+${text}`;
 }
 
+/**
+ * Сумма «ниже всего, что платили» со знаком «−»: та же типографика, что у «дороже».
+ * Сервер отдаёт её отрицательной; знак берётся от модуля, поэтому функция не зависит
+ * от знака входа. Ноль знака не получает. Арифметики нет.
+ */
+export function formatBelow(value: Decimal): string {
+  const magnitude = absDecimal(value);
+  return compareDecimalStrings(magnitude, "0") === 0 ? formatSigned(magnitude) : formatSigned(`-${magnitude}`);
+}
+
 /** Модуль подписанной суммы: строка без ведущего «-», арифметики нет. */
 export function absDecimal(value: Decimal): Decimal {
   return value.startsWith("-") ? value.slice(1) : value;

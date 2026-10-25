@@ -27,6 +27,7 @@ import {
   FILTER_LABEL,
   LINE_STATE_LABEL,
   NO_INFLATION_CAPTION,
+  PER_SQM_UNIT,
   PRICES_CAPTION_NET,
 } from "./ourPriceCopy";
 
@@ -108,7 +109,8 @@ const lineIds = () =>
 
 /** Восемь строк одной статьи: по две на «ниже», по одной на «дороже» и «в вилке», два расхождения единиц, две без сравнения. */
 function filterLines(): OurPriceLine[] {
-  const below = pair("300.00", "366.00");
+  // Сервер отдаёт «ниже» отрицательным (спека 4а §2.8): цена КП минус минимум ступени.
+  const below = pair("-300.00", "-366.00");
   return [
     line(1, 11, { state: "comparable", position: "below", to_ours: pair("-300.00", "-366.00"), bargain: pair("0.00", "0.00"), below }),
     line(2, 11, { state: "comparable", position: "above", to_ours: pair("200.00", "244.00"), bargain: pair("200.00", "244.00"), below: null }),
@@ -332,7 +334,7 @@ describe("плитки-фильтры", () => {
     await loaded();
     expect(screen.getByTestId("tile-above_ours")).toHaveTextContent(FILTER_LABEL.above_ours);
     expect(screen.getByTestId("tile-above_ours")).toHaveTextContent("+146 400,00");
-    expect(screen.getByTestId("tile-below_paid")).toHaveTextContent("36 600,00");
+    expect(screen.getByTestId("tile-below_paid")).toHaveTextContent("−36 600,00");
     expect(screen.getByTestId("tile-below_paid")).not.toHaveTextContent("+36 600,00");
     expect(screen.getByTestId("tile-unit_mismatch")).toHaveTextContent("6 100,00");
     expect(screen.getByTestId("tile-not_comparable")).toHaveTextContent("9 760,00");
@@ -530,7 +532,7 @@ describe("таблица статей", () => {
             work_category_id: 11,
             code: "01",
             title: "Статья 1",
-            lines_totals: { ...noTotals, bargain: pair("120000.00", "146400.00"), below: pair("30000.00", "36600.00") },
+            lines_totals: { ...noTotals, bargain: pair("120000.00", "146400.00"), below: pair("-30000.00", "-36600.00") },
           },
           {
             ...head,
@@ -638,7 +640,8 @@ describe("таблица статей", () => {
     expect(screen.getByTestId("art-fork-11")).toHaveTextContent("90 000,00 – 130 000,00");
     expect(screen.getByTestId("art-whole-11")).toHaveTextContent("+500 000,00");
     expect(screen.getByTestId("art-above-11")).toHaveTextContent("+120 000,00");
-    expect(screen.getByTestId("art-below-11")).toHaveTextContent("30 000,00");
+    expect(screen.getByTestId("art-below-11")).toHaveTextContent("−30 000,00");
+    expect(screen.getByTestId("art-below-11")).not.toHaveTextContent("+30 000,00");
     expect(screen.getByTestId("art-persqm-12")).toHaveTextContent("—");
     expect(screen.getByTestId("art-fork-12")).toHaveTextContent("—");
     expect(screen.getByTestId("art-whole-12")).toHaveTextContent("—");
@@ -964,6 +967,33 @@ describe("открытие строки и маршрут", () => {
     expect(screen.getByTestId("offer-page")).not.toHaveAttribute("data-open-line");
     fireEvent.click(screen.getByTestId("line-5001"));
     expect(screen.getByTestId("offer-page")).toHaveAttribute("data-open-line", "5001");
+  });
+
+  it("смена участника сбрасывает фильтр плиток и открытую строку: панель не открывается со строкой чужого КП", async () => {
+    renderPage("?article=11");
+    await loaded();
+    fireEvent.click(screen.getByTestId("tile-above_ours"));
+    expect(screen.getByTestId("tile-above_ours")).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByTestId("line-5001"));
+    expect(screen.getByTestId("offer-page")).toHaveAttribute("data-open-line", "5001");
+
+    const link = screen.getByTestId("participant-switcher").querySelector("a");
+    expect(link).not.toBeNull();
+    fireEvent.click(link as HTMLElement);
+    await waitFor(() => expect(screen.getByTestId("loc")).toHaveTextContent("/offers/7003"));
+    await loaded();
+
+    expect(screen.getByTestId("offer-page")).not.toHaveAttribute("data-open-line");
+    expect(screen.getByTestId("tile-all")).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByTestId("tile-above_ours")).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("единица ₽/м² — одна, из ourPriceCopy: плитка и полоса её печатают", async () => {
+    expect(PER_SQM_UNIT).toBe("₽/м²");
+    renderPage();
+    await loaded();
+    expect(screen.getByTestId("tile-per_sqm")).toHaveTextContent(PER_SQM_UNIT);
+    expect(screen.getByTestId("strip-dot-101").getAttribute("title")).toContain(` ${PER_SQM_UNIT}`);
   });
 
   it("вне RequireAdmin: member открывает разбор по адресу", async () => {

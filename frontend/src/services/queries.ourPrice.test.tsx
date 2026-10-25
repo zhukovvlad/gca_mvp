@@ -290,6 +290,28 @@ describe("поток обновления", () => {
     await vi.waitFor(() => expect(result.current.line.data?.line.state).toBe("comparable"));
   });
 
+  it("выключенный экземпляр хука разбора панели не инвалидирует: на ответ разбора — ровно один запрос панели", async () => {
+    handlerState.ourPriceOfferInProgress = [1, 0];
+    handlerState.ourPriceLineStates = ["in_progress", "comparable"];
+    fakeIntervals();
+    const queryClient = makeClient();
+    const { result } = renderHook(
+      () => ({
+        offer: useOurPriceOffer(T, R, O, null),
+        // Тот же ключ, что у живого экземпляра, но запрос выключен: он тоже видит ответ.
+        disabled: useOurPriceOffer(T, R, O, null, { enabled: false }),
+        line: useOurPriceLine(T, R, O, P, null, null),
+      }),
+      { wrapper: wrapperFor(queryClient) }
+    );
+    await vi.waitFor(() => expect(result.current.line.data?.line.state).toBe("in_progress"));
+    await vi.advanceTimersByTimeAsync(OUR_PRICE_POLL_MS);
+    await vi.waitFor(() => expect(result.current.line.data?.line.state).toBe("comparable"));
+    await vi.advanceTimersByTimeAsync(50);
+    expect(requestsOf("offer")).toHaveLength(2);
+    expect(requestsOf("line")).toHaveLength(2);
+  });
+
   it("новый ответ разбора не трогает панели другого участника и не запрашивает закрытые панели", async () => {
     const linePath = (offerId: number, pid: number) =>
       `/api/v1/tenders/${T}/rounds/${R}/our-price/offers/${offerId}/lines/${pid}`;

@@ -2769,7 +2769,8 @@ export function useOurPriceOffer(
   const answeredKeys = useRef(new Set<string>());
   const { data, dataUpdatedAt, isPlaceholderData } = query;
   useEffect(() => {
-    if (data === undefined || isPlaceholderData) return;
+    // Выключенный экземпляр (тот же ключ, запроса нет) ответов не ждёт: инвалидирует живой.
+    if (opts?.enabled === false || data === undefined || isPlaceholderData) return;
     const keyText = JSON.stringify(queryKey);
     const isFirstAnswer = !answeredKeys.current.has(keyText);
     answeredKeys.current.add(keyText);

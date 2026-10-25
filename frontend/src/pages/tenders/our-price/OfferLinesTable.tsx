@@ -13,11 +13,9 @@ import {
   contractsShort,
   EMPTY_LINES_LABEL,
   LINE_COLUMN,
-  LINE_STATE_LABEL,
-  POSITION_LABEL,
+  lineStateLabel,
   RUNG_LEVEL_LABEL,
   SECONDARY_MARK,
-  WAITING_ADMIN_LABEL,
 } from "./ourPriceCopy";
 import { SortHead } from "./SortHead";
 import { ariaSort, compareNullable, nextSort, type SortDir, type SortState } from "./sorting";
@@ -64,13 +62,6 @@ function compareLines(a: OurPriceLine, b: OurPriceLine, sort: SortState<SortKey>
   if (sort.key === "work") return compareText(a.title, b.title, sort.dir);
   if (sort.key === "unit") return compareText(a.unit, b.unit, sort.dir);
   return compareNullable(decimalOf(a, sort.key, vat), decimalOf(b, sort.key, vat), sort.dir);
-}
-
-/** Подпись состояния рядом с разницей; у сопоставимой строки — её положение в вилке. */
-function stateLabel(line: OurPriceLine): string | null {
-  if (line.state === "comparable") return line.position === null ? null : POSITION_LABEL[line.position];
-  if (line.state === "no_variant" && line.waiting_admin) return WAITING_ADMIN_LABEL;
-  return LINE_STATE_LABEL[line.state];
 }
 
 /** Подпись ступени: «вариант · Класс 2 · 3 дог.»; у строки без ступени её нет. */
@@ -211,7 +202,7 @@ export function OfferLinesTable({ lines, vat, rateClass, onOpenLine }: OfferLine
         cell: ({ row }) => {
           const line = row.original;
           const diff = pick(line.to_ours, vat);
-          const label = stateLabel(line);
+          const label = lineStateLabel(line);
           return (
             <div data-testid={`to-ours-${line.position_item_id}`}>
               <span

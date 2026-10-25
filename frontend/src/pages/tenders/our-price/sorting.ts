@@ -20,10 +20,10 @@ export function ariaSort<K>(sort: SortState<K>, key: K): "ascending" | "descendi
 
 /**
  * Десятичные строки сравниваются без перевода в число; пустые всегда в конце — в обоих
- * направлениях сортировки.
+ * направлениях сортировки; две пустые равны.
  */
 export function compareNullable(a: Decimal | null, b: Decimal | null, dir: SortDir): number {
-  if (a === null) return 1;
+  if (a === null) return b === null ? 0 : 1;
   if (b === null) return -1;
   const result = compareDecimalStrings(a, b) ?? 0;
   return dir === "asc" ? result : -result;

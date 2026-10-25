@@ -2755,7 +2755,7 @@ function ourPriceProgress(inProgress: number): OurPriceProgress {
 function ourPriceTotals(): OurPriceTotals {
   return {
     bargain: pair("120000.00", "146400.00"),
-    below: pair("30000.00", "36600.00"),
+    below: pair("-30000.00", "-36600.00"),
     below_lines: 2,
     unit_mismatch_lines: 1,
     unit_mismatch_amount: pair("5000.00", "6100.00"),
@@ -2967,6 +2967,7 @@ export function ourPriceLineViewFixture(
         year: 2025,
         rate_class: { id: 2, title: "Класс 2" },
         contractor_id: 401,
+        contractor_title: "Подрядчик А",
         rate: pair("900", "1098"),
         is_lower_bound: true,
         with_this_contractor: true,

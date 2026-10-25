@@ -33,7 +33,7 @@ describe("ParticipantCard", () => {
     expect(card).toHaveTextContent("110 000,00");
     expect(card).toHaveTextContent("+10,0 % к медиане наших");
     expect(card).toHaveTextContent(/Можно выторговать\s*120 000,00/);
-    expect(card).toHaveTextContent(/Ниже всего, что платили\s*30 000,00\s*₽\s*·\s*2 стр\./);
+    expect(card).toHaveTextContent(/Ниже всего, что платили\s*−30 000,00\s*₽\s*·\s*2 стр\./);
     expect(card).toHaveTextContent(/Разные единицы учёта\s*1 стр\./);
     expect(card).toHaveTextContent(/Не с чем сравнить\s*8 000,00/);
     expect(card).toHaveTextContent("без НДС");

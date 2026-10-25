@@ -1,5 +1,5 @@
 import { pluralRu } from "@/lib/format";
-import type { Decimal, OurPriceLineState, OurPriceParticipant } from "@/types/domain";
+import type { Decimal, OurPriceLine, OurPriceLineState, OurPriceParticipant } from "@/types/domain";
 
 import type { OfferFilter } from "./offerFilter";
 
@@ -197,6 +197,7 @@ export const FILTER_HINT: Record<Exclude<OfferFilter, "all">, string> = {
 };
 
 export const PER_SQM_TILE_LABEL = "КП на м² объекта";
+export const PER_SQM_UNIT = "₽/м²";
 
 export const STRIP_TITLE = "Цена на м² объекта против наших договоров, ₽";
 export const STRIP_LEGEND_CLASS = "тёмные — договоры класса объекта";
@@ -237,6 +238,81 @@ export const POSITION_LABEL = {
 } as const;
 
 export const RUNG_LEVEL_LABEL = { v: "вариант", p: "по параметру", f: "вся семья" } as const;
+
+/** Подпись состояния рядом с разницей; у сопоставимой строки — её положение в вилке. */
+export function lineStateLabel(line: OurPriceLine): string | null {
+  if (line.state === "comparable") return line.position === null ? null : POSITION_LABEL[line.position];
+  if (line.state === "no_variant" && line.waiting_admin) return WAITING_ADMIN_LABEL;
+  return LINE_STATE_LABEL[line.state];
+}
+
+/** Панель строки (спека 4а §2.12, §2.14): тексты. */
+export const SHEET_TITLE = "Строка КП";
+export const SHEET_ERROR_LABEL = "Не удалось открыть строку";
+export const SHEET_DESCRIPTION = "Сравнение строки КП с нашими договорами";
+export const SHEET_SECTION = {
+  prices: "Цены",
+  ladder: "Лестница сравнения",
+  family: "Вся семья в этом КП",
+  contracts: "Договоры на этой ступени",
+  vatDropped: "Договоры, не попавшие в сравнение",
+} as const;
+export const SHEET_FIELD = {
+  kpPrice: "Цена КП",
+  quantity: "Объём",
+  toOurs: "К нашей расценке",
+  ours: "Наша расценка (справкой)",
+  groupKpPerSqm: "Группа в КП на м² объекта",
+  secondary: "Второстепенные",
+} as const;
+
+export function priceBasisLabel(view: "net" | "shown", rate: Decimal | null): string {
+  return view === "shown" && rate !== null ? `${vatShownLabel(rate)} (договоры — по ставке КП)` : VAT_NET_LABEL;
+}
+
+export const RUNG_SCOPE_LABEL = { cls: "класс объекта", all: "все классы" } as const;
+export const RUNG_AUTO_TAG = "авто";
+export const RUNG_RESET_LABEL = "Вернуть автоматическую";
+export const RUNG_HINT =
+  "Нажмите на другую ступень, чтобы сравнить по ней: вилка, наша расценка и отклонение пересчитаются. Цифры страницы разбора при этом не меняются.";
+
+/** Форма существительного по числу: 1 строка, 2 строки, 5 строк (11–14 — всегда «строк»). */
+function pluralForm(n: number, one: string, few: string, many: string): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return few;
+  return many;
+}
+
+export function groupLinesCaption(n: number): string {
+  return `${n} ${pluralForm(n, "строка", "строки", "строк")} КП вместе`;
+}
+export const GROUP_THIS_LINE = "эта строка";
+export const GROUP_OUTSIDE = "вне группы";
+export function groupMembership(lines: number): string {
+  return `группа из ${lines} стр.`;
+}
+
+export const CONTRACT_LOWER_BOUND = "нижняя граница";
+export const CONTRACT_WITH_CONTRACTOR = "договор с этим подрядчиком";
+export function contractNumber(number: string): string {
+  return `договор ${number}`;
+}
+export function ratioNote(ratio: Decimal): string {
+  return `×${ratio} к остальным договорам — проверьте единицу учёта`;
+}
+export const VAT_DROPPED_NOTE = "выпал: неизвестна база НДС";
+
+export const UNIT_WARN_TITLE = "Разные единицы учёта?";
+export function unitWarnKp(ratio: Decimal, median: string | null): string {
+  return `Цена КП отличается от медианы наших договоров${median === null ? "" : ` (${median})`} в ${ratio} раз.`;
+}
+export function unitWarnContracts(ratios: Decimal[]): string {
+  return `Наши договоры расходятся с остальными: ${ratios.map((r) => `×${r}`).join(", ")}.`;
+}
+export const UNIT_WARN_TAIL =
+  "Почти всегда это не цена, а разный способ счёта: в одном месте за единицу, в другом — за весь объём. Ничего не исключено; в суммы переплаты строка не входит. Хороший вопрос подрядчику.";
 
 export function contractsShort(n: number): string {
   return `${n} дог.`;

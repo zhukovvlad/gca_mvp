@@ -28,6 +28,7 @@ from models import (
     ContextMember,
     ContextParameterValue,
     Contract,
+    Contractor,
     Estimate,
     FamilyParameter,
     FamilyParameterSchema,
@@ -386,12 +387,14 @@ def load_history(db: Session, *, exclude_object_id: int) -> tuple[list[HistoryCo
             Contract.rate_class_id,
             RateClass.title,
             Contract.contractor_id,
+            Contractor.title,
             ObjectModel.area_total_sp,
         )
         .select_from(latest)
         .join(Contract, Contract.id == latest.c.contract_id)
         .join(ObjectModel, ObjectModel.id == Contract.object_id)
         .join(RateClass, RateClass.id == Contract.rate_class_id)
+        .join(Contractor, Contractor.id == Contract.contractor_id)
         .where(Contract.object_id != exclude_object_id)
         .order_by(Contract.id)
     ).all()
@@ -405,7 +408,8 @@ def load_history(db: Session, *, exclude_object_id: int) -> tuple[list[HistoryCo
             rate_class_id=row[5],
             rate_class_title=row[6],
             contractor_id=row[7],
-            area=row[8],
+            contractor_title=row[8],
+            area=row[9],
         )
         for row in contract_rows
     ]

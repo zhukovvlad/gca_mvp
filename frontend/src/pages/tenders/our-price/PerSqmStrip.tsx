@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 import type { Decimal, OurPriceOffer } from "@/types/domain";
 
 import { pick, type VatView } from "./money";
-import { STRIP_LEGEND_CLASS, STRIP_LEGEND_OTHER, STRIP_THIS_OFFER, STRIP_TITLE } from "./ourPriceCopy";
+import { PER_SQM_UNIT, STRIP_LEGEND_CLASS, STRIP_LEGEND_OTHER, STRIP_THIS_OFFER, STRIP_TITLE } from "./ourPriceCopy";
 
 export interface PerSqmStripProps {
   offer: OurPriceOffer;
@@ -88,7 +88,7 @@ export function PerSqmStrip({ offer, vat }: PerSqmStripProps) {
                 key={point.contractId}
                 data-testid={`strip-dot-${point.contractId}`}
                 data-same-class={point.sameClass}
-                title={`${point.label}: ${formatDecimalMoney(point.value, "")} ₽/м²`}
+                title={`${point.label}: ${formatDecimalMoney(point.value, "")} ${PER_SQM_UNIT}`}
                 style={at(point.value)}
                 className={cn(
                   "absolute top-1/2 size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full",

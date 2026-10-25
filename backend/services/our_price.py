@@ -103,6 +103,7 @@ class HistoryContract:
     rate_class_id: int
     rate_class_title: str
     contractor_id: int
+    contractor_title: str
     area: Decimal | None
 
 

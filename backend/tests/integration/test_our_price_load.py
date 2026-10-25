@@ -375,6 +375,7 @@ class TestHistoryComposition:
                 rate_class_id=rate_class.id,
                 rate_class_title="Класс Х",
                 contractor_id=contract.contractor_id,
+                contractor_title=contract.contractor.title,
                 area=D("2500"),
             )
         ]

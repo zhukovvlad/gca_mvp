@@ -7,7 +7,7 @@ import { formatDecimalMoney } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { Decimal, MoneyPair, OurPriceParticipant } from "@/types/domain";
 
-import { pick, type VatView } from "./money";
+import { formatBelow, pick, type VatView } from "./money";
 import {
   CARD_LABEL,
   CHEAPEST_PER_SQM_LABEL,
@@ -62,9 +62,9 @@ export function ParticipantCard({ participant, view, cheapest, href }: Participa
   const reason = emptyReasonOf(participant);
   const perSqm = pick(participant.per_sqm, view);
   const totals = participant.totals;
-  const money = (pair: MoneyPair | null): string => {
+  const money = (pair: MoneyPair | null, format: (v: Decimal) => string = formatDecimalMoney): string => {
     const value: Decimal | null = pick(pair, view);
-    return value === null ? "—" : formatDecimalMoney(value);
+    return value === null ? "—" : format(value);
   };
   return (
     <Card
@@ -107,7 +107,7 @@ export function ParticipantCard({ participant, view, cheapest, href }: Participa
                 <Row label={CARD_LABEL.bargain} value={money(totals.bargain)} tone="dear" />
                 <Row
                   label={CARD_LABEL.below}
-                  value={`${money(totals.below)} · ${linesCount(totals.below_lines)}`}
+                  value={`${money(totals.below, formatBelow)} · ${linesCount(totals.below_lines)}`}
                   tone="cheap"
                 />
                 <Row label={CARD_LABEL.unitMismatch} value={linesCount(totals.unit_mismatch_lines)} />

@@ -10,7 +10,7 @@ import type { Decimal, MoneyPair, OurPriceLine, OurPriceOffer, OurPriceOfferArti
 
 import { OfferLinesTable } from "./OfferLinesTable";
 import { matchesFilter, type OfferFilter } from "./offerFilter";
-import { absDecimal, formatSigned, pick, type VatView } from "./money";
+import { absDecimal, formatBelow, formatSigned, pick, type VatView } from "./money";
 import {
   FORK_COLUMN_LABEL,
   LEGEND_MISMATCH,
@@ -38,7 +38,7 @@ function articleKey(id: number | null): string {
 const DASH = "—";
 const COLUMNS = 8;
 
-/** Высота полосы — доля от `--max`, делит CSS: деньги в JS не переводятся в число. */
+/** Ширина полосы — доля от `--max`, делит CSS: деньги в JS не переводятся в число. */
 const BAR_WIDTH = "w-[calc(var(--v)/var(--max)*100%)]";
 
 function money(pair: MoneyPair | null, vat: VatView, format: (v: Decimal) => string): string {
@@ -178,7 +178,7 @@ export function OfferArticlesTable({
             {money(above, vat, formatSigned)}
           </TableCell>
           <TableCell data-testid={`art-below-${key}`} className="text-right font-mono tabular-nums text-info-text">
-            {money(below, vat, (v) => formatDecimalMoney(v, ""))}
+            {money(below, vat, formatBelow)}
           </TableCell>
           <TableCell data-testid={`art-none-${key}`} className="text-right font-mono text-xs tabular-nums">
             {money(totals?.not_comparable.total ?? null, vat, (v) => formatDecimalMoney(v, ""))}

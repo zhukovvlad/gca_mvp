@@ -518,8 +518,8 @@ lines: [{position_item_id, article_id|null, title, unit, quantity, section_ref,
   строки вне группы — `[]`;
 - `contracts` — договоры выбранной ступени (у системы — её группы):
   `{contract_id, object_title, number, year, rate_class: {id, title},
-  contractor_id, rate: {net, shown}, is_lower_bound, with_this_contractor,
-  ratio|null}`. `rate` — без округления; `is_lower_bound` — ставка равна
+  contractor_id, contractor_title, rate: {net, shown}, is_lower_bound,
+  with_this_contractor, ratio|null}`. `rate` — без округления; `is_lower_bound` — ставка равна
   `range.min` (договоров с ней может быть несколько); `with_this_contractor` —
   подрядчик договора — подрядчик участника; `ratio` — кратность из
   `unit_mismatch.contracts`, иначе `null`. У строки, не дошедшей до лестницы

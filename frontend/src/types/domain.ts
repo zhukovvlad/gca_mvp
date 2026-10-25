@@ -3487,6 +3487,7 @@ export interface OurPriceRungContract {
   year: number;
   rate_class: { id: number; title: string };
   contractor_id: number;
+  contractor_title: string;
   rate: MoneyPair;
   is_lower_bound: boolean;
   with_this_contractor: boolean;

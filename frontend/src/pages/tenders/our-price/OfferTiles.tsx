@@ -3,7 +3,7 @@ import { formatDecimalMoney } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { MoneyPair, OurPriceOffer } from "@/types/domain";
 
-import { formatSigned, pick, type VatView } from "./money";
+import { formatBelow, formatSigned, pick, type VatView } from "./money";
 import { matchesFilter, type OfferFilter } from "./offerFilter";
 import {
   EMPTY_REASON_LABEL,
@@ -13,6 +13,7 @@ import {
   linesCount,
   medianCaption,
   PER_SQM_TILE_LABEL,
+  PER_SQM_UNIT,
 } from "./ourPriceCopy";
 
 export type { OfferFilter } from "./offerFilter";
@@ -61,7 +62,8 @@ export function OfferTiles({ offer, vat, filter, onFilter }: OfferTilesProps) {
   const money = (filterKey: FilterTile): string => {
     const value = pick(amount(filterKey), vat);
     if (value === null) return "—";
-    return filterKey === "above_ours" ? formatSigned(value) : formatDecimalMoney(value);
+    if (filterKey === "above_ours") return formatSigned(value);
+    return filterKey === "below_paid" ? formatBelow(value) : formatDecimalMoney(value);
   };
 
   const count = (key: OfferFilter) => offer.lines.filter((line) => matchesFilter(line, key)).length;
@@ -76,7 +78,7 @@ export function OfferTiles({ offer, vat, filter, onFilter }: OfferTilesProps) {
           ) : (
             <p>
               <span className="font-mono text-xl tabular-nums">{formatDecimalMoney(perSqm, "")}</span>
-              <span className="text-xs text-fg-secondary"> ₽/м²</span>
+              <span className="text-xs text-fg-secondary"> {PER_SQM_UNIT}</span>
               {participant.class_median_pct !== null && (
                 <span
                   className={cn(

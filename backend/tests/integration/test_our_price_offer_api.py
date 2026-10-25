@@ -1028,6 +1028,7 @@ class TestLinePanelAuto:
             "year",
             "rate_class",
             "contractor_id",
+            "contractor_title",
             "rate",
             "is_lower_bound",
             "with_this_contractor",
@@ -1039,6 +1040,9 @@ class TestLinePanelAuto:
         assert first["year"] == 2025
         assert first["rate_class"] == {"id": stage.rate_class.id, "title": "Класс Т"}
         assert first["contractor_id"] == low.contractor_id
+        assert first["contractor_title"] == own.contractor.title
+        assert second["contractor_title"] == high.contractor.title
+        assert first["contractor_title"] != second["contractor_title"]
         assert _pair(first["rate"]) == (D("100"), D("120"))
         assert (first["is_lower_bound"], first["with_this_contractor"], first["ratio"]) == (True, True, None)
         assert second["contract_id"] == high.id

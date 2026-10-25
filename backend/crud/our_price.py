@@ -801,6 +801,7 @@ def build_line_view(
                 "year": contract.year,
                 "rate_class": {"id": contract.rate_class_id, "title": contract.rate_class_title},
                 "contractor_id": contract.contractor_id,
+                "contractor_title": contract.contractor_title,
                 "rate": money_pair(rated.net, rate, unit=True),
                 "is_lower_bound": rated.net == result.range.min,
                 "with_this_contractor": contract.contractor_id == participant.contractor_id,

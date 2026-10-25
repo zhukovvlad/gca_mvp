@@ -66,6 +66,7 @@ def contract(cid: int, *, cls: int = TENDER_CLASS, area: Decimal | None = None) 
         rate_class_id=cls,
         rate_class_title="Класс",
         contractor_id=cid,
+        contractor_title=f"Подрядчик {cid}",
         area=area,
     )
 
