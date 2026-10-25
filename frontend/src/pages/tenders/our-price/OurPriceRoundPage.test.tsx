@@ -16,6 +16,7 @@ import type { InflationSeries, OurPriceRound } from "@/types/domain";
 import OurPriceRoundPage from "./OurPriceRoundPage";
 import {
   INFLATION_SWITCH_LABEL,
+  KP_NOT_ADJUSTED_NOTE,
   NO_INFLATION_CAPTION,
   PRICES_CAPTION_NET,
   PRICES_CAPTION_SHOWN_MIXED,
@@ -138,6 +139,26 @@ describe("состояния экрана", () => {
     expect(screen.getByTestId("card-7002")).not.toHaveTextContent("дешевле всех на м²");
     expect(screen.getByTestId("card-7003")).not.toHaveTextContent("дешевле всех на м²");
   });
+
+  it("«дешевле всех на м²» — по полной строке сервера: на экране у обоих 100,00, отмечен один", async () => {
+    const base = ourPriceRoundFixture();
+    const [a, b, c] = base.participants;
+    const round: OurPriceRound = {
+      ...base,
+      participants: [
+        { ...a, per_sqm: { net: "100.004", shown: "122.01" } },
+        { ...b, state: "ok", estimate_id: 9002, per_sqm: { net: "100.001", shown: "122.00" }, totals: a.totals },
+        c,
+      ],
+    };
+    server.use(http.get(ROUND_PATH, () => HttpResponse.json(round)));
+    renderPage();
+    await loaded();
+    expect(screen.getByTestId("card-7001")).toHaveTextContent("100,00");
+    expect(screen.getByTestId("card-7002")).toHaveTextContent("100,00");
+    expect(screen.getByTestId("card-7002")).toHaveTextContent("дешевле всех на м²");
+    expect(screen.getByTestId("card-7001")).not.toHaveTextContent("дешевле всех на м²");
+  });
 });
 
 describe("НДС", () => {
@@ -212,6 +233,20 @@ describe("ИПЦ", () => {
     expect(screen.getByRole("switch", { name: INFLATION_SWITCH_LABEL })).not.toBeChecked();
     expect(seriesParam(0)).toBeNull();
     expect(screen.getByTestId("round-header")).not.toHaveTextContent(NO_INFLATION_CAPTION);
+  });
+
+  it("при включённом ряде подпись шапки говорит, что КП не приводится", async () => {
+    renderPage("?inflation=3");
+    await loaded();
+    const header = screen.getByTestId("round-header");
+    await waitFor(() => expect(header).toHaveTextContent(KP_NOT_ADJUSTED_NOTE));
+    expect(header).toHaveTextContent("Цены приведены к марту 2026 по ряду «Ряд А»; ");
+  });
+
+  it("без ряда пояснения про КП нет", async () => {
+    renderPage();
+    await loaded();
+    expect(screen.getByTestId("round-header")).not.toHaveTextContent(KP_NOT_ADJUSTED_NOTE);
   });
 
   it("включение ставит в адрес id первого активного ряда по id, а не по порядку списка", async () => {

@@ -884,7 +884,8 @@ class TestKpLines:
 
         assert row.title == "Устройство Х"
         assert row.unit == db_session.get(UnitOfMeasure, world.unit_id).symbol
-        assert row.quantity == D("8")
+        # объём строки — вес сравнения, а не заглушка файла
+        assert row.quantity == D("10")
         assert row.section_ref == "3.2"
         assert (row.line.position_item_id, row.line.unit_price, row.line.total) == (
             item.id,
@@ -892,6 +893,34 @@ class TestKpLines:
             D("125"),
         )
         assert row.line.weight == D("10")
+
+    def test_quantity_is_the_comparison_weight_not_the_file_placeholder(self, world, db_session):
+        estimate, proposal, *_ = _kp_scene(world)
+        world.line(proposal, suggested=D("2600"), quantity=D("1"))
+        db_session.flush()
+
+        (row,) = _kp(db_session, estimate)
+
+        assert row.quantity == D("2600")
+        assert row.line.weight == D("2600")
+
+    def test_quantity_without_a_suggested_quantity_is_the_customer_quantity(self, world, db_session):
+        estimate, proposal, *_ = _kp_scene(world)
+        world.line(proposal, suggested=None, quantity=D("3"))
+        db_session.flush()
+
+        (row,) = _kp(db_session, estimate)
+
+        assert row.quantity == D("3")
+
+    def test_quantity_is_none_when_neither_quantity_is_known(self, world, db_session):
+        estimate, proposal, *_ = _kp_scene(world)
+        world.line(proposal, suggested=None, quantity=None)
+        db_session.flush()
+
+        (row,) = _kp(db_session, estimate)
+
+        assert row.quantity is None
 
     def test_weight_falls_back_to_the_quantity(self, world, db_session):
         estimate, proposal, *_ = _kp_scene(world)

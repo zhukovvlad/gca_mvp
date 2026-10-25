@@ -1,9 +1,8 @@
 import { Card, CardContent } from "@/components/ui/card";
-import { formatDecimalMoney } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { MoneyPair, OurPriceOffer } from "@/types/domain";
 
-import { formatBelow, formatSigned, pick, type VatView } from "./money";
+import { formatBelow, formatMoney, formatSigned, pick, type VatView } from "./money";
 import { matchesFilter, type OfferFilter } from "./offerFilter";
 import {
   EMPTY_REASON_LABEL,
@@ -63,7 +62,7 @@ export function OfferTiles({ offer, vat, filter, onFilter }: OfferTilesProps) {
     const value = pick(amount(filterKey), vat);
     if (value === null) return "—";
     if (filterKey === "above_ours") return formatSigned(value);
-    return filterKey === "below_paid" ? formatBelow(value) : formatDecimalMoney(value);
+    return filterKey === "below_paid" ? formatBelow(value) : formatMoney(value);
   };
 
   const count = (key: OfferFilter) => offer.lines.filter((line) => matchesFilter(line, key)).length;
@@ -77,7 +76,7 @@ export function OfferTiles({ offer, vat, filter, onFilter }: OfferTilesProps) {
             <p className="text-fg-secondary">{reason === null ? "—" : EMPTY_REASON_LABEL[reason]}</p>
           ) : (
             <p>
-              <span className="font-mono text-xl tabular-nums">{formatDecimalMoney(perSqm, "")}</span>
+              <span className="font-mono text-xl tabular-nums">{formatMoney(perSqm, "")}</span>
               <span className="text-xs text-fg-secondary"> {PER_SQM_UNIT}</span>
               {participant.class_median_pct !== null && (
                 <span

@@ -11,7 +11,6 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { compareDecimalStrings } from "@/lib/decimal";
-import { formatDecimalMoney } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type {
   Decimal,
@@ -22,7 +21,7 @@ import type {
   OurPriceRoundArticle,
 } from "@/types/domain";
 
-import { formatSigned, pick, type VatView } from "./money";
+import { formatMoney, formatSigned, pick, type VatView } from "./money";
 import {
   ARTICLE_COLUMN_LABEL,
   ARTICLES_TITLE,
@@ -185,9 +184,9 @@ export function ArticlesMatrix({ round, view, offerHref }: ArticlesMatrixProps) 
               cheapest && "underline decoration-2 underline-offset-4"
             )}
           >
-            {formatDecimalMoney(value, "")}
+            {formatMoney(value, "")}
           </span>
-          <span className="block font-mono text-xs text-fg-secondary">
+          <span className="block whitespace-normal font-mono text-xs text-fg-secondary">
             {whole !== null && formatSigned(whole)}
             {cell.unit_mismatch_lines > 0 && (
               <span className="text-warning-text">
@@ -210,7 +209,12 @@ export function ArticlesMatrix({ round, view, offerHref }: ArticlesMatrixProps) 
         data-testid={`row-${rowKey}`}
         className={isTotal ? "border-b-2 bg-surface-sunken font-semibold" : undefined}
       >
-        <TableCell>
+        <TableCell
+          className={cn(
+            "sticky left-0 z-10 w-64 min-w-48 whitespace-normal",
+            isTotal ? "bg-surface-sunken" : "bg-surface"
+          )}
+        >
           {article.code !== null && (
             <span className="mr-1 font-mono text-xs text-fg-muted">{article.code}</span>
           )}
@@ -218,7 +222,7 @@ export function ArticlesMatrix({ round, view, offerHref }: ArticlesMatrixProps) 
         </TableCell>
         <TableCell data-testid={`fork-${rowKey}`} className="text-right font-mono tabular-nums">
           {min !== null && max !== null
-            ? `${formatDecimalMoney(min, "")} – ${formatDecimalMoney(max, "")}`
+            ? `${formatMoney(min, "")} – ${formatMoney(max, "")}`
             : "—"}
         </TableCell>
         {round.participants.map((participant) => renderCell(article, rowKey, participant))}
@@ -241,7 +245,7 @@ export function ArticlesMatrix({ round, view, offerHref }: ArticlesMatrixProps) 
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead aria-sort={ariaSort(sort, "article")}>
+              <TableHead aria-sort={ariaSort(sort, "article")} className="sticky left-0 z-10 bg-surface">
                 <SortHead
                   label={ARTICLE_COLUMN_LABEL}
                   sortKey="article"

@@ -2,11 +2,10 @@ import type { CSSProperties } from "react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { compareDecimalStrings } from "@/lib/decimal";
-import { formatDecimalMoney } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { Decimal, OurPriceOffer } from "@/types/domain";
 
-import { pick, type VatView } from "./money";
+import { formatMoney, pick, type VatView } from "./money";
 import { PER_SQM_UNIT, STRIP_LEGEND_CLASS, STRIP_LEGEND_OTHER, STRIP_THIS_OFFER, STRIP_TITLE } from "./ourPriceCopy";
 
 export interface PerSqmStripProps {
@@ -88,7 +87,7 @@ export function PerSqmStrip({ offer, vat }: PerSqmStripProps) {
                 key={point.contractId}
                 data-testid={`strip-dot-${point.contractId}`}
                 data-same-class={point.sameClass}
-                title={`${point.label}: ${formatDecimalMoney(point.value, "")} ${PER_SQM_UNIT}`}
+                title={`${point.label}: ${formatMoney(point.value, "")} ${PER_SQM_UNIT}`}
                 style={at(point.value)}
                 className={cn(
                   "absolute top-1/2 size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full",
@@ -106,7 +105,7 @@ export function PerSqmStrip({ offer, vat }: PerSqmStripProps) {
               )}
             >
               <span className="absolute -top-5 left-1/2 -translate-x-1/2 whitespace-nowrap text-xs font-semibold text-warning-text">
-                {STRIP_THIS_OFFER} · {formatDecimalMoney(me, "")}
+                {STRIP_THIS_OFFER} · {formatMoney(me, "")}
               </span>
             </div>
           </div>
@@ -121,7 +120,7 @@ export function PerSqmStrip({ offer, vat }: PerSqmStripProps) {
                 point.sameClass ? "bg-surface-sunken" : "text-fg-secondary"
               )}
             >
-              {point.label}: <b className="font-mono">{formatDecimalMoney(point.value, "")}</b>
+              {point.label}: <b className="font-mono">{formatMoney(point.value, "")}</b>
             </span>
           ))}
         </div>

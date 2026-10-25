@@ -23,6 +23,7 @@ import {
   BREADCRUMB_TENDERS,
   ERROR_TITLE,
   errorLabel,
+  inflationCaptionOf,
   NO_INFLATION_CAPTION,
   OFFER_SWITCHER_LABEL,
   offerCrumbStage,
@@ -108,7 +109,11 @@ export default function OurPriceOfferPage() {
   // Переключатель недоступен (база НДС участника неизвестна) — показ нетто, что бы ни стояло в адресе.
   const vatToggleEnabled = participant.vat_rate !== null;
   const view: VatView = vatToggleEnabled ? urlView : "net";
-  const inflationCaption = refused ? NO_INFLATION_CAPTION : (data.inflation?.sentence ?? null);
+  const inflationCaption = refused
+    ? NO_INFLATION_CAPTION
+    : data.inflation === undefined
+      ? null
+      : inflationCaptionOf(data.inflation.sentence);
 
   // Переключатели адреса едут в соседние экраны; раскрытая статья — нет.
   const switches = new URLSearchParams();

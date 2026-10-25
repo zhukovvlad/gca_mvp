@@ -4,13 +4,12 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { compareDecimalStrings } from "@/lib/decimal";
-import { formatDecimalMoney } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { Decimal, MoneyPair, OurPriceLine, OurPriceOffer, OurPriceOfferArticle } from "@/types/domain";
 
 import { OfferLinesTable } from "./OfferLinesTable";
 import { matchesFilter, type OfferFilter } from "./offerFilter";
-import { absDecimal, formatBelow, formatSigned, pick, type VatView } from "./money";
+import { absDecimal, formatBelow, formatMoney, formatSigned, pick, type VatView } from "./money";
 import {
   FORK_COLUMN_LABEL,
   LEGEND_MISMATCH,
@@ -110,10 +109,10 @@ export function OfferArticlesTable({
     return (
       <>
         <TableCell data-testid={`art-persqm-${key}`} className="text-right font-mono tabular-nums">
-          {money(row.per_sqm, vat, (v) => formatDecimalMoney(v, ""))}
+          {money(row.per_sqm, vat, (v) => formatMoney(v, ""))}
         </TableCell>
         <TableCell data-testid={`art-fork-${key}`} className="text-right font-mono tabular-nums">
-          {min !== null && max !== null ? `${formatDecimalMoney(min, "")} – ${formatDecimalMoney(max, "")}` : DASH}
+          {min !== null && max !== null ? `${formatMoney(min, "")} – ${formatMoney(max, "")}` : DASH}
         </TableCell>
         <TableCell data-testid={`art-whole-${key}`} className="text-right font-mono tabular-nums">
           {money(row.whole, vat, formatSigned)}
@@ -139,11 +138,14 @@ export function OfferArticlesTable({
     const below = totals?.below ?? null;
     const belowValue = below === null ? null : absDecimal(below.net);
     const mismatch = totals?.unit_mismatch_lines ?? 0;
+    // Нет строк в категории — прочерк: «0,00 ₽» читался бы как сумма, которой нет.
+    const aboveLines = (linesByArticle.get(key) ?? []).filter((line) => matchesFilter(line, "above_ours")).length;
+    const belowLines = totals?.below_lines ?? 0;
     const expanded = open.has(key);
     return (
       <Fragment key={key}>
         <TableRow data-testid={`article-${key}`}>
-          <TableCell>
+          <TableCell className="min-w-48 whitespace-normal">
             <button
               type="button"
               data-testid={`article-toggle-${key}`}
@@ -159,7 +161,7 @@ export function OfferArticlesTable({
           {headCells(article, key)}
           <TableCell>
             {scale !== null && (
-              <div className="flex w-40 items-center">
+              <div className="flex w-28 items-center">
                 <div className="flex flex-1 justify-end">
                   {belowValue !== null && (
                     <Bar testId={`art-bar-below-${key}`} value={belowValue} max={scale} tone="bg-info-text" />
@@ -175,13 +177,13 @@ export function OfferArticlesTable({
             )}
           </TableCell>
           <TableCell data-testid={`art-above-${key}`} className="text-right font-mono tabular-nums text-warning-text">
-            {money(above, vat, formatSigned)}
+            {aboveLines === 0 ? DASH : money(above, vat, formatSigned)}
           </TableCell>
           <TableCell data-testid={`art-below-${key}`} className="text-right font-mono tabular-nums text-info-text">
-            {money(below, vat, formatBelow)}
+            {belowLines === 0 ? DASH : money(below, vat, formatBelow)}
           </TableCell>
           <TableCell data-testid={`art-none-${key}`} className="text-right font-mono text-xs tabular-nums">
-            {money(totals?.not_comparable.total ?? null, vat, (v) => formatDecimalMoney(v, ""))}
+            {money(totals?.not_comparable.total ?? null, vat, (v) => formatMoney(v, ""))}
             {mismatch > 0 && <span className="block text-warning-text">⚠ {mismatch}</span>}
           </TableCell>
         </TableRow>
@@ -211,14 +213,14 @@ export function OfferArticlesTable({
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>{OFFER_COLUMN.article}</TableHead>
-              <TableHead className="text-right">{OFFER_COLUMN.perSqm}</TableHead>
-              <TableHead className="text-right">{FORK_COLUMN_LABEL}</TableHead>
-              <TableHead className="text-right">{OFFER_COLUMN.whole}</TableHead>
-              <TableHead>{OFFER_COLUMN.bars}</TableHead>
-              <TableHead className="text-right">{OFFER_COLUMN.above}</TableHead>
-              <TableHead className="text-right">{OFFER_COLUMN.below}</TableHead>
-              <TableHead className="text-right">{OFFER_COLUMN.none}</TableHead>
+              <TableHead className="whitespace-normal">{OFFER_COLUMN.article}</TableHead>
+              <TableHead className="whitespace-normal text-right">{OFFER_COLUMN.perSqm}</TableHead>
+              <TableHead className="whitespace-normal text-right">{FORK_COLUMN_LABEL}</TableHead>
+              <TableHead className="whitespace-normal text-right">{OFFER_COLUMN.whole}</TableHead>
+              <TableHead className="whitespace-normal">{OFFER_COLUMN.bars}</TableHead>
+              <TableHead className="whitespace-normal text-right">{OFFER_COLUMN.above}</TableHead>
+              <TableHead className="whitespace-normal text-right">{OFFER_COLUMN.below}</TableHead>
+              <TableHead className="whitespace-normal text-right">{OFFER_COLUMN.none}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>

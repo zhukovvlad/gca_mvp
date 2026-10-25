@@ -25,6 +25,7 @@ import {
   EMPTY_REASON_LABEL,
   errorLabel,
   FILTER_LABEL,
+  KP_NOT_ADJUSTED_NOTE,
   LINE_STATE_LABEL,
   NO_INFLATION_CAPTION,
   PER_SQM_UNIT,
@@ -649,6 +650,30 @@ describe("таблица статей", () => {
     expect(screen.getByTestId("art-below-unallocated")).toHaveTextContent("—");
   });
 
+  it("нет строк в категории — прочерк, а не «0,00 ₽»; есть строки с нулевой суммой — ноль", async () => {
+    const base = ourPriceOfferFixture();
+    const head = base.articles[0];
+    const zero = pair("0.00", "0.00");
+    const totals = { ...head.lines_totals! };
+    const inLine = { position: "in" as const, bargain: zero, below: null };
+    serve(
+      offerWith([line(1, 11, inLine), line(2, 12, { ...inLine, bargain: pair("5.00", "6.10") })], {
+        articles: [
+          { ...head, work_category_id: 11, title: "Статья 1", lines_totals: { ...totals, bargain: zero, below: zero, below_lines: 0 } },
+          { ...head, work_category_id: 12, title: "Статья 2", lines_totals: { ...totals, bargain: zero, below: zero, below_lines: 1 } },
+        ],
+      })
+    );
+    renderPage();
+    await loaded();
+    expect(screen.getByTestId("art-above-11")).toHaveTextContent("—");
+    expect(screen.getByTestId("art-above-11")).not.toHaveTextContent("0,00");
+    expect(screen.getByTestId("art-below-11")).toHaveTextContent("—");
+    expect(screen.getByTestId("art-below-11")).not.toHaveTextContent("0,00");
+    expect(screen.getByTestId("art-above-12")).toHaveTextContent("0,00");
+    expect(screen.getByTestId("art-below-12")).toHaveTextContent("0,00");
+  });
+
   it("не с чем сравнить и разные единицы — в одной ячейке: сумма и ⚠ с числом строк", async () => {
     serve(threeArticles());
     renderPage();
@@ -781,6 +806,19 @@ describe("таблица статей", () => {
 });
 
 describe("НДС и ИПЦ", () => {
+  it("при включённом ряде подпись шапки говорит, что КП не приводится", async () => {
+    renderPage("?inflation=3&article=11");
+    await loaded();
+    const header = screen.getByTestId("round-header");
+    await waitFor(() => expect(header).toHaveTextContent(KP_NOT_ADJUSTED_NOTE));
+    expect(header).toHaveTextContent("Цены приведены к марту 2026 по ряду «Ряд А»; ");
+  });
+
+  it("без ряда пояснения про КП нет", async () => {
+    renderPage();
+    await loaded();
+    expect(screen.getByTestId("round-header")).not.toHaveTextContent(KP_NOT_ADJUSTED_NOTE);
+  });
   it("переключатель НДС — без запроса: цифры строки берутся из shown", async () => {
     renderPage("?article=11");
     await loaded();

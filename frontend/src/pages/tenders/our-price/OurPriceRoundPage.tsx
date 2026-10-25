@@ -23,6 +23,7 @@ import {
   BREADCRUMB_TENDERS,
   ERROR_TITLE,
   errorLabel,
+  inflationCaptionOf,
   NO_INFLATION_CAPTION,
   RECALC_LABEL,
   roundSubtitle,
@@ -102,7 +103,11 @@ export default function OurPriceRoundPage() {
   // Переключатель недоступен (ни у кого нет известной ставки) — показ нетто, что бы ни стояло в адресе.
   const vatToggleEnabled = participants.some((p) => p.state === "ok" && p.vat_rate !== null);
   const view: VatView = vatToggleEnabled ? urlView : "net";
-  const inflationCaption = refused ? NO_INFLATION_CAPTION : (data.inflation?.sentence ?? null);
+  const inflationCaption = refused
+    ? NO_INFLATION_CAPTION
+    : data.inflation === undefined
+      ? null
+      : inflationCaptionOf(data.inflation.sentence);
   const best = cheapestNet(participants);
 
   const subtitle = roundSubtitle({

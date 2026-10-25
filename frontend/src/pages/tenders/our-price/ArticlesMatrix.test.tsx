@@ -290,3 +290,32 @@ describe("ArticlesMatrix: правки по ревью", () => {
     expect(screen.getByTestId("matrix-hint")).toHaveTextContent("разница с нижней границей наших договоров класса");
   });
 });
+
+describe("вёрстка: умещается у четырёх участников, дальше — прокрутка с закреплённой первой колонкой", () => {
+  it("первая колонка закреплена в шапке и в строках; колонки участников не уже минимума", () => {
+    renderMatrix(roundWith([article(1, 1, [pair("100", "122")])]));
+    expect(screen.getByRole("columnheader", { name: /Статья/ })).toHaveClass("sticky", "left-0");
+    expect(screen.getByTestId("row-1").querySelector("td")).toHaveClass("sticky", "left-0");
+  });
+
+  it("название статьи переносится в своей колонке, а не расширяет таблицу", () => {
+    renderMatrix(roundWith([article(1, 1, [pair("100", "122")])]));
+    expect(screen.getByTestId("row-1").querySelector("td")).toHaveClass("whitespace-normal");
+  });
+});
+
+describe("сравнения — по полным строкам сервера, а не по напечатанным", () => {
+  it("«дешевле всех» в статье: на экране оба 150,00, отмечен тот, чья полная строка меньше", () => {
+    renderMatrix(roundWith([article(11, 1, [pair("150.004", "183"), pair("150.001", "183")])]));
+    expect(screen.getByTestId("cell-11-7001")).toHaveTextContent("150,00");
+    expect(screen.getByTestId("cell-11-7002")).toHaveTextContent("150,00");
+    expect(screen.getByTestId("cell-11-7002")).toHaveAttribute("data-cheapest", "true");
+    expect(screen.getByTestId("cell-11-7001")).not.toHaveAttribute("data-cheapest");
+  });
+
+  it("окраска: выше максимума вилки на тысячную — «дороже», хотя напечатано 200,00 при максимуме 200,00", () => {
+    renderMatrix(roundWith([article(11, 1, [pair("200.004", "244")])]));
+    expect(screen.getByTestId("cell-11-7001")).toHaveTextContent("200,00");
+    expect(screen.getByTestId("cell-11-7001")).toHaveAttribute("data-tone", "dear");
+  });
+});

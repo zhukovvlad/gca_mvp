@@ -1,11 +1,23 @@
 import { compareDecimalStrings } from "@/lib/decimal";
 import { formatDecimalMoney } from "@/lib/format";
-import type { Decimal, MoneyPair } from "@/types/domain";
+import type { Decimal, MoneyPair, OurPriceLine } from "@/types/domain";
 
-import { SUB_KOPECK_LABEL } from "./ourPriceCopy";
+import { PER_SQM_UNIT, SUB_KOPECK_LABEL } from "./ourPriceCopy";
 
 /** Вид денег на экране: нетто либо в ставке КП (`shown`). */
 export type VatView = "net" | "shown";
+
+/** Знаков после запятой у денег на экране: сервер отдаёт ставки и ₽/м² без округления (спека 4а §2.9). */
+const MONEY_DIGITS = 2;
+
+/**
+ * Деньги на экране: не больше двух знаков после запятой, округление строкой (половина вверх).
+ * Единственный путь печати денежного значения на экранах «Против нашей цены»: сравнения,
+ * цвета и сортировка идут по полным строкам сервера, а не по тому, что напечатано.
+ */
+export function formatMoney(value: Decimal | null | undefined, currency = "₽"): string {
+  return formatDecimalMoney(value, currency, MONEY_DIGITS);
+}
 
 /**
  * Выбирает готовое поле пары — арифметики над деньгами на клиенте нет: нетто и
@@ -22,7 +34,7 @@ export function pick(pair: MoneyPair | null, view: VatView): Decimal | null {
  * Знак читается по строке, арифметики нет.
  */
 export function formatSigned(value: Decimal): string {
-  const text = formatDecimalMoney(value);
+  const text = formatMoney(value);
   if (text.startsWith("-")) return `−${text.slice(1)}`;
   return /^0([.,]0+)?\s/.test(text) ? text : `+${text}`;
 }
@@ -49,5 +61,25 @@ export function absDecimal(value: Decimal): Decimal {
 export function formatUnitPrice(value: Decimal): string {
   const positive = compareDecimalStrings(value, "0") === 1;
   const underKopeck = compareDecimalStrings(value, "0.01") === -1;
-  return positive && underKopeck ? SUB_KOPECK_LABEL : formatDecimalMoney(value, "");
+  return positive && underKopeck ? SUB_KOPECK_LABEL : formatMoney(value, "");
+}
+
+/** Подпись цены за единицу измерения строки: «₽/м3»; без единицы — просто «₽». */
+export function priceUnitLabel(unit: string | null): string {
+  return unit === null ? "₽" : `₽/${unit}`;
+}
+
+/**
+ * Единица сравниваемой цены КП строки. У системы цена за комплекс с вилкой договоров в ₽/м² глазом
+ * не сравнивается, поэтому сравнивается цена группы за м² объекта (спека 4а §2.8).
+ */
+export function comparedUnit(line: OurPriceLine): string {
+  return line.kind === "system" ? PER_SQM_UNIT : priceUnitLabel(line.unit);
+}
+
+/** Сравниваемая цена КП строки в выбранном виде: у системы — цена группы за м², без группы — `null`. */
+export function comparedKpPrice(line: OurPriceLine, vat: VatView): Decimal | null {
+  return line.kind === "system"
+    ? pick(line.group?.kp_per_sqm ?? null, vat)
+    : pick(line.kp.unit_price, vat);
 }

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -32,6 +33,8 @@ import {
   SHEET_ERROR_LABEL,
   UNIT_WARN_TITLE,
   VAT_DROPPED_NOTE,
+  VAT_NET_LABEL,
+  VAT_UNKNOWN_LABEL,
 } from "./ourPriceCopy";
 
 const LINE_PATH = "/api/v1/tenders/:id/rounds/:roundId/our-price/offers/:offerId/lines/:positionItemId";
@@ -141,6 +144,38 @@ describe("цены панели", () => {
     expect(sheet).toHaveTextContent("Семья 1 · Вариант 1");
   });
 
+  it("цена КП и наша расценка подписаны рублями за единицу измерения строки", async () => {
+    serveView(() => view({ unit: "м3" }));
+    renderSheet();
+    await screen.findByTestId("sheet-prices");
+    expect(screen.getByTestId("sheet-kp-price")).toHaveTextContent("1 200,00 ₽/м3");
+    expect(screen.getByTestId("sheet-ours")).toHaveTextContent("1 000,00 ₽/м3");
+    expect(screen.getByTestId("sheet-quantity")).toHaveTextContent("100,00 м3");
+  });
+
+  it("строка без единицы: цена подписана просто рублями", async () => {
+    serveView(() => view({ unit: null }));
+    renderSheet();
+    expect(await screen.findByTestId("sheet-kp-price")).toHaveTextContent(/^1 200,00 ₽$/);
+  });
+
+  it("система: сравниваемая цена — цена группы за м² объекта; сумма самой строки остаётся справкой", async () => {
+    serveView(() =>
+      view({
+        kind: "system",
+        unit: "компл",
+        kp: { unit_price: pair("39230327.87", "47860000.00"), total: pair("39230327.87", "47860000.00") },
+        group: { lines: 3, share: "1", kp_per_sqm: pair("786", "959") },
+      })
+    );
+    renderSheet();
+    await screen.findByTestId("sheet-prices");
+    expect(screen.getByTestId("sheet-kp-price")).toHaveTextContent("786,00 ₽/м²");
+    expect(screen.getByTestId("sheet-kp-price")).not.toHaveTextContent("39 230 327");
+    expect(screen.getByTestId("sheet-kp-total")).toHaveTextContent("39 230 327,87");
+    expect(screen.getByTestId("sheet-ours")).toHaveTextContent("₽/м²");
+  });
+
   it("наша расценка взята по всем классам — у неё подпись «все классы»", async () => {
     serveView(() => view({ ours: { value: pair("1000", "1220"), from_all_classes: true } }));
     renderSheet();
@@ -154,6 +189,15 @@ describe("цены панели", () => {
     expect(screen.getByTestId("sheet-kp-price")).toHaveTextContent("1 464,00");
     expect(screen.getByTestId("sheet-to-ours")).toHaveTextContent("+24 400,00");
     expect(screen.getByTestId("sheet-ours")).toHaveTextContent("1 220,00");
+  });
+
+  it("с НДС, но без ставки КП: подпись не «без НДС», а «база НДС неизвестна»; цифры — прочерки", async () => {
+    serveView(() => view({ kp: { unit_price: pair("1200", null), total: pair("120000.00", null) }, to_ours: pair("20000.00", null), ours: { value: pair("1000", null), from_all_classes: false } }));
+    renderSheet({ vat: "shown", vatRate: null });
+    const prices = await screen.findByTestId("sheet-prices");
+    expect(prices).toHaveTextContent(VAT_UNKNOWN_LABEL);
+    expect(prices).not.toHaveTextContent(VAT_NET_LABEL);
+    expect(screen.getByTestId("sheet-kp-price")).toHaveTextContent("—");
   });
 
   it("разница отрицательна — знак «−»", async () => {
@@ -251,6 +295,87 @@ describe("лестница", () => {
     expect(rung("v", "all")).not.toHaveTextContent(RUNG_AUTO_TAG);
   });
 
+  describe("клавиатура: радиогруппа", () => {
+    const withRungs = (contracts: [number, number, number, number]) => (a: Asked) =>
+      view(
+        onRung(a, {
+          rungs: [
+            { level: "v", scope: "cls", contracts: contracts[0] },
+            { level: "v", scope: "all", contracts: contracts[1] },
+            { level: "f", scope: "cls", contracts: contracts[2] },
+            { level: "f", scope: "all", contracts: contracts[3] },
+          ],
+        })
+      );
+
+    it("стрелка вправо выбирает следующую ступень и переводит на неё фокус", async () => {
+      const asked = serveView(withRungs([3, 5, 4, 6]));
+      renderSheet();
+      await screen.findByTestId("rung-v-cls");
+      const user = userEvent.setup();
+      rung("v", "cls").focus();
+      await user.keyboard("{ArrowRight}");
+      await waitFor(() => expect(rung("v", "all")).toHaveAttribute("aria-checked", "true"));
+      expect(asked[asked.length - 1]).toMatchObject({ level: "v", scope: "all" });
+      expect(rung("v", "all")).toHaveFocus();
+      expect(rung("v", "cls")).toHaveAttribute("aria-checked", "false");
+    });
+
+    it("стрелка влево с первой ступени переходит на последнюю; вниз — как вправо, вверх — как влево", async () => {
+      serveView(withRungs([3, 5, 4, 6]));
+      renderSheet();
+      await screen.findByTestId("rung-v-cls");
+      const user = userEvent.setup();
+      rung("v", "cls").focus();
+      await user.keyboard("{ArrowLeft}");
+      await waitFor(() => expect(rung("f", "all")).toHaveAttribute("aria-checked", "true"));
+      await user.keyboard("{ArrowUp}");
+      await waitFor(() => expect(rung("f", "cls")).toHaveAttribute("aria-checked", "true"));
+      await user.keyboard("{ArrowDown}");
+      await waitFor(() => expect(rung("f", "all")).toHaveAttribute("aria-checked", "true"));
+    });
+
+    it("ступень без договоров пропускается", async () => {
+      serveView(withRungs([3, 5, 0, 6]));
+      renderSheet();
+      await screen.findByTestId("rung-v-cls");
+      const user = userEvent.setup();
+      rung("v", "all").focus();
+      await user.keyboard("{ArrowRight}");
+      await waitFor(() => expect(rung("f", "all")).toHaveAttribute("aria-checked", "true"));
+      expect(rung("f", "cls")).toHaveAttribute("aria-checked", "false");
+    });
+
+    it("другая клавиша выбор не меняет и запроса не шлёт", async () => {
+      const asked = serveView(withRungs([3, 5, 4, 6]));
+      renderSheet();
+      await screen.findByTestId("rung-v-cls");
+      const user = userEvent.setup();
+      rung("v", "cls").focus();
+      await user.keyboard("a");
+      expect(asked).toHaveLength(1);
+      expect(rung("v", "cls")).toHaveAttribute("aria-checked", "true");
+    });
+
+    it("стрелка не прокручивает панель: действие клавиши по умолчанию отменено", async () => {
+      serveView(withRungs([3, 5, 4, 6]));
+      renderSheet();
+      await screen.findByTestId("rung-v-cls");
+      expect(fireEvent.keyDown(rung("v", "cls"), { key: "ArrowDown" })).toBe(false);
+      expect(fireEvent.keyDown(rung("v", "cls"), { key: "a" })).toBe(true);
+    });
+
+    it("в Tab-порядке одна ступень — выбранная", async () => {
+      serveView(withRungs([3, 5, 4, 6]));
+      renderSheet();
+      await screen.findByTestId("rung-v-cls");
+      expect(rung("v", "cls")).toHaveAttribute("tabindex", "0");
+      for (const other of [rung("v", "all"), rung("f", "cls"), rung("f", "all")]) {
+        expect(other).toHaveAttribute("tabindex", "-1");
+      }
+    });
+  });
+
   it("«Вернуть автоматическую» есть только при выбранной ступени и снимает выбор", async () => {
     serveView((a) => view(onRung(a)));
     renderSheet();
@@ -333,7 +458,7 @@ describe("системная строка", () => {
     expect(screen.getByTestId("group-line-5002")).toHaveTextContent("группа из 2 стр.");
     expect(screen.getByTestId("group-line-5003")).toHaveTextContent(GROUP_OUTSIDE);
     expect(screen.getByTestId("group-line-5001")).not.toHaveTextContent(GROUP_OUTSIDE);
-    expect(screen.getByTestId("sheet-group-per-sqm")).toHaveTextContent("500,00 ₽/м²");
+    expect(screen.getByTestId("sheet-kp-price")).toHaveTextContent("500,00 ₽/м²");
   });
 
   it("строка другой группы семьи подписана размером СВОЕЙ группы, а не группы открытой строки", async () => {
@@ -362,7 +487,7 @@ describe("системная строка", () => {
     const member = await screen.findByTestId("group-line-5002");
     expect(member).toHaveTextContent("146 400,00");
     expect(member).not.toHaveTextContent("120 000,00");
-    expect(screen.getByTestId("sheet-group-per-sqm")).toHaveTextContent("610,00");
+    expect(screen.getByTestId("sheet-kp-price")).toHaveTextContent("610,00");
   });
 
   it("выбор ступени меняет семью в панели: список берётся из ответа на выбранную ступень", async () => {
@@ -414,13 +539,13 @@ describe("договоры ступени", () => {
     expect(first).toHaveTextContent("Договор 101");
     expect(first).toHaveTextContent("Подрядчик 501");
     expect(first).not.toHaveTextContent("Подрядчик 502");
-    expect(first).toHaveTextContent("900,123");
+    expect(first).toHaveTextContent("900,12");
     expect(first).toHaveTextContent(CONTRACT_LOWER_BOUND);
     expect(first).toHaveTextContent(CONTRACT_WITH_CONTRACTOR);
     expect(first).not.toHaveTextContent("проверьте единицу учёта");
 
     const odd = screen.getByTestId("contract-102");
-    expect(odd).toHaveTextContent("×7.5 к остальным договорам — проверьте единицу учёта");
+    expect(odd).toHaveTextContent("×7,5 к остальным договорам — проверьте единицу учёта");
     expect(odd).not.toHaveTextContent(CONTRACT_LOWER_BOUND);
     expect(odd).not.toHaveTextContent(CONTRACT_WITH_CONTRACTOR);
 
@@ -498,9 +623,9 @@ describe("плашка «Разные единицы учёта?»", () => {
     renderSheet();
     const warn = await screen.findByTestId("unit-warn");
     expect(warn).toHaveTextContent(UNIT_WARN_TITLE);
-    expect(warn).toHaveTextContent("в 12.5 раз");
+    expect(warn).toHaveTextContent("в 12,5 раз");
     expect(warn).toHaveTextContent("1 100,00");
-    expect(warn).toHaveTextContent("×7.5");
+    expect(warn).toHaveTextContent("×7,5");
   });
 
   it("расходятся только договоры (kp_ratio = null): про цену КП в плашке нет ни слова", async () => {

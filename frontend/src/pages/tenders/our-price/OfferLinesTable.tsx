@@ -3,11 +3,19 @@ import { createColumnHelper, tableFeatures, useTable } from "@tanstack/react-tab
 
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { formatDecimalMoney } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { Decimal, OurPriceLine } from "@/types/domain";
 
-import { absDecimal, formatSigned, formatUnitPrice, pick, type VatView } from "./money";
+import {
+  absDecimal,
+  comparedKpPrice,
+  comparedUnit,
+  formatMoney,
+  formatSigned,
+  formatUnitPrice,
+  pick,
+  type VatView,
+} from "./money";
 import {
   ALL_CLASSES_LABEL,
   contractsShort,
@@ -44,7 +52,7 @@ function decimalOf(line: OurPriceLine, key: SortKey, vat: VatView): Decimal | nu
     case "quantity":
       return line.quantity;
     case "kp":
-      return pick(line.kp.unit_price, vat);
+      return comparedKpPrice(line, vat);
     case "fork":
       return pick(line.range?.min ?? null, vat);
     case "ours":
@@ -83,6 +91,16 @@ const helper = createColumnHelper<typeof features, OurPriceLine>();
 
 const DASH = "—";
 
+/** Желаемые ширины числовых колонок (раскладка автоматическая: вилка расширяется по тексту); колонка работы берёт остаток. */
+const COLUMN_WIDTH: Record<string, string | undefined> = {
+  unit: "w-16",
+  quantity: "w-24",
+  kp: "w-28",
+  fork: "w-44",
+  ours: "w-28",
+  to_ours: "w-44",
+};
+
 /**
  * Строки статьи разбора (спека 4а §2.14, дизайн 3.3): работа и вариант, единица, объём,
  * цена КП, вилка наших договоров со ступенью, наша расценка и разница со знаком.
@@ -108,12 +126,12 @@ export function OfferLinesTable({ lines, vat, rateClass, onOpenLine }: OfferLine
             .filter((part): part is string => part !== null)
             .join(" · ");
           return (
-            <div data-testid={`work-${line.position_item_id}`} className="max-w-[22rem]">
+            <div data-testid={`work-${line.position_item_id}`}>
               <button type="button" className="line-clamp-3 text-left text-fg" title={line.title}>
                 {line.title}
               </button>
               {variant !== "" && (
-                <span className="block text-xs text-fg-secondary">
+                <span className="block text-[0.6875rem] leading-snug text-fg-secondary">
                   {variant}
                   {line.secondary.length > 0 && (
                     <span
@@ -140,7 +158,7 @@ export function OfferLinesTable({ lines, vat, rateClass, onOpenLine }: OfferLine
         header: LINE_COLUMN.quantity,
         cell: ({ row }) => (
           <span data-testid={`qty-${row.original.position_item_id}`} className="font-mono tabular-nums">
-            {row.original.quantity === null ? DASH : formatDecimalMoney(row.original.quantity, "")}
+            {row.original.quantity === null ? DASH : formatMoney(row.original.quantity, "")}
           </span>
         ),
       }),
@@ -148,10 +166,17 @@ export function OfferLinesTable({ lines, vat, rateClass, onOpenLine }: OfferLine
         id: "kp",
         header: LINE_COLUMN.kpPrice,
         cell: ({ row }) => {
-          const price = pick(row.original.kp.unit_price, vat);
+          const price = comparedKpPrice(row.original, vat);
           return (
             <span data-testid={`kp-${row.original.position_item_id}`} className="font-mono tabular-nums">
-              {price === null ? DASH : formatUnitPrice(price)}
+              {price === null ? (
+                DASH
+              ) : (
+                <>
+                  {formatUnitPrice(price)}
+                  <span className="block text-[0.6875rem] text-fg-secondary">{comparedUnit(row.original)}</span>
+                </>
+              )}
             </span>
           );
         },
@@ -168,9 +193,15 @@ export function OfferLinesTable({ lines, vat, rateClass, onOpenLine }: OfferLine
             <div>
               <span data-testid={`fork-${line.position_item_id}`} className="font-mono tabular-nums">
                 {min !== null && max !== null ? `${formatUnitPrice(min)} – ${formatUnitPrice(max)}` : DASH}
+                {line.kind === "system" && min !== null && max !== null && (
+                  <span className="block text-[0.6875rem] text-fg-secondary">{comparedUnit(line)}</span>
+                )}
               </span>
               {caption !== null && (
-                <span data-testid={`rung-${line.position_item_id}`} className="block text-xs text-fg-secondary">
+                <span
+                  data-testid={`rung-${line.position_item_id}`}
+                  className="block whitespace-normal text-[0.6875rem] leading-snug text-fg-secondary"
+                >
                   {caption}
                 </span>
               )}
@@ -187,6 +218,9 @@ export function OfferLinesTable({ lines, vat, rateClass, onOpenLine }: OfferLine
           return (
             <span data-testid={`ours-${line.position_item_id}`}>
               <span className="font-mono tabular-nums">{value === null ? DASH : formatUnitPrice(value)}</span>
+              {line.kind === "system" && value !== null && (
+                <span className="block text-[0.6875rem] text-fg-secondary">{comparedUnit(line)}</span>
+              )}
               {line.ours?.from_all_classes === true && (
                 <Badge variant="outline" className="ml-1">
                   {ALL_CLASSES_LABEL}
@@ -214,7 +248,7 @@ export function OfferLinesTable({ lines, vat, rateClass, onOpenLine }: OfferLine
                 {diff === null ? DASH : formatSigned(diff)}
               </span>
               {label !== null && (
-                <Badge variant="outline" className="ml-1 whitespace-normal">
+                <Badge variant="outline" className="mt-0.5 block h-auto max-w-full whitespace-normal rounded-lg py-0.5 text-left">
                   {label}
                 </Badge>
               )}
@@ -245,7 +279,7 @@ export function OfferLinesTable({ lines, vat, rateClass, onOpenLine }: OfferLine
               <TableHead
                 key={header.id}
                 aria-sort={ariaSort(sort, header.column.id as SortKey)}
-                className={numeric.has(header.column.id) ? "text-right" : undefined}
+                className={cn(numeric.has(header.column.id) && "text-right", COLUMN_WIDTH[header.column.id])}
               >
                 <SortHead
                   label={String(header.column.columnDef.header)}
@@ -270,7 +304,11 @@ export function OfferLinesTable({ lines, vat, rateClass, onOpenLine }: OfferLine
             {row.getAllCells().map((cell) => (
               <TableCell
                 key={cell.id}
-                className={numeric.has(cell.column.id) ? "text-right align-top" : "align-top"}
+                className={cn(
+                  "align-top",
+                  numeric.has(cell.column.id) && "text-right",
+                  cell.column.id === "work" && "whitespace-normal"
+                )}
               >
                 <table.FlexRender cell={cell} />
               </TableCell>

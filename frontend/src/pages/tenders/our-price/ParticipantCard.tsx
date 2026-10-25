@@ -3,11 +3,10 @@ import { Link } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { formatDecimalMoney } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { Decimal, MoneyPair, OurPriceParticipant } from "@/types/domain";
 
-import { formatBelow, pick, type VatView } from "./money";
+import { formatBelow, formatMoney, pick, type VatView } from "./money";
 import {
   CARD_LABEL,
   CHEAPEST_PER_SQM_LABEL,
@@ -17,6 +16,7 @@ import {
   emptyReasonOf,
   linesCount,
   medianCaption,
+  PER_SQM_UNIT,
   VAT_NET_LABEL,
   VAT_UNKNOWN_LABEL,
   vatShownLabel,
@@ -62,7 +62,7 @@ export function ParticipantCard({ participant, view, cheapest, href }: Participa
   const reason = emptyReasonOf(participant);
   const perSqm = pick(participant.per_sqm, view);
   const totals = participant.totals;
-  const money = (pair: MoneyPair | null, format: (v: Decimal) => string = formatDecimalMoney): string => {
+  const money = (pair: MoneyPair | null, format: (v: Decimal) => string = formatMoney): string => {
     const value: Decimal | null = pick(pair, view);
     return value === null ? "—" : format(value);
   };
@@ -88,9 +88,9 @@ export function ParticipantCard({ participant, view, cheapest, href }: Participa
           <>
             <p>
               <span className="font-mono text-xl tabular-nums">
-                {perSqm === null ? "—" : formatDecimalMoney(perSqm, "")}
+                {perSqm === null ? "—" : formatMoney(perSqm, "")}
               </span>
-              <span className="text-xs text-fg-secondary"> ₽/м²</span>
+              <span className="text-xs text-fg-secondary"> {PER_SQM_UNIT}</span>
               {participant.class_median_pct !== null && (
                 <span
                   className={cn(

@@ -1,15 +1,14 @@
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 
 import { Skeleton } from "@/components/ui-domain/Skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { formatDecimalMoney } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useOurPriceLine } from "@/services/queries";
 import type { Decimal, OurPriceLine, OurPriceLineView, RungLevel, RungScope } from "@/types/domain";
 
-import { formatSigned, formatUnitPrice, pick, type VatView } from "./money";
+import { comparedKpPrice, comparedUnit, formatMoney, formatSigned, formatUnitPrice, pick, type VatView } from "./money";
 import {
   ALL_CLASSES_LABEL,
   contractNumber,
@@ -22,7 +21,6 @@ import {
   groupMembership,
   lineStateLabel,
   priceBasisLabel,
-  PER_SQM_UNIT,
   RECALC_LABEL,
   ratioNote,
   RUNG_AUTO_TAG,
@@ -59,6 +57,14 @@ export interface LineSheetProps {
 type Rung = { level: RungLevel; scope: RungScope };
 
 const DASH = "—";
+
+/** Шаг по ступеням лестницы от нажатой стрелки. */
+const ARROW_STEP: Partial<Record<string, 1 | -1>> = {
+  ArrowRight: 1,
+  ArrowDown: 1,
+  ArrowLeft: -1,
+  ArrowUp: -1,
+};
 
 const sameRung = (a: Rung | null, b: Rung | null) => a !== null && b !== null && a.level === b.level && a.scope === b.scope;
 
@@ -193,10 +199,12 @@ function Section({ title, testId, children }: { title: string; testId?: string; 
 }
 
 function Prices({ line, vat, vatRate }: { line: OurPriceLine; vat: VatView; vatRate: Decimal | null }) {
-  const unitPrice = pick(line.kp.unit_price, vat);
+  const unitPrice = comparedKpPrice(line, vat);
+  const priceUnit = comparedUnit(line);
+  const system = line.kind === "system";
+  const total = pick(line.kp.total, vat);
   const toOurs = pick(line.to_ours, vat);
   const ours = line.ours === null ? null : pick(line.ours.value, vat);
-  const groupPerSqm = line.group === null ? null : pick(line.group.kp_per_sqm, vat);
   const unit = line.unit === null ? "" : ` ${line.unit}`;
   return (
     <Section title={SHEET_SECTION.prices} testId="sheet-prices">
@@ -204,11 +212,19 @@ function Prices({ line, vat, vatRate }: { line: OurPriceLine; vat: VatView; vatR
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
         <dt className="text-fg-secondary">{SHEET_FIELD.kpPrice}</dt>
         <dd data-testid="sheet-kp-price" className="font-mono tabular-nums">
-          {unitPrice === null ? DASH : `${formatUnitPrice(unitPrice)}${unit}`}
+          {unitPrice === null ? DASH : `${formatUnitPrice(unitPrice)} ${priceUnit}`}
         </dd>
+        {system && (
+          <>
+            <dt className="text-fg-secondary">{SHEET_FIELD.kpTotal}</dt>
+            <dd data-testid="sheet-kp-total" className="font-mono tabular-nums">
+              {total === null ? DASH : formatMoney(total)}
+            </dd>
+          </>
+        )}
         <dt className="text-fg-secondary">{SHEET_FIELD.quantity}</dt>
         <dd data-testid="sheet-quantity" className="font-mono tabular-nums">
-          {line.quantity === null ? DASH : `${formatDecimalMoney(line.quantity, "")}${unit}`}
+          {line.quantity === null ? DASH : `${formatMoney(line.quantity, "")}${unit}`}
         </dd>
         <dt className="text-fg-secondary">{SHEET_FIELD.toOurs}</dt>
         <dd data-testid="sheet-to-ours" className="font-mono tabular-nums">
@@ -216,19 +232,11 @@ function Prices({ line, vat, vatRate }: { line: OurPriceLine; vat: VatView; vatR
         </dd>
         <dt className="text-fg-secondary">{SHEET_FIELD.ours}</dt>
         <dd data-testid="sheet-ours" className="font-mono tabular-nums">
-          {ours === null ? DASH : formatUnitPrice(ours)}
+          {ours === null ? DASH : `${formatUnitPrice(ours)} ${priceUnit}`}
           {line.ours?.from_all_classes === true && (
             <span className="ml-2 text-xs text-fg-secondary">{ALL_CLASSES_LABEL}</span>
           )}
         </dd>
-        {groupPerSqm !== null && (
-          <>
-            <dt className="text-fg-secondary">{SHEET_FIELD.groupKpPerSqm}</dt>
-            <dd data-testid="sheet-group-per-sqm" className="font-mono tabular-nums">
-              {formatUnitPrice(groupPerSqm)} {PER_SQM_UNIT}
-            </dd>
-          </>
-        )}
         {line.secondary.length > 0 && (
           <>
             <dt className="text-fg-secondary">{SHEET_FIELD.secondary}</dt>
@@ -252,6 +260,21 @@ function Ladder({
   onRung: (rung: Rung | null) => void;
 }) {
   const selected: Rung | null = rung ?? line.rung;
+  const available = line.rungs.filter((r) => r.contracts > 0);
+  const refs = useRef(new Map<string, HTMLButtonElement>());
+  const keyOf = (r: Rung) => `${r.level}-${r.scope}`;
+
+  // Стрелки идут по доступным ступеням по кругу: вправо и вниз — вперёд, влево и вверх — назад.
+  const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>, from: Rung) => {
+    const step = ARROW_STEP[event.key];
+    if (step === undefined) return;
+    event.preventDefault();
+    const index = available.findIndex((r) => sameRung(from, r));
+    const next = available[(index + step + available.length) % available.length];
+    onRung({ level: next.level, scope: next.scope });
+    refs.current.get(keyOf(next))?.focus();
+  };
+
   return (
     <Section title={SHEET_SECTION.ladder}>
       <div role="radiogroup" aria-label={SHEET_SECTION.ladder} className="space-y-1">
@@ -259,10 +282,16 @@ function Ladder({
           const checked = sameRung(selected, r);
           return (
             <Button
-              key={`${r.level}-${r.scope}`}
+              key={keyOf(r)}
+              ref={(node: HTMLButtonElement | null) => {
+                if (node === null) refs.current.delete(keyOf(r));
+                else refs.current.set(keyOf(r), node);
+              }}
               type="button"
               role="radio"
               aria-checked={checked}
+              tabIndex={checked ? 0 : -1}
+              onKeyDown={(event) => onKeyDown(event, r)}
               data-testid={`rung-${r.level}-${r.scope}`}
               variant={checked ? "default" : "outline"}
               disabled={r.contracts === 0}
@@ -324,7 +353,7 @@ function Family({ line, groupLines, vat }: { line: OurPriceLine; groupLines: Our
                   {member.group === null ? GROUP_OUTSIDE : groupMembership(member.group.lines)}
                 </span>
               </span>
-              <span className="font-mono tabular-nums">{total === null ? DASH : formatDecimalMoney(total, "")}</span>
+              <span className="font-mono tabular-nums">{total === null ? DASH : formatMoney(total, "")}</span>
             </li>
           );
         })}

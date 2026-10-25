@@ -263,6 +263,8 @@ class KpLineRow:
     line: KpLine
     title: str
     unit: str | None
+    #: Объём строки — вес сравнения: предложенный объём, а при его отсутствии объём заказчика
+    #: (`quantity` файла бывает заглушкой «1», спека 4а §2.12).
     quantity: Decimal | None
     section_ref: str | None
     article_root_id: int | None
@@ -481,7 +483,6 @@ def load_kp_lines(db: Session, estimate_ids: Sequence[int]) -> dict[int, list[Kp
             PositionItem.id,
             PositionItem.job_title_in_proposal,
             UnitOfMeasure.symbol,
-            PositionItem.quantity,
             PositionItem.item_number_in_proposal,
             PositionItem.position_key_in_proposal,
             PositionItem.unit_cost_total,
@@ -506,8 +507,8 @@ def load_kp_lines(db: Session, estimate_ids: Sequence[int]) -> dict[int, list[Kp
         .order_by(Lot.estimate_id, PositionItem.id)
     ).all()
     signals = catalog_signal(db, estimate_ids)
-    infos = _variant_infos(db, [row[12] for row in rows if row[12] is not None])
-    secondary = _secondary_values(db, [row[11] for row in rows if row[11] is not None])
+    infos = _variant_infos(db, [row[11] for row in rows if row[11] is not None])
+    secondary = _secondary_values(db, [row[10] for row in rows if row[10] is not None])
     root_of, _ = category_roots(db)
     for row in rows:
         (
@@ -515,7 +516,6 @@ def load_kp_lines(db: Session, estimate_ids: Sequence[int]) -> dict[int, list[Kp
             item_id,
             title,
             unit,
-            quantity,
             number,
             key_text,
             unit_price,
@@ -543,7 +543,7 @@ def load_kp_lines(db: Session, estimate_ids: Sequence[int]) -> dict[int, list[Kp
                 ),
                 title=title,
                 unit=unit,
-                quantity=quantity,
+                quantity=weight,
                 section_ref=number or key_text,
                 article_root_id=root_of.get(category_id) if category_id is not None else None,
                 family_title=family_title,

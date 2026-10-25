@@ -5,7 +5,7 @@ import { ourPriceLineFixture } from "@/test/fixtures";
 import type { MoneyPair, OurPriceLine } from "@/types/domain";
 
 import { OfferLinesTable } from "./OfferLinesTable";
-import { LINE_STATE_LABEL, WAITING_ADMIN_LABEL } from "./ourPriceCopy";
+import { LINE_STATE_LABEL, POSITION_LABEL, WAITING_ADMIN_LABEL } from "./ourPriceCopy";
 
 const pair = (net: string, shown: string | null): MoneyPair => ({ net, shown });
 
@@ -399,5 +399,77 @@ describe("открытие строки и пустота", () => {
     renderTable([]);
     expect(screen.getByTestId("lines-empty")).toBeInTheDocument();
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
+  });
+});
+
+describe("вёрстка: текст переносится в своей колонке, числа — нет", () => {
+  it("ячейка работы переносит строки, числовые — нет", () => {
+    renderTable([line(1)]);
+    expect(screen.getByTestId("work-1").closest("td")).toHaveClass("whitespace-normal");
+    for (const id of ["qty-1", "kp-1"]) {
+      expect(screen.getByTestId(id).closest("td")).toHaveClass("whitespace-nowrap");
+    }
+  });
+
+  it("подпись состояния — плашка без обрезки: высота по тексту, перенос разрешён", () => {
+    renderTable([line(1)]);
+    const chip = within(screen.getByTestId("to-ours-1")).getByText(POSITION_LABEL.in);
+    expect(chip).toHaveClass("h-auto", "whitespace-normal");
+  });
+});
+
+describe("единица цены", () => {
+  it("цена КП обычной строки подписана рублями за единицу измерения", () => {
+    renderTable([line(1, { unit: "м3" })]);
+    expect(screen.getByTestId("kp-1")).toHaveTextContent("1 200,00₽/м3");
+  });
+
+  it("у системы в колонке цены — цена группы за м² объекта, а не цена за комплекс; вилка и расценка — тоже ₽/м²", () => {
+    const system = line(2, {
+      kind: "system",
+      unit: "компл",
+      kp: { unit_price: pair("39230327.87", "47860000.00"), total: pair("39230327.87", "47860000.00") },
+      group: { lines: 3, share: "1", kp_per_sqm: pair("786", "959") },
+    });
+    renderTable([system]);
+    expect(screen.getByTestId("kp-2")).toHaveTextContent("786,00₽/м²");
+    expect(screen.getByTestId("kp-2")).not.toHaveTextContent("39 230 327");
+    expect(screen.getByTestId("fork-2")).toHaveTextContent("₽/м²");
+    expect(screen.getByTestId("ours-2")).toHaveTextContent("₽/м²");
+  });
+
+  it("у системы цена в виде «с НДС» — показанная цена группы; без группы — прочерк", () => {
+    const base = { kind: "system" as const, unit: "компл" };
+    renderTable(
+      [
+        line(1, { ...base, group: { lines: 2, share: "1", kp_per_sqm: pair("786", "959") } }),
+        line(2, { ...base, group: null }),
+      ],
+      { vat: "shown" }
+    );
+    expect(screen.getByTestId("kp-1")).toHaveTextContent("959,00₽/м²");
+    expect(screen.getByTestId("kp-2")).toHaveTextContent("—");
+    expect(screen.getByTestId("kp-2")).not.toHaveTextContent("₽");
+  });
+
+  it("сортировка по цене КП идёт по показанному: у системы — по цене группы", () => {
+    const system = (id: number, perSqm: string) =>
+      line(id, {
+        kind: "system",
+        kp: { unit_price: pair("1000000", "1000000"), total: null },
+        group: { lines: 1, share: "1", kp_per_sqm: pair(perSqm, perSqm) },
+      });
+    renderTable([system(1, "900"), system(2, "100")]);
+    fireEvent.click(screen.getByRole("button", { name: "Цена КП" }));
+    expect(order()).toEqual([2, 1]);
+  });
+
+  it("сортировка по цене КП — по полной строке сервера: на экране обе 100,00, порядок задаёт тысячная", () => {
+    const priced = (id: number, price: string) => line(id, { kp: { unit_price: pair(price, price), total: null } });
+    renderTable([priced(1, "100.004"), priced(2, "100.001")]);
+    expect(screen.getByTestId("kp-1")).toHaveTextContent("100,00");
+    expect(screen.getByTestId("kp-2")).toHaveTextContent("100,00");
+    fireEvent.click(screen.getByRole("button", { name: "Цена КП" }));
+    expect(order()).toEqual([2, 1]);
   });
 });

@@ -1,4 +1,4 @@
-import { pluralRu } from "@/lib/format";
+import { pluralRu, roundDecimal } from "@/lib/format";
 import type { Decimal, OurPriceLine, OurPriceLineState, OurPriceParticipant } from "@/types/domain";
 
 import type { OfferFilter } from "./offerFilter";
@@ -64,6 +64,12 @@ export const VAT_SWITCH_LABEL = "С НДС по ставке КП";
 export const INFLATION_SWITCH_LABEL = "Привести по ИПЦ";
 export const INFLATION_SERIES_LABEL = "Ряд индексов";
 export const NO_INFLATION_CAPTION = "цены без приведения";
+export const KP_NOT_ADJUSTED_NOTE = "КП не приводится — он уже в ценах этапа";
+
+/** Подпись приведения: предложение ответа без точки и пояснение, что приводится только история (спека 4а §2.10). */
+export function inflationCaptionOf(sentence: string): string {
+  return `${sentence.replace(/\.$/, "")}; ${KP_NOT_ADJUSTED_NOTE}`;
+}
 export const RECALC_LABEL = "Пересчитываем цены…";
 
 export const PRICES_CAPTION_NET = "цены без НДС";
@@ -259,15 +265,20 @@ export const SHEET_SECTION = {
 } as const;
 export const SHEET_FIELD = {
   kpPrice: "Цена КП",
+  kpTotal: "Сумма строки в КП",
   quantity: "Объём",
   toOurs: "К нашей расценке",
   ours: "Наша расценка (справкой)",
-  groupKpPerSqm: "Группа в КП на м² объекта",
   secondary: "Второстепенные",
 } as const;
 
+/**
+ * Подпись цен панели строки. В ставке КП без ставки (база НДС неизвестна) поле «в ставке КП»
+ * пусто, и называть такие цифры «без НДС» нельзя: подпись говорит, что базы нет.
+ */
 export function priceBasisLabel(view: "net" | "shown", rate: Decimal | null): string {
-  return view === "shown" && rate !== null ? `${vatShownLabel(rate)} (договоры — по ставке КП)` : VAT_NET_LABEL;
+  if (view === "net") return VAT_NET_LABEL;
+  return rate === null ? VAT_UNKNOWN_LABEL : `${vatShownLabel(rate)} (договоры — по ставке КП)`;
 }
 
 export const RUNG_SCOPE_LABEL = { cls: "класс объекта", all: "все классы" } as const;
@@ -299,17 +310,24 @@ export const CONTRACT_WITH_CONTRACTOR = "договор с этим подряд
 export function contractNumber(number: string): string {
   return `договор ${number}`;
 }
+/** Кратность расхождения: один знак после запятой, строкой («5,3»). */
+function ratioText(ratio: Decimal): string {
+  return roundDecimal(ratio, 1).replace(".", ",");
+}
+export function formatRatio(ratio: Decimal): string {
+  return `×${ratioText(ratio)}`;
+}
 export function ratioNote(ratio: Decimal): string {
-  return `×${ratio} к остальным договорам — проверьте единицу учёта`;
+  return `${formatRatio(ratio)} к остальным договорам — проверьте единицу учёта`;
 }
 export const VAT_DROPPED_NOTE = "выпал: неизвестна база НДС";
 
 export const UNIT_WARN_TITLE = "Разные единицы учёта?";
 export function unitWarnKp(ratio: Decimal, median: string | null): string {
-  return `Цена КП отличается от медианы наших договоров${median === null ? "" : ` (${median})`} в ${ratio} раз.`;
+  return `Цена КП отличается от медианы наших договоров${median === null ? "" : ` (${median})`} в ${ratioText(ratio)} раз.`;
 }
 export function unitWarnContracts(ratios: Decimal[]): string {
-  return `Наши договоры расходятся с остальными: ${ratios.map((r) => `×${r}`).join(", ")}.`;
+  return `Наши договоры расходятся с остальными: ${ratios.map(formatRatio).join(", ")}.`;
 }
 export const UNIT_WARN_TAIL =
   "Почти всегда это не цена, а разный способ счёта: в одном месте за единицу, в другом — за весь объём. Ничего не исключено; в суммы переплаты строка не входит. Хороший вопрос подрядчику.";

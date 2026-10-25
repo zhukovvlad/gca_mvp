@@ -486,6 +486,8 @@ lines: [{position_item_id, article_id|null, title, unit, quantity, section_ref,
 
 Уточнения формы строки (план 4а, решения 7 и 8):
 
+- **`quantity`** — вес строки: `COALESCE(suggested_quantity, quantity)`; сырой
+  `quantity` файла бывает заглушкой «1» и на экран не идёт.
 - **`article_id`** — корень статьи, тот же `work_category_id`, что в `articles`;
   `null` — «Нераспределённое».
 - **`waiting_admin`** — то же правило, что у `progress.waiting_admin`: нет
