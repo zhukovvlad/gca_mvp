@@ -1,13 +1,19 @@
 import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 
 import { PageHeader } from "@/components/ui-domain/PageHeader";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { ContextsTab } from "./ContextsTab";
+import { ENTRY_PARAMS, parseEntry, type Entry } from "./entryParams";
 import { FamiliesTab } from "./FamiliesTab";
 import { SOURCE_EXPLANATION } from "./labels";
 import { SourceChip } from "./SourceChip";
-import { SuggestionsTab } from "./SuggestionsTab";
+import { SuggestionsTab, type SuggestionTarget } from "./SuggestionsTab";
+
+function suggestionTargetOf(entry: Entry | null): SuggestionTarget | null {
+  return entry?.tab === "suggestions" ? { contextId: entry.contextId, queue: entry.queue, unit: entry.unit } : null;
+}
 
 /**
  * Экран «Семьи и контексты» (спека `2026-09-25-families-screen-design.md`
@@ -23,7 +29,42 @@ import { SuggestionsTab } from "./SuggestionsTab";
  * списком внутри {@link ContextsTab}, а не отдельной областью экрана.
  */
 export default function FamiliesPage() {
-  const [tab, setTab] = useState("families");
+  // Адрес входа (`entryParams.ts`) открывает вкладку «Контексты» с карточкой контекста или
+  // «Предложения» с его предложением; некорректный адрес страницу не меняет.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [tab, setTab] = useState(() => parseEntry(searchParams)?.tab ?? "families");
+  // Предложение, к которому привела ссылка: вкладка «Предложения» подсвечивает его.
+  const [suggestionTarget, setSuggestionTarget] = useState(() => suggestionTargetOf(parseEntry(searchParams)));
+
+  // Ссылка на эту же страницу, пока она открыта, ведёт на вкладку входа. Правка состояния во
+  // время рендера — приём `FamiliesTab`; запись адреса самой вкладкой «Контексты» сюда же
+  // попадает, но называет ту же вкладку и ничего не меняет.
+  const searchKey = searchParams.toString();
+  const [seenSearchKey, setSeenSearchKey] = useState(searchKey);
+  if (searchKey !== seenSearchKey) {
+    setSeenSearchKey(searchKey);
+    const entry = parseEntry(searchParams);
+    if (entry) {
+      setTab(entry.tab);
+      setSuggestionTarget(suggestionTargetOf(entry));
+    }
+  }
+
+  // Вкладка, выбранная вручную или переходом внутри страницы, вход из адреса отменяет.
+  function goTab(next: string) {
+    setTab(next);
+    setSuggestionTarget(null);
+    if (ENTRY_PARAMS.some((name) => searchParams.has(name))) {
+      setSearchParams(
+        (prev) => {
+          const params = new URLSearchParams(prev);
+          for (const name of ENTRY_PARAMS) params.delete(name);
+          return params;
+        },
+        { replace: true }
+      );
+    }
+  }
   // Семья, к которой перешли по ссылке «Открыть семью» из вкладки «Предложения».
   const [focusFamilyId, setFocusFamilyId] = useState<number | null>(null);
 
@@ -32,12 +73,12 @@ export default function FamiliesPage() {
 
   function openFamily(familyId: number) {
     setFocusFamilyId(familyId);
-    setTab("families");
+    goTab("families");
   }
 
   function showFamilyContexts(familyId: number) {
     setContextsFamilyId(familyId);
-    setTab("contexts");
+    goTab("contexts");
   }
 
   return (
@@ -49,7 +90,7 @@ export default function FamiliesPage() {
           навигации) и здесь не правится: сегментный переключатель занимает
           его штатный слот `actions` (та же позиция, что действия любой
           другой страницы), а не собственная вёрстка заголовка. */}
-      <Tabs value={tab} onValueChange={(v) => v && setTab(v)}>
+      <Tabs value={tab} onValueChange={(v) => v && goTab(v)}>
         <PageHeader
           serif
           title="Семьи и контексты"
@@ -99,7 +140,7 @@ export default function FamiliesPage() {
         </TabsContent>
 
         <TabsContent value="suggestions" className="mt-6">
-          <SuggestionsTab onOpenFamily={openFamily} />
+          <SuggestionsTab onOpenFamily={openFamily} target={suggestionTarget} />
         </TabsContent>
       </Tabs>
     </div>

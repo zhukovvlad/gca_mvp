@@ -17,7 +17,7 @@ from decimal import Decimal
 import pytest
 import sqlalchemy as sa
 
-from models import FamilyParameter, SemanticJob, UnitOfMeasure
+from models import ContextMember, FamilyParameter, SemanticJob, UnitOfMeasure
 from tests import comparison_fixtures as fx
 from tests.integration.test_our_price_load import World
 from tests.integration.test_our_price_round_api import (
@@ -36,6 +36,7 @@ from tests.integration.test_our_price_round_api import (
 from tests.integration.test_our_price_round_api import _get as _round_get
 from tests.integration.test_our_price_round_api import _ok as _round_ok
 from tests.integration.test_our_price_signal import _job, _pause
+from tests.integration.test_semantic_queue_api import _published
 
 pytestmark = pytest.mark.integration
 
@@ -43,6 +44,8 @@ D = Decimal
 
 LINE_KEYS = {
     "position_item_id",
+    "context_id",
+    "unit_id",
     "article_id",
     "title",
     "unit",
@@ -53,6 +56,7 @@ LINE_KEYS = {
     "secondary",
     "state",
     "waiting_admin",
+    "suggestion_queue",
     "kind",
     "kp",
     "rung",
@@ -394,6 +398,9 @@ class TestLineForm:
         line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
 
         assert set(line) == LINE_KEYS
+        assert line["context_id"] == item.context_id
+        assert line["unit_id"] == stage.world.unit_id
+        assert line["suggestion_queue"] is None
         assert line["article_id"] == stage.cats["R"].id
         assert line["title"] == item.job_title_in_proposal
         assert line["unit"] == stage.db.get(UnitOfMeasure, item.unit_id).symbol
@@ -721,7 +728,116 @@ class TestLineStates:
         assert (line["rung"], line["rungs"], line["to_ours"]) == (None, [], None)
 
 
+class TestLineContextId:
+    def test_line_without_variant_carries_its_context_id(self, member_client, stage):
+        rnd = stage.round()
+        part = stage.participant(rnd, "Подрядчик А", vat=D("0"))
+        item = stage.kp(part, D("100"), variant=False)
+
+        line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
+
+        assert line["context_id"] == item.context_id
+        assert isinstance(line["context_id"], int)
+
+    def test_line_without_membership_has_null_context_id(self, member_client, stage, db_session):
+        rnd = stage.round()
+        part = stage.participant(rnd, "Подрядчик А", vat=D("0"))
+        item = stage.kp(part, D("100"), variant=False)
+        db_session.execute(sa.delete(ContextMember).where(ContextMember.position_item_id == item.id))
+
+        line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
+
+        assert (line["context_id"], line["unit_id"]) == (None, None)
+
+    def test_line_carries_the_unit_of_its_catalog_row(self, member_client, stage):
+        rnd = stage.round()
+        part = stage.participant(rnd, "Подрядчик А", vat=D("0"))
+        item = stage.kp(part, D("100"), variant=False)
+
+        line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
+
+        assert line["unit_id"] == stage.world.unit_id
+        assert isinstance(line["unit_id"], int)
+
+    def test_panel_line_carries_the_same_context_id(self, member_client, stage):
+        rnd, part, item = _scene(stage)
+
+        panel = _panel(member_client, stage.tender, rnd, part, item)
+
+        assert panel["line"]["context_id"] == item.context_id
+        assert panel["line"]["unit_id"] == stage.world.unit_id
+
+
 class TestWaitingAdmin:
+    def test_unresolved_suggestion_makes_a_no_variant_line_wait(self, member_client, stage, db_session):
+        rnd = stage.round()
+        part = stage.participant(rnd, "Подрядчик А", vat=D("0"))
+        waiting = stage.kp(part, D("100"), variant=False)
+        quiet = stage.kp(part, D("100"), variant=False)
+        _published(db_session, waiting.context_id, family_id=stage.family.id, confidence="0.5")
+
+        body = _ok(member_client, stage.tender, rnd, part)
+
+        line = _line_of(body, waiting)
+        assert (line["state"], line["waiting_admin"]) == ("no_variant", True)
+        assert line["suggestion_queue"] == "list"
+        assert _line_of(body, quiet)["waiting_admin"] is False
+        assert _line_of(body, quiet)["suggestion_queue"] is None
+        assert body["progress"] == {"lines_total": 2, "in_progress": 0, "waiting_admin": 1}
+
+    def test_a_new_family_suggestion_names_the_new_queue(self, member_client, stage, db_session):
+        rnd = stage.round()
+        part = stage.participant(rnd, "Подрядчик А", vat=D("0"))
+        item = stage.kp(part, D("100"), variant=False)
+        _published(db_session, item.context_id, family_id=None, new_family_name="Иная семья")
+
+        line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
+
+        assert (line["waiting_admin"], line["suggestion_queue"]) == (True, "new")
+
+    def test_a_suggestion_the_queue_hides_does_not_make_the_line_wait(self, member_client, stage, db_session):
+        rnd = stage.round()
+        part = stage.participant(rnd, "Подрядчик А", vat=D("0"))
+        item = stage.kp(part, D("100"), variant=False)
+        _published(db_session, item.context_id, family_id=stage.family.id, superseded=True)
+
+        line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
+
+        assert (line["waiting_admin"], line["suggestion_queue"]) == (False, None)
+
+    def test_a_stuck_job_without_a_suggestion_waits_but_has_nothing_open(self, member_client, stage, db_session):
+        rnd = stage.round()
+        part = stage.participant(rnd, "Подрядчик А", vat=D("0"))
+        stuck = stage.kp(part, D("100"), variant=False)
+        _job(db_session, "family_suggestion", "error", context_id=stuck.context_id)
+
+        line = _line_of(_ok(member_client, stage.tender, rnd, part), stuck)
+
+        assert (line["waiting_admin"], line["suggestion_queue"]) == (True, None)
+
+    def test_a_line_in_progress_does_not_claim_an_open_suggestion(self, member_client, stage, db_session):
+        rnd = stage.round()
+        part = stage.participant(rnd, "Подрядчик А", vat=D("0"))
+        item = stage.kp(part, D("100"), variant=False)
+        _published(db_session, item.context_id, family_id=stage.family.id)
+        _job(db_session, "family_suggestion", "pending", context_id=item.context_id)
+
+        line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
+
+        assert (line["state"], line["waiting_admin"], line["suggestion_queue"]) == ("in_progress", False, None)
+
+    def test_a_line_in_progress_and_stuck_does_not_claim_an_open_suggestion(self, member_client, stage, db_session):
+        rnd = stage.round()
+        part = stage.participant(rnd, "Подрядчик А", vat=D("0"))
+        item = stage.kp(part, D("100"), variant=False)
+        _published(db_session, item.context_id, family_id=stage.family.id)
+        _job(db_session, "family_suggestion", "pending", context_id=item.context_id)
+        _job(db_session, "family_suggestion", "error", context_id=item.context_id)
+
+        line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
+
+        assert (line["state"], line["waiting_admin"], line["suggestion_queue"]) == ("in_progress", False, None)
+
     def test_no_variant_with_a_stuck_job_waits_for_the_admin(self, member_client, stage, db_session):
         rnd = stage.round()
         part = stage.participant(rnd, "Подрядчик А", vat=D("0"))

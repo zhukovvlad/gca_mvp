@@ -1,5 +1,5 @@
 import { ChevronRight } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { EntityCombobox } from "@/components/domain/EntityCombobox";
 import { Badge } from "@/components/ui/badge";
@@ -162,6 +162,8 @@ interface GroupCardProps {
   unitLabel: string;
   defaultOpen: boolean;
   mode: GroupsMode;
+  /** Контекст, предложение которого подсвечено (вход по ссылке); `null` — нет. */
+  highlightContextId: number | null;
 }
 
 /**
@@ -170,9 +172,16 @@ interface GroupCardProps {
  * группы (снятые id); подтверждение шлёт ровно отмеченные, в том числе строки,
  * не выведенные за пределом {@link VISIBLE_ROWS} (они отмечены по умолчанию).
  */
-function GroupCard({ group, unitLabel, defaultOpen, mode }: GroupCardProps) {
-  const [open, setOpen] = useState(defaultOpen);
-  const [showAll, setShowAll] = useState(false);
+function GroupCard({ group, unitLabel, defaultOpen, mode, highlightContextId }: GroupCardProps) {
+  const targetIndex =
+    highlightContextId === null ? -1 : group.rows.findIndex((r) => r.context_id === highlightContextId);
+  const [open, setOpen] = useState(defaultOpen || targetIndex >= 0);
+  const [showAll, setShowAll] = useState(targetIndex >= VISIBLE_ROWS);
+  const targetRef = useRef<HTMLDivElement>(null);
+  // Подсвеченное предложение выводится в зону видимости, когда группа открыта и строка на месте.
+  useEffect(() => {
+    if (open && targetIndex >= 0) targetRef.current?.scrollIntoView?.({ block: "center" });
+  }, [open, targetIndex]);
   const [unchecked, setUnchecked] = useState<ReadonlySet<number>>(new Set());
   const [otherRow, setOtherRow] = useState<SuggestionRow | null>(null);
   const confirm = useConfirmSuggestions();
@@ -244,13 +253,17 @@ function GroupCard({ group, unitLabel, defaultOpen, mode }: GroupCardProps) {
         <div className="border-t border-border-subtle">
           {visibleRows.map((row) => {
             const isOff = unchecked.has(row.suggestion_id);
+            const isTarget = row.context_id === highlightContextId;
             return (
               <div
                 key={row.suggestion_id}
+                ref={isTarget ? targetRef : undefined}
                 data-testid="suggestion-row"
+                data-highlighted={isTarget ? "true" : undefined}
                 className={cn(
                   "flex items-start gap-4 border-b border-border-subtle px-4 py-3 last:border-b-0",
-                  isOff && "bg-surface-hover opacity-65"
+                  isOff && "bg-surface-hover opacity-65",
+                  isTarget && "bg-accent-soft ring-2 ring-inset ring-accent-border"
                 )}
               >
                 <Checkbox
@@ -353,6 +366,8 @@ interface SuggestionGroupsProps {
   mode?: GroupsMode;
   /** Код единицы (`M2`) → символ (`м²`); неизвестный код печатается как есть. */
   unitLabel: (code: string | null) => string;
+  /** Контекст, предложение которого подсвечено и чья группа раскрыта (вход по ссылке). */
+  highlightContextId?: number | null;
 }
 
 /**
@@ -360,7 +375,7 @@ interface SuggestionGroupsProps {
  * (`mode="change"`: заголовок «прежняя → предложенная», свои тексты исходов). Первая группа
  * раскрыта, как в макете.
  */
-export function SuggestionGroups({ groups, unitLabel, mode = "list" }: SuggestionGroupsProps) {
+export function SuggestionGroups({ groups, unitLabel, mode = "list", highlightContextId = null }: SuggestionGroupsProps) {
   return (
     <div className="flex flex-col gap-3">
       {groups.map((group, index) => (
@@ -370,6 +385,7 @@ export function SuggestionGroups({ groups, unitLabel, mode = "list" }: Suggestio
           unitLabel={unitLabel(group.unit_code)}
           defaultOpen={index === 0}
           mode={mode}
+          highlightContextId={highlightContextId}
         />
       ))}
     </div>

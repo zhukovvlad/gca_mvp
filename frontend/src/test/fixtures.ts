@@ -2878,6 +2878,8 @@ export function ourPriceRoundFixture(
 export function ourPriceLineFixture(overrides: Partial<OurPriceLine> = {}): OurPriceLine {
   return {
     position_item_id: OUR_PRICE_LINE_ID,
+    context_id: 501,
+    unit_id: 3,
     article_id: 11,
     title: "Работа 1",
     unit: "м2",
@@ -2888,6 +2890,7 @@ export function ourPriceLineFixture(overrides: Partial<OurPriceLine> = {}): OurP
     secondary: [{ name: "Цвет", value: "серый" }],
     state: "comparable",
     waiting_admin: false,
+    suggestion_queue: null,
     kind: "work",
     kp: { unit_price: pair("1200", "1464"), total: pair("120000.00", "146400.00") },
     rung: { level: "v", scope: "cls", auto: true, threshold_met: true },

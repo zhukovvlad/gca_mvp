@@ -1,19 +1,13 @@
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
+import { parseId } from "@/lib/urlParams";
 import { isInflationRefusal } from "@/components/inflation/refusalCodes";
 import { apiErrorCode } from "@/services/queries";
 import type { Decimal } from "@/types/domain";
 
 import type { VatView } from "./money";
 import { PRICES_CAPTION_NET, PRICES_CAPTION_SHOWN_MIXED, pricesCaptionShown } from "./ourPriceCopy";
-
-/** Целое положительное из адреса; всё остальное — `null` (ряда нет). */
-export function parseId(raw: string | null): number | null {
-  if (raw === null || !/^\d+$/.test(raw)) return null;
-  const id = Number(raw);
-  return id > 0 ? id : null;
-}
 
 /**
  * Переключатели экранов «Против нашей цены» живут в адресе: `?vat=shown` (по умолчанию

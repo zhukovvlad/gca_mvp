@@ -245,10 +245,15 @@ export const POSITION_LABEL = {
 
 export const RUNG_LEVEL_LABEL = { v: "вариант", p: "по параметру", f: "вся семья" } as const;
 
+/** Строка без варианта, чьё решение ждёт администратора (спека 4а §2.11). */
+export function isWaitingAdminLine(line: OurPriceLine): boolean {
+  return line.state === "no_variant" && line.waiting_admin;
+}
+
 /** Подпись состояния рядом с разницей; у сопоставимой строки — её положение в вилке. */
 export function lineStateLabel(line: OurPriceLine): string | null {
   if (line.state === "comparable") return line.position === null ? null : POSITION_LABEL[line.position];
-  if (line.state === "no_variant" && line.waiting_admin) return WAITING_ADMIN_LABEL;
+  if (isWaitingAdminLine(line)) return WAITING_ADMIN_LABEL;
   return LINE_STATE_LABEL[line.state];
 }
 

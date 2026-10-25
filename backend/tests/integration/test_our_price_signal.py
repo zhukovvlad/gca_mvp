@@ -16,6 +16,7 @@ import pytest
 import sqlalchemy as sa
 
 from crud.our_price_load import CatalogSignal, catalog_signal
+from crud.semantic_queue import list_suggestions, open_suggestion_queues
 from models import (
     FamilyParameterSchema,
     SemanticJob,
@@ -25,13 +26,15 @@ from models import (
 )
 from services.context_routing import route_position
 from services.work_families import assign_family
-from tests.integration.test_semantic_queue_api import _active_family, _unit_id
+from tests.integration.test_semantic_queue_api import _active_family, _published, _unit_id
 
 pytestmark = pytest.mark.integration
 
 NONE = CatalogSignal(False, False)
 IN_PROGRESS = CatalogSignal(True, False)
 WAITING = CatalogSignal(False, True)
+WAITING_LIST = CatalogSignal(False, True, suggestion_queue="list")
+WAITING_NEW = CatalogSignal(False, True, suggestion_queue="new")
 
 CONTEXT_KINDS = ("family_suggestion", "context_values")
 
@@ -440,6 +443,187 @@ class TestClaimPaused:
 
 
 # ---------------------------------------------------------------------------
+#  Нерешённое предложение семьи у контекста без семьи
+# ---------------------------------------------------------------------------
+
+
+class TestUnresolvedSuggestion:
+    """Открытое предложение — то же, что видит администратор в очереди
+    «Предложения»: опубликовано и не решено, у контекста без семьи. Какое из
+    предложений контекста новее, значения не имеет."""
+
+    def test_published_undecided_suggestion_of_a_row_without_family_waits(self, scene):
+        _published(scene.db, scene.free_ctx, family_id=scene.family.id, confidence="0.5")
+
+        signals = _signal(scene)
+
+        assert signals[scene.free] == WAITING_LIST
+        assert signals[scene.famed] == NONE
+        assert signals[scene.neighbor] == NONE
+
+    def test_new_family_suggestion_waits_too(self, scene):
+        _published(scene.db, scene.free_ctx, family_id=None, new_family_name="Иная семья")
+
+        assert _signal(scene)[scene.free] == WAITING_NEW
+
+    @pytest.mark.parametrize("decision", ("accepted", "rejected"))
+    def test_decided_suggestion_does_not_wait(self, scene, decision):
+        _published(
+            scene.db,
+            scene.free_ctx,
+            family_id=scene.family.id,
+            decision=decision,
+            decided_by=scene.admin.id,
+        )
+
+        assert _signal(scene)[scene.free] == NONE
+
+    def test_unpublished_suggestion_does_not_wait(self, scene):
+        _published(scene.db, scene.free_ctx, family_id=scene.family.id, is_published=False)
+
+        assert _signal(scene)[scene.free] == NONE
+
+    def test_row_with_family_does_not_wait_for_its_suggestion(self, scene):
+        _published(scene.db, scene.famed_ctx, family_id=scene.family.id)
+
+        assert _signal(scene)[scene.famed] == NONE
+
+    def test_newer_unpublished_suggestion_does_not_hide_an_open_one(self, scene):
+        """Очередь показывает опубликованное нерешённое, даже когда новее него лежит
+        неопубликованное (ответ с устаревшим отпечатком): строка тоже ждёт."""
+        _published(scene.db, scene.free_ctx, family_id=scene.family.id)
+        _published(scene.db, scene.free_ctx, family_id=scene.family.id, is_published=False, superseded=True)
+
+        assert _signal(scene)[scene.free] == WAITING_LIST
+
+    def test_newer_decided_suggestion_does_not_hide_an_open_one(self, scene):
+        _published(scene.db, scene.free_ctx, family_id=scene.family.id)
+        _published(
+            scene.db,
+            scene.free_ctx,
+            family_id=scene.family.id,
+            is_published=False,
+            decision="rejected",
+            decided_by=scene.admin.id,
+            superseded=True,
+        )
+
+        assert _signal(scene)[scene.free] == WAITING_LIST
+
+    def test_older_decided_suggestion_does_not_make_a_row_wait(self, scene):
+        _published(
+            scene.db,
+            scene.free_ctx,
+            family_id=scene.family.id,
+            is_published=False,
+            decision="rejected",
+            decided_by=scene.admin.id,
+        )
+        _published(scene.db, scene.free_ctx, family_id=scene.family.id, is_published=False, superseded=True)
+
+        assert _signal(scene)[scene.free] == NONE
+
+    def test_live_job_beats_the_unresolved_suggestion(self, scene):
+        _published(scene.db, scene.free_ctx, family_id=scene.family.id)
+        _job(scene.db, "family_suggestion", "pending", context_id=scene.free_ctx)
+
+        assert _signal(scene)[scene.free] == IN_PROGRESS
+
+    def test_suggestion_of_another_context_does_not_mark_the_row(self, scene):
+        item, ctx = _row(scene.db, scene.factories, scene.proposal, unit_id=scene.unit, title="Потолок")
+        _published(scene.db, ctx, family_id=scene.family.id)
+
+        signals = _signal(scene)
+
+        assert signals[item] == WAITING_LIST
+        assert signals[scene.free] == NONE
+
+    def test_published_suggestion_of_a_stale_fingerprint_does_not_wait(self, scene):
+        """Очередь «Предложения» такое предложение скрывает (контекст изменился с тех
+        пор), решать администратору нечего: строка не ждёт."""
+        _published(scene.db, scene.free_ctx, family_id=scene.family.id, superseded=True)
+
+        assert _signal(scene)[scene.free] == NONE
+
+    def test_stuck_job_without_a_suggestion_does_not_claim_an_open_one(self, scene):
+        """Подпись есть, но решать нечего в очереди предложений: ссылка пойдёт на карточку."""
+        _job(scene.db, "family_suggestion", "error", context_id=scene.free_ctx)
+
+        assert _signal(scene)[scene.free] == WAITING
+
+    def test_stuck_job_with_an_open_suggestion_claims_it(self, scene):
+        _published(scene.db, scene.free_ctx, family_id=scene.family.id)
+        _job(scene.db, "family_suggestion", "error", context_id=scene.free_ctx)
+
+        assert _signal(scene)[scene.free] == WAITING_LIST
+
+
+class TestAgreementWithTheSuggestionsQueue:
+    def test_open_suggestion_marks_exactly_the_contexts_the_queues_list(self, scene):
+        db, admin = scene.db, scene.admin
+        rows = {}
+        # Каждое условие видимости — и у «Семьи из списка», и у «Новой»: снятие условия
+        # с одной стороны (очередь или сигнал) обязано развести множества.
+        names = (
+            "listed",
+            "new_family",
+            "decided",
+            "unpublished",
+            "hidden_by_newer",
+            "with_family",
+            "stale",
+            "new_decided",
+            "new_unpublished",
+            "new_with_family",
+            "new_stale",
+        )
+        for name in names:
+            rows[name] = _row(
+                db,
+                scene.factories,
+                scene.proposal,
+                unit_id=scene.unit,
+                title=f"Работа {name}",
+                family_id=scene.family.id if name in ("with_family", "new_with_family") else None,
+                admin_id=admin.id,
+            )
+        db.execute(sa.delete(SemanticJob))
+        _published(db, rows["listed"][1], family_id=scene.family.id)
+        _published(db, rows["new_family"][1], family_id=None, new_family_name="Иная семья")
+        _published(db, rows["decided"][1], family_id=scene.family.id, decision="accepted", decided_by=admin.id)
+        _published(db, rows["unpublished"][1], family_id=scene.family.id, is_published=False)
+        _published(db, rows["hidden_by_newer"][1], family_id=scene.family.id)
+        _published(db, rows["hidden_by_newer"][1], family_id=scene.family.id, is_published=False, superseded=True)
+        _published(db, rows["with_family"][1], family_id=scene.family.id)
+        _published(db, rows["stale"][1], family_id=scene.family.id, superseded=True)
+        _published(db, rows["new_decided"][1], family_id=None, decision="rejected", decided_by=admin.id)
+        _published(db, rows["new_unpublished"][1], family_id=None, is_published=False)
+        _published(db, rows["new_with_family"][1], family_id=None)
+        _published(db, rows["new_stale"][1], family_id=None, superseded=True)
+
+        signals = _signal(scene)
+        marked = {ctx for item, ctx in rows.values() if signals[item].suggestion_queue is not None}
+        queue_of = {ctx: signals[item].suggestion_queue for item, ctx in rows.values()}
+        listed = {row["context_id"] for group in list_suggestions(db, queue="list")["groups"] for row in group["rows"]}
+        new = {
+            row["context_id"] for row in list_suggestions(db, queue="new")["items"] if row["suggestion_id"] is not None
+        }
+
+        assert marked == listed | new
+        assert marked == {rows[name][1] for name in ("listed", "new_family", "hidden_by_newer")}
+        assert {ctx for ctx in listed if queue_of[ctx] == "list"} == listed
+        assert {ctx for ctx in new if queue_of[ctx] == "new"} == new
+
+    def test_open_suggestion_queues_skips_a_context_with_a_family_on_its_own(self, scene):
+        """Функция общая и публичная: своё «только контексты без семьи» она держит
+        сама, а не за счёт того, что вызывающий заранее отсеял контексты с семьёй."""
+        _published(scene.db, scene.famed_ctx, family_id=scene.family.id)
+        _published(scene.db, scene.free_ctx, family_id=scene.family.id)
+
+        assert open_suggestion_queues(scene.db, {scene.famed_ctx, scene.free_ctx}) == {scene.free_ctx: "list"}
+
+
+# ---------------------------------------------------------------------------
 #  Состав ответа
 # ---------------------------------------------------------------------------
 
@@ -492,7 +676,8 @@ class TestCoverage:
 
 def _stage(db, factories, admin, rows: int):
     """Этап из `rows` строк на отдельных контекстах, у части — живые и
-    остановленные задания, у части — семья."""
+    остановленные задания, у части — без заданий (на них сигнал доходит до
+    правила нерешённого предложения), у части — семья."""
     unit = _unit_id(db, "M2")
     family = _active_family(db, title=f"Семья {uuid.uuid4().hex[:6]}", unit_name="M2", actor_id=admin.id)
     estimate_id, proposal = _estimate_proposal(factories)
@@ -507,7 +692,12 @@ def _stage(db, factories, admin, rows: int):
             family_id=family.id if i % 2 else None,
             admin_id=admin.id,
         )
-        _job(db, "family_suggestion", "pending" if i % 3 else "error", context_id=ctx)
+        if i % 3 != 2:
+            _job(db, "family_suggestion", "pending" if i % 3 else "error", context_id=ctx)
+        if i % 2 == 0:
+            # Открытое предложение у строки без семьи: сигнал доходит до загрузки
+            # материала запроса и отпечатков (`open_suggestion_queues`), и на 2 строках, и на 20.
+            _published(db, ctx, family_id=family.id)
     db.flush()
     return estimate_id
 

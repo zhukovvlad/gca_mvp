@@ -216,6 +216,7 @@ export default function OurPriceOfferPage() {
             filter={filter}
             initialOpen={searchParams.get("article")}
             rateClass={tender.rate_class.title}
+            canResolve={currentUser?.role === "admin"}
             onOpenLine={setOpenLine}
           />
         </div>
@@ -230,6 +231,7 @@ export default function OurPriceOfferPage() {
         seriesId={refused ? null : seriesId}
         vat={view}
         vatRate={participant.vat_rate}
+        canResolve={currentUser?.role === "admin"}
         onClose={() => setOpenLine(null)}
       />
     </div>

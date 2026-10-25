@@ -25,6 +25,7 @@ import {
   RUNG_LEVEL_LABEL,
   SECONDARY_MARK,
 } from "./ourPriceCopy";
+import { LineStateText } from "./LineStateText";
 import { SortHead } from "./SortHead";
 import { ariaSort, compareNullable, nextSort, type SortDir, type SortState } from "./sorting";
 
@@ -33,6 +34,8 @@ export interface OfferLinesTableProps {
   vat: VatView;
   /** Название класса объекта: подпись ступени «… · класс · N дог.». */
   rateClass: string;
+  /** Подпись «ждёт решения администратора» — ссылка на карточку контекста (только `admin`). */
+  canResolve?: boolean;
   onOpenLine: (positionItemId: number) => void;
 }
 
@@ -107,7 +110,7 @@ const COLUMN_WIDTH: Record<string, string | undefined> = {
  * По умолчанию строки идут по модулю разницы, сильнее всего расходящиеся — сверху;
  * числа сравниваются десятичными строками, пустые — в конце.
  */
-export function OfferLinesTable({ lines, vat, rateClass, onOpenLine }: OfferLinesTableProps) {
+export function OfferLinesTable({ lines, vat, rateClass, canResolve = false, onOpenLine }: OfferLinesTableProps) {
   const [sort, setSort] = useState<SortState<SortKey>>({ key: "to_ours", dir: "desc" });
 
   const sorted = useMemo(
@@ -249,7 +252,7 @@ export function OfferLinesTable({ lines, vat, rateClass, onOpenLine }: OfferLine
               </span>
               {label !== null && (
                 <Badge variant="outline" className="mt-0.5 block h-auto max-w-full whitespace-normal rounded-lg py-0.5 text-left">
-                  {label}
+                  <LineStateText line={line} label={label} canResolve={canResolve} />
                 </Badge>
               )}
             </div>
@@ -257,7 +260,7 @@ export function OfferLinesTable({ lines, vat, rateClass, onOpenLine }: OfferLine
         },
       }),
     ];
-  }, [vat, rateClass]);
+  }, [vat, rateClass, canResolve]);
 
   const table = useTable({ features, columns, data: sorted });
 

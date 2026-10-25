@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 
 import { ourPriceLineFixture } from "@/test/fixtures";
@@ -15,12 +16,13 @@ function line(id: number, overrides: Partial<OurPriceLine> = {}): OurPriceLine {
 
 function renderTable(
   lines: OurPriceLine[],
-  options: { vat?: "net" | "shown"; onOpenLine?: (id: number) => void } = {}
+  options: { vat?: "net" | "shown"; onOpenLine?: (id: number) => void; canResolve?: boolean } = {}
 ) {
   return render(
     <OfferLinesTable
       lines={lines}
       vat={options.vat ?? "net"}
+      canResolve={options.canResolve}
       rateClass="Класс 2"
       onOpenLine={options.onOpenLine ?? (() => undefined)}
     />
@@ -471,5 +473,96 @@ describe("единица цены", () => {
     expect(screen.getByTestId("kp-2")).toHaveTextContent("100,00");
     fireEvent.click(screen.getByRole("button", { name: "Цена КП" }));
     expect(order()).toEqual([2, 1]);
+  });
+});
+
+function LocationProbe() {
+  const location = useLocation();
+  return <div data-testid="loc">{location.pathname + location.search}</div>;
+}
+
+describe("OfferLinesTable: подпись «ждёт решения администратора» как ссылка", () => {
+  const waiting = (id: number, over: Partial<OurPriceLine> = {}) =>
+    line(id, { ...toOurs(id, null), state: "no_variant", waiting_admin: true, context_id: 700 + id, ...over });
+
+  function renderLinked(lines: OurPriceLine[], onOpenLine: (id: number) => void = () => undefined, canResolve = true) {
+    return render(
+      <MemoryRouter initialEntries={["/tenders/1"]}>
+        <OfferLinesTable lines={lines} vat="net" rateClass="Класс 2" canResolve={canResolve} onOpenLine={onOpenLine} />
+        <LocationProbe />
+      </MemoryRouter>
+    );
+  }
+
+  it("admin: подпись — ссылка на карточку контекста строки", () => {
+    renderLinked([waiting(1)]);
+
+    const link = within(screen.getByTestId("to-ours-1")).getByRole("link", { name: WAITING_ADMIN_LABEL });
+    expect(link).toHaveAttribute("href", "/families?context=701");
+  });
+
+  it("открытое предложение: ссылка на очередь «Предложения» с единицей и контекстом", () => {
+    renderLinked([waiting(1, { suggestion_queue: "list", unit_id: 3 })]);
+
+    expect(screen.getByRole("link", { name: WAITING_ADMIN_LABEL })).toHaveAttribute(
+      "href",
+      "/families?tab=suggestions&queue=list&unit=3&context=701"
+    );
+  });
+
+  it("открытое предложение у строки без единицы: фильтр «без единицы»", () => {
+    renderLinked([waiting(1, { suggestion_queue: "new", unit_id: null })]);
+
+    expect(screen.getByRole("link", { name: WAITING_ADMIN_LABEL })).toHaveAttribute(
+      "href",
+      "/families?tab=suggestions&queue=new&unit=none&context=701"
+    );
+  });
+
+  it("щелчок по ссылке переходит и не открывает панель строки", () => {
+    const onOpenLine = vi.fn();
+    renderLinked([waiting(1)], onOpenLine);
+
+    fireEvent.click(screen.getByRole("link", { name: WAITING_ADMIN_LABEL }));
+
+    expect(screen.getByTestId("loc")).toHaveTextContent("/families?context=701");
+    expect(onOpenLine).not.toHaveBeenCalled();
+  });
+
+  it("member: тот же текст без ссылки", () => {
+    renderLinked([waiting(1)], () => undefined, false);
+
+    expect(screen.getByTestId("to-ours-1")).toHaveTextContent(WAITING_ADMIN_LABEL);
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+  });
+
+  it("без контекста у строки ссылки нет даже у admin", () => {
+    renderLinked([waiting(1, { context_id: null })]);
+
+    expect(screen.getByTestId("to-ours-1")).toHaveTextContent(WAITING_ADMIN_LABEL);
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+  });
+
+  it("права, пришедшие после первого рендера, превращают подпись в ссылку", () => {
+    const table = (canResolve: boolean) => (
+      <MemoryRouter>
+        <OfferLinesTable lines={[waiting(1)]} vat="net" rateClass="Класс 2" canResolve={canResolve} onOpenLine={() => undefined} />
+      </MemoryRouter>
+    );
+    const { rerender } = render(table(false));
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+
+    rerender(table(true));
+
+    expect(screen.getByRole("link", { name: WAITING_ADMIN_LABEL })).toHaveAttribute("href", "/families?context=701");
+  });
+
+  it("другие подписи у admin остаются текстом", () => {
+    renderLinked([
+      line(1, { ...toOurs(1, null), state: "no_variant", waiting_admin: false }),
+      line(2, { ...toOurs(2, null), state: "in_progress", waiting_admin: true }),
+    ]);
+
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
   });
 });

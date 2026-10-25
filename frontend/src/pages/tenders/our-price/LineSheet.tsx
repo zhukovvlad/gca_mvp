@@ -39,6 +39,7 @@ import {
   unitWarnKp,
   VAT_DROPPED_NOTE,
 } from "./ourPriceCopy";
+import { LineStateText } from "./LineStateText";
 import { RecalcOverlay } from "./RecalcOverlay";
 
 export interface LineSheetProps {
@@ -51,6 +52,8 @@ export interface LineSheetProps {
   vat: VatView;
   /** Ставка КП участника: подпись «с НДС 22 %». `null` — база НДС неизвестна. */
   vatRate: Decimal | null;
+  /** Подпись «ждёт решения администратора» — ссылка на карточку контекста (только `admin`). */
+  canResolve?: boolean;
   onClose: () => void;
 }
 
@@ -97,7 +100,16 @@ export function LineSheet({ positionItemId, onClose, ...rest }: LineSheetProps) 
 type BodyProps = Omit<LineSheetProps, "positionItemId" | "onClose"> & { positionItemId: number };
 
 /** Живёт, пока открыта одна строка: выбор ступени пропадает вместе с телом при смене строки. */
-function LineSheetBody({ tenderId, roundId, offerId, positionItemId, seriesId, vat, vatRate }: BodyProps) {
+function LineSheetBody({
+  tenderId,
+  roundId,
+  offerId,
+  positionItemId,
+  seriesId,
+  vat,
+  vatRate,
+  canResolve = false,
+}: BodyProps) {
   const [rung, setRung] = useState<Rung | null>(null);
   // Автоматическая ступень остаётся известной и при предпросмотре другой: это тот же запрос, пока выбора нет.
   const autoQuery = useOurPriceLine(tenderId, roundId, offerId, positionItemId, null, seriesId);
@@ -132,6 +144,7 @@ function LineSheetBody({ tenderId, roundId, offerId, positionItemId, seriesId, v
             data={data}
             vat={vat}
             vatRate={vatRate}
+            canResolve={canResolve}
             rung={rung}
             autoRung={autoRung}
             onRung={setRung}
@@ -151,19 +164,20 @@ interface PanelContentProps {
   data: OurPriceLineView;
   vat: VatView;
   vatRate: Decimal | null;
+  canResolve: boolean;
   rung: Rung | null;
   autoRung: OurPriceLine["rung"];
   onRung: (rung: Rung | null) => void;
 }
 
-function PanelContent({ data, vat, vatRate, rung, autoRung, onRung }: PanelContentProps) {
+function PanelContent({ data, vat, vatRate, canResolve, rung, autoRung, onRung }: PanelContentProps) {
   const { line } = data;
   const stateText = lineStateLabel(line);
   return (
     <div className="space-y-5 px-4 pb-6">
       {stateText !== null && (
         <p data-testid="sheet-state" className="text-sm text-fg-secondary">
-          {stateText}
+          <LineStateText line={line} label={stateText} canResolve={canResolve} />
         </p>
       )}
       <UnitWarn line={line} vat={vat} />

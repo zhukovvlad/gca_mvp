@@ -26,6 +26,8 @@ export interface OfferArticlesTableProps {
   /** Ключ статьи, раскрытой при входе (`?article=`): `work_category_id` либо `unallocated`. */
   initialOpen: string | null;
   rateClass: string;
+  /** Подпись «ждёт решения администратора» — ссылка на карточку контекста (только `admin`). */
+  canResolve?: boolean;
   onOpenLine: (positionItemId: number) => void;
 }
 
@@ -75,6 +77,7 @@ export function OfferArticlesTable({
   filter,
   initialOpen,
   rateClass,
+  canResolve,
   onOpenLine,
 }: OfferArticlesTableProps) {
   const [open, setOpen] = useState<ReadonlySet<string>>(() =>
@@ -194,6 +197,7 @@ export function OfferArticlesTable({
                 lines={(linesByArticle.get(key) ?? []).filter((line) => matchesFilter(line, filter))}
                 vat={vat}
                 rateClass={rateClass}
+                canResolve={canResolve}
                 onOpenLine={onOpenLine}
               />
             </TableCell>

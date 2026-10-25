@@ -33,6 +33,7 @@ import {
   SHEET_ERROR_LABEL,
   UNIT_WARN_TITLE,
   VAT_DROPPED_NOTE,
+  WAITING_ADMIN_LABEL,
   VAT_NET_LABEL,
   VAT_UNKNOWN_LABEL,
 } from "./ourPriceCopy";
@@ -829,5 +830,91 @@ describe("в составе страницы разбора", () => {
     expect(requestsOf("offer")).toHaveLength(2);
     expect(requestsOf("line")).toHaveLength(2);
     expect(screen.getByTestId("line-sheet")).toBeInTheDocument();
+  });
+});
+
+describe("LineSheet: подпись «ждёт решения администратора»", () => {
+  const waitingView = () => view({ state: "no_variant", waiting_admin: true, context_id: 777, rungs: [], rung: null }, { contracts: [] });
+
+  it("открытое предложение: ссылка на очередь «Предложения» с единицей и контекстом", async () => {
+    serveView(() =>
+      view(
+        { state: "no_variant", waiting_admin: true, suggestion_queue: "list", context_id: 777, unit_id: 5, rungs: [], rung: null },
+        { contracts: [] }
+      )
+    );
+    renderSheet({ canResolve: true });
+
+    const state = await screen.findByTestId("sheet-state");
+
+    expect(within(state).getByRole("link", { name: WAITING_ADMIN_LABEL })).toHaveAttribute(
+      "href",
+      "/families?tab=suggestions&queue=list&unit=5&context=777"
+    );
+  });
+
+  it("открытое предложение новой семьи: ссылка на очередь «Новая»", async () => {
+    serveView(() =>
+      view(
+        { state: "no_variant", waiting_admin: true, suggestion_queue: "new", context_id: 777, unit_id: 5, rungs: [], rung: null },
+        { contracts: [] }
+      )
+    );
+    renderSheet({ canResolve: true });
+
+    const state = await screen.findByTestId("sheet-state");
+
+    expect(within(state).getByRole("link", { name: WAITING_ADMIN_LABEL })).toHaveAttribute(
+      "href",
+      "/families?tab=suggestions&queue=new&unit=5&context=777"
+    );
+  });
+
+  it("admin: подпись состояния — ссылка на карточку контекста", async () => {
+    serveView(waitingView);
+    renderSheet({ canResolve: true });
+
+    const state = await screen.findByTestId("sheet-state");
+
+    expect(within(state).getByRole("link", { name: WAITING_ADMIN_LABEL })).toHaveAttribute(
+      "href",
+      "/families?context=777"
+    );
+  });
+
+  it("member: тот же текст без ссылки", async () => {
+    serveView(waitingView);
+    renderSheet({ canResolve: false });
+
+    const state = await screen.findByTestId("sheet-state");
+
+    expect(state).toHaveTextContent(WAITING_ADMIN_LABEL);
+    expect(within(state).queryByRole("link")).not.toBeInTheDocument();
+  });
+
+  // Роль доходит до панели со страницы разбора: проводка `canResolve` страницы,
+  // а не только проп панели в изоляции.
+  it.each([
+    ["admin", true],
+    ["member", false],
+  ] as const)("на странице разбора: %s — ссылка в подписи панели: %s", async (role, linked) => {
+    serveView(waitingView);
+    renderWithProviders(
+      <Routes>
+        <Route path="/tenders/:tenderId/rounds/:roundId/our-price/offers/:offerId" element={<OurPriceOfferPage />} />
+      </Routes>,
+      { initialRoute: `${ROUTE}?article=11`, initialUser: { id: 1, email: "u@example.com", role } }
+    );
+    await screen.findByTestId("tile-per_sqm");
+    fireEvent.click(screen.getByTestId(`line-${OUR_PRICE_LINE_ID}`));
+
+    const state = await screen.findByTestId("sheet-state");
+
+    expect(state).toHaveTextContent(WAITING_ADMIN_LABEL);
+    if (linked) {
+      expect(within(state).getByRole("link", { name: WAITING_ADMIN_LABEL })).toHaveAttribute("href", "/families?context=777");
+    } else {
+      expect(within(state).queryByRole("link")).not.toBeInTheDocument();
+    }
   });
 });

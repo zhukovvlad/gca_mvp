@@ -628,6 +628,8 @@ def _line_view(row: KpLineRow, result: LineResult, rate: Decimal | None) -> dict
         }
     return {
         "position_item_id": line.position_item_id,
+        "context_id": row.context_id,
+        "unit_id": row.unit_id,
         "article_id": row.article_root_id,
         "title": row.title,
         "unit": row.unit,
@@ -638,6 +640,7 @@ def _line_view(row: KpLineRow, result: LineResult, rate: Decimal | None) -> dict
         "secondary": [{"name": name, "value": value} for name, value in row.secondary],
         "state": result.state.value,
         "waiting_admin": _is_waiting_admin(line),
+        "suggestion_queue": row.suggestion_queue if _is_waiting_admin(line) else None,
         "kind": "system" if line.is_system else "work",
         "kp": {
             "unit_price": money_pair(result.kp_unit_net, rate, unit=True),

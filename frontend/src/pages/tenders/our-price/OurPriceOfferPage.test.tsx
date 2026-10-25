@@ -30,6 +30,7 @@ import {
   NO_INFLATION_CAPTION,
   PER_SQM_UNIT,
   PRICES_CAPTION_NET,
+  WAITING_ADMIN_LABEL,
 } from "./ourPriceCopy";
 
 const OFFER_PATH = "/api/v1/tenders/:id/rounds/:roundId/our-price/offers/:offerId";
@@ -72,7 +73,7 @@ function tenderCard(): TenderCard {
   };
 }
 
-function renderPage(search = "", options: { card?: boolean } = {}) {
+function renderPage(search = "", options: { card?: boolean; role?: "admin" | "member" } = {}) {
   if (options.card !== false) server.use(http.get(TENDER_PATH, () => HttpResponse.json(tenderCard())));
   return renderWithProviders(
     <>
@@ -81,7 +82,7 @@ function renderPage(search = "", options: { card?: boolean } = {}) {
       </Routes>
       <LocationProbe />
     </>,
-    { initialRoute: ROUTE + search, initialUser: { id: 1, email: "u@example.com", role: "admin" } }
+    { initialRoute: ROUTE + search, initialUser: { id: 1, email: "u@example.com", role: options.role ?? "admin" } }
   );
 }
 
@@ -1040,5 +1041,26 @@ describe("открытие строки и маршрут", () => {
     render(<App />);
     expect(await screen.findByTestId("tile-per_sqm", undefined, { timeout: 5000 })).toBeInTheDocument();
     window.history.pushState({}, "", "/");
+  });
+});
+
+describe("ссылка с подписи «ждёт решения администратора»", () => {
+  it("admin: подпись строки ведёт на карточку её контекста на странице «Семьи»", async () => {
+    serve(filterOffer());
+    renderPage("?article=11");
+    await loaded();
+
+    const link = within(screen.getByTestId("to-ours-7")).getByRole("link", { name: WAITING_ADMIN_LABEL });
+
+    expect(link).toHaveAttribute("href", "/families?context=501");
+  });
+
+  it("member: подпись есть, ссылки нет", async () => {
+    serve(filterOffer());
+    renderPage("?article=11", { role: "member" });
+    await loaded();
+
+    expect(screen.getByTestId("to-ours-7")).toHaveTextContent(WAITING_ADMIN_LABEL);
+    expect(within(screen.getByTestId("to-ours-7")).queryByRole("link")).not.toBeInTheDocument();
   });
 });

@@ -385,7 +385,21 @@ Codex в PR #72; макет —
 
 **Не** `in_progress`: `error`, `privacy_hold`, удержанная пачка, захват на
 паузе — это «не разобрана в каталоге» с подписью «ждёт решения
-администратора» (дизайн 3.13). Иначе плашка висела бы без конца.
+администратора» (дизайн 3.13). Иначе плашка висела бы без конца. Та же
+подпись — у строки, чей контекст без семьи и у которого есть **открытое**
+предложение семьи: опубликованное, не решённое, на текущий отпечаток
+запроса — ровно то, что администратор видит в очередях «Семья из списка» и
+«Новая» вкладки «Предложения» (модель предложила семью ниже порога
+автопринятия, решение за человеком; решение пользователя 25.10.2026 по
+приёмке на стенде). Видимость — та же, что у очередей: сигнал считает её
+функцией `crud/semantic_queue.py::open_suggestion_queues`, очереди — своими
+запросами, совпадение условий держит тест согласия; живое задание старше
+(`in_progress`). У `admin` подпись — ссылка туда, где решают: при открытом
+предложении — вкладка «Предложения» на нужной очереди с фильтром единицы и
+подсветкой предложения
+(`/families?tab=suggestions&queue=<list|new>&unit=<id|none>&context=<id>`),
+при ошибке, удержании, пачке или паузе — карточка контекста
+(`/families?context=<id>`); у `member` — текст без ссылки.
 
 Прогресс плашки — `(строки этапа − in_progress) / строки этапа` по всем КП
 этапа; плашка видна, пока `in_progress > 0`. Экран опрашивает эндпоинт этапа
@@ -471,7 +485,8 @@ articles: [{work_category_id|null, code, title, sort_order,
             lines_totals: {...как participants[].totals...}|null}]    /* суммы §2.8 по строкам статьи */
 total: {work_category_id: null, code: null, title, sort_order: null,
         per_sqm, whole, unit_mismatch_lines, ours_class_per_sqm}      /* без lines_totals */
-lines: [{position_item_id, article_id|null, title, unit, quantity, section_ref,
+lines: [{position_item_id, article_id|null, context_id|null, unit_id|null,
+         suggestion_queue: "list"|"new"|null, title, unit, quantity, section_ref,
          family|null, variant_label|null, secondary: [{name, value}],
          state, waiting_admin: bool, kind: "work"|"system",
          kp: {unit_price, total}  /* {net, shown} */,
@@ -490,6 +505,13 @@ lines: [{position_item_id, article_id|null, title, unit, quantity, section_ref,
   `quantity` файла бывает заглушкой «1» и на экран не идёт.
 - **`article_id`** — корень статьи, тот же `work_category_id`, что в `articles`;
   `null` — «Нераспределённое».
+- **`context_id`** — контекст членства строки в каталоге; `null` — членства
+  нет. **`unit_id`** — единица каталожной строки. **`suggestion_queue`** —
+  очередь вкладки «Предложения», где лежит открытое предложение семьи
+  контекста (`list` — семья из списка, `new` — новая семья); заполнена,
+  только когда строка `waiting_admin` (§2.11) и у её контекста без семьи есть
+  открытое предложение, иначе `null` — в том числе при открытом предложении у
+  строки `in_progress`. Все три нужны ссылке «ждёт решения администратора» (§2.11).
 - **`waiting_admin`** — то же правило, что у `progress.waiting_admin`: нет
   варианта, нет `in_progress`, поднят флаг «ждёт решения администратора».
 - **`to_ours`** — подписанная разница к нашей расценке

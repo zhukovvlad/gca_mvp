@@ -3427,6 +3427,10 @@ export interface OurPriceOfferArticle extends OurPriceArticleHead, OurPriceCell 
 
 export interface OurPriceLine {
   position_item_id: number;
+  /** Контекст членства строки; `null` у строки без членства. */
+  context_id: number | null;
+  /** Единица каталожной строки контекста; `null` без членства или без единицы. */
+  unit_id: number | null;
   article_id: number | null;
   title: string;
   unit: string | null;
@@ -3437,6 +3441,8 @@ export interface OurPriceLine {
   secondary: Array<{ name: string; value: string }>;
   state: OurPriceLineState;
   waiting_admin: boolean;
+  /** Очередь «Предложения» с открытым предложением, из-за которого строка ждёт; иначе `null`. */
+  suggestion_queue: "list" | "new" | null;
   kind: "work" | "system";
   kp: { unit_price: MoneyPair | null; total: MoneyPair | null };
   rung: { level: RungLevel; scope: RungScope; auto: boolean; threshold_met: boolean } | null;

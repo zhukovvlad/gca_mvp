@@ -15,12 +15,14 @@ from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Literal
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Session, aliased
 
 from crud.analytics import latest_estimates
 from crud.project_passport import CATEGORY_TOTALS
+from crud.semantic_queue import open_suggestion_queues
 from models import (
     CatalogContext,
     CatalogPosition,
@@ -74,6 +76,10 @@ class CatalogSignal:
 
     in_progress: bool
     waiting_admin: bool
+    #: Строка ждёт, потому что у её контекста есть открытое предложение семьи, видимое
+    #: администратору, и очередь «Предложения», где оно лежит: `list` (семья из списка)
+    #: или `new` (новая семья); иначе `None`.
+    suggestion_queue: Literal["list", "new"] | None = None
 
 
 @dataclass(frozen=True)
@@ -172,6 +178,13 @@ def _held_subjects(db: Session) -> tuple[set[int], set[int]]:
     return held_contexts, held_families
 
 
+def _suggestion_queues(db: Session, rows: Sequence[_Row]) -> dict[int, Literal["list", "new"]]:
+    """Контексты без семьи → очередь «Предложения» с их открытым предложением.
+    Видимость та же, что у очередей (`semantic_queue.open_suggestion_queues`):
+    предложение опубликовано, не решено и на текущий отпечаток запроса."""
+    return open_suggestion_queues(db, {r.context_id for r in rows if r.context_id is not None})
+
+
 def _claim_paused(db: Session) -> bool:
     """Захват остановлен; строки состояния может не быть — тогда нет."""
     paused = db.execute(sa.select(SemanticWorkerState.claim_paused)).scalar_one_or_none()
@@ -187,7 +200,9 @@ def catalog_signal(db: Session, estimate_ids: Sequence[int]) -> dict[int, Catalo
     три правила для заданий в `error`/`privacy_hold`, удержанная пачка с
     контекстом или семьёй строки в отпечатках, либо остановленный захват при
     живом задании строки (тогда `in_progress` гаснет: плашка не должна висеть
-    без конца). Строка без членства в контексте — оба флага ложны. Флаги не
+    без конца), либо открытое предложение семьи (опубликованное и не решённое) у контекста без
+    семьи (живое задание старше: тогда `in_progress`); `suggestion_queue` называет
+    очередь «Предложения» с этим предложением. Строка без членства в контексте — оба флага ложны. Флаги не
     смотрят на вариант контекста.
     """
     if not estimate_ids:
@@ -197,6 +212,7 @@ def catalog_signal(db: Session, estimate_ids: Sequence[int]) -> dict[int, Catalo
         return {}
     by_context, by_family, by_unit = _jobs_by_subject(db, rows)
     held_contexts, held_families = _held_subjects(db)
+    queues = _suggestion_queues(db, rows)
     paused = _claim_paused(db)
 
     signals: dict[int, CatalogSignal] = {}
@@ -212,9 +228,12 @@ def catalog_signal(db: Session, estimate_ids: Sequence[int]) -> dict[int, Catalo
         live = bool(statuses & set(_LIVE_STATUSES))
         stuck = bool(statuses & set(_STUCK_STATUSES))
         held = row.context_id in held_contexts or row.family_id in held_families
+        queue = queues.get(row.context_id)
+        waiting = stuck or held or (live and paused) or (queue is not None and not live)
         signals[row.position_item_id] = CatalogSignal(
             in_progress=live and not paused,
-            waiting_admin=stuck or held or (live and paused),
+            waiting_admin=waiting,
+            suggestion_queue=queue if waiting else None,
         )
     return signals
 
@@ -263,6 +282,12 @@ class KpLineRow:
     line: KpLine
     title: str
     unit: str | None
+    #: Контекст членства строки; `None` у строки без членства.
+    context_id: int | None
+    #: Единица каталожной строки корзины контекста; `None` без членства или без единицы.
+    unit_id: int | None
+    #: Очередь «Предложения» с открытым предложением, из-за которого строка ждёт; иначе `None`.
+    suggestion_queue: Literal["list", "new"] | None
     #: Объём строки — вес сравнения: предложенный объём, а при его отсутствии объём заказчика
     #: (`quantity` файла бывает заглушкой «1», спека 4а §2.12).
     quantity: Decimal | None
@@ -493,6 +518,7 @@ def load_kp_lines(db: Session, estimate_ids: Sequence[int]) -> dict[int, list[Kp
             CatalogContext.work_variant_id,
             CatalogContext.semantic_kind,
             WorkFamily.title,
+            CatalogPosition.unit_id,
         )
         .select_from(PositionItem)
         .join(Proposal, Proposal.id == PositionItem.proposal_id)
@@ -503,6 +529,8 @@ def load_kp_lines(db: Session, estimate_ids: Sequence[int]) -> dict[int, list[Kp
         .outerjoin(ContextMember, ContextMember.position_item_id == PositionItem.id)
         .outerjoin(CatalogContext, CatalogContext.id == ContextMember.context_id)
         .outerjoin(WorkFamily, WorkFamily.id == CatalogContext.work_family_id)
+        .outerjoin(ContextBucket, ContextBucket.id == CatalogContext.bucket_id)
+        .outerjoin(CatalogPosition, CatalogPosition.id == ContextBucket.catalog_position_id)
         .where(Lot.estimate_id.in_(list(estimate_ids)), PositionItem.is_chapter.is_(False))
         .order_by(Lot.estimate_id, PositionItem.id)
     ).all()
@@ -526,6 +554,7 @@ def load_kp_lines(db: Session, estimate_ids: Sequence[int]) -> dict[int, list[Kp
             variant_id,
             kind,
             family_title,
+            unit_id,
         ) = row
         info = infos.get(variant_id) if variant_id is not None else None
         signal = signals.get(item_id, CatalogSignal(False, False))
@@ -543,6 +572,9 @@ def load_kp_lines(db: Session, estimate_ids: Sequence[int]) -> dict[int, list[Kp
                 ),
                 title=title,
                 unit=unit,
+                context_id=context_id,
+                unit_id=unit_id,
+                suggestion_queue=signal.suggestion_queue,
                 quantity=weight,
                 section_ref=number or key_text,
                 article_root_id=root_of.get(category_id) if category_id is not None else None,
