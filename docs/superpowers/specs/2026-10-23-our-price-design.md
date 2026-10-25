@@ -456,31 +456,88 @@ Codex в PR #72; макет —
 
 **`GET /api/v1/tenders/{tender_id}/rounds/{round_id}/our-price/offers/{offer_id}`**
 `?inflation_series_id=` — разбор участника: шапка как выше для одного
-участника, таблица статей (`articles`) с суммами по статье и **все строки КП**:
+участника (`tender`, `round`, `progress`, `history`, `inflation`,
+`participants` — один элемент, `total`), таблица статей (`articles`) с суммами
+по статье и **все строки КП** без глав и без пагинации, в порядке строк сметы.
+Участник без сметы — 404 (разбирать нечего; вход в разбор — только из ячейки с
+КП); участник с неизвестной базой НДС — 200, строки в состоянии
+`unknown_vat_base`, `totals` и `lines_totals` — `null`.
 
 ```
+progress: {lines_total, in_progress, waiting_admin}  /* по строкам ЭТОГО КП, правило экрана этапа */
+history: как у этапа, но `shown_rate` — ставка этого участника
+articles: [{work_category_id|null, code, title, sort_order,
+            per_sqm, whole, unit_mismatch_lines, ours_class_per_sqm,  /* поля ячейки этапа для этого участника */
+            lines_totals: {...как participants[].totals...}|null}]    /* суммы §2.8 по строкам статьи */
+total: {work_category_id: null, code: null, title, sort_order: null,
+        per_sqm, whole, unit_mismatch_lines, ours_class_per_sqm}      /* без lines_totals */
 lines: [{position_item_id, article_id|null, title, unit, quantity, section_ref,
          family|null, variant_label|null, secondary: [{name, value}],
-         state, kind: "work"|"system",
+         state, waiting_admin: bool, kind: "work"|"system",
          kp: {unit_price, total}  /* {net, shown} */,
-         rung: {level, scope, auto: true, threshold_met: bool} | null,
+         rung: {level, scope, auto: bool, threshold_met: bool} | null,
          rungs: [{level, scope, contracts: int}],
          range: {min, max, median}|null, ours: {value, from_all_classes}|null,
          position: "above"|"in"|"below"|null,
-         bargain, below  /* {net, shown} | null */,
-         group: {lines: int, share}|null,
+         to_ours, bargain, below  /* {net, shown} | null */,
+         group: {lines: int, share, kp_per_sqm}|null,
          unit_mismatch: {kp_ratio|null, contracts: [{contract_id, ratio}]}|null}]
 ```
 
+Уточнения формы строки (план 4а, решения 7 и 8):
+
+- **`article_id`** — корень статьи, тот же `work_category_id`, что в `articles`;
+  `null` — «Нераспределённое».
+- **`waiting_admin`** — то же правило, что у `progress.waiting_admin`: нет
+  варианта, нет `in_progress`, поднят флаг «ждёт решения администратора».
+- **`to_ours`** — подписанная разница к нашей расценке
+  `(цена КП − ours) · вес · доля`, заполнена у `comparable` и `unit_mismatch`;
+  `bargain` и `below` — только у `comparable`: у `unit_mismatch` разница от
+  единицы учёта, а не от цены.
+- **`group`** — у каждой строки, вошедшей в группу системы (в том числе у
+  `no_history`); `kp_per_sqm` — цена группы за м², `share` — доля строки в
+  группе строкой без округления; у работ и у системных строк вне группы —
+  `null`.
+- **Деньги** — `kp.unit_price`, `range.*`, `ours.value`, `group.kp_per_sqm`:
+  пары `{net, shown}` без округления; `kp.total`, `to_ours`, `bargain`, `below`:
+  пары, квантованные до копеек; `share`, `kp_ratio`, `ratio` — строки без
+  округления. Ставка `shown` — ставка КП участника.
+- **`rungs`** — только доступные строке ступени (четыре без `p`, если у семьи
+  одного главного параметра) с числом договоров, а не вся шестёрка. `rung.auto`
+  — bool: в разборе всегда `true`, у предпросмотра ступени в панели — `false`.
+
 **`GET …/our-price/offers/{offer_id}/lines/{position_item_id}?level=&scope=`**
-`&inflation_series_id=` — панель строки и предпросмотр ступени: та же строка
-на выбранной ступени (у системы — вся семья) и **договоры ступени**: объект,
-номер, год, класс, подрядчик, ставка (`{net, shown}`), признак «нижняя
-граница», признак «договор с этим подрядчиком», кратность расхождения, договоры,
-выпавшие из-за базы НДС. Без `level`/`scope` — авто.
+`&inflation_series_id=` — панель строки и предпросмотр ступени. Ответ —
+`{line, group_lines, contracts, vat_dropped}`:
+
+- `line` — форма строки разбора на выбранной ступени; без `level`/`scope` —
+  авто, и `line` равна строке разбора;
+- `group_lines` — все системные строки семьи этой строки в КП на выбранной
+  ступени (ступень у системы одна на семью, §2.6 п. 6), включая строки других
+  групп семьи; каждая — в полной форме, группы различает `group`; у работы и у
+  строки вне группы — `[]`;
+- `contracts` — договоры выбранной ступени (у системы — её группы):
+  `{contract_id, object_title, number, year, rate_class: {id, title},
+  contractor_id, rate: {net, shown}, is_lower_bound, with_this_contractor,
+  ratio|null}`. `rate` — без округления; `is_lower_bound` — ставка равна
+  `range.min` (договоров с ней может быть несколько); `with_this_contractor` —
+  подрядчик договора — подрядчик участника; `ratio` — кратность из
+  `unit_mismatch.contracts`, иначе `null`. У строки, не дошедшей до лестницы
+  (`rung = null`), — `[]`;
+- `vat_dropped` — `[{contract_id, object_title, number, year}]`: договоры
+  ключа выбранной ступени, выпавшие из-за неизвестной базы НДС, с тем же
+  охватом по классу, что у ступени; у строки без ступени — `[]`.
+
+**`unknown_rung`.** Запрос проверяет эндпоинт, а не ядро (ядро молча
+игнорирует ступень у строки, не дошедшей до лестницы): `level` и `scope`
+разбираются как строки, и неполная пара, неизвестное значение и ступень вне
+доступных строке (её `rungs`; у строки без ключа и у строки, не дошедшей до
+лестницы, доступных нет) — один код `unknown_rung`, а не валидационная форма
+FastAPI.
 
 **Отказы** (`DomainError` → `{code, message, ...}`): 404 — тендер, раунд,
-оффер или строка не найдены либо не принадлежат друг другу; 404 ряда; 422
+оффер или строка не найдены либо не принадлежат друг другу (глава — не строка),
+участник без сметы — 404; 404 ряда; 422
 `missing_inflation_years` (`missing_years`); 422 `amendment_date_missing`
 (`estimate_ids`); 422 `inflation_target_missing`; 422 `unknown_rung` —
 ступень, которой у строки нет. Тексты `missing_inflation_years` и
