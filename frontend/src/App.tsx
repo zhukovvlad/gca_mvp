@@ -21,6 +21,7 @@ import ReportsPage from "@/pages/reports/ReportsPage";
 import ReviewPage from "@/pages/review/ReviewPage";
 import SettingsPage from "@/pages/settings/SettingsPage";
 import StandardsPage from "@/pages/standards/StandardsPage";
+import OurPriceRoundPage from "@/pages/tenders/our-price/OurPriceRoundPage";
 import StageSummaryPage from "@/pages/tenders/summary/StageSummaryPage";
 import TenderCardPage from "@/pages/tenders/TenderCardPage";
 import TendersPage from "@/pages/tenders/TendersPage";
@@ -94,6 +95,14 @@ export default function App() {
                   что и «Сравнение договоров» (`/compare`).
                 */}
                 <Route path="/tenders/:tenderId/summary" element={<StageSummaryPage />} />
+                {/*
+                  «Против нашей цены» (спека 4а §2.13) — чтение, доступно и
+                  `member`; вне меню: вход с карточки тендера и из ячейки КП.
+                */}
+                <Route
+                  path="/tenders/:tenderId/rounds/:roundId/our-price"
+                  element={<OurPriceRoundPage />}
+                />
                 <Route path="/review" element={<ReviewPage />} />
                 {/*
                   Паспорт проекта (Ф6 фазы 7) — чтение, поэтому доступен и `member` (§3):
