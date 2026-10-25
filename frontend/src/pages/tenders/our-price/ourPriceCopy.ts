@@ -1,5 +1,7 @@
 import { pluralRu } from "@/lib/format";
-import type { Decimal, OurPriceLineState } from "@/types/domain";
+import type { Decimal, OurPriceLineState, OurPriceParticipant } from "@/types/domain";
+
+import type { OfferFilter } from "./offerFilter";
 
 /**
  * Тексты экранов «Против нашей цены» (спека 4а §2.9, §2.11, §2.13). Компоненты
@@ -35,6 +37,12 @@ export const EMPTY_REASON_LABEL: Record<EmptyReason, string> = {
   no_estimate: NO_ESTIMATE_LABEL,
   ...PER_SQM_REASON_LABEL,
 };
+
+/** Причина, по которой у участника нет ₽/м²: поле участника, а не ветка текста. */
+export function emptyReasonOf(participant: OurPriceParticipant): EmptyReason | null {
+  if (participant.state === "no_estimate") return "no_estimate";
+  return participant.per_sqm_reason;
+}
 
 export const CHEAPEST_PER_SQM_LABEL = "дешевле всех на м²";
 export const DETAIL_LINK_LABEL = "Разобрать по строкам →";
@@ -161,4 +169,75 @@ export function roundSubtitle(parts: {
   ]
     .filter((part): part is string => part !== null)
     .join(" · ");
+}
+
+export const OFFER_SWITCHER_LABEL = "Участник:";
+
+export function offerCrumbStage(stageNo: number): string {
+  return `этап ${stageNo}: все участники`;
+}
+
+export function offerTitle(contractor: string): string {
+  return `КП «${contractor}» против нашей цены`;
+}
+
+export const FILTER_LABEL: Record<OfferFilter, string> = {
+  all: "Все строки",
+  above_ours: "Дороже нашей расценки",
+  below_paid: "Ниже всего, что платили",
+  unit_mismatch: "Разные единицы учёта",
+  not_comparable: "Не с чем сравнить",
+};
+
+export const FILTER_HINT: Record<Exclude<OfferFilter, "all">, string> = {
+  above_ours: "потенциал торга",
+  below_paid: "риск допработ и замены",
+  unit_mismatch: "вопрос подрядчику про единицу учёта",
+  not_comparable: "не разобраны, нет в договорах, нет цены",
+};
+
+export const PER_SQM_TILE_LABEL = "КП на м² объекта";
+
+export const STRIP_TITLE = "Цена на м² объекта против наших договоров, ₽";
+export const STRIP_LEGEND_CLASS = "тёмные — договоры класса объекта";
+export const STRIP_LEGEND_OTHER = "светлые — другие классы";
+export const STRIP_THIS_OFFER = "это КП";
+
+export const OFFER_ARTICLES_TITLE = "Статьи: где дороже и где ниже";
+export const OFFER_COLUMN = {
+  article: "Статья",
+  perSqm: "КП, ₽/м²",
+  whole: "Статья целиком",
+  bars: "По строкам: ← ниже · дороже →",
+  above: "Дороже расценки",
+  below: "Ниже платили",
+  none: "Не с чем / разные ед.",
+} as const;
+export const OFFER_TOTAL_LABEL = "Итого на м² объекта";
+
+export const LINE_COLUMN = {
+  work: "Работа в КП · вариант",
+  unit: "Ед.",
+  quantity: "Объём",
+  kpPrice: "Цена КП",
+  fork: "Наши договоры: вилка, ₽",
+  ours: "Наша расценка",
+  toOurs: "К нашей расценке",
+} as const;
+
+export const EMPTY_LINES_LABEL = "В этой статье строк под фильтр нет.";
+export const ALL_CLASSES_LABEL = "все кл.";
+export const SECONDARY_MARK = "ⓘ";
+export const SUB_KOPECK_LABEL = "< 0,01";
+
+export const POSITION_LABEL = {
+  above: "выше всего, что платили",
+  in: "в нашей вилке",
+  below: "ниже всего, что платили",
+} as const;
+
+export const RUNG_LEVEL_LABEL = { v: "вариант", p: "по параметру", f: "вся семья" } as const;
+
+export function contractsShort(n: number): string {
+  return `${n} дог.`;
 }

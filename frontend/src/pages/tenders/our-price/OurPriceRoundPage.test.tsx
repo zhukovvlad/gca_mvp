@@ -349,6 +349,20 @@ describe("отказ приведения ИПЦ", () => {
     }
   );
 
+  it("закрытие диалога ряда перезапрашивает этап с тем же рядом", async () => {
+    handlerState.ourPriceRefusal = "missing_inflation_years";
+    renderPage("?inflation=3", { role: "admin" });
+    await loaded();
+    const withSeries = () =>
+      roundRequests().filter((r) => new URL(r.url).searchParams.get("inflation_series_id") === "3").length;
+    const before = withSeries();
+    await userEvent.click(within(screen.getByTestId("inflation-refusal")).getByRole("button"));
+    await screen.findByRole("dialog");
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() => expect(withSeries()).toBeGreaterThan(before));
+  });
+
   it("номинальный запрос тоже упал — состояние ошибки экрана, а не пустое молчание", async () => {
     handlerState.ourPriceRefusal = "missing_inflation_years";
     server.use(

@@ -21,6 +21,7 @@ import ReportsPage from "@/pages/reports/ReportsPage";
 import ReviewPage from "@/pages/review/ReviewPage";
 import SettingsPage from "@/pages/settings/SettingsPage";
 import StandardsPage from "@/pages/standards/StandardsPage";
+import OurPriceOfferPage from "@/pages/tenders/our-price/OurPriceOfferPage";
 import OurPriceRoundPage from "@/pages/tenders/our-price/OurPriceRoundPage";
 import StageSummaryPage from "@/pages/tenders/summary/StageSummaryPage";
 import TenderCardPage from "@/pages/tenders/TenderCardPage";
@@ -102,6 +103,10 @@ export default function App() {
                 <Route
                   path="/tenders/:tenderId/rounds/:roundId/our-price"
                   element={<OurPriceRoundPage />}
+                />
+                <Route
+                  path="/tenders/:tenderId/rounds/:roundId/our-price/offers/:offerId"
+                  element={<OurPriceOfferPage />}
                 />
                 <Route path="/review" element={<ReviewPage />} />
                 {/*

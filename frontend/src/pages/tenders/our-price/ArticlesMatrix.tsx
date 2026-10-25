@@ -1,8 +1,6 @@
 import { useMemo, useState } from "react";
-import { ArrowDown, ArrowUp } from "lucide-react";
 import { Link } from "react-router-dom";
 
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table,
@@ -29,6 +27,7 @@ import {
   ARTICLE_COLUMN_LABEL,
   ARTICLES_TITLE,
   EMPTY_REASON_LABEL,
+  emptyReasonOf,
   FORK_COLUMN_LABEL,
   LEGEND_BEST,
   LEGEND_CHEAP,
@@ -40,8 +39,9 @@ import {
   VAT_UNKNOWN_LABEL,
   vatShownLabel,
   UNALLOCATED_ARTICLE,
-  type EmptyReason,
 } from "./ourPriceCopy";
+import { SortHead } from "./SortHead";
+import { ariaSort, compareNullable, nextSort, type SortDir, type SortState } from "./sorting";
 
 export interface ArticlesMatrixProps {
   round: OurPriceRound;
@@ -55,10 +55,6 @@ export interface ArticlesMatrixProps {
 
 /** Ключ сортировки: статья, вилка класса либо участник (`offer_id`). */
 type SortKey = "article" | "fork" | number;
-interface SortState {
-  key: SortKey;
-  dir: "asc" | "desc";
-}
 
 type Tone = "dear" | "cheap";
 
@@ -67,16 +63,7 @@ const TONE_CLASS: Record<Tone, string> = {
   cheap: "bg-info-soft text-info-text",
 };
 
-/** Пустые значения всегда в конце, в обоих направлениях сортировки. */
-function compareNullable(a: Decimal | null, b: Decimal | null, dir: SortState["dir"]): number {
-  if (a === null && b === null) return 0;
-  if (a === null) return 1;
-  if (b === null) return -1;
-  const result = compareDecimalStrings(a, b) ?? 0;
-  return dir === "asc" ? result : -result;
-}
-
-function compareOrder(a: number | null, b: number | null, dir: SortState["dir"]): number {
+function compareOrder(a: number | null, b: number | null, dir: SortDir): number {
   if (a === null && b === null) return 0;
   if (a === null) return 1;
   if (b === null) return -1;
@@ -93,12 +80,6 @@ function toneOf(perSqmNet: Decimal | null, fork: OurPriceFork | null): Tone | nu
   if (compareDecimalStrings(perSqmNet, fork.max.net) === 1) return "dear";
   if (compareDecimalStrings(perSqmNet, fork.min.net) === -1) return "cheap";
   return null;
-}
-
-/** Причина пустой ячейки — поле участника, а не ветка текста. */
-function emptyReason(participant: OurPriceParticipant): EmptyReason | null {
-  if (participant.state === "no_estimate") return "no_estimate";
-  return participant.per_sqm_reason;
 }
 
 /** Подпись ставки участника под его заголовком колонки. */
@@ -118,39 +99,6 @@ function forkView(round: OurPriceRound, view: VatView): VatView {
   return view === "shown" && round.history.shown_rate !== null ? "shown" : "net";
 }
 
-function SortHead({
-  label,
-  sortKey,
-  sort,
-  onSort,
-  align = "left",
-}: {
-  label: string;
-  sortKey: SortKey;
-  sort: SortState;
-  onSort: (key: SortKey) => void;
-  align?: "left" | "right";
-}) {
-  const active = sort.key === sortKey;
-  return (
-    <Button
-      type="button"
-      variant="ghost"
-      size="sm"
-      className={cn("h-auto px-1 py-0.5 font-medium", align === "right" && "ml-auto flex")}
-      onClick={() => onSort(sortKey)}
-    >
-      {label}
-      {active && (sort.dir === "asc" ? <ArrowUp aria-hidden /> : <ArrowDown aria-hidden />)}
-    </Button>
-  );
-}
-
-function ariaSort(sort: SortState, key: SortKey): "ascending" | "descending" | "none" {
-  if (sort.key !== key) return "none";
-  return sort.dir === "asc" ? "ascending" : "descending";
-}
-
 /**
  * Таблица «статьи × участники» экрана этапа (спека 4а §2.13): первая строка —
  * «Итого», дальше статьи по номеру классификатора; колонка вилки наших договоров
@@ -158,12 +106,10 @@ function ariaSort(sort: SortState, key: SortKey): "ascending" | "descending" | "
  * одной арифметики над деньгами.
  */
 export function ArticlesMatrix({ round, view, offerHref }: ArticlesMatrixProps) {
-  const [sort, setSort] = useState<SortState>({ key: "article", dir: "asc" });
+  const [sort, setSort] = useState<SortState<SortKey>>({ key: "article", dir: "asc" });
 
   function onSort(key: SortKey) {
-    setSort((prev) =>
-      prev?.key === key ? { key, dir: prev.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" }
-    );
+    setSort((prev) => nextSort(prev, key));
   }
 
   const rows = useMemo(() => {
@@ -194,7 +140,7 @@ export function ArticlesMatrix({ round, view, offerHref }: ArticlesMatrixProps) 
     const value = pick(cell?.per_sqm ?? null, view);
     const testId = `cell-${rowKey}-${participant.offer_id}`;
     if (cell === undefined || value === null) {
-      const reason = emptyReason(participant);
+      const reason = emptyReasonOf(participant);
       return (
         <TableCell
           key={participant.offer_id}

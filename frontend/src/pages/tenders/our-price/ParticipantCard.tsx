@@ -14,12 +14,12 @@ import {
   contractsWithContractor,
   DETAIL_LINK_LABEL,
   EMPTY_REASON_LABEL,
+  emptyReasonOf,
   linesCount,
   medianCaption,
   VAT_NET_LABEL,
   VAT_UNKNOWN_LABEL,
   vatShownLabel,
-  type EmptyReason,
 } from "./ourPriceCopy";
 
 export interface ParticipantCardProps {
@@ -34,12 +34,6 @@ export interface ParticipantCardProps {
 function vatCaption(participant: OurPriceParticipant, view: VatView): string {
   if (view === "net") return VAT_NET_LABEL;
   return participant.vat_rate === null ? VAT_UNKNOWN_LABEL : vatShownLabel(participant.vat_rate);
-}
-
-/** Причина, по которой у карточки нет ₽/м²: поле участника, а не ветка текста. */
-function cardReason(participant: OurPriceParticipant): EmptyReason | null {
-  if (participant.state === "no_estimate") return "no_estimate";
-  return participant.per_sqm_reason;
 }
 
 function Row({ label, value, tone }: { label: string; value: string; tone?: "dear" | "cheap" }) {
@@ -65,7 +59,7 @@ function Row({ label, value, tone }: { label: string; value: string; tone?: "dea
  * единицы / не с чем сравнить» и вход в разбор. Числа выбирает `pick`.
  */
 export function ParticipantCard({ participant, view, cheapest, href }: ParticipantCardProps) {
-  const reason = cardReason(participant);
+  const reason = emptyReasonOf(participant);
   const perSqm = pick(participant.per_sqm, view);
   const totals = participant.totals;
   const money = (pair: MoneyPair | null): string => {
