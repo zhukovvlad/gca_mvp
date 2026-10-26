@@ -7,6 +7,7 @@ import pytest
 from services.our_price_money import (
     UNALLOCATED,
     CategoryRow,
+    article_net,
     estimate_net_total,
     history_shown_rate,
     money_pair,
@@ -26,6 +27,23 @@ def _row(estimate_id, category, base, amount):
         vat_base=None if base is None else D(base),
         amount=None if amount is None else D(amount),
     )
+
+
+# --- article_net -----------------------------------------------------------
+
+
+@pytest.mark.parametrize("zero", ["0", "0.00", "-0", "1E-100", "-1E-98", "0.0049", "-0.0049"])
+def test_our_price_money_article_net_zero_to_the_cent_means_no_article(zero):
+    assert article_net(D(zero)) is None
+
+
+@pytest.mark.parametrize("value", ["0.005", "-0.005", "0.01", "-100", "80"])
+def test_our_price_money_article_net_keeps_nonzero_values_including_negative(value):
+    assert article_net(D(value)) == D(value)
+
+
+def test_our_price_money_article_net_passes_unknown_net_through():
+    assert article_net(None) is None
 
 
 # --- net_by_root -----------------------------------------------------------

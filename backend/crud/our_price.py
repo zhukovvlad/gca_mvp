@@ -60,6 +60,7 @@ from services.our_price import (
 )
 from services.our_price_money import (
     UNALLOCATED,
+    article_net,
     estimate_net_total,
     history_shown_rate,
     money_pair,
@@ -211,7 +212,8 @@ def _history_sums(
         net_total = estimate_net_total(sums)
         if net_total is not None:
             total[contract.contract_id] = per_sqm(adjusted(net_total, contract.estimate_id), contract.area)
-        for root, value in sums.items():
+        for root, net in sums.items():
+            value = article_net(net)
             if value is not None:
                 roots.setdefault(root, {})[contract.contract_id] = per_sqm(
                     adjusted(value, contract.estimate_id), contract.area
@@ -221,7 +223,8 @@ def _history_sums(
 
 def _fork(values: Mapping[int, Decimal], class_contract_ids: set[int]) -> tuple[Decimal, Decimal] | None:
     """Минимум и максимум ₽/м² договоров класса; ни одного — `None`. Нулевые и
-    отрицательные значения законны (правило сумм, спека §2.8)."""
+    отрицательные значения законны (правило сумм, спека §2.8); нулевые суммы
+    статей в `values` по статье не попадают (`article_net`)."""
     found = [value for contract_id, value in values.items() if contract_id in class_contract_ids]
     return (min(found), max(found)) if found else None
 
@@ -416,7 +419,7 @@ def _cell_of(
         value = kp_value
         mismatch_lines = offer_totals(evaluation).unit_mismatch_lines
     else:
-        value = per_sqm(scene.roots_by_estimate.get(participant.estimate_id, {}).get(root), area)
+        value = per_sqm(article_net(scene.roots_by_estimate.get(participant.estimate_id, {}).get(root)), area)
         mismatch_lines = sum(
             1
             for row in scene.kp_lines[participant.estimate_id]

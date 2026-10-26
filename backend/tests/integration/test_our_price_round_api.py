@@ -543,18 +543,101 @@ class TestPerSqmAndArticles:
         assert first["sort_order"] == stage.cats["R"].sort_order
         assert (last["code"], last["title"], last["sort_order"]) == (None, "Нераспределённое", None)
 
-    def test_a_root_missing_in_a_participant_is_null_and_a_zero_root_is_zero(self, member_client, stage):
+    def test_a_root_missing_in_a_participant_and_a_zero_root_are_both_null(self, member_client, stage):
         rnd, part = _two_history_and_kp(stage)
         other = stage.participant(rnd, "Подрядчик Б", vat=D("0"))
         stage.kp(other, D("120"))
         stage.kp(other, D("50"), cat="R2", total=D("0"))
+        stage.history(D("100"), cat="R2")  # у класса статья есть: «whole» не None только из-за КП
 
         body = _ok(member_client, stage.tender, rnd)
 
         article = _article(body, stage, "R2")
-        assert _cell(article, part)["per_sqm"] is None  # строк нет — не ноль
+        for participant in (part, other):  # строк нет и сумма статьи 0 — одно и то же: статьи нет
+            assert _cell(article, participant)["per_sqm"] is None
+            assert _cell(article, participant)["whole"] is None
+
+    def test_a_negative_article_sum_of_a_participant_stays_a_value(self, member_client, stage):
+        rnd, _part = _two_history_and_kp(stage)
+        other = stage.participant(rnd, "Подрядчик Б", vat=D("0"))
+        stage.kp(other, D("120"))
+        stage.kp(other, D("50"), cat="R2", total=D("-100"))
+        stage.history(D("100"), cat="R2")  # 1.0
+
+        body = _ok(member_client, stage.tender, rnd)
+
+        cell = _cell(_article(body, stage, "R2"), other)
+        assert cell["per_sqm"] is not None  # зачёт — значение, а не «статьи нет»
+        assert _dec(cell["per_sqm"]["net"]) == D("-0.1")
+        # (-0.1 - 1.0) * 1000
+        assert cell["whole"]["net"] == "-1100.00"
+
+    def test_a_zero_article_sum_of_a_contract_is_not_in_the_class_fork(self, member_client, stage):
+        stage.history(D("100"), total=D("0"))  # статья R: 0 — статьи нет
+        stage.history(D("140"))  # 1.4
+        rnd = stage.round()
+        part = stage.participant(rnd, "Подрядчик А", vat=D("0"))
+        stage.kp(part, D("120"))
+
+        body = _ok(member_client, stage.tender, rnd)
+
+        article = _article(body, stage, "R")
+        for fork in (article["ours_class_per_sqm"], _cell(article, part)["ours_class_per_sqm"]):
+            assert (_dec(fork["min"]["net"]), _dec(fork["max"]["net"])) == (D("1.4"), D("1.4"))
+        # (1.2 - 1.4) * 1000
+        assert _cell(article, part)["whole"]["net"] == "-200.00"
+        # «Итого» — сумма сметы, правило нуля к нему не относится
+        total_fork = body["total"]["ours_class_per_sqm"]
+        assert (_dec(total_fork["min"]["net"]), _dec(total_fork["max"]["net"])) == (D("0"), D("1.4"))
+
+    @staticmethod
+    def _extra_lot(stage, estimate, contractor, vat, total):
+        """Ещё один лот сметы с одной строкой статьи R на `total` с НДС."""
+        lot = stage.f.LotFactory.create(estimate=estimate)
+        proposal = stage.f.ProposalFactory.create(lot=lot, contractor=contractor, vat_rate=vat)
+        stage.line(proposal, "R", total / D("10"), total=total)
+        stage.db.flush()
+
+    def test_an_article_sum_that_cancels_to_a_cent_remainder_is_a_zero_for_a_participant(self, member_client, stage):
+        stage.history(D("100"), cat="R2")
+        rnd = stage.round()
+        part = stage.participant(rnd, "Подрядчик А", vat=D("12"))
+        stage.kp(part, D("120"), cat="R2")
+        # 60, 40 и −100 с НДС 12 % гасятся в брутто, а в нетто по строкам дают остаток ~1E-98
+        for total in (D("60"), D("40"), D("-100")):
+            self._extra_lot(stage, part.estimate, part.contractor, D("12"), total)
+        stage.history(D("100"))  # у класса статья R есть: «whole» не None только из-за КП
+
+        body = _ok(member_client, stage.tender, rnd)
+
+        cell = _cell(_article(body, stage, "R"), part)
+        assert (cell["per_sqm"], cell["whole"]) == (None, None)
+
+    def test_an_article_sum_that_cancels_to_a_cent_remainder_is_not_in_the_class_fork(self, member_client, stage):
+        _contract, estimate, proposal = stage.history(D("6"), total=D("60"), vat=D("12"))
+        for total in (D("40"), D("-100")):
+            self._extra_lot(stage, estimate, proposal.contractor, D("12"), total)
+        stage.history(D("140"))  # 1.4
+        rnd = stage.round()
+        part = stage.participant(rnd, "Подрядчик А", vat=D("0"))
+        stage.kp(part, D("120"))
+
+        body = _ok(member_client, stage.tender, rnd)
+
+        fork = _article(body, stage, "R")["ours_class_per_sqm"]
+        assert (_dec(fork["min"]["net"]), _dec(fork["max"]["net"])) == (D("1.4"), D("1.4"))
+
+    def test_only_a_zero_article_sum_in_the_class_gives_null_fork(self, member_client, stage):
+        stage.history(D("100"), total=D("0"))
+        rnd = stage.round()
+        part = stage.participant(rnd, "Подрядчик А", vat=D("0"))
+        stage.kp(part, D("120"))
+
+        body = _ok(member_client, stage.tender, rnd)
+
+        article = _article(body, stage, "R")
+        assert article["ours_class_per_sqm"] is None
         assert _cell(article, part)["whole"] is None
-        assert {k: _dec(v) for k, v in _cell(article, other)["per_sqm"].items()} == {"net": D("0"), "shown": D("0")}
 
     def test_unit_mismatch_lines_are_counted_per_article_and_in_total(self, member_client, stage):
         rnd, part = _two_history_and_kp(stage)
@@ -583,8 +666,8 @@ class TestPerSqmAndArticles:
         cell_fork = _cell(_article(body, stage, "R"), part)["ours_class_per_sqm"]
         assert (_dec(cell_fork["min"]["net"]), _dec(cell_fork["max"]["net"])) == (D("1.0"), D("1.4"))
 
-    def test_zero_and_negative_contract_sums_are_legal_in_the_fork(self, member_client, stage):
-        stage.history(D("100"), total=D("0"))  # 0
+    def test_negative_contract_sums_are_legal_in_the_fork(self, member_client, stage):
+        stage.history(D("100"), total=D("0"))  # статья 0 — статьи нет, в вилку не входит
         stage.history(D("100"), total=D("-100"))  # -0.1
         stage.history(D("140"))  # 1.4
         rnd = stage.round()

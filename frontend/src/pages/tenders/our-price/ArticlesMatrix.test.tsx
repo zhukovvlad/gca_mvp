@@ -143,6 +143,17 @@ describe("ArticlesMatrix", () => {
     expect(screen.getByTestId("cell-11-7003")).not.toHaveAttribute("data-cheapest");
   });
 
+  it("пустая ячейка участника с КП (статьи нет) — прочерк без причины, не «дешевле всех» и не мешает отметить остальных", () => {
+    // 7002 — участник с КП; сервер отдал per_sqm = null: сумма статьи 0 или строк статьи нет
+    renderMatrix(roundWith([article(11, 1, [pair("10", "1"), null])]));
+    expect(screen.getByTestId("cell-11-7001")).toHaveAttribute("data-cheapest", "true");
+    const empty = screen.getByTestId("cell-11-7002");
+    expect(empty).toHaveTextContent("—");
+    expect(empty).not.toHaveTextContent("0,00");
+    expect(empty).not.toHaveAttribute("data-cheapest");
+    expect(empty).not.toHaveAttribute("data-reason");
+  });
+
   it("ничья по минимуму: подчёркнуты обе", () => {
     renderMatrix(roundWith([article(11, 1, [pair("10.0", "1"), pair("10", "1")])]));
     expect(screen.getByTestId("cell-11-7001")).toHaveAttribute("data-cheapest", "true");
