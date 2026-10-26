@@ -29,7 +29,7 @@ import {
   offerCrumbStage,
   offerTitle,
   RECALC_LABEL,
-  roundSubtitle,
+  offerSubtitle,
 } from "./ourPriceCopy";
 import {
   inflationRefusalCode,
@@ -135,7 +135,7 @@ export default function OurPriceOfferPage() {
             : [];
         });
 
-  const subtitle = roundSubtitle({
+  const subtitle = offerSubtitle(round.stage_no, {
     heldOn: round.held_on,
     objectTitle: tender.object.title,
     area: tender.object.area_total_sp,
@@ -179,7 +179,7 @@ export default function OurPriceOfferPage() {
               {offerTitle(participant.contractor.title)}
             </h1>
             <p className="mt-1 text-sm text-fg-secondary">
-              {offerCrumbStage(round.stage_no)} · {subtitle}
+              {subtitle}
             </p>
           </>
         }

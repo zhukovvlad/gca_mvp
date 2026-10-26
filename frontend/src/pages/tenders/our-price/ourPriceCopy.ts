@@ -1,4 +1,4 @@
-import { pluralRu, roundDecimal } from "@/lib/format";
+import { formatDecimalMoney, formatNumber, pluralRu, roundDecimal } from "@/lib/format";
 import type { Decimal, OurPriceLine, OurPriceLineState, OurPriceParticipant } from "@/types/domain";
 
 import type { OfferFilter } from "./offerFilter";
@@ -99,7 +99,7 @@ export const CARD_LABEL = {
 } as const;
 
 export function linesCount(n: number): string {
-  return `${n} стр.`;
+  return `${formatNumber(n)} стр.`;
 }
 
 export function contractsWithContractor(n: number): string {
@@ -122,7 +122,7 @@ export function medianCaption(pct: string): string {
 }
 
 export function progressCaption(done: number, total: number): string {
-  return `Каталог ещё разбирает строки КП: разобрано ${done} из ${total}`;
+  return `Каталог ещё разбирает строки КП: разобрано ${formatNumber(done)} из ${formatNumber(total)}`;
 }
 
 export function waitingAdminCaption(n: number): string {
@@ -161,20 +161,37 @@ export function roundTitle(stageNo: number, participants: number): string {
   return `Этап ${stageNo} против нашей цены · ${participantsCount(participants)}`;
 }
 
-export function roundSubtitle(parts: {
+interface SubtitleParts {
   heldOn: string | null;
   objectTitle: string;
   area: Decimal | null;
   rateClass: string;
-}): string {
+}
+
+function subtitleOf(first: string | null, parts: SubtitleParts): string {
   return [
-    parts.heldOn !== null ? dateRu(parts.heldOn) : null,
+    first,
     `объект ${parts.objectTitle}`,
-    parts.area !== null ? `${parts.area} м²` : null,
+    parts.area !== null ? `${formatDecimalMoney(parts.area, "", 2)} м²` : null,
     `класс ${parts.rateClass}`,
   ]
     .filter((part): part is string => part !== null)
     .join(" · ");
+}
+
+export function roundSubtitle(parts: SubtitleParts): string {
+  return subtitleOf(parts.heldOn !== null ? dateRu(parts.heldOn) : null, parts);
+}
+
+/** Подзаголовок разбора участника: «Этап 3, 10.03.2026 · объект …». */
+export function offerSubtitle(stageNo: number, parts: SubtitleParts): string {
+  const stage = `Этап ${stageNo}`;
+  return subtitleOf(parts.heldOn !== null ? `${stage}, ${dateRu(parts.heldOn)}` : stage, parts);
+}
+
+/** Подпись варианта строки: подпись уже начинается с семьи, поэтому семья отдельно не печатается. */
+export function variantCaption(line: { family: string | null; variant_label: string | null }): string | null {
+  return line.variant_label ?? line.family;
 }
 
 export const OFFER_SWITCHER_LABEL = "Участник:";
@@ -315,21 +332,42 @@ export const CONTRACT_WITH_CONTRACTOR = "договор с этим подряд
 export function contractNumber(number: string): string {
   return `договор ${number}`;
 }
-/** Кратность расхождения: один знак после запятой, строкой («5,3»). */
-function ratioText(ratio: Decimal): string {
-  return roundDecimal(ratio, 1).replace(".", ",");
+/**
+ * Кратность расхождения строкой: один знак после запятой («5,3», целое без «,0»), от ста —
+ * целым с разрядами («37 610»). Правило одно для всех кратностей экрана.
+ */
+function ratioDigits(value: string): string {
+  const oneDigit = roundDecimal(value, 1);
+  if (oneDigit.split(".")[0].length < 3) return oneDigit.replace(/\.0$/, "").replace(".", ",");
+  return formatNumber(Number(roundDecimal(value, 0)));
 }
+
+/**
+ * Кратность меньше единицы переворачивается: «0,0000769» читается как «в 13 004 раз меньше».
+ * Кратность — отношение цен, а не деньги: переворот считается числом, без денег на клиенте.
+ */
+function ratioParts(ratio: Decimal): { text: string; smaller: boolean } {
+  const value = Number(ratio);
+  const smaller = value > 0 && value < 1;
+  return { text: ratioDigits(smaller ? (1 / value).toFixed(6) : ratio), smaller };
+}
+
 export function formatRatio(ratio: Decimal): string {
-  return `×${ratioText(ratio)}`;
+  const { text, smaller } = ratioParts(ratio);
+  return smaller ? `в ${text} раз меньше` : `×${text}`;
 }
 export function ratioNote(ratio: Decimal): string {
-  return `${formatRatio(ratio)} к остальным договорам — проверьте единицу учёта`;
+  const { text, smaller } = ratioParts(ratio);
+  const subject = smaller ? `в ${text} раз меньше остальных договоров` : `×${text} к остальным договорам`;
+  return `${subject} — проверьте единицу учёта`;
 }
 export const VAT_DROPPED_NOTE = "выпал: неизвестна база НДС";
 
 export const UNIT_WARN_TITLE = "Разные единицы учёта?";
 export function unitWarnKp(ratio: Decimal, median: string | null): string {
-  return `Цена КП отличается от медианы наших договоров${median === null ? "" : ` (${median})`} в ${ratioText(ratio)} раз.`;
+  const { text, smaller } = ratioParts(ratio);
+  const verb = smaller ? "ниже" : "отличается от";
+  return `Цена КП ${verb} медианы наших договоров${median === null ? "" : ` (${median})`} в ${text} раз.`;
 }
 export function unitWarnContracts(ratios: Decimal[]): string {
   return `Наши договоры расходятся с остальными: ${ratios.map(formatRatio).join(", ")}.`;

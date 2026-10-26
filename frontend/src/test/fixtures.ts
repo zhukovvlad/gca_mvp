@@ -2886,7 +2886,7 @@ export function ourPriceLineFixture(overrides: Partial<OurPriceLine> = {}): OurP
     quantity: "100",
     section_ref: "1.1",
     family: "Семья 1",
-    variant_label: "Вариант 1",
+    variant_label: "Семья 1 · Вариант 1",
     secondary: [{ name: "Цвет", value: "серый" }],
     state: "comparable",
     waiting_admin: false,

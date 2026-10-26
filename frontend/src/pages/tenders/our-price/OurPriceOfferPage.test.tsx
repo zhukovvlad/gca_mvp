@@ -186,6 +186,14 @@ describe("состояния экрана", () => {
     expect(header).toHaveTextContent("Класс 2");
     expect(header).toHaveTextContent(PRICES_CAPTION_NET);
   });
+
+  it("подзаголовок: «Этап N, дата» и площадь с разрядами; подписи крошки в нём нет", async () => {
+    renderPage();
+    await loaded();
+    const header = screen.getByTestId("round-header");
+    expect(header).toHaveTextContent("Этап 3, 10.03.2026 · объект Объект Т · 5 000,00 м² · класс Класс 2");
+    expect(header).not.toHaveTextContent("этап 3: все участники");
+  });
 });
 
 describe("путь и переключатель участников", () => {
@@ -319,10 +327,13 @@ describe("плитки-фильтры", () => {
     const above = screen.getByTestId("tile-above_ours");
     const all = screen.getByTestId("tile-all");
     expect(all).toHaveAttribute("aria-pressed", "true");
+    // Кнопка «Все строки» выбрана — залитая, не выбрана — контурная.
+    expect(all).toHaveClass("bg-primary");
     expect(above).toHaveAttribute("aria-pressed", "false");
     fireEvent.click(above);
     expect(above).toHaveAttribute("aria-pressed", "true");
     expect(all).toHaveAttribute("aria-pressed", "false");
+    expect(all).not.toHaveClass("bg-primary");
     fireEvent.click(screen.getByTestId("tile-below_paid"));
     expect(above).toHaveAttribute("aria-pressed", "false");
     fireEvent.click(all);
@@ -623,6 +634,16 @@ describe("таблица статей", () => {
     fireEvent.click(screen.getByTestId("article-toggle-11"));
     fireEvent.click(screen.getByTestId("article-toggle-unallocated"));
     expect(lineRows()).toHaveLength(631);
+  }, 30000);
+
+  it("число строк на плитке «Все строки» — с разрядами", async () => {
+    const lines: OurPriceLine[] = [];
+    for (let i = 1; i <= 1234; i++) lines.push(line(i, 11));
+    serve({ ...threeArticles(), lines });
+    renderPage();
+    await loaded();
+    expect(screen.getByTestId("tile-all")).toHaveTextContent("1 234");
+    expect(screen.getByTestId("tile-all")).toHaveAttribute("data-count", "1234");
   }, 30000);
 
   it("статья без строк под фильтром: подпись вместо пустой таблицы", async () => {

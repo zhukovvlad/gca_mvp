@@ -222,7 +222,7 @@ describe("колонки строки", () => {
       line(1, {
         title: "Устройство стяжки",
         family: "Стяжка",
-        variant_label: "50 мм",
+        variant_label: "Стяжка · 50 мм",
         secondary: [
           { name: "Цвет", value: "серый" },
           { name: "Армирование", value: "сетка" },
@@ -232,6 +232,8 @@ describe("колонки строки", () => {
     const work = screen.getByTestId("work-1");
     expect(work).toHaveTextContent("Устройство стяжки");
     expect(work).toHaveTextContent("Стяжка · 50 мм");
+    // Подпись варианта уже начинается с семьи: семья во второй раз не печатается.
+    expect(work).not.toHaveTextContent("Стяжка · Стяжка");
     expect(screen.getByTestId("secondary-1")).toHaveAttribute("title", "Цвет: серый; Армирование: сетка");
   });
 
@@ -242,7 +244,7 @@ describe("колонки строки", () => {
   });
 
   it("вариант есть, второстепенных параметров нет — значка подсказки нет", () => {
-    renderTable([line(1, { family: "Стяжка", variant_label: "50 мм", secondary: [] })]);
+    renderTable([line(1, { family: "Стяжка", variant_label: "Стяжка · 50 мм", secondary: [] })]);
     expect(screen.getByTestId("work-1")).toHaveTextContent("Стяжка · 50 мм");
     expect(screen.queryByTestId("secondary-1")).not.toBeInTheDocument();
   });

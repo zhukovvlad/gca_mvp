@@ -24,6 +24,7 @@ import {
   lineStateLabel,
   RUNG_LEVEL_LABEL,
   SECONDARY_MARK,
+  variantCaption,
 } from "./ourPriceCopy";
 import { LineStateText } from "./LineStateText";
 import { SortHead } from "./SortHead";
@@ -125,9 +126,7 @@ export function OfferLinesTable({ lines, vat, rateClass, canResolve = false, onO
         header: LINE_COLUMN.work,
         cell: ({ row }) => {
           const line = row.original;
-          const variant = [line.family, line.variant_label]
-            .filter((part): part is string => part !== null)
-            .join(" · ");
+          const variant = variantCaption(line) ?? "";
           return (
             <div data-testid={`work-${line.position_item_id}`}>
               <button type="button" className="line-clamp-3 text-left text-fg" title={line.title}>

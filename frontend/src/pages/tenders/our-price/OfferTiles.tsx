@@ -1,4 +1,6 @@
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { formatNumber } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { MoneyPair, OurPriceOffer } from "@/types/domain";
 
@@ -68,68 +70,67 @@ export function OfferTiles({ offer, vat, filter, onFilter }: OfferTilesProps) {
   const count = (key: OfferFilter) => offer.lines.filter((line) => matchesFilter(line, key)).length;
 
   return (
-    <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
-      <Card size="sm" data-testid="tile-per_sqm" className="col-span-2">
-        <CardContent className="space-y-1 text-sm">
-          <p className="text-xs text-fg-secondary">{PER_SQM_TILE_LABEL}</p>
-          {perSqm === null ? (
-            <p className="text-fg-secondary">{reason === null ? "—" : EMPTY_REASON_LABEL[reason]}</p>
-          ) : (
-            <p>
-              <span className="font-mono text-xl tabular-nums">{formatMoney(perSqm, "")}</span>
-              <span className="text-xs text-fg-secondary"> {PER_SQM_UNIT}</span>
-              {participant.class_median_pct !== null && (
-                <span
-                  className={cn(
-                    "ml-2 font-mono text-xs",
-                    participant.class_median_pct.startsWith("-") ? "text-info-text" : "text-warning-text"
-                  )}
-                >
-                  {medianCaption(participant.class_median_pct)}
-                </span>
-              )}
-            </p>
-          )}
-        </CardContent>
-      </Card>
-      {FILTER_TILES.map((key) => {
-        const pressed = filter === key;
-        const n = count(key);
-        return (
-          <button
-            key={key}
-            type="button"
-            data-testid={`tile-${key}`}
-            data-count={n}
-            aria-pressed={pressed}
-            onClick={() => onFilter(pressed ? "all" : key)}
-            className={cn(
-              "rounded-xl border border-border-subtle bg-surface p-3 text-left text-sm transition-colors hover:bg-surface-sunken",
-              pressed && "border-fg bg-surface-sunken ring-1 ring-fg"
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-[minmax(0,1.3fr)_repeat(4,minmax(0,1fr))]">
+        <Card size="sm" data-testid="tile-per_sqm" className="col-span-2 lg:col-span-1">
+          <CardContent className="space-y-1 text-sm">
+            <p className="text-xs text-fg-secondary">{PER_SQM_TILE_LABEL}</p>
+            {perSqm === null ? (
+              <p className="text-fg-secondary">{reason === null ? "—" : EMPTY_REASON_LABEL[reason]}</p>
+            ) : (
+              <p>
+                <span className="font-mono text-xl tabular-nums">{formatMoney(perSqm, "")}</span>
+                <span className="text-xs text-fg-secondary"> {PER_SQM_UNIT}</span>
+                {participant.class_median_pct !== null && (
+                  <span
+                    className={cn(
+                      "ml-2 font-mono text-xs",
+                      participant.class_median_pct.startsWith("-") ? "text-info-text" : "text-warning-text"
+                    )}
+                  >
+                    {medianCaption(participant.class_median_pct)}
+                  </span>
+                )}
+              </p>
             )}
-          >
-            <span className="block text-xs text-fg-secondary">{FILTER_LABEL[key]}</span>
-            <span className={cn("block font-mono text-lg tabular-nums", TONE_CLASS[key])}>{money(key)}</span>
-            <span className="block text-xs text-fg-secondary">
-              {linesCount(n)} · {FILTER_HINT[key]}
-            </span>
-          </button>
-        );
-      })}
-      <button
+          </CardContent>
+        </Card>
+        {FILTER_TILES.map((key) => {
+          const pressed = filter === key;
+          const n = count(key);
+          return (
+            <button
+              key={key}
+              type="button"
+              data-testid={`tile-${key}`}
+              data-count={n}
+              aria-pressed={pressed}
+              onClick={() => onFilter(pressed ? "all" : key)}
+              className={cn(
+                "rounded-xl border border-border-subtle bg-surface p-3 text-left text-sm transition-colors hover:bg-surface-sunken",
+                pressed && "border-fg bg-surface-sunken ring-1 ring-fg"
+              )}
+            >
+              <span className="block text-xs text-fg-secondary">{FILTER_LABEL[key]}</span>
+              <span className={cn("block font-mono text-lg tabular-nums", TONE_CLASS[key])}>{money(key)}</span>
+              <span className="block text-xs text-fg-secondary">
+                {linesCount(n)} · {FILTER_HINT[key]}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      <Button
         type="button"
+        size="sm"
+        variant={filter === "all" ? "default" : "outline"}
         data-testid="tile-all"
         data-count={offer.lines.length}
         aria-pressed={filter === "all"}
         onClick={() => onFilter("all")}
-        className={cn(
-          "rounded-xl border border-border-subtle bg-surface p-3 text-left text-sm transition-colors hover:bg-surface-sunken",
-          filter === "all" && "border-fg bg-surface-sunken ring-1 ring-fg"
-        )}
       >
-        <span className="block text-xs text-fg-secondary">{FILTER_LABEL.all}</span>
-        <span className="block font-mono text-lg tabular-nums">{offer.lines.length}</span>
-      </button>
+        {FILTER_LABEL.all} · {formatNumber(offer.lines.length)}
+      </Button>
     </div>
   );
 }

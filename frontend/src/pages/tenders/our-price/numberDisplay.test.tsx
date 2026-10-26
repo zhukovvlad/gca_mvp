@@ -187,7 +187,7 @@ describe("панель строки: числа с длинной дробью",
     expect(text("sheet-quantity")).toContain("2 600,12");
     expect(text("contract-102")).toContain(SUB_KOPECK_LABEL);
     expect(text("contract-101")).toContain("×5,3");
-    expect(text("unit-warn")).toContain("×0,2");
+    expect(text("unit-warn")).toContain("в 4,5 раз меньше");
     expect(text("unit-warn")).toContain("в 5,3 раз");
     expectNoLongFractions();
   });

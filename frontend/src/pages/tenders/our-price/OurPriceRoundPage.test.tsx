@@ -93,7 +93,7 @@ describe("состояния экрана", () => {
     const header = screen.getByTestId("round-header");
     expect(header).toHaveTextContent("10.03.2026");
     expect(header).toHaveTextContent("Объект Т");
-    expect(header).toHaveTextContent("5000 м²");
+    expect(header).toHaveTextContent("5 000,00 м²");
     expect(header).toHaveTextContent("Класс 2");
     expect(header).toHaveTextContent(PRICES_CAPTION_NET);
   });

@@ -143,6 +143,8 @@ describe("цены панели", () => {
     const sheet = screen.getByTestId("line-sheet");
     expect(within(sheet).getByRole("heading", { name: "Работа 1" })).toBeInTheDocument();
     expect(sheet).toHaveTextContent("Семья 1 · Вариант 1");
+    // Подпись варианта уже начинается с семьи: во второй раз она не печатается.
+    expect(sheet).not.toHaveTextContent("Семья 1 · Семья 1");
   });
 
   it("цена КП и наша расценка подписаны рублями за единицу измерения строки", async () => {

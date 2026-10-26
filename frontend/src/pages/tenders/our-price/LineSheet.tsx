@@ -37,6 +37,7 @@ import {
   UNIT_WARN_TITLE,
   unitWarnContracts,
   unitWarnKp,
+  variantCaption,
   VAT_DROPPED_NOTE,
 } from "./ourPriceCopy";
 import { LineStateText } from "./LineStateText";
@@ -156,8 +157,7 @@ function LineSheetBody({
 }
 
 function subtitle(line: OurPriceLine): string {
-  const parts = [line.family, line.variant_label].filter((part): part is string => part !== null);
-  return parts.length === 0 ? SHEET_DESCRIPTION : parts.join(" · ");
+  return variantCaption(line) ?? SHEET_DESCRIPTION;
 }
 
 interface PanelContentProps {
