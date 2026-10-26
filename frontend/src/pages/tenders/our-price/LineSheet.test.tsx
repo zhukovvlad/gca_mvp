@@ -606,6 +606,22 @@ describe("договоры ступени", () => {
     expect(screen.queryByTestId("contract-201")).not.toBeInTheDocument();
   });
 
+  it("без ступени (нет истории) выпавшие договоры всё равно названы", async () => {
+    serveView(() =>
+      view(
+        { state: "no_history", position: null, to_ours: null, ours: null, range: null, rung: null, rungs: [] },
+        {
+          contracts: [],
+          vat_dropped: [{ contract_id: 201, object_title: "Объект 201", number: "Договор 201", year: 2019 }],
+        }
+      )
+    );
+    renderSheet();
+    const row = await screen.findByTestId("vat-dropped-201");
+    expect(row).toHaveTextContent(VAT_DROPPED_NOTE);
+    expect(screen.getByTestId("sheet-state")).toHaveTextContent(LINE_STATE_LABEL.no_history);
+  });
+
   it("выпавших нет — секции нет", async () => {
     serveView(() => view({}, { vat_dropped: [] }));
     renderSheet();

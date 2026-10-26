@@ -401,7 +401,8 @@ def load_history(db: Session, *, exclude_object_id: int) -> tuple[list[HistoryCo
     последней сметы без глав, чей контекст несёт вариант и не архивирован; цена
     и вес проходят предикаты в SQL (у системы — предикат на сумме строки).
     Строка с неизвестной базой НДС остаётся: она нужна ядру для названия
-    причины выпадения договора.
+    причины выпадения договора. Версия сметы выбирается один раз, первым запросом;
+    строки читаются по её идентификаторам, а не по повторному выбору «последней».
     """
     latest = latest_estimates()
     contract_rows = db.execute(
@@ -446,9 +447,10 @@ def load_history(db: Session, *, exclude_object_id: int) -> tuple[list[HistoryCo
         sa.and_(is_system, _price_ok(PositionItem.total_cost_total)),
         sa.and_(sa.not_(is_system), _price_ok(PositionItem.unit_cost_total), _weight_ok(_WEIGHT)),
     )
+    estimate_of = {contract.estimate_id: contract.contract_id for contract in contracts}
     line_rows = db.execute(
         sa.select(
-            Contract.id,
+            Estimate.id,
             CatalogContext.work_variant_id,
             is_system,
             PositionItem.unit_cost_total,
@@ -460,23 +462,21 @@ def load_history(db: Session, *, exclude_object_id: int) -> tuple[list[HistoryCo
         .join(Proposal, Proposal.id == PositionItem.proposal_id)
         .join(Lot, Lot.id == Proposal.lot_id)
         .join(Estimate, Estimate.id == Lot.estimate_id)
-        .join(latest, latest.c.estimate_id == Estimate.id)
-        .join(Contract, Contract.id == latest.c.contract_id)
         .join(ContextMember, ContextMember.position_item_id == PositionItem.id)
         .join(CatalogContext, CatalogContext.id == ContextMember.context_id)
         .where(
-            Contract.object_id != exclude_object_id,
+            Estimate.id.in_(list(estimate_of)),
             PositionItem.is_chapter.is_(False),
             CatalogContext.work_variant_id.is_not(None),
             CatalogContext.archived_at.is_(None),
             suitable,
         )
-        .order_by(Contract.id, PositionItem.id)
+        .order_by(Estimate.contract_id, PositionItem.id)
     ).all()
     infos = _variant_infos(db, [row[1] for row in line_rows])
     lines = [
         HistoryLine(
-            contract_id=row[0],
+            contract_id=estimate_of[row[0]],
             key=_line_key(infos[row[1]], row[1]),
             is_system=row[2],
             unit_price=row[3],

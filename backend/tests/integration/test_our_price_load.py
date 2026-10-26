@@ -427,6 +427,38 @@ class TestHistoryComposition:
 
         assert [c.estimate_id for c in contracts] == [top.id]
 
+    def test_a_new_amendment_between_the_two_reads_does_not_mix_versions(self, world, db_session):
+        """Договор и его строки читаются двумя запросами: допсоглашение, вставшее между
+        ними, не должно дать строки новой сметы под метаданными старой. Допсоглашение
+        «появляется» между запросами сменой номера — на том же соединении, в момент
+        второго запроса (до его исполнения)."""
+        contract = world.contract()
+        current, current_proposal = world.estimate(contract, amendment_no=2, vat_rate=D("0"))
+        coming, coming_proposal = world.estimate(contract, amendment_no=1, vat_rate=D("20"))
+        family, schema = world.family()
+        _, variant = _simple_variant(world, family, schema)
+        world.line(current_proposal, family=family, variant=variant, unit_cost=D("111"))
+        world.line(coming_proposal, family=family, variant=variant, unit_cost=D("222"))
+        db_session.flush()
+        appeared = [False]
+
+        def _amend(conn, _cursor, statement, _params, _context, _executemany):
+            if appeared[0] or "position_items" not in statement:
+                return
+            appeared[0] = True
+            conn.exec_driver_sql("UPDATE estimates SET amendment_no = 3 WHERE id = %s", (coming.id,))
+
+        engine = db_session.get_bind()
+        sa.event.listen(engine, "before_cursor_execute", _amend)
+        try:
+            contracts, lines = _history_of(db_session, contract)
+        finally:
+            sa.event.remove(engine, "before_cursor_execute", _amend)
+
+        assert appeared[0]
+        assert [c.estimate_id for c in contracts] == [current.id]
+        assert [(ln.unit_price, ln.vat_base) for ln in lines] == [(D("111"), D("0"))]
+
     def test_offer_estimate_without_a_contract_is_not_history(self, world, db_session):
         estimate, proposal = world.offer_estimate()
         family, schema = world.family()

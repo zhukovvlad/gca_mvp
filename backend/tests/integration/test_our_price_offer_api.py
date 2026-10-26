@@ -17,7 +17,7 @@ from decimal import Decimal
 import pytest
 import sqlalchemy as sa
 
-from models import ContextMember, FamilyParameter, SemanticJob, UnitOfMeasure
+from models import ContextMember, FamilyParameter, PositionItem, SemanticJob, UnitOfMeasure
 from tests import comparison_fixtures as fx
 from tests.integration.test_our_price_load import World
 from tests.integration.test_our_price_round_api import (
@@ -1208,17 +1208,21 @@ class TestLinePanelAuto:
         assert abs(D(ratios[wide.id]) - D("6.6666666666666666666666666667")) < TOLERANCE
         assert ratios[wide.id] == panel["line"]["unit_mismatch"]["contracts"][0]["ratio"]
 
-    def test_line_that_did_not_reach_the_ladder_has_no_contracts_and_no_dropped(self, member_client, stage):
+    def test_line_that_did_not_reach_the_ladder_has_no_contracts_but_names_the_dropped_ones(self, member_client, stage):
         rnd = stage.round()
         part = stage.participant(rnd, "Подрядчик А", vat=D("0"))
         silent = stage.kp(part, D("100"), variant=False)
-        _history(stage, D("100"), vat=None)  # единственный договор семьи выпал по базе НДС
+        dropped, _, _ = _history(stage, D("100"), vat=None)  # единственный договор семьи выпал по базе НДС
         lonely = stage.kp(part, D("100"))
 
-        for item in (silent, lonely):
-            panel = _panel(member_client, stage.tender, rnd, part, item)
-            assert panel["line"]["rung"] is None, item.id
-            assert (panel["contracts"], panel["vat_dropped"], panel["group_lines"]) == ([], [], [])
+        panels = {item.id: _panel(member_client, stage.tender, rnd, part, item) for item in (silent, lonely)}
+
+        for panel in panels.values():
+            assert panel["line"]["rung"] is None
+            assert (panel["contracts"], panel["group_lines"]) == ([], [])
+        # строка без варианта ключа не имеет, называть нечего; у строки с ключом причина названа
+        assert panels[silent.id]["vat_dropped"] == []
+        assert [d["contract_id"] for d in panels[lonely.id]["vat_dropped"]] == [dropped.id]
 
     def test_unknown_base_participant_gets_a_panel_without_contracts(self, member_client, stage):
         stage.history(D("100"))
@@ -1561,6 +1565,113 @@ class TestVatDropped:
         assert on_variant["vat_dropped"] == []
         assert [d["contract_id"] for d in on_family["vat_dropped"]] == [elsewhere.id]
 
+    def test_without_a_rung_the_dropped_contract_of_the_key_is_still_named(self, member_client, stage):
+        dropped, _, _ = _history(stage, D("120"), vat=None)
+        rnd = stage.round()
+        part = stage.participant(rnd, "Подрядчик А")
+        item = stage.kp(part, D("144"))
+
+        panel = _panel(member_client, stage.tender, rnd, part, item)
+
+        assert panel["line"]["state"] == "no_history"
+        assert panel["line"]["rung"] is None
+        assert [d["contract_id"] for d in panel["vat_dropped"]] == [dropped.id]
+
+    def test_without_a_rung_and_without_dropped_contracts_the_list_is_empty(self, member_client, stage):
+        rnd = stage.round()
+        part = stage.participant(rnd, "Подрядчик А")
+        item = stage.kp(part, D("144"))
+
+        panel = _panel(member_client, stage.tender, rnd, part, item)
+
+        assert panel["line"]["state"] == "no_history"
+        assert panel["vat_dropped"] == []
+
+    def test_without_a_rung_the_first_rung_with_dropped_contracts_decides(self, member_client, stage):
+        elsewhere, _, _ = _history(stage, D("120"), vat=None, variant=_second_variant(stage))
+        rnd = stage.round()
+        part = stage.participant(rnd, "Подрядчик А")
+        item = stage.kp(part, D("144"))
+
+        panel = _panel(member_client, stage.tender, rnd, part, item)
+
+        assert panel["line"]["state"] == "no_history"
+        assert [d["contract_id"] for d in panel["vat_dropped"]] == [elsewhere.id]
+
+    def test_without_a_rung_a_dropped_contract_of_another_class_is_named_only_from_the_all_scope(
+        self, member_client, stage, factories
+    ):
+        other_class = factories.RateClassFactory.create(title="Класс Ч")
+        foreign, _, _ = _history(stage, D("120"), vat=None, rate_class=other_class)
+        own_elsewhere, _, _ = _history(stage, D("120"), vat=None, variant=_second_variant(stage))
+        rnd = stage.round()
+        part = stage.participant(rnd, "Подрядчик А")
+        item = stage.kp(part, D("144"))
+
+        panel = _panel(member_client, stage.tender, rnd, part, item)
+
+        # на ступени «вариант, класс» выпавших нет, на «вариант, все классы» — один чужого класса;
+        # договор своего класса другого варианта лежит на ступени ниже и не называется
+        assert panel["line"]["state"] == "no_history"
+        assert [d["contract_id"] for d in panel["vat_dropped"]] == [foreign.id]
+        assert own_elsewhere.id not in {d["contract_id"] for d in panel["vat_dropped"]}
+
+    def test_without_a_rung_the_class_rung_names_only_the_tender_class(self, member_client, stage, factories):
+        """Без ступени охват класса тот же, что у ступени: на ключе варианта выпали
+        договоры обоих классов — ступень «вариант, класс» называет только свой."""
+        other_class = factories.RateClassFactory.create(title="Класс Ч")
+        own, _, _ = _history(stage, D("120"), vat=None)
+        foreign, _, _ = _history(stage, D("120"), vat=None, rate_class=other_class)
+        rnd = stage.round()
+        part = stage.participant(rnd, "Подрядчик А")
+        item = stage.kp(part, D("144"))
+
+        panel = _panel(member_client, stage.tender, rnd, part, item)
+
+        assert panel["line"]["state"] == "no_history"
+        assert [d["contract_id"] for d in panel["vat_dropped"]] == [own.id]
+        assert foreign.id not in {d["contract_id"] for d in panel["vat_dropped"]}
+
+    def test_other_states_without_a_rung_do_not_name_dropped_contracts(self, member_client, stage):
+        _history(stage, D("120"), vat=None)
+        rnd = stage.round()
+        unknown_base = stage.participant(rnd, "Подрядчик А", vat=None)
+        base_item = stage.kp(unknown_base, D("144"))
+        priced = stage.participant(rnd, "Подрядчик Б")
+        no_price_item = stage.kp(priced, D("0"), total=D("0"))
+
+        base_panel = _panel(member_client, stage.tender, rnd, unknown_base, base_item)
+        price_panel = _panel(member_client, stage.tender, rnd, priced, no_price_item)
+
+        assert base_panel["line"]["state"] == "unknown_vat_base"
+        assert price_panel["line"]["state"] == "no_price"
+        assert base_panel["vat_dropped"] == []
+        assert price_panel["vat_dropped"] == []
+
+    def test_no_area_and_in_progress_lines_with_a_key_do_not_name_dropped_contracts(
+        self, member_client, world, db_session, factories
+    ):
+        """Остальные состояния без ступени — тем же правилом: у системной строки без
+        площади объекта и у строки с живым заданием каталога ключ есть, выпавшие
+        договоры этого ключа есть, но причина «не сравнили» не в истории."""
+        stage_ = Stage(world, db_session, factories, area=None)
+        _history(stage_, D("1"), total=D("120000"), kind="SYSTEM", vat=None)
+        _history(stage_, D("120"), vat=None)
+        rnd = stage_.round()
+        part = stage_.participant(rnd, "Подрядчик А")
+        system = _put(stage_, part.proposal, "R", D("1"), total=D("30000"), kind="SYSTEM")
+        busy = stage_.kp(part, D("144"))
+        _job(db_session, "family_suggestion", "pending", context_id=busy.context_id)
+        db_session.flush()
+
+        system_panel = _panel(member_client, stage_.tender, rnd, part, system)
+        busy_panel = _panel(member_client, stage_.tender, rnd, part, busy)
+
+        assert (system_panel["line"]["state"], system_panel["line"]["rung"]) == ("no_area", None)
+        assert (busy_panel["line"]["state"], busy_panel["line"]["rung"]) == ("in_progress", None)
+        assert system_panel["vat_dropped"] == []
+        assert busy_panel["vat_dropped"] == []
+
     def test_system_panel_lists_the_dropped_contracts_of_the_group_key(self, member_client, stage):
         dropped, _, _ = _history(stage, D("1"), total=D("120000"), kind="SYSTEM", vat=None)
         rnd, part, (small, _) = _system_scene(stage)
@@ -1569,6 +1680,74 @@ class TestVatDropped:
 
         assert [d["contract_id"] for d in panel["vat_dropped"]] == [dropped.id]
         assert dropped.id not in {c["contract_id"] for c in panel["contracts"]}
+
+
+# ---------------------------------------------------------------------------
+#  Статья без сумм
+# ---------------------------------------------------------------------------
+
+
+class TestArticleWithoutMoney:
+    """Статья, у которой все суммы строк пусты, остаётся в разборе: её строки КП
+    открываются только через статью."""
+
+    def _scene(self, stage, db_session):
+        _history_pair(stage)
+        rnd = stage.round()
+        part = stage.participant(rnd, "Подрядчик А")
+        empty = stage.kp(part, D("144"), cat="R")
+        priced = stage.kp(part, D("144"), cat="R2")
+        db_session.execute(sa.update(PositionItem).where(PositionItem.id == empty.id).values(total_cost_total=None))
+        db_session.flush()
+        return rnd, part, empty, priced
+
+    def test_the_article_is_listed_with_an_empty_cell_and_its_lines(self, member_client, stage, db_session):
+        rnd, part, empty, priced = self._scene(stage, db_session)
+
+        body = _ok(member_client, stage.tender, rnd, part)
+
+        assert stage.cats["R"].id in {a["work_category_id"] for a in body["articles"]}
+        article = _offer_article(body, stage, "R")
+        assert article["per_sqm"] is None
+        assert article["whole"] is None
+        assert article["lines_totals"] is not None
+        in_article = [line for line in body["lines"] if line["article_id"] == stage.cats["R"].id]
+        assert [line["position_item_id"] for line in in_article] == [empty.id]
+        assert [a["work_category_id"] for a in body["articles"]] == [stage.cats["R"].id, stage.cats["R2"].id]
+        assert _offer_article(body, stage, "R2")["per_sqm"] is not None
+
+    def test_a_neighbouring_article_with_money_is_unchanged(self, member_client, stage, db_session):
+        rnd, part, empty, priced = self._scene(stage, db_session)
+
+        body = _ok(member_client, stage.tender, rnd, part)
+
+        assert _pair(_offer_article(body, stage, "R2")["per_sqm"])[0] == D("1.2")
+
+    def test_the_stage_screen_lists_the_same_article(self, member_client, stage, db_session):
+        rnd, part, empty, priced = self._scene(stage, db_session)
+
+        body = _round_ok(member_client, stage.tender, rnd)
+
+        assert [a["work_category_id"] for a in body["articles"]] == [stage.cats["R"].id, stage.cats["R2"].id]
+        cell = _cell(_article(body, stage, "R"), part)
+        assert cell["per_sqm"] is None
+        assert cell["whole"] is None
+
+    def test_the_offer_lists_only_the_articles_of_its_own_estimate(self, member_client, stage, db_session):
+        """Статьи разбора — по смете этого участника: статья без сумм, которая есть
+        только у соседа по этапу, в разбор участника не попадает."""
+        _history_pair(stage)
+        rnd = stage.round()
+        part = stage.participant(rnd, "Подрядчик А")
+        neighbour = stage.participant(rnd, "Подрядчик Б")
+        stage.kp(part, D("144"), cat="R")
+        foreign = stage.kp(neighbour, D("144"), cat="R2")
+        db_session.execute(sa.update(PositionItem).where(PositionItem.id == foreign.id).values(total_cost_total=None))
+        db_session.flush()
+
+        body = _ok(member_client, stage.tender, rnd, part)
+
+        assert [a["work_category_id"] for a in body["articles"]] == [stage.cats["R"].id]
 
 
 # ---------------------------------------------------------------------------

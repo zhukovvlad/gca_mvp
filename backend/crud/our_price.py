@@ -53,7 +53,9 @@ from services.our_price import (
     OfferEvaluation,
     OfferTotals,
     RateRange,
+    Rung,
     RungChoice,
+    available_rungs,
     evaluate_offer,
     lines_totals,
     offer_totals,
@@ -433,6 +435,17 @@ def _cell_of(
     return cell
 
 
+def _article_roots(scene: _Scene, estimate_ids: Sequence[int]) -> set[int | None]:
+    """Статьи смет КП: корни с суммами и корни строк КП. Статья, у которой все суммы
+    пусты, в суммах отсутствует, но её строки есть, и открываются они только через
+    статью (спека 4а §2.12, пункт `article_id`)."""
+    roots: set[int | None] = set()
+    for estimate_id in estimate_ids:
+        roots.update(scene.roots_by_estimate.get(estimate_id, {}))
+        roots.update(row.article_root_id for row in scene.kp_lines.get(estimate_id, []))
+    return roots
+
+
 def _ordered_roots(present_roots: set[int | None], root_meta: Mapping[int, ArticleMeta]) -> list[int | None]:
     """Корни статей по номеру классификатора, «Нераспределённое» — последним."""
     ordered: list[int | None] = sorted(
@@ -535,9 +548,8 @@ def build_round_view(db: Session, tender_id: int, round_id: int, *, inflation_se
             for participant in participants
         ]
 
-    present_roots = {root for eid in scene.kp_ids for root in scene.roots_by_estimate.get(eid, {})}
     articles = []
-    for root in _ordered_roots(present_roots, scene.root_meta):
+    for root in _ordered_roots(_article_roots(scene, scene.kp_ids), scene.root_meta):
         fork = _fork(scene.history.by_root.get(root, {}), scene.class_contracts)
         articles.append(
             {
@@ -705,7 +717,7 @@ def build_offer_view(
         return _cell_of(scene, participant, evaluation, kp_value, root, is_total=is_total, fork=fork)
 
     articles = []
-    for root in _ordered_roots(set(scene.roots_by_estimate.get(participant.estimate_id, {})), scene.root_meta):
+    for root in _ordered_roots(_article_roots(scene, [participant.estimate_id]), scene.root_meta):
         article_lines = None
         if participant.state == "ok":
             article_lines = _totals_view(
@@ -747,6 +759,31 @@ def _rung_choice(level: str | None, scope: str | None, position_item_id: int, au
             code=CODE_UNKNOWN_RUNG,
         )
     return RungChoice(position_item_id, rung)
+
+
+def _vat_dropped_view(scene: _Scene, row: KpLineRow, result: LineResult) -> list[dict]:
+    """Договоры, выпавшие из-за неизвестной базы НДС, на ступени строки. Без выбранной
+    ступени (`no_history`) — на первой ступени лестницы строки, где такие договоры
+    есть: охват «класс» — только класс тендера."""
+    line = row.line
+    if result.rung is not None:
+        rungs: Sequence[Rung] = [result.rung]
+    elif result.state is LineState.no_history:
+        rungs = available_rungs(line.key)
+    else:
+        return []
+    for rung in rungs:
+        dropped = [
+            scene.index.contract(contract_id)
+            for contract_id in scene.index.vat_dropped(rung.level, line.key.at(rung.level), is_system=line.is_system)
+        ]
+        dropped = [c for c in dropped if rung.scope == "all" or c.rate_class_id == scene.head.rate_class_id]
+        if dropped:
+            return [
+                {"contract_id": c.contract_id, "object_title": c.object_title, "number": c.number, "year": c.year}
+                for c in dropped
+            ]
+    return []
 
 
 def build_line_view(
@@ -815,20 +852,7 @@ def build_line_view(
             }
         )
 
-    vat_dropped = []
-    if result.rung is not None:
-        key_value = row.line.key.at(result.rung.level)
-        for contract_id in scene.index.vat_dropped(result.rung.level, key_value, is_system=row.line.is_system):
-            contract = scene.index.contract(contract_id)
-            if result.rung.scope == "all" or contract.rate_class_id == scene.head.rate_class_id:
-                vat_dropped.append(
-                    {
-                        "contract_id": contract.contract_id,
-                        "object_title": contract.object_title,
-                        "number": contract.number,
-                        "year": contract.year,
-                    }
-                )
+    vat_dropped = _vat_dropped_view(scene, row, result)
 
     return {
         "line": _line_view(row, result, rate),
