@@ -125,6 +125,10 @@ class ContractRate:
     contract_id: int
     #: Нетто за единицу (у системы — за м²); после приведения, если план передан.
     net: Decimal
+    #: Та же ставка до множителя ИПЦ; без плана приведения равна `net`.
+    nominal: Decimal
+    #: Число строк договора, сложивших ставку по этому ключу.
+    lines: int
 
 
 @dataclass(frozen=True)
@@ -168,6 +172,44 @@ class RungChoice:
     rung: Rung
 
 
+ResetReason = Literal["kind_changed", "key_changed", "rung_unavailable", "rung_empty"]
+
+
+@dataclass(frozen=True)
+class SavedWorkRung:
+    """Сохранённая ступень строки: ступень и снимок ключа строки на её уровне."""
+
+    rung: Rung
+    #: Значение `LineKey.at(rung.level)` на момент выбора.
+    key_snapshot: Hashable
+
+
+@dataclass(frozen=True)
+class SavedFamilyRung:
+    """Сохранённая ступень семьи системы внутри одного КП."""
+
+    rung: Rung
+    first_main_parameter_id: int | None
+
+
+@dataclass(frozen=True)
+class SavedRungs:
+    #: position_item_id -> ступень строки
+    work: Mapping[int, SavedWorkRung]
+    #: family_id -> ступень семьи (внутри одного КП)
+    family: Mapping[int, SavedFamilyRung]
+
+
+@dataclass(frozen=True)
+class ManualRung:
+    """Статус сохранённой ступени у строки: чья она и действует ли."""
+
+    rung: Rung
+    target: Literal["line", "family"]
+    active: bool
+    reset_reason: ResetReason | None
+
+
 @dataclass(frozen=True)
 class LineResult:
     position_item_id: int
@@ -193,6 +235,11 @@ class LineResult:
     share: Decimal | None
     group_per_sqm: Decimal | None
     mismatch: Mismatch | None
+    #: Сохранённая ступень строки или её семьи; `None` — сохранённой нет.
+    manual: ManualRung | None = None
+    #: Ступени, которые можно сохранить: у работы — с договорами, у системы —
+    #: с договорами у каждой группы семьи; без лестницы — пусто.
+    selectable: frozenset[Rung] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -295,18 +342,19 @@ class HistoryIndex:
                         acc[1] += line.weight
                     counted[slot] += 1
 
-            rates: dict[_IndexKey, dict[int, Decimal]] = defaultdict(dict)
+            rates: dict[_IndexKey, dict[int, ContractRate]] = defaultdict(dict)
             for slot, acc in sums.items():
                 index_key, contract_id = slot
                 contract = self._contracts[contract_id]
-                rate = acc[0] / contract.area if index_key[2] else acc[0] / acc[1]
+                nominal = acc[0] / contract.area if index_key[2] else acc[0] / acc[1]
+                rate = nominal
                 if factor_by_estimate is not None:
-                    rate = adjust_amount(rate, factor_by_estimate[contract.estimate_id])
+                    rate = adjust_amount(nominal, factor_by_estimate[contract.estimate_id])
                 if is_price(rate):
-                    rates[index_key][contract_id] = rate
+                    rates[index_key][contract_id] = ContractRate(contract_id, rate, nominal, counted[slot])
 
         for index_key, by_contract in rates.items():
-            self._rates[index_key] = [ContractRate(cid, by_contract[cid]) for cid in sorted(by_contract)]
+            self._rates[index_key] = [by_contract[cid] for cid in sorted(by_contract)]
         dropped: dict[_IndexKey, set[int]] = defaultdict(set)
         for slot in dropped_lines:
             if counted.get(slot, 0) == 0:
@@ -428,6 +476,7 @@ def _result(
         "share": None,
         "group_per_sqm": None,
         "mismatch": None,
+        "selectable": frozenset(),
     }
     values.update(fields)
     return LineResult(
@@ -508,6 +557,23 @@ def _compare(
     )
 
 
+def _work_manual(
+    key: LineKey | None, record: SavedWorkRung, history: HistoryIndex, *, tender_class_id: int
+) -> ManualRung:
+    """Действует ли сохранённая ступень работы: четыре условия по порядку (спека 4б §2.5).
+
+    Условие «строка — работа» проверяет вызывающий: сюда попадают только работы.
+    """
+    reason: ResetReason | None = None
+    if key is None or key.at(record.rung.level) != record.key_snapshot:
+        reason = "key_changed"
+    elif record.rung not in available_rungs(key):
+        reason = "rung_unavailable"
+    elif not _rung_rates(history, key, record.rung, tender_class_id=tender_class_id):
+        reason = "rung_empty"
+    return ManualRung(record.rung, "line", reason is None, reason)
+
+
 def _evaluate_work(
     line: KpLine,
     history: HistoryIndex,
@@ -516,6 +582,7 @@ def _evaluate_work(
     kp_total_net: Decimal | None,
     tender_class_id: int,
     choice: RungChoice | None,
+    saved: SavedRungs | None,
 ) -> LineResult:
     key = line.key
     assert key is not None and line.weight is not None
@@ -523,12 +590,19 @@ def _evaluate_work(
     counts = tuple(
         RungCount(rung, len(_rung_rates(history, key, rung, tender_class_id=tender_class_id))) for rung in rungs
     )
+    selectable = frozenset(count.rung for count in counts if count.contracts >= 1)
+
+    record = saved.work.get(line.position_item_id) if saved is not None else None
+    manual = _work_manual(key, record, history, tender_class_id=tender_class_id) if record is not None else None
 
     chosen = choice is not None and choice.position_item_id == line.position_item_id
+    pinned = manual is not None and manual.active
     if chosen:
         if choice.rung not in rungs:
             raise ValueError(f"у строки {line.position_item_id} нет ступени {choice.rung}")
         rung: Rung | None = choice.rung
+    elif pinned:
+        rung = manual.rung
     else:
         rung = auto_rung(counts)
 
@@ -542,6 +616,8 @@ def _evaluate_work(
             rung=rung,
             auto=not chosen,
             rungs=counts,
+            manual=manual,
+            selectable=selectable,
         )
 
     cmp = _compare(history, kp_unit_net, rung_rates, quantity=line.weight, tender_class_id=tender_class_id)
@@ -551,7 +627,7 @@ def _evaluate_work(
         kp_unit_net,
         kp_total_net,
         rung=rung,
-        auto=not chosen,
+        auto=not (chosen or pinned),
         threshold_met=cmp.threshold_met,
         rungs=counts,
         contracts=tuple(rung_rates),
@@ -563,6 +639,8 @@ def _evaluate_work(
         bargain=cmp.bargain,
         below=cmp.below,
         mismatch=cmp.mismatch,
+        manual=manual,
+        selectable=selectable,
     )
 
 
@@ -593,6 +671,29 @@ def _line_part(amount: Decimal | None, line_net: Decimal, group_net: Decimal) ->
     return None if amount is None else amount * line_net / group_net
 
 
+def _family_manual(
+    record: SavedFamilyRung,
+    entries: Sequence[_SystemEntry],
+    rungs: Sequence[Rung],
+    counts: Mapping[Rung, Mapping[Hashable, int]],
+) -> ManualRung:
+    """Действует ли сохранённая ступень семьи: три условия по порядку (спека 4б §2.6).
+
+    Ступень `p` есть в `rungs` только при первом главном параметре у всех строк
+    семьи, поэтому после проверки доступности он у каждой строки задан.
+    """
+    reason: ResetReason | None = None
+    if record.rung not in rungs:
+        reason = "rung_unavailable"
+    elif record.rung.level == "p" and any(
+        entry.key.first_main[0] != record.first_main_parameter_id for entry in entries
+    ):
+        reason = "key_changed"
+    elif min(counts[record.rung].values()) < 1:
+        reason = "rung_empty"
+    return ManualRung(record.rung, "family", reason is None, reason)
+
+
 def _evaluate_family(
     entries: Sequence[_SystemEntry],
     history: HistoryIndex,
@@ -600,6 +701,7 @@ def _evaluate_family(
     tender_area: Decimal,
     tender_class_id: int,
     choice: RungChoice | None,
+    saved: SavedRungs | None,
     first_group_index: int,
 ) -> tuple[dict[int, LineResult], list[GroupResult]]:
     """Одна ступень на всю семью: строки делятся по ключу ступени, группа — одна цена."""
@@ -622,11 +724,18 @@ def _evaluate_family(
         for rung in rungs
     }
 
+    selectable = frozenset(rung for rung in rungs if min(counts[rung].values()) >= 1)
+    family_record = saved.family.get(entries[0].key.family_id) if saved is not None else None
+    family_manual = _family_manual(family_record, entries, rungs, counts) if family_record is not None else None
+
     chosen = choice is not None and any(entry.line.position_item_id == choice.position_item_id for entry in entries)
+    pinned = family_manual is not None and family_manual.active
     if chosen:
         if choice.rung not in rungs:
             raise ValueError(f"у семьи {entries[0].key.family_id} нет ступени {choice.rung}")
         rung = choice.rung
+    elif pinned:
+        rung = family_manual.rung
     else:
         rung = RUNG_ORDER[-1]
         for threshold in (RUNG_THRESHOLD, 1):
@@ -662,12 +771,20 @@ def _evaluate_family(
         )
         for member in members:
             line_counts = tuple(RungCount(r, counts[r][member.key.at(r.level)]) for r in rungs)
+            work_record = saved.work.get(member.line.position_item_id) if saved is not None else None
+            manual = (
+                ManualRung(work_record.rung, "line", False, "kind_changed")
+                if work_record is not None
+                else family_manual
+            )
             with localcontext(_CONTEXT):
                 share = member.kp_total_net / group_net
                 fields = dict(
                     rung=rung,
-                    auto=not chosen,
+                    auto=not (chosen or pinned),
                     rungs=line_counts,
+                    manual=manual,
+                    selectable=selectable,
                     group_index=group_index,
                     group_lines=len(members),
                     share=share,
@@ -696,6 +813,21 @@ def _evaluate_family(
     return results, groups
 
 
+def _before_ladder_manual(
+    line: KpLine, history: HistoryIndex, *, tender_class_id: int, saved: SavedRungs | None
+) -> ManualRung | None:
+    """Статус сохранённой ступени строки, которую состояние развело до лестницы.
+
+    Ступень не применяется и не сбрасывается: смысл проверяется по ключу строки.
+    """
+    record = saved.work.get(line.position_item_id) if saved is not None else None
+    if record is None:
+        return None
+    if line.is_system:
+        return ManualRung(record.rung, "line", False, "kind_changed")
+    return _work_manual(line.key, record, history, tender_class_id=tender_class_id)
+
+
 def evaluate_offer(
     lines: Sequence[KpLine],
     history: HistoryIndex,
@@ -704,8 +836,14 @@ def evaluate_offer(
     tender_area: Decimal | None,
     tender_class_id: int,
     choice: RungChoice | None = None,
+    saved: SavedRungs | None = None,
 ) -> OfferEvaluation:
-    """Состояние и сравнение каждой строки КП; порядок проверок — спека §2.7."""
+    """Состояние и сравнение каждой строки КП; порядок проверок — спека §2.7.
+
+    `choice` — ступень из предпросмотра, она побеждает сохранённую `saved` на своей
+    строке или семье. Недействующая сохранённая ступень расчёт не меняет и не
+    роняет: строка идёт на авто и несёт `manual` с причиной.
+    """
     results: dict[int, LineResult] = {}
     family_entries: dict[int, list[_SystemEntry]] = {}
     for line in lines:
@@ -730,7 +868,13 @@ def evaluate_offer(
             state = LineState.no_variant
 
         if state is not None:
-            results[line.position_item_id] = _result(line, state, kp_unit_net, kp_total_net)
+            results[line.position_item_id] = _result(
+                line,
+                state,
+                kp_unit_net,
+                kp_total_net,
+                manual=_before_ladder_manual(line, history, tender_class_id=tender_class_id, saved=saved),
+            )
         elif line.is_system:
             assert line.key is not None and kp_total_net is not None
             family_entries.setdefault(line.key.family_id, []).append(
@@ -745,6 +889,7 @@ def evaluate_offer(
                 kp_total_net=kp_total_net,
                 tender_class_id=tender_class_id,
                 choice=choice,
+                saved=saved,
             )
 
     groups: list[GroupResult] = []
@@ -756,6 +901,7 @@ def evaluate_offer(
             tender_area=tender_area,
             tender_class_id=tender_class_id,
             choice=choice,
+            saved=saved,
             first_group_index=len(groups),
         )
         results.update(family_results)

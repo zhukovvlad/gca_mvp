@@ -238,7 +238,7 @@ def test_auto_rung_without_p_rungs_skips_them():
 
 
 def _rates(*values: str) -> list[ContractRate]:
-    return [ContractRate(i + 1, D(value)) for i, value in enumerate(values)]
+    return [ContractRate(i + 1, D(value), D(value), 1) for i, value in enumerate(values)]
 
 
 def test_rate_range_odd_count_median_is_the_middle():
@@ -326,7 +326,7 @@ def test_rates_weighted_average_net_by_weight():
     ]
     index = HistoryIndex([contract(1)], lines, factor_by_estimate=None)
     [rate] = index.rates("v", 50, is_system=False, class_id=None)
-    assert rate == ContractRate(1, D(175))  # (100*1 + 200*3) / 4
+    assert rate == ContractRate(1, D(175), D(175), 2)  # (100*1 + 200*3) / 4
 
 
 def test_rates_net_of_line_vat_base():
@@ -338,7 +338,7 @@ def test_rates_net_of_line_vat_base():
 def test_rates_line_without_vat_base_is_left_out_of_the_average():
     lines = [hline(1, D(100)), hline(1, D(900), base=None)]
     index = HistoryIndex([contract(1)], lines, factor_by_estimate=None)
-    assert index.rates("v", 50, is_system=False, class_id=None) == [ContractRate(1, D(100))]
+    assert index.rates("v", 50, is_system=False, class_id=None) == [ContractRate(1, D(100), D(100), 1)]
     assert index.vat_dropped("v", 50, is_system=False) == []
 
 
@@ -362,26 +362,26 @@ def test_rates_line_failing_price_or_weight_predicate_does_not_count(price, weig
 def test_rates_unusable_line_does_not_drag_the_average():
     lines = [hline(1, D(100), weight=D(1)), hline(1, D(0), weight=D(1000))]
     index = HistoryIndex([contract(1)], lines, factor_by_estimate=None)
-    assert index.rates("v", 50, is_system=False, class_id=None) == [ContractRate(1, D(100))]
+    assert index.rates("v", 50, is_system=False, class_id=None) == [ContractRate(1, D(100), D(100), 1)]
 
 
 def test_rates_negative_weight_line_does_not_count():
     # вес -1 прошёл бы проверку «не пусто» и стянул бы среднее к (300 - 200) / 2 = 50
     lines = [hline(1, D(100), weight=D(3)), hline(1, D(200), weight=D(-1))]
     index = HistoryIndex([contract(1)], lines, factor_by_estimate=None)
-    assert index.rates("v", 50, is_system=False, class_id=None) == [ContractRate(1, D(100))]
+    assert index.rates("v", 50, is_system=False, class_id=None) == [ContractRate(1, D(100), D(100), 1)]
 
 
 def test_rates_line_of_a_contract_missing_from_the_list_does_not_count():
     lines = [hline(1, D(100)), hline(2, D(900)), hline(3, D(500), base=None)]
     index = HistoryIndex([contract(1)], lines, factor_by_estimate=None)
-    assert index.rates("v", 50, is_system=False, class_id=None) == [ContractRate(1, D(100))]
+    assert index.rates("v", 50, is_system=False, class_id=None) == [ContractRate(1, D(100), D(100), 1)]
     assert index.vat_dropped("v", 50, is_system=False) == []
 
 
 def test_rates_penny_rate_is_kept():
     index = HistoryIndex([contract(1)], [hline(1, D("0.0000001"))], factor_by_estimate=None)
-    assert index.rates("v", 50, is_system=False, class_id=None) == [ContractRate(1, D("0.0000001"))]
+    assert index.rates("v", 50, is_system=False, class_id=None) == [ContractRate(1, D("0.0000001"), D("0.0000001"), 1)]
 
 
 def test_rates_rate_that_adjusts_to_zero_is_not_a_rate():
@@ -392,7 +392,7 @@ def test_rates_rate_that_adjusts_to_zero_is_not_a_rate():
 def test_rates_rate_that_adjusts_to_nan_is_not_a_rate_and_not_counted_on_the_rung():
     lines = [hline(1, D(100)), hline(2, D(120))]
     index = HistoryIndex([contract(1), contract(2)], lines, factor_by_estimate={100: NAN, 200: D(1)})
-    assert index.rates("v", 50, is_system=False, class_id=None) == [ContractRate(2, D(120))]
+    assert index.rates("v", 50, is_system=False, class_id=None) == [ContractRate(2, D(120), D(120), 1)]
     result = one([kp(price=D(130))], index)
     assert result.rungs[0] == RungCount(V_CLS, 1)
     assert result.threshold_met is False
@@ -409,7 +409,10 @@ def test_rates_adjustment_does_not_round_the_nominal_rate_first():
 def test_rates_each_contract_is_adjusted_by_its_own_estimate_factor():
     lines = [hline(1, D(100)), hline(2, D(100))]
     index = HistoryIndex([contract(1), contract(2)], lines, factor_by_estimate={100: D(2), 200: D(3)})
-    assert index.rates("v", 50, is_system=False, class_id=None) == [ContractRate(1, D(200)), ContractRate(2, D(300))]
+    assert index.rates("v", 50, is_system=False, class_id=None) == [
+        ContractRate(1, D(200), D(100), 1),
+        ContractRate(2, D(300), D(100), 1),
+    ]
 
 
 def test_rates_adjustment_is_nominal_times_factor_without_rounding():
@@ -468,8 +471,8 @@ def test_rates_work_and_system_cuts_do_not_mix_on_a_shared_key():
     index = HistoryIndex([contract(1), contract(2, area=D(50))], lines, factor_by_estimate=None)
     works = index.rates("v", 50, is_system=False, class_id=None)
     systems = index.rates("v", 50, is_system=True, class_id=None)
-    assert works == [ContractRate(1, D(100))]
-    assert systems == [ContractRate(2, D(100))]  # 5000 / 50
+    assert works == [ContractRate(1, D(100), D(100), 1)]
+    assert systems == [ContractRate(2, D(100), D(100), 1)]  # 5000 / 50
 
 
 def test_rates_system_rate_is_net_total_over_contract_area():
