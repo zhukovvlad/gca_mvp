@@ -1100,7 +1100,7 @@ def test_kp_file_header_inflation_years_two_sources_give_both_years():
     assert [item["year"] for item in head.inflation_years] == [2024, 2025, 2026]
 
 
-def test_kp_file_header_text_gets_the_apostrophe():
+def test_kp_file_header_text_is_raw_data():
     head = header(tender_title="=Т", object_title="-О", contractor_title="@П")
-    assert (head.tender, head.object, head.contractor) == ("'=Т", "'-О", "'@П")
+    assert (head.tender, head.object, head.contractor) == ("=Т", "-О", "@П")
     assert not head.filename.startswith("'")

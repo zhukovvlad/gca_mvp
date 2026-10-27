@@ -42,6 +42,8 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
+from services.stage_summary import TAX_GROSS, TAX_NET, TAX_NONE
+
 # ---------------------------------------------------------------------------
 #  Стили (перенос из источника)
 # ---------------------------------------------------------------------------
@@ -68,6 +70,7 @@ C_CLASS_TOTAL_BG = "9DC3E6" # итог по классу
 C_TOTAL_BG = "BDD7EE"       # общий итог
 C_ODD = "FFFFFF"
 C_EVEN = "EBF3FB"
+C_OURS_BG = "E2EFDA"        # наши столбцы в файле подрядчику
 C_RED_TEXT = "C00000"       # превышение норматива
 C_GREEN_TEXT = "375623"     # экономия
 
@@ -155,6 +158,101 @@ def write_banner(ws: Worksheet, row: int, text: str, width: int, *, bg: str, siz
     cell.alignment = align(h="left")
     ws.row_dimensions[row].height = 18
     return row + 1
+
+
+def write_caption(ws: Worksheet, row: int, text: str, *, wrap: bool = False) -> int:
+    """Строка подписи без рамки: подписи шапки не часть таблицы, границ у них нет."""
+    cell = ws.cell(row=row, column=1, value=safe_str(text))
+    cell.font = font(bold=True, size=9)
+    cell.alignment = align(h="left", wrap=wrap)
+    return row + 1
+
+
+#: Подписи налогового состава и ценового уровня — печатаются на каждом листе
+#: (AGENTS.md §10). Слова «валовые, как в файлах» и «нетто» держатся дословно.
+TAX_BASIS_CAPTION = {
+    TAX_GROSS: "Деньги: валовые, как в файлах (одна известная ставка НДС на всех этапах)",
+    TAX_NET: "Деньги: нетто (ставки НДС этапов различаются)",
+    TAX_NONE: "Деньги: сумм нет — ни на одном этапе не известна база НДС",
+}
+PRICE_LEVEL_NOMINAL = "номинальный, без приведения"
+PRICE_LEVEL_NOMINAL_CAPTION = f"Ценовой уровень: {PRICE_LEVEL_NOMINAL}"
+
+#: Месяцы в именительном: на листе месяц стоит ПОСЛЕ двоеточия, то есть подписью
+#: («Цены приведены к: август 2026»), а не продолжением фразы. В подписи оси
+#: (`crud.comparison`) он в дательном, потому что там фраза сплошная.
+_MONTHS_NOMINATIVE = (
+    "январь", "февраль", "март", "апрель", "май", "июнь",
+    "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь",
+)
+
+
+def month_label(target_month: str) -> str:
+    year, month = target_month.split("-")
+    return f"{_MONTHS_NOMINATIVE[int(month) - 1]} {year}"
+
+
+def iso_date_to_ru(value: str) -> str:
+    """`2026-01-12T…` → `12.01.2026`. Дата правки ряда печатается по-русски.
+
+    Разбор строкой, а не `datetime.fromisoformat`: значение уже пришло в ответе
+    строкой (`crud.common.iso`), и второе преобразование туда-обратно только
+    добавило бы место, где формат может разойтись.
+    """
+    date_part = value.split("T")[0]
+    year, month, day = date_part.split("-")
+    return f"{day}.{month}.{year}"
+
+
+def write_inflation_block(ws: Worksheet, row: int, inflation: dict, *, lead: str = "Цены приведены к:") -> int:
+    """Ряд, целевой месяц и ПО КАЖДОМУ году — пять фактов (DoD 13, спека инфляции 2026-08-18-inflation-adjustment-design.md §2.10).
+
+    **Печатается только на листе.** Экран показывает примечание ряда и уровни по
+    годам, но НЕ источники: три источника рядом с тремя процентами превращают
+    ориентирующую строку в таблицу. Источник нужен там, где задают вопрос «откуда
+    8,3 %», — а задают его к артефакту защиты перед банком, то есть к файлу.
+    Разделение простое: экран ориентирует, файл защищает (там же, §2.12).
+
+    Пять фактов на год — коэффициент, источник, признак прогноза, дата правки и
+    сам год — потому что версионности у ряда нет (там же, §2.10): воспроизводимость
+    лежит на файле, и защищённые числа заморожены в нём. Год без источника или без
+    даты правки эту роль не исполнил бы.
+
+    `lead` — ведущая фраза первой строки: у выгрузки сравнения «Цены приведены
+    к:», у файла подрядчику «Цены договоров приведены к:».
+    """
+    ws.cell(
+        row=row, column=1,
+        value=safe_str(
+            f"{lead} {month_label(inflation['target_month'])}"
+            f" · ряд: «{inflation['series_name']}»"
+        ),
+    ).font = font(bold=True, size=9)
+    row += 1
+
+    for item in inflation["used_years"]:
+        kind = "прогноз" if item["is_forecast"] else "факт"
+        parts = [
+            str(item["year"]),
+            format(item["coefficient"], "f"),
+            safe_str(item["source"]),
+            kind,
+        ]
+        if item["updated_at"]:
+            parts.append(f"правлен {iso_date_to_ru(item['updated_at'])}")
+        ws.cell(row=row, column=1, value=safe_str(" · ".join(parts))).font = font(size=9)
+        row += 1
+
+    if not inflation["used_years"]:
+        # Пустой список — законное состояние (цель совпала с месяцем сметы, DoD 5),
+        # и молчать о нём нельзя: читатель обязан понять, что приведение включено,
+        # а годов не потребовалось, — иначе он решит, что ряд не доехал до листа.
+        ws.cell(
+            row=row, column=1,
+            value="Коэффициенты за годы не потребовались: цены уже в целевом уровне.",
+        ).font = font(size=9)
+        row += 1
+    return row
 
 
 def write_column_headers(ws: Worksheet, row: int, columns: list[tuple[str, int, str | None, str]]) -> int:

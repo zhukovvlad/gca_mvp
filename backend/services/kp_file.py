@@ -22,7 +22,7 @@ from money.price import is_price, is_weight
 from money.vat import gross_to_net, net_to_gross, quantize_money
 from parser.summary_block import ARITHMETIC_PRECISION
 from responses import safe_filename_part
-from services.excel import safe_str
+from services.excel import PRICE_LEVEL_NOMINAL, safe_str
 from services.kp_comment import (
     CommentInputs,
     InflationLabel,
@@ -359,7 +359,7 @@ def build_header(context: FileContext, rows: Sequence[FileSection | FileLine]) -
         years = inflation_years_for(sources, plan, context.contract_periods)
 
     if context.inflation is None:
-        level_label = "номинальный, без приведения"
+        level_label = PRICE_LEVEL_NOMINAL
     else:
         level_label = (
             f"приведено по ИПЦ: {context.inflation.series_name}, к {context.inflation.month}; КП не приводится"
@@ -370,10 +370,10 @@ def build_header(context: FileContext, rows: Sequence[FileSection | FileLine]) -
         stage += f" от {context.stage_date:%d.%m.%Y}"
     contractor = safe_filename_part(context.contractor_title, fallback="подрядчик")
     return FileHeader(
-        tender=safe_str(context.tender_title),
-        object=safe_str(context.object_title),
+        tender=context.tender_title,
+        object=context.object_title,
         round=stage,
-        contractor=safe_str(context.contractor_title),
+        contractor=context.contractor_title,
         exported_on=f"{context.exported_on:%d.%m.%Y}",
         vat_label=_vat_label(context.kp_vat_base),
         source_label="Цена источника — как записана в договоре, без НДС",
