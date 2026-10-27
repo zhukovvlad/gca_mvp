@@ -35,9 +35,15 @@ import {
   sampleTenderBasis,
   sampleTenderCard,
   sampleTenders,
+  ourPriceLineViewFixture,
+  ourPriceOfferFixture,
+  ourPriceRoundFixture,
 } from "./fixtures";
 import type {
   ContractCandidate,
+  OurPriceLineState,
+  RungLevel,
+  RungScope,
   TenderAward,
   TenderAwardEvent,
   Comparison,
@@ -451,6 +457,27 @@ interface HandlerState {
     | "offer_has_no_estimate";
   /** Последние PUT и DELETE к category-overrides — для проверки тела. */
   roundOverrideRequests: Array<{ method: string; body: Record<string, unknown> }>;
+  /**
+   * «Против нашей цены» (спека 4а §2.12). Отказ приведения: с `inflation_series_id`
+   * в адресе все три эндпоинта отвечают `422` с этим кодом, без него — `200`
+   * (номинальные цифры), как бэкенд.
+   */
+  ourPriceRefusal:
+    | null
+    | "missing_inflation_years"
+    | "amendment_date_missing"
+    | "inflation_target_missing";
+  /**
+   * Последовательности `progress.in_progress` ответов этапа и разбора: n-й запрос
+   * получает n-й элемент, после конца повторяется последний (`[3, 1, 0]` —
+   * опрос, у которого сигнал гаснет).
+   */
+  ourPriceRoundInProgress: number[];
+  ourPriceOfferInProgress: number[];
+  /** Последовательность состояния строки в панели (`["in_progress", "comparable"]`). */
+  ourPriceLineStates: OurPriceLineState[];
+  /** Все запросы трёх эндпоинтов по порядку: вид и адрес с параметрами. */
+  ourPriceRequests: Array<{ kind: "round" | "offer" | "line"; url: string }>;
   /**
    * Исход `GET /api/v1/tenders/:id/changes-export` (спека
    * 2026-09-16-tender-changes-export-design.md §2.1, §2.11, план фичи, Task
@@ -1961,6 +1988,30 @@ function toContextCard(fixture: SemanticContextFixture): ContextCardData {
 /** Активная семья «Кровельные работы» со схемой в фикстуре. */
 export const SCHEMA_FAMILY_ID = 43;
 
+/** `index`-й элемент последовательности; после конца повторяется последний. */
+function nthOf<T>(sequence: T[], index: number): T {
+  return sequence[Math.min(index, sequence.length - 1)];
+}
+
+/** Отказ приведения: `422` с рядом в адресе, `null` (ответ `200`) без него. */
+function ourPriceRefusalResponse(request: Request): Response | null {
+  const code = handlerState.ourPriceRefusal;
+  if (code === null || !new URL(request.url).searchParams.has("inflation_series_id")) return null;
+  const messages = {
+    missing_inflation_years: "В ряду нет значений за 2024 год.",
+    amendment_date_missing: "У допсоглашения договора 1 нет даты подготовки сметы.",
+    inflation_target_missing:
+      "У этапа нет даты проведения, и у КП нет даты подготовки — приведение по ИПЦ не к чему привязать.",
+  } as const;
+  const context =
+    code === "missing_inflation_years"
+      ? { missing_years: [2024] }
+      : code === "amendment_date_missing"
+        ? { estimate_ids: [9001] }
+        : {};
+  return HttpResponse.json({ detail: { code, message: messages[code], ...context } }, { status: 422 });
+}
+
 export const handlerState: HandlerState = {
   jobStatuses: ["done"],
   jobPolls: 0,
@@ -1994,6 +2045,11 @@ export const handlerState: HandlerState = {
   roundUploadConflictCode: "replace_required",
   tenderDeleteOutcome: "ok",
   stageSummaryOutcome: "ok",
+  ourPriceRefusal: null,
+  ourPriceRoundInProgress: [0],
+  ourPriceOfferInProgress: [0],
+  ourPriceLineStates: ["comparable"],
+  ourPriceRequests: [],
   roundOverrideRequests: [],
   changesExportOutcome: "ok",
   lastChangesExportTenderId: null,
@@ -2579,6 +2635,11 @@ export function resetHandlerState() {
   handlerState.roundUploadConflictCode = "replace_required";
   handlerState.tenderDeleteOutcome = "ok";
   handlerState.stageSummaryOutcome = "ok";
+  handlerState.ourPriceRefusal = null;
+  handlerState.ourPriceRoundInProgress = [0];
+  handlerState.ourPriceOfferInProgress = [0];
+  handlerState.ourPriceLineStates = ["comparable"];
+  handlerState.ourPriceRequests = [];
   handlerState.roundOverrideRequests = [];
   handlerState.changesExportOutcome = "ok";
   handlerState.lastChangesExportTenderId = null;
@@ -4166,6 +4227,53 @@ export const handlers = [
         return HttpResponse.json(sampleStageSummary);
     }
   }),
+  /**
+   * «Против нашей цены» (спека 4а §2.12): этап, разбор участника и панель строки.
+   * Ответ выбирается по `handlerState.ourPrice*`; каждый запрос записывается в
+   * `ourPriceRequests`, а n-й ответ опроса берёт n-й элемент последовательности.
+   */
+  http.get("/api/v1/tenders/:id/rounds/:roundId/our-price", ({ request }) => {
+    const refusal = ourPriceRefusalResponse(request);
+    const index = handlerState.ourPriceRequests.filter((r) => r.kind === "round").length;
+    handlerState.ourPriceRequests.push({ kind: "round", url: request.url });
+    if (refusal) return refusal;
+    return HttpResponse.json(
+      ourPriceRoundFixture({
+        inProgress: nthOf(handlerState.ourPriceRoundInProgress, index),
+        withInflation: new URL(request.url).searchParams.has("inflation_series_id"),
+      })
+    );
+  }),
+  http.get("/api/v1/tenders/:id/rounds/:roundId/our-price/offers/:offerId", ({ request }) => {
+    const refusal = ourPriceRefusalResponse(request);
+    const index = handlerState.ourPriceRequests.filter((r) => r.kind === "offer").length;
+    handlerState.ourPriceRequests.push({ kind: "offer", url: request.url });
+    if (refusal) return refusal;
+    return HttpResponse.json(
+      ourPriceOfferFixture({
+        inProgress: nthOf(handlerState.ourPriceOfferInProgress, index),
+        withInflation: new URL(request.url).searchParams.has("inflation_series_id"),
+      })
+    );
+  }),
+  http.get(
+    "/api/v1/tenders/:id/rounds/:roundId/our-price/offers/:offerId/lines/:positionItemId",
+    ({ request }) => {
+      const refusal = ourPriceRefusalResponse(request);
+      const index = handlerState.ourPriceRequests.filter((r) => r.kind === "line").length;
+      handlerState.ourPriceRequests.push({ kind: "line", url: request.url });
+      if (refusal) return refusal;
+      const params = new URL(request.url).searchParams;
+      const level = params.get("level") as RungLevel | null;
+      const scope = params.get("scope") as RungScope | null;
+      return HttpResponse.json(
+        ourPriceLineViewFixture({
+          lineState: nthOf(handlerState.ourPriceLineStates, index),
+          rung: level && scope ? { level, scope } : null,
+        })
+      );
+    }
+  ),
   /**
    * Книга «Изменения КП» (спека 2026-09-16-tender-changes-export-design.md
    * §2.1, §2.11, план фичи, Task 5). Тот же приём блоб-ответа, что у выгрузок

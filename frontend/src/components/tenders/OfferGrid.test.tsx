@@ -11,9 +11,11 @@ import { renderWithProviders } from "@/test/utils";
 import type { TenderAward, TenderCard } from "@/types/domain";
 
 /**
- * Решётка и отметка победителя (спека Б2 §2.8, макет экраны 1–2): меню «⋯»
- * только у КП финального этапа и только пока действующей отметки нет; строка
- * победителя подсвечена, в его финальной ячейке — значок «победитель».
+ * Решётка и отметка победителя (спека Б2 §2.8, макет экраны 1–2; спека 4а
+ * §2.13): меню «⋯» у каждой ячейки с КП и сметой, в нём «Против нашей цены»;
+ * пункт «Отметить победителем» — только `admin`, только в финальном этапе и
+ * только пока действующей отметки нет; строка победителя подсвечена, в его
+ * финальной ячейке — значок «победитель».
  */
 const [round1, round2] = sampleTenderCard.rounds;
 
@@ -50,48 +52,76 @@ function renderGrid(card: TenderCard, options?: Parameters<typeof renderWithProv
 
 const MEMBER = { id: 2, email: "member@example.com", role: "member" } as const;
 const triggers = () => screen.queryAllByRole("button", { name: /Действия с КП/ });
+const AWARD_ITEM = "Отметить победителем";
+const OUR_PRICE_ITEM = "Против нашей цены";
+
+/** Пункты меню «⋯»: открыть, прочитать подписи, закрыть. */
+async function itemsOf(user: ReturnType<typeof userEvent.setup>, trigger: HTMLElement): Promise<string[]> {
+  await user.click(trigger);
+  const names = (await screen.findAllByRole("menuitem")).map((item) => item.textContent ?? "");
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(screen.queryByRole("menuitem")).toBeNull());
+  return names;
+}
 
 describe("OfferGrid: меню отметки победителя", () => {
-  it("меню у КП финального этапа обоих участников, у ячеек этапа 1 меню нет", () => {
+  it("пункт «Отметить победителем» есть только в ячейке финального этапа, в этапе 1 того же участника его нет", async () => {
+    const user = userEvent.setup();
     renderGrid(bothFinal);
 
-    expect(triggers().map((t) => t.getAttribute("aria-label"))).toEqual([
-      "Действия с КП участника «ООО Альфа»",
-      "Действия с КП участника «ООО Бета»",
-    ]);
-    // Этап 1 у Альфы с КП есть — но он не финальный: меню не в его ячейке.
     const alphaRow = screen.getByText("ООО Альфа").closest("tr") as HTMLElement;
     const cells = within(alphaRow).getAllByRole("cell");
-    expect(within(cells[1]).queryByRole("button", { name: /Действия с КП/ })).toBeNull();
-    expect(within(cells[2]).getByRole("button", { name: /Действия с КП/ })).toBeInTheDocument();
+    const stage1 = within(cells[1]).getByRole("button", { name: /Действия с КП/ });
+    const stage2 = within(cells[2]).getByRole("button", { name: /Действия с КП/ });
+    expect(await itemsOf(user, stage1)).toEqual([OUR_PRICE_ITEM]);
+    expect(await itemsOf(user, stage2)).toEqual([OUR_PRICE_ITEM, AWARD_ITEM]);
   });
 
-  it("финальный этап — по наибольшему stage_no, а не по порядку в списке", () => {
+  it("финальный этап — по наибольшему stage_no, а не по порядку в списке", async () => {
+    const user = userEvent.setup();
     renderGrid({ ...bothFinal, rounds: [bothFinal.rounds[1], bothFinal.rounds[0]] });
 
-    expect(triggers()).toHaveLength(2);
     const alphaRow = screen.getByText("ООО Альфа").closest("tr") as HTMLElement;
     const stage2Cell = within(alphaRow).getByText(/1\s100,00/).closest("td") as HTMLElement;
-    expect(within(stage2Cell).getByRole("button", { name: /Действия с КП/ })).toBeInTheDocument();
+    const stage1Cell = within(alphaRow).getByText(/1\s200,00/).closest("td") as HTMLElement;
+    expect(await itemsOf(user, within(stage2Cell).getByRole("button", { name: /Действия с КП/ }))).toContain(AWARD_ITEM);
+    expect(await itemsOf(user, within(stage1Cell).getByRole("button", { name: /Действия с КП/ }))).not.toContain(AWARD_ITEM);
   });
 
-  it("пустая ячейка финала («—») и «нет сметы» меню не получают", () => {
-    // Исходная фикстура: у Альфы финал пуст, у Беты предложение есть, а сметы нет.
+  it("пустая ячейка («—») и «нет сметы» меню не получают, ячейка с КП — получает", () => {
+    // Исходная фикстура: у Альфы этап 1 с КП, финал пуст; у Беты этап 1 пуст,
+    // в финале предложение есть, а сметы нет.
     renderGrid(sampleTenderCard);
 
-    expect(triggers()).toHaveLength(0);
+    expect(triggers()).toHaveLength(1);
+    const alphaCells = within(screen.getByText("ООО Альфа").closest("tr") as HTMLElement).getAllByRole("cell");
+    const betaCells = within(screen.getByText("ООО Бета").closest("tr") as HTMLElement).getAllByRole("cell");
+    expect(within(alphaCells[1]).getByRole("button", { name: /Действия с КП/ })).toBeInTheDocument();
+    expect(within(alphaCells[2]).queryByRole("button", { name: /Действия с КП/ })).toBeNull();
+    expect(within(betaCells[1]).queryByRole("button", { name: /Действия с КП/ })).toBeNull();
+    expect(within(betaCells[2]).queryByRole("button", { name: /Действия с КП/ })).toBeNull();
   });
 
-  it("при действующей отметке меню нет нигде", () => {
+  it("при действующей отметке пункта «Отметить победителем» нет ни в одном меню", async () => {
+    const user = userEvent.setup();
     renderGrid(withAward(bothFinal, sampleTenderAward));
 
-    expect(triggers()).toHaveLength(0);
+    const all = triggers();
+    expect(all).toHaveLength(3);
+    for (const trigger of all) {
+      expect(await itemsOf(user, trigger)).toEqual([OUR_PRICE_ITEM]);
+    }
   });
 
-  it("member меню не видит", () => {
+  it("member пункта «Отметить победителем» не видит", async () => {
+    const user = userEvent.setup();
     renderGrid(bothFinal, { initialUser: MEMBER });
 
-    expect(triggers()).toHaveLength(0);
+    const all = triggers();
+    expect(all).toHaveLength(3);
+    for (const trigger of all) {
+      expect(await itemsOf(user, trigger)).toEqual([OUR_PRICE_ITEM]);
+    }
   });
 
   it("пункт «Отметить победителем» подписан КП и этапом и шлёт offer_id этой ячейки", async () => {
@@ -154,10 +184,54 @@ describe("OfferGrid: меню отметки победителя", () => {
     const user = userEvent.setup();
     renderGrid(bothFinal);
 
-    await user.click(screen.getByRole("button", { name: "Действия с КП участника «ООО Альфа»" }));
+    // У Альфы КП в двух этапах: меню финала — последнее из её меню.
+    await user.click(screen.getAllByRole("button", { name: "Действия с КП участника «ООО Альфа»" }).at(-1) as HTMLElement);
     await user.click(await screen.findByRole("menuitem", { name: "Отметить победителем" }));
 
     expect(await screen.findByText(/В тендере уже отмечен победитель — ТОО Монолит/)).toBeInTheDocument();
+  });
+});
+
+describe("OfferGrid: вход «Против нашей цены» в меню ячейки", () => {
+  it("меню есть у каждой ячейки с КП и сметой — во всех этапах и у всех ролей", () => {
+    renderGrid(bothFinal);
+    expect(triggers().map((t) => t.getAttribute("aria-label"))).toEqual([
+      "Действия с КП участника «ООО Альфа»",
+      "Действия с КП участника «ООО Альфа»",
+      "Действия с КП участника «ООО Бета»",
+    ]);
+  });
+
+  it("у member и при действующей отметке пункт — та же ссылка на разбор", async () => {
+    const user = userEvent.setup();
+    renderGrid(withAward(bothFinal, sampleTenderAward), { initialUser: MEMBER });
+
+    const betaCells = within(screen.getByText("ООО Бета").closest("tr") as HTMLElement).getAllByRole("cell");
+    await user.click(within(betaCells[2]).getByRole("button", { name: /Действия с КП/ }));
+    expect(await screen.findByRole("menuitem", { name: OUR_PRICE_ITEM })).toHaveAttribute(
+      "href",
+      "/tenders/300/rounds/3002/our-price/offers/7002"
+    );
+  });
+
+  it("пункт ведёт в разбор оффера ЭТОЙ ячейки этого этапа, без параметров экрана", async () => {
+    const user = userEvent.setup();
+    renderGrid(bothFinal);
+
+    const alphaCells = within(screen.getByText("ООО Альфа").closest("tr") as HTMLElement).getAllByRole("cell");
+    await user.click(within(alphaCells[1]).getByRole("button", { name: /Действия с КП/ }));
+    expect(await screen.findByRole("menuitem", { name: OUR_PRICE_ITEM })).toHaveAttribute(
+      "href",
+      "/tenders/300/rounds/3001/our-price/offers/7001"
+    );
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("menuitem")).toBeNull());
+
+    await user.click(within(alphaCells[2]).getByRole("button", { name: /Действия с КП/ }));
+    expect(await screen.findByRole("menuitem", { name: OUR_PRICE_ITEM })).toHaveAttribute(
+      "href",
+      "/tenders/300/rounds/3002/our-price/offers/7003"
+    );
   });
 });
 

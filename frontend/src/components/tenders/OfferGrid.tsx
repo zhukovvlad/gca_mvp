@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { Check, MoreHorizontal, Trash2 } from "lucide-react";
 
 import { ParticipantDeleteDialog } from "@/components/tenders/ParticipantDeleteDialog";
@@ -20,6 +21,7 @@ import { Toggle } from "@/components/ui/toggle";
 import { useCurrentUser } from "@/hooks/useAuth";
 import { formatDecimalMoney } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { OUR_PRICE_ENTRY_LABEL } from "@/pages/tenders/our-price/ourPriceCopy";
 import { useAwardWinner } from "@/services/queries";
 import type { TenderCard, TenderParticipant } from "@/types/domain";
 
@@ -226,14 +228,14 @@ export function OfferGrid({
                           />
                         )}
                       </Toggle>
-                      {canAward && round.stage_no === finalStageNo && (
-                        <AwardCellMenu
-                          tenderId={card.id}
-                          offerId={offerId}
-                          participantTitle={participant.title}
-                          stageNo={round.stage_no}
-                        />
-                      )}
+                      <OfferCellMenu
+                        tenderId={card.id}
+                        roundId={round.id}
+                        offerId={offerId}
+                        participantTitle={participant.title}
+                        stageNo={round.stage_no}
+                        canAward={canAward && round.stage_no === finalStageNo}
+                      />
                       </div>
                       {foreign && (
                         <span id={foreignReasonId} className="sr-only">
@@ -268,20 +270,26 @@ export function OfferGrid({
 }
 
 /**
- * Меню «⋯» ячейки финального этапа с КП (макет, экран 1): единственный пункт —
- * «Отметить победителем». Подпись меню называет КП и этап, чтобы выбор был
- * осознанным.
+ * Меню «⋯» ячейки с КП и сметой (макет, экран 1) — у каждой такой ячейки, в любом
+ * этапе и у любой роли. «Против нашей цены» ведёт в разбор этого КП в его этапе
+ * (спека 4а §2.13); «Отметить победителем» — только при `canAward`: админ,
+ * финальный этап, действующей отметки нет. Подпись меню называет КП и этап, чтобы
+ * выбор был осознанным.
  */
-function AwardCellMenu({
+function OfferCellMenu({
   tenderId,
+  roundId,
   offerId,
   participantTitle,
   stageNo,
+  canAward,
 }: {
   tenderId: number;
+  roundId: number;
   offerId: number;
   participantTitle: string;
   stageNo: number;
+  canAward: boolean;
 }) {
   const award = useAwardWinner(tenderId);
   return (
@@ -298,9 +306,16 @@ function AwardCellMenu({
           <DropdownMenuLabel>
             КП {participantTitle} · этап {stageNo}
           </DropdownMenuLabel>
-          <DropdownMenuItem disabled={award.isPending} onClick={() => award.mutate(offerId)}>
-            Отметить победителем
+          <DropdownMenuItem
+            render={<Link to={`/tenders/${tenderId}/rounds/${roundId}/our-price/offers/${offerId}`} />}
+          >
+            {OUR_PRICE_ENTRY_LABEL}
           </DropdownMenuItem>
+          {canAward && (
+            <DropdownMenuItem disabled={award.isPending} onClick={() => award.mutate(offerId)}>
+              Отметить победителем
+            </DropdownMenuItem>
+          )}
         </DropdownMenuGroup>
       </DropdownMenuContent>
     </DropdownMenu>

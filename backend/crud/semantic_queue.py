@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Collection
 from decimal import Decimal
 from typing import Literal, TypedDict
 
@@ -733,6 +734,40 @@ def _new_queue(db: Session, *, unit_id: UnitFilter, multi_owner_only: bool) -> l
             )
         )
     return items
+
+
+def open_suggestion_queues(db: Session, context_ids: Collection[int]) -> dict[int, Literal["list", "new"]]:
+    """Контекст → очередь «Предложения», где администратор видит его открытое
+    предложение: `list` (предложена существующая семья) или `new` (новая семья).
+    Только контексты без семьи; предложение опубликовано, не решено и на текущий
+    отпечаток запроса — те же условия, что у `_list_queue` и `_new_queue`.
+    Контекстов, чьё предложение очередь скрывает, в ответе нет.
+
+    Запросов фиксированное число, сколько бы контекстов ни спросили: выборка
+    предложений и пакетная загрузка материала запроса.
+    """
+    ids = sorted(set(context_ids))
+    if not ids:
+        return {}
+    found = db.execute(
+        sa.select(FamilySuggestion.context_id, FamilySuggestion.family_id, FamilySuggestion.request_hash)
+        .join(CatalogContext, CatalogContext.id == FamilySuggestion.context_id)
+        .where(
+            FamilySuggestion.context_id.in_(ids),
+            FamilySuggestion.is_published.is_(True),
+            FamilySuggestion.decision.is_(None),
+            CatalogContext.work_family_id.is_(None),
+        )
+    ).all()
+    if not found:
+        return {}
+    materials = load_request_material(db, {row.context_id for row in found})
+    fingerprints = _UnitFingerprints()
+    return {
+        row.context_id: "list" if row.family_id is not None else "new"
+        for row in found
+        if fingerprints.is_current(materials[row.context_id], row.request_hash)
+    }
 
 
 def list_suggestions(

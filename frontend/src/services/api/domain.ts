@@ -94,6 +94,11 @@ import type {
   ReviewQueueParams,
   RoundImportJob,
   RoundInput,
+  OurPriceLineView,
+  OurPriceOffer,
+  OurPriceRound,
+  RungLevel,
+  RungScope,
   RoundUnallocated,
   SetNameRoleInput,
   SetRoundCategoryOverrideInput,
@@ -405,6 +410,48 @@ export const tendersApi = {
         params: { offers: offerIds },
         paramsSerializer: { indexes: null },
       })
+      .then((r) => r.data),
+  /**
+   * Экран этапа «Против нашей цены» (спека 4а §2.12). `seriesId = null` — запрос
+   * без `inflation_series_id`: ключа приведения в ответе нет.
+   */
+  ourPriceRound: (tenderId: number, roundId: number, seriesId: number | null): Promise<OurPriceRound> =>
+    api
+      .get<OurPriceRound>(`/v1/tenders/${tenderId}/rounds/${roundId}/our-price`, {
+        params: seriesId === null ? undefined : { inflation_series_id: seriesId },
+      })
+      .then((r) => r.data),
+  /** Разбор участника: статьи с суммами и все строки его КП. */
+  ourPriceOffer: (
+    tenderId: number,
+    roundId: number,
+    offerId: number,
+    seriesId: number | null
+  ): Promise<OurPriceOffer> =>
+    api
+      .get<OurPriceOffer>(`/v1/tenders/${tenderId}/rounds/${roundId}/our-price/offers/${offerId}`, {
+        params: seriesId === null ? undefined : { inflation_series_id: seriesId },
+      })
+      .then((r) => r.data),
+  /** Панель строки; `rung = null` — автоматическая ступень, без `level` и `scope` в адресе. */
+  ourPriceLine: (
+    tenderId: number,
+    roundId: number,
+    offerId: number,
+    positionItemId: number,
+    rung: { level: RungLevel; scope: RungScope } | null,
+    seriesId: number | null
+  ): Promise<OurPriceLineView> =>
+    api
+      .get<OurPriceLineView>(
+        `/v1/tenders/${tenderId}/rounds/${roundId}/our-price/offers/${offerId}/lines/${positionItemId}`,
+        {
+          params: {
+            ...(rung === null ? {} : { level: rung.level, scope: rung.scope }),
+            ...(seriesId === null ? {} : { inflation_series_id: seriesId }),
+          },
+        }
+      )
       .then((r) => r.data),
   roundUnallocated: (tenderId: number, roundId: number): Promise<RoundUnallocated> =>
     api.get<RoundUnallocated>(`/v1/tenders/${tenderId}/rounds/${roundId}/unallocated`).then((r) => r.data),

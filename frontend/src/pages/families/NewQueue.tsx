@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Pager } from "@/components/domain/Pager";
 import { EmptyState } from "@/components/ui-domain/EmptyState";
@@ -18,6 +18,8 @@ interface NewQueueProps {
   /** Код единицы (`M2`) → символ (`м²`). */
   unitLabel: (code: string | null) => string;
   onOpenFamily?: (familyId: number) => void;
+  /** Контекст, предложение которого подсвечено (вход по ссылке); `null` — нет. */
+  highlightContextId?: number | null;
 }
 
 /** Строка контекста: наименование, статья и путь — как в очереди «Семья из списка». */
@@ -65,12 +67,21 @@ function AiAnswer({ row }: { row: NewRow }) {
  * семья» с именем от ИИ и «Завести семью…»; строки единиц без активных семей
  * модель не видела — для них семью заводят на вкладке «Семьи».
  */
-export function NewQueue({ rows, unitLabel, onOpenFamily }: NewQueueProps) {
-  const [page, setPage] = useState(1);
+export function NewQueue({ rows, unitLabel, onOpenFamily, highlightContextId = null }: NewQueueProps) {
   const [pageSize, setPageSize] = usePersistedPageSize(
     "gca.families.suggestions.new.pageSize",
     DEFAULT_PAGE_SIZE
   );
+  const isTarget = (row: NewRow) => row.suggestion_id !== null && row.context_id === highlightContextId;
+  // Вход по ссылке открывает страницу с подсвеченной строкой; дальше страницу листает человек.
+  const [page, setPage] = useState(() => {
+    const index = rows.findIndex(isTarget);
+    return index < 0 ? 1 : Math.floor(index / pageSize) + 1;
+  });
+  const targetRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    targetRef.current?.scrollIntoView?.({ block: "center" });
+  }, [highlightContextId]);
   const [creating, setCreating] = useState<(NewRow & { suggestion_id: number }) | null>(null);
 
   if (rows.length === 0) {
@@ -100,10 +111,12 @@ export function NewQueue({ rows, unitLabel, onOpenFamily }: NewQueueProps) {
         {pageRows.map((row) => (
           <div
             key={row.context_id}
+            ref={isTarget(row) ? targetRef : undefined}
             data-testid="new-row"
+            data-highlighted={isTarget(row) ? "true" : undefined}
             className={`${GRID} border-b border-border-subtle last:border-b-0 ${
               row.suggestion_id === null ? "bg-surface-hover" : ""
-            }`}
+            } ${isTarget(row) ? "bg-accent-soft ring-2 ring-inset ring-accent-border" : ""}`}
           >
             <div className="text-fg-tertiary">{unitLabel(row.unit_code)}</div>
             <AiAnswer row={row} />

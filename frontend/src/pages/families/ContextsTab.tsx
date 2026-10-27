@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Search, X } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
 
 import { EntityCombobox } from "@/components/domain/EntityCombobox";
 import { Pager } from "@/components/domain/Pager";
@@ -33,6 +34,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { parseId } from "@/lib/urlParams";
 import { cn } from "@/lib/utils";
 import { useDebounce } from "@/lib/useDebounce";
 import { useSemanticContexts, useWorkFamilies } from "@/services/queries";
@@ -129,6 +131,9 @@ function familyHint(family: WorkFamily): string | undefined {
   return hint || undefined;
 }
 
+/** Параметр адреса, которым выбранный контекст открывается ссылкой (`/families?context=<id>`). */
+const CONTEXT_PARAM = "context";
+
 interface ContextsTabProps {
   /** Семья, показанная кнопкой «Показать контексты» вкладки «Семьи»; после применения вкладка сообщает `onFocusShown`. */
   focusFamilyId?: number | null;
@@ -166,7 +171,39 @@ export function ContextsTab({ focusFamilyId = null, onFocusShown }: ContextsTabP
     "gca.families.contexts.pageSize",
     DEFAULT_PAGE_SIZE
   );
-  const [selectedContextId, setSelectedContextId] = useState<number | null>(null);
+  // Контекст из адреса: карточка открыта по нему, и выдача списка (фильтр,
+  // другая страница) выбор не снимает — карточка грузится по id, а не из списка.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const urlContextId = parseId(searchParams.get(CONTEXT_PARAM));
+  const [linkedContextId, setLinkedContextId] = useState(urlContextId);
+  const [selectedContextId, setSelectedContextId] = useState<number | null>(urlContextId);
+
+  // Адрес сменили снаружи (пункт меню «Семьи», ссылка на другой контекст): выбор
+  // следует за ним. Свою запись в адрес (она совпадает с выбором) за внешнюю смену
+  // не считаем. Правка состояния во время рендера, тем же приёмом, что ниже.
+  const [seenUrlContextId, setSeenUrlContextId] = useState(urlContextId);
+  if (urlContextId !== seenUrlContextId) {
+    setSeenUrlContextId(urlContextId);
+    if (urlContextId !== selectedContextId) {
+      setSelectedContextId(urlContextId);
+      setLinkedContextId(urlContextId);
+    }
+  }
+
+  // Выбор строки отражается в адресе (замена записи, без шага в истории), чтобы
+  // карточку можно было открыть ссылкой и сохранить.
+  useEffect(() => {
+    if (urlContextId === selectedContextId) return;
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (selectedContextId === null) next.delete(CONTEXT_PARAM);
+        else next.set(CONTEXT_PARAM, String(selectedContextId));
+        return next;
+      },
+      { replace: true }
+    );
+  }, [selectedContextId, urlContextId, setSearchParams]);
 
   const search = useDebounce(searchInput, 300);
   const familiesQ = useWorkFamilies();
@@ -239,6 +276,7 @@ export function ContextsTab({ focusFamilyId = null, onFocusShown }: ContextsTabP
   // === null`, и всё условие ложно на следующем рендере той же выдачи.
   if (
     selectedContextId !== null &&
+    selectedContextId !== linkedContextId &&
     data &&
     !data.items.some((row) => row.id === selectedContextId)
   ) {

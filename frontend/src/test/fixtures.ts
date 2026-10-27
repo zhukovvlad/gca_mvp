@@ -31,6 +31,19 @@ import type {
   RoundUnallocated,
   StagePositions,
   StagePositionsRow,
+  MoneyPair,
+  OurPriceCell,
+  OurPriceFork,
+  OurPriceInflation,
+  OurPriceLine,
+  OurPriceLineState,
+  OurPriceLineView,
+  OurPriceOffer,
+  OurPriceProgress,
+  OurPriceRound,
+  OurPriceTotals,
+  RungLevel,
+  RungScope,
   StageSummary,
   StageSummaryCell,
   StageSummaryChange,
@@ -2706,3 +2719,264 @@ export const sampleRoundUnallocated: RoundUnallocated = {
   ],
   category_options: sampleProjectPassport.category_options,
 };
+
+// ---------------------------------------------------------------------------
+//  «Против нашей цены» (спека 4а §2.12). Форма — как у ответов бэкенда;
+//  названия обезличены, числа выдуманы.
+// ---------------------------------------------------------------------------
+
+export const OUR_PRICE_TENDER_ID = 300;
+export const OUR_PRICE_ROUND_ID = 31;
+export const OUR_PRICE_OFFER_ID = 7001;
+export const OUR_PRICE_LINE_ID = 5001;
+
+/** Ряд ИПЦ фикстур приведения. */
+export const OUR_PRICE_SERIES_ID = 3;
+
+const pair = (net: string, shown: string | null): MoneyPair => ({ net, shown });
+
+function ourPriceInflation(): OurPriceInflation {
+  return {
+    series_id: OUR_PRICE_SERIES_ID,
+    series_name: "Ряд А",
+    series_note: null,
+    series_updated_at: null,
+    target_month: "2026-03",
+    has_forecast: false,
+    used_years: [],
+    sentence: "Цены приведены к марту 2026 по ряду «Ряд А».",
+  };
+}
+
+function ourPriceProgress(inProgress: number): OurPriceProgress {
+  return { lines_total: 10, in_progress: inProgress, waiting_admin: 0 };
+}
+
+function ourPriceTotals(): OurPriceTotals {
+  return {
+    bargain: pair("120000.00", "146400.00"),
+    below: pair("-30000.00", "-36600.00"),
+    below_lines: 2,
+    unit_mismatch_lines: 1,
+    unit_mismatch_amount: pair("5000.00", "6100.00"),
+    not_comparable: {
+      total: pair("8000.00", "9760.00"),
+      by_state: { no_history: { lines: 2, amount: pair("8000.00", "9760.00") } },
+    },
+  };
+}
+
+const OUR_PRICE_FORK: OurPriceFork = {
+  min: pair("90000", "109800"),
+  max: pair("130000", "158600"),
+};
+
+function ourPriceCell(perSqm: MoneyPair | null): OurPriceCell {
+  return {
+    per_sqm: perSqm,
+    whole: perSqm === null ? null : pair("500000.00", "610000.00"),
+    unit_mismatch_lines: 0,
+    ours_class_per_sqm: perSqm === null ? null : OUR_PRICE_FORK,
+  };
+}
+
+/** Ответ экрана этапа: три участника (КП с базой, КП без сметы, КП с неизвестной базой). */
+export function ourPriceRoundFixture(
+  opts: { inProgress?: number; withInflation?: boolean; stageNo?: number } = {}
+): OurPriceRound {
+  const perSqmA = pair("110000", "134200");
+  const cells = [
+    { offer_id: 7001, ...ourPriceCell(perSqmA) },
+    { offer_id: 7002, ...ourPriceCell(null) },
+    { offer_id: 7003, ...ourPriceCell(null) },
+  ];
+  return {
+    tender: {
+      id: OUR_PRICE_TENDER_ID,
+      title: "Тендер Т",
+      object: { id: 21, title: "Объект Т", area_total_sp: "5000" },
+      rate_class: { id: 2, title: "Класс 2" },
+    },
+    round: { id: OUR_PRICE_ROUND_ID, stage_no: opts.stageNo ?? 3, label: null, held_on: "2026-03-10" },
+    progress: ourPriceProgress(opts.inProgress ?? 0),
+    history: {
+      contracts: [
+        {
+          id: 101,
+          number: "Договор 1",
+          object_title: "Объект Ж",
+          year: 2025,
+          rate_class: { id: 2, title: "Класс 2" },
+          contractor_id: 401,
+          area: "4000",
+        },
+      ],
+      shown_rate: null,
+      per_sqm: [{ contract_id: 101, net: "100000", shown: null }],
+    },
+    ...(opts.withInflation ? { inflation: ourPriceInflation() } : {}),
+    participants: [
+      {
+        offer_id: 7001,
+        estimate_id: 9001,
+        contractor: { id: 401, title: "Подрядчик А" },
+        vat_rate: "22",
+        state: "ok",
+        per_sqm: perSqmA,
+        per_sqm_reason: null,
+        class_median_pct: "10.0",
+        ours_with_contractor: 1,
+        totals: ourPriceTotals(),
+      },
+      {
+        offer_id: 7002,
+        estimate_id: null,
+        contractor: { id: 402, title: "Подрядчик Б" },
+        vat_rate: null,
+        state: "no_estimate",
+        per_sqm: null,
+        per_sqm_reason: null,
+        class_median_pct: null,
+        ours_with_contractor: 0,
+        totals: null,
+      },
+      {
+        offer_id: 7003,
+        estimate_id: 9003,
+        contractor: { id: 403, title: "Подрядчик В" },
+        vat_rate: null,
+        state: "unknown_vat_base",
+        per_sqm: null,
+        per_sqm_reason: "unknown_vat_base",
+        class_median_pct: null,
+        ours_with_contractor: 0,
+        totals: null,
+      },
+    ],
+    articles: [
+      {
+        work_category_id: 11,
+        code: "01",
+        title: "Статья 1",
+        sort_order: 1,
+        ours_class_per_sqm: OUR_PRICE_FORK,
+        cells,
+      },
+    ],
+    total: {
+      work_category_id: null,
+      code: null,
+      title: "Итого на м² объекта",
+      sort_order: null,
+      ours_class_per_sqm: OUR_PRICE_FORK,
+      cells,
+    },
+  };
+}
+
+/** Строка разбора: по умолчанию сопоставимая работа на автоматической ступени. */
+export function ourPriceLineFixture(overrides: Partial<OurPriceLine> = {}): OurPriceLine {
+  return {
+    position_item_id: OUR_PRICE_LINE_ID,
+    context_id: 501,
+    unit_id: 3,
+    article_id: 11,
+    title: "Работа 1",
+    unit: "м2",
+    quantity: "100",
+    section_ref: "1.1",
+    family: "Семья 1",
+    variant_label: "Семья 1 · Вариант 1",
+    secondary: [{ name: "Цвет", value: "серый" }],
+    state: "comparable",
+    waiting_admin: false,
+    suggestion_queue: null,
+    kind: "work",
+    kp: { unit_price: pair("1200", "1464"), total: pair("120000.00", "146400.00") },
+    rung: { level: "v", scope: "cls", auto: true, threshold_met: true },
+    rungs: [
+      { level: "v", scope: "cls", contracts: 3 },
+      { level: "v", scope: "all", contracts: 5 },
+      { level: "f", scope: "cls", contracts: 4 },
+      { level: "f", scope: "all", contracts: 6 },
+    ],
+    range: { min: pair("900", "1098"), max: pair("1300", "1586"), median: pair("1100", "1342") },
+    ours: { value: pair("1000", "1220"), from_all_classes: false },
+    position: "in",
+    to_ours: pair("20000.00", "24400.00"),
+    bargain: pair("20000.00", "24400.00"),
+    below: null,
+    group: null,
+    unit_mismatch: null,
+    ...overrides,
+  };
+}
+
+/** Разбор участника 7001; `inProgress` — число строк, которые каталог ещё разбирает. */
+export function ourPriceOfferFixture(
+  opts: { inProgress?: number; withInflation?: boolean; lineState?: OurPriceLineState } = {}
+): OurPriceOffer {
+  const round = ourPriceRoundFixture({ inProgress: opts.inProgress, withInflation: opts.withInflation });
+  const cell = ourPriceCell(round.participants[0].per_sqm);
+  return {
+    tender: round.tender,
+    round: round.round,
+    progress: round.progress,
+    history: round.history,
+    ...(round.inflation ? { inflation: round.inflation } : {}),
+    participants: [round.participants[0]],
+    articles: [
+      {
+        work_category_id: 11,
+        code: "01",
+        title: "Статья 1",
+        sort_order: 1,
+        ...cell,
+        lines_totals: ourPriceTotals(),
+      },
+    ],
+    total: {
+      work_category_id: null,
+      code: null,
+      title: "Итого на м² объекта",
+      sort_order: null,
+      ...cell,
+    },
+    lines: [ourPriceLineFixture({ state: opts.lineState ?? "comparable" })],
+  };
+}
+
+/** Панель строки: договоры выбранной ступени (без `rung` — автоматической). */
+export function ourPriceLineViewFixture(
+  opts: { lineState?: OurPriceLineState; rung?: { level: RungLevel; scope: RungScope } | null } = {}
+): OurPriceLineView {
+  const rung = opts.rung ?? null;
+  return {
+    line: ourPriceLineFixture({
+      state: opts.lineState ?? "comparable",
+      rung: {
+        level: rung?.level ?? "v",
+        scope: rung?.scope ?? "cls",
+        auto: rung === null,
+        threshold_met: true,
+      },
+    }),
+    group_lines: [],
+    contracts: [
+      {
+        contract_id: 101,
+        object_title: "Объект Ж",
+        number: "Договор 1",
+        year: 2025,
+        rate_class: { id: 2, title: "Класс 2" },
+        contractor_id: 401,
+        contractor_title: "Подрядчик А",
+        rate: pair("900", "1098"),
+        is_lower_bound: true,
+        with_this_contractor: true,
+        ratio: null,
+      },
+    ],
+    vat_dropped: [],
+  };
+}

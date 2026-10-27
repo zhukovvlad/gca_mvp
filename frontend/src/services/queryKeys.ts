@@ -185,6 +185,32 @@ export const qk = {
     /** Кандидаты на привязку к отметке победителя (спека Б2 §2.6). */
     contractCandidates: (tenderId: number, awardId: number) =>
       ["tenders", "contract-candidates", tenderId, awardId] as const,
+    /**
+     * «Против нашей цены» (спека 4а §2.12). Все ключи — под одним префиксом
+     * `["tenders", "our-price", …]`, отдельно от прочих ключей тендера, и
+     * иерархичны: `ourPriceOffersOfRound` — префикс всех разборов этапа,
+     * `ourPriceLinesOfOffer` — префикс всех панелей строк участника. Новый ответ
+     * этапа инвалидирует первый, новый ответ разбора — второй; ряд ИПЦ (или его
+     * отсутствие, `null`) — последний элемент ключа.
+     */
+    ourPriceRound: (tenderId: number, roundId: number, seriesId: number | null) =>
+      ["tenders", "our-price", "round", tenderId, roundId, seriesId] as const,
+    ourPriceOffersOfRound: (tenderId: number, roundId: number) =>
+      ["tenders", "our-price", "offer", tenderId, roundId] as const,
+    ourPriceOffer: (tenderId: number, roundId: number, offerId: number, seriesId: number | null) =>
+      ["tenders", "our-price", "offer", tenderId, roundId, offerId, seriesId] as const,
+    ourPriceLinesOfOffer: (tenderId: number, roundId: number, offerId: number) =>
+      ["tenders", "our-price", "line", tenderId, roundId, offerId] as const,
+    ourPriceLine: (
+      tenderId: number,
+      roundId: number,
+      offerId: number,
+      positionItemId: number,
+      level: string | null,
+      scope: string | null,
+      seriesId: number | null
+    ) =>
+      ["tenders", "our-price", "line", tenderId, roundId, offerId, positionItemId, level, scope, seriesId] as const,
   },
 
   /** Семьи работ (спека 2026-09-22-catalog-families-design.md §2.7, §2.10). */

@@ -41,6 +41,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCurrentUser } from "@/hooks/useAuth";
 import { formatDate } from "@/lib/format";
+import { OUR_PRICE_ENTRY_LABEL, OUR_PRICE_ENTRY_NO_ESTIMATES } from "@/pages/tenders/our-price/ourPriceCopy";
 import {
   useCreateRound,
   useDeleteTender,
@@ -362,11 +363,47 @@ export default function TenderCardPage() {
               Этап {selected.stage_no}
               {selected.label ? ` · ${selected.label}` : ""}
             </h2>
-            {isAdmin && (
-              <Button variant="outline" size="sm" onClick={() => setRoundToDelete(selected)}>
-                <Trash2 className="size-3.5" /> Удалить этап
-              </Button>
-            )}
+            <div className="flex flex-wrap items-center gap-2">
+              {hasEstimates ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  render={<Link to={`/tenders/${card.id}/rounds/${selected.id}/our-price`} />}
+                >
+                  {OUR_PRICE_ENTRY_LABEL}
+                </Button>
+              ) : (
+                // Недоступность — `aria-disabled`, а не `disabled`: у нативно
+                // отключённой кнопки нет наведения; причина — ещё и скрытым
+                // текстом, как у «Нового этапа» выше.
+                <>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          aria-disabled="true"
+                          aria-describedby="our-price-entry-reason"
+                          className="opacity-50"
+                        >
+                          {OUR_PRICE_ENTRY_LABEL}
+                        </Button>
+                      }
+                    />
+                    <TooltipContent>{OUR_PRICE_ENTRY_NO_ESTIMATES}</TooltipContent>
+                  </Tooltip>
+                  <span id="our-price-entry-reason" className="sr-only">
+                    {OUR_PRICE_ENTRY_NO_ESTIMATES}
+                  </span>
+                </>
+              )}
+              {isAdmin && (
+                <Button variant="outline" size="sm" onClick={() => setRoundToDelete(selected)}>
+                  <Trash2 className="size-3.5" /> Удалить этап
+                </Button>
+              )}
+            </div>
           </div>
 
           <BaselineStatus round={selected} hasEstimates={hasEstimates} />

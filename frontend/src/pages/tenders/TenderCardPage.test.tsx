@@ -114,6 +114,88 @@ describe("Карточка тендера (§2.13, §2.14)", () => {
   });
 });
 
+describe("Вход «Против нашей цены» в панели этапа", () => {
+  const MEMBER = { id: 2, email: "member@example.com", role: "member" } as const;
+  const entry = () => screen.findByText("Против нашей цены", { selector: "a, button" });
+
+  it("у этапа с КП и сметой — ссылка на экран этого этапа без параметров, у admin и member", async () => {
+    for (const options of [{}, { initialUser: MEMBER }]) {
+      const { unmount } = renderCard({ initialRoute: "/tenders/300?round=3001", ...options });
+      const link = await entry();
+      expect(link).toHaveAttribute("href", "/tenders/300/rounds/3001/our-price");
+      expect(link).not.toHaveAttribute("aria-disabled");
+      unmount();
+    }
+  });
+
+  it("у этапа без единой сметы — выключена, причина названа, ссылки нет", async () => {
+    // Этап 2 фикстуры: у Беты предложение без сметы, у Альфы пусто.
+    renderCard({ initialRoute: "/tenders/300?round=3002" });
+    const control = await entry();
+
+    expect(control).toHaveAttribute("aria-disabled", "true");
+    expect(control).not.toHaveAttribute("href");
+    expect(control).toHaveAttribute("aria-describedby");
+    const reasonId = control.getAttribute("aria-describedby") as string;
+    expect(document.getElementById(reasonId)).toHaveTextContent("В этапе нет КП со сметой");
+  });
+
+  // Ревью задачи 13: «выключена с подсказкой» — скрытый текст подсказку
+  // наведения не заменяет (тот же урок, что у «Нового этапа»).
+  it("наведение на выключенную кнопку показывает подсказку с причиной", async () => {
+    const user = userEvent.setup();
+    renderCard({ initialRoute: "/tenders/300?round=3002" });
+
+    await user.hover(await entry());
+
+    await waitFor(() =>
+      expect(document.querySelector('[data-slot="tooltip-content"]')).toHaveTextContent("В этапе нет КП со сметой")
+    );
+  });
+
+  // Ревью задачи 13: пункт меню — элемент Base UI с подставленной ссылкой;
+  // адрес в `href` ещё не доказывает, что нажатие на пункт уводит по нему.
+  it("нажатие на пункт меню ячейки и на кнопку панели уводит на экраны 4а", async () => {
+    function PathProbe() {
+      return <div data-testid="path">{useLocation().pathname}</div>;
+    }
+    for (const via of ["menu", "panel"] as const) {
+      const user = userEvent.setup();
+      const { unmount } = renderWithProviders(
+        <>
+          <Routes>
+            <Route path="/tenders/:tenderId" element={<TenderCardPage />} />
+            <Route path="/tenders/:tenderId/rounds/:roundId/our-price/*" element={<div>экран 4а</div>} />
+          </Routes>
+          <PathProbe />
+        </>,
+        { initialRoute: "/tenders/300?round=3001" }
+      );
+      const alphaRow = (await screen.findByText("ООО Альфа")).closest("tr") as HTMLElement;
+      if (via === "menu") {
+        await user.click(within(alphaRow).getByRole("button", { name: /Действия с КП/ }));
+        await user.click(await screen.findByRole("menuitem", { name: "Против нашей цены" }));
+        expect(await screen.findByText("экран 4а")).toBeInTheDocument();
+        expect(screen.getByTestId("path")).toHaveTextContent("/tenders/300/rounds/3001/our-price/offers/7001");
+      } else {
+        await user.click(await entry());
+        expect(await screen.findByText("экран 4а")).toBeInTheDocument();
+        expect(screen.getByTestId("path")).toHaveTextContent(/^\/tenders\/300\/rounds\/3001\/our-price$/);
+      }
+      unmount();
+    }
+  });
+
+  it("смена этапа переводит кнопку между состояниями и адресом", async () => {
+    const user = userEvent.setup();
+    renderCard({ initialRoute: "/tenders/300?round=3001" });
+    expect(await entry()).toHaveAttribute("href", "/tenders/300/rounds/3001/our-price");
+
+    await user.click(screen.getByRole("button", { name: /^Этап 2/ }));
+    await waitFor(() => expect(screen.getByText("Против нашей цены", { selector: "a, button" })).toHaveAttribute("aria-disabled", "true"));
+  });
+});
+
 /**
  * Интерактивное покрытие четырёх admin-диалогов карточки (finding ревью
  * задачи 12): раньше тесты проверяли только ОТСУТСТВИЕ кнопок у `member`, ни
@@ -638,15 +720,19 @@ describe("Победитель тендера на карточке (Б2)", () =
     handlerState.tenderAwardState = { award: sampleTenderAward, history: [sampleAwardHistoryWithNotConcluded[2]] };
   }
 
-  it("победитель не отмечен: подсказка и меню у КП финала", async () => {
+  // Ревью задачи 13 фичи 4а: меню «⋯» теперь есть у каждой ячейки с КП, и его
+  // наличие больше не говорит о праве на отметку — проверяется сам пункт.
+  it("победитель не отмечен: подсказка и пункт «Отметить победителем» в меню КП финала", async () => {
     handlerState.tenderRoundState = FINAL_STATE;
+    const user = userEvent.setup();
     renderCard();
 
     expect(await screen.findByText(/Победитель не отмечен/)).toBeInTheDocument();
-    expect(await betaMenu()).toBeInTheDocument();
+    await user.click(await betaMenu());
+    expect(await screen.findByRole("menuitem", { name: "Отметить победителем" })).toBeInTheDocument();
   });
 
-  it("отметка через меню: плашка появляется, меню исчезает, «Новый этап» блокируется", async () => {
+  it("отметка через меню: плашка появляется, пункт отметки из меню исчезает, «Новый этап» блокируется", async () => {
     handlerState.tenderRoundState = FINAL_STATE;
     const user = userEvent.setup();
     renderCard();
@@ -656,7 +742,10 @@ describe("Победитель тендера на карточке (Б2)", () =
 
     expect(await screen.findByText("Победитель — ООО Бета")).toBeInTheDocument();
     expect(screen.getByText(/договора пока нет/)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Действия с КП/ })).toBeNull();
+    // Меню у КП остаётся (там и вход «Против нашей цены»), но отметить второй раз нельзя.
+    await user.click(await betaMenu());
+    expect(await screen.findByRole("menuitem", { name: "Против нашей цены" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Отметить победителем" })).toBeNull();
     expect(screen.getByRole("button", { name: "Новый этап" })).toHaveAttribute("aria-disabled", "true");
   });
 
@@ -731,7 +820,9 @@ describe("Победитель тендера на карточке (Б2)", () =
 
     expect(await screen.findByText(/Победитель не отмечен/)).toBeInTheDocument();
     expect(screen.queryByTestId("award-history-row")).toBeNull();
-    expect(await betaMenu()).toBeInTheDocument();
+    // Отметку снова можно поставить: пункт вернулся в меню (само меню есть всегда).
+    await user.click(await betaMenu());
+    expect(await screen.findByRole("menuitem", { name: "Отметить победителем" })).toBeInTheDocument();
   });
 
   it("привязка договора: плашка показывает договор, карточка договора перезапрашивается", async () => {

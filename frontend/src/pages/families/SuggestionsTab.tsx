@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 
 import { Pager } from "@/components/domain/Pager";
 import { EmptyState } from "@/components/ui-domain/EmptyState";
@@ -44,9 +45,24 @@ const EMPTY_ROWS: never[] = [];
 const TAB_CLASS =
   "rounded-lg px-4 py-2 text-sm data-active:bg-action data-active:font-medium data-active:text-action-text";
 
+/** Предложение, к которому привела ссылка: очередь, фильтр единицы и контекст, чья строка подсвечивается. */
+export interface SuggestionTarget {
+  queue: "list" | "new";
+  contextId: number;
+  unit: SuggestionUnitFilter | undefined;
+}
+
+/** Значение выбора единицы для фильтра из адреса. */
+function unitSelectValue(unit: SuggestionUnitFilter | undefined): string {
+  if (unit === undefined) return ANY;
+  return unit === NO_UNIT ? NO_UNIT : String(unit);
+}
+
 interface SuggestionsTabProps {
   /** Перейти к семье на вкладке «Семьи» (ссылки «Открыть семью»). */
   onOpenFamily?: (familyId: number) => void;
+  /** Вход по ссылке с подписи «ждёт решения администратора»: единица и предложение контекста. */
+  target?: SuggestionTarget | null;
 }
 
 /**
@@ -57,9 +73,9 @@ interface SuggestionsTabProps {
  * и «Ошибки». Фильтры и подтверждения выполняет сервер; страницы — по группам.
  * Единица фильтрует «Семью из списка», «Смену семьи» и «Новую»; у «Ошибок» её нет.
  */
-export function SuggestionsTab({ onOpenFamily }: SuggestionsTabProps = {}) {
-  const [queue, setQueue] = useState<QueueTab>("list");
-  const [unitFilter, setUnitFilter] = useState<string>(ANY);
+export function SuggestionsTab({ onOpenFamily, target = null }: SuggestionsTabProps = {}) {
+  const [queue, setQueue] = useState<QueueTab>(target?.queue ?? "list");
+  const [unitFilter, setUnitFilter] = useState<string>(() => unitSelectValue(target?.unit));
   const [bandFilter, setBandFilter] = useState<string>(ANY);
   const [multiOwner, setMultiOwner] = useState(false);
   const [page, setPage] = useState(1);
@@ -115,6 +131,30 @@ export function SuggestionsTab({ onOpenFamily }: SuggestionsTabProps = {}) {
     err: (errorsQ.isFetching && !errorsQ.isPending) || (holdQ.isFetching && !holdQ.isPending),
   }[queue];
   const pageGroups = groups.slice((page - 1) * pageSize, page * pageSize);
+
+  // Вход по ссылке: страница с группой предложения контекста открывается один раз, когда
+  // очередь пришла; если предложения в очереди нет (фильтр, уже решено), показана заметка.
+  const targetIndex =
+    target === null ? -1 : groups.findIndex((g) => g.rows.some((r) => r.context_id === target.contextId));
+  const [targetShown, setTargetShown] = useState(false);
+  if (target?.queue === "list" && !targetShown && queueQ.data) {
+    setTargetShown(true);
+    if (targetIndex >= 0) setPage(Math.floor(targetIndex / pageSize) + 1);
+  }
+  // Очередь «Новая»: строка без предложения (единица без семей) предложением не считается.
+  const newTargetFound =
+    target !== null && newRows.some((r) => r.suggestion_id !== null && r.context_id === target.contextId);
+  // Цель, однажды найденная в очереди, «не найденной» уже не становится: из очереди её
+  // убирает решение администратора (отклонение, подтверждение), а не отсутствие.
+  const [foundTarget, setFoundTarget] = useState<SuggestionTarget | null>(null);
+  const targetPresent = target?.queue === "list" ? targetIndex >= 0 : newTargetFound;
+  if (targetPresent && foundTarget !== target) setFoundTarget(target);
+  const targetFound = foundTarget === target;
+  const targetMissing =
+    target !== null &&
+    queue === target.queue &&
+    (target.queue === "list" ? queueQ.data !== undefined : newQ.data !== undefined) &&
+    !targetFound;
 
   function unitLabel(code: string | null): string {
     if (code === null) return "без единицы";
@@ -266,6 +306,18 @@ export function SuggestionsTab({ onOpenFamily }: SuggestionsTabProps = {}) {
         <EmptyState title="Ошибка загрузки" description="Не удалось получить очередь предложений." />
       )}
 
+      {targetMissing && (
+        <div
+          data-testid="suggestion-not-found"
+          className="rounded-lg border border-warning-border bg-warning-soft px-3 py-2 text-sm text-warning-text"
+        >
+          Предложение не найдено в очереди.{" "}
+          <Link className="underline underline-offset-2" to={`/families?context=${target?.contextId}`}>
+            Открыть карточку контекста
+          </Link>
+        </div>
+      )}
+
       {queue === "list" && queueQ.data && groups.length === 0 && (
         <EmptyState
           title="Предложений нет"
@@ -275,7 +327,11 @@ export function SuggestionsTab({ onOpenFamily }: SuggestionsTabProps = {}) {
 
       {queue === "list" && queueQ.data && groups.length > 0 && (
         <>
-          <SuggestionGroups groups={pageGroups} unitLabel={unitLabel} />
+          <SuggestionGroups
+            groups={pageGroups}
+            unitLabel={unitLabel}
+            highlightContextId={target?.queue === "list" ? target.contextId : null}
+          />
           <Pager
             page={page}
             total={groups.length}
@@ -303,7 +359,12 @@ export function SuggestionsTab({ onOpenFamily }: SuggestionsTabProps = {}) {
         <EmptyState title="Ошибка загрузки" description="Не удалось получить очередь «Новая»." />
       )}
       {queue === "new" && newQ.data && (
-        <NewQueue rows={newRows} unitLabel={unitLabel} onOpenFamily={onOpenFamily} />
+        <NewQueue
+          rows={newRows}
+          unitLabel={unitLabel}
+          onOpenFamily={onOpenFamily}
+          highlightContextId={target?.queue === "new" ? target.contextId : null}
+        />
       )}
 
       {queue === "err" && (errorsQ.isPending || holdQ.isPending) && (
