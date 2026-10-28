@@ -69,8 +69,11 @@ LINE_KEYS = {
     "below",
     "group",
     "unit_mismatch",
+    "agreed",
+    "comment_kind",
+    "manual_rung",
 }
-PANEL_KEYS = {"line", "group_lines", "contracts", "vat_dropped"}
+PANEL_KEYS = {"line", "group_lines", "contracts", "vat_dropped", "comment"}
 TOLERANCE = D("1e-20")
 
 
@@ -511,10 +514,10 @@ class TestLineForm:
 
         assert line["rung"] == {"level": "v", "scope": "cls", "auto": True, "threshold_met": True}
         assert line["rungs"] == [
-            {"level": "v", "scope": "cls", "contracts": 2},
-            {"level": "v", "scope": "all", "contracts": 2},
-            {"level": "f", "scope": "cls", "contracts": 3},
-            {"level": "f", "scope": "all", "contracts": 3},
+            {"level": "v", "scope": "cls", "contracts": 2, "selectable": True},
+            {"level": "v", "scope": "all", "contracts": 2, "selectable": True},
+            {"level": "f", "scope": "cls", "contracts": 3, "selectable": True},
+            {"level": "f", "scope": "all", "contracts": 3, "selectable": True},
         ]
 
     def test_a_second_main_parameter_adds_the_p_rungs(self, member_client, stage, world):

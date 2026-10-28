@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from crud.common import DomainError, iso
 from crud.comparison import InflationPlan, _inflation_sentence
+from crud.kp_decisions import EstimateDecisions, kp_source_line, load_decisions, load_unit_texts
 from crud.our_price_inflation import plan_history_inflation, round_target_month
 from crud.our_price_load import (
     ArticleMeta,
@@ -42,6 +43,8 @@ from models import (
 )
 from money.inflation import adjust_amount
 from money.price import is_price
+from services.kp_comment import InflationLabel, template_text
+from services.kp_file import line_comment_inputs
 from services.our_price import (
     _CONTEXT,
     RUNG_ORDER,
@@ -139,6 +142,8 @@ class _Scene:
     history: _HistorySums
     #: Вилка ₽/м² договоров класса по итогу сметы.
     total_fork: tuple[Decimal, Decimal] | None
+    #: Решения по строкам каждой сметы КП этапа (спека 4б §2.13).
+    decisions: dict[int, EstimateDecisions]
 
 
 def _load_head(db: Session, tender_id: int, round_id: int) -> _Head:
@@ -353,6 +358,7 @@ def _build_scene(
         class_contracts=class_contracts,
         history=history,
         total_fork=_fork(history.total, class_contracts),
+        decisions=load_decisions(db, kp_ids),
     )
 
 
@@ -364,6 +370,7 @@ def _evaluate(scene: _Scene, participant: _Participant, choice: RungChoice | Non
         tender_area=scene.head.area,
         tender_class_id=scene.head.rate_class_id,
         choice=choice,
+        saved=scene.decisions[participant.estimate_id].saved,
     )
 
 
@@ -672,7 +679,12 @@ def _line_view(row: KpLineRow, result: LineResult, rate: Decimal | None) -> dict
             }
         ),
         "rungs": [
-            {"level": count.rung.level, "scope": count.rung.scope, "contracts": count.contracts}
+            {
+                "level": count.rung.level,
+                "scope": count.rung.scope,
+                "contracts": count.contracts,
+                "selectable": count.rung in result.selectable,
+            }
             for count in result.rungs
         ],
         "range": _range_view(result.range, rate),
@@ -690,6 +702,89 @@ def _line_view(row: KpLineRow, result: LineResult, rate: Decimal | None) -> dict
         "below": money_pair(result.below, rate, unit=False),
         "group": group,
         "unit_mismatch": mismatch,
+    }
+
+
+def _author(user_id: int, email: str) -> dict:
+    return {"id": user_id, "email": email}
+
+
+def _inflation_label(plan: InflationPlan | None) -> InflationLabel | None:
+    """Ряд и целевой месяц `ММ.ГГГГ` для комментария; без ряда — `None`."""
+    if plan is None:
+        return None
+    year, month = plan.target_month.split("-")
+    return InflationLabel(plan.series_name, f"{month}.{year}")
+
+
+def _template_text(
+    scene: _Scene, participant: _Participant, row: KpLineRow, result: LineResult, unit_text: str
+) -> str | None:
+    """Шаблонный комментарий строки; вход собирает та же функция, что у файла. У КП с
+    неизвестной базой НДС шаблона нет: нетто цены КП посчитать не из чего."""
+    if participant.base is None:
+        return None
+    pid = row.line.position_item_id
+    agreed = scene.decisions[participant.estimate_id].agreements.get(pid)
+    return template_text(
+        line_comment_inputs(
+            kp_source_line(row, unit_text),
+            result,
+            history=scene.index,
+            tender_class_id=scene.head.rate_class_id,
+            tender_contractor_id=participant.contractor_id,
+            tender_area=scene.head.area,
+            kp_vat_base=participant.base,
+            inflation=_inflation_label(scene.plan),
+            agreed_net=agreed[0] if agreed is not None else None,
+        )
+    )
+
+
+def _decision_fields(
+    scene: _Scene, participant: _Participant, row: KpLineRow, result: LineResult, template: str | None
+) -> dict:
+    """Поля решений строки: `agreed`, `comment_kind`, `manual_rung` (спека 4б §2.11).
+    Текст комментария сюда не входит — его отдаёт только панель."""
+    decisions = scene.decisions[participant.estimate_id]
+    pid = row.line.position_item_id
+
+    agreed = None
+    record = decisions.agreements.get(pid)
+    if record is not None:
+        net, at, user_id, email = record
+        agreed = {**money_pair(net, participant.base, unit=True), "set_by": _author(user_id, email), "set_at": iso(at)}
+
+    comment_kind = None
+    if pid in decisions.comments:
+        comment_kind = "custom"
+    elif template is not None:
+        comment_kind = "template"
+
+    manual_rung = None
+    manual = result.manual
+    if manual is not None:
+        owner = pid if manual.target == "line" else row.line.key.family_id
+        at, user_id, email = decisions.rung_meta[(manual.target, owner)]
+        manual_rung = {
+            "level": manual.rung.level,
+            "scope": manual.rung.scope,
+            "active": manual.active,
+            "reset_reason": manual.reset_reason,
+            "target": manual.target,
+            "set_by": _author(user_id, email),
+            "set_at": iso(at),
+        }
+    return {"agreed": agreed, "comment_kind": comment_kind, "manual_rung": manual_rung}
+
+
+def _line_with_decisions(scene: _Scene, participant: _Participant, row: KpLineRow, result: LineResult) -> dict:
+    # Строке разбора нужен только вид комментария, а не его текст, поэтому
+    # единицу КП не читаем: вид от неё не зависит.
+    template = _template_text(scene, participant, row, result, "")
+    return {
+        **_line_view(row, result, participant.base),
+        **_decision_fields(scene, participant, row, result, template),
     }
 
 
@@ -736,7 +831,9 @@ def build_offer_view(
         "participants": [view],
         "articles": articles,
         "total": {**_TOTAL_HEAD, **flat_cell(None, is_total=True)},
-        "lines": [_line_view(row, evaluation.lines[row.line.position_item_id], rate) for row in rows],
+        "lines": [
+            _line_with_decisions(scene, participant, row, evaluation.lines[row.line.position_item_id]) for row in rows
+        ],
     }
     if scene.plan is not None:
         result["inflation"] = _inflation_view(scene.plan)
@@ -821,13 +918,14 @@ def build_line_view(
         evaluation = _evaluate(scene, participant, choice)
     result = evaluation.lines[position_item_id]
     rate = participant.base
+    unit_texts = load_unit_texts(db, participant.estimate_id)
 
     group_lines = []
     if result.group_index is not None:
         family_id = evaluation.groups[result.group_index].family_id
         members = {pid for g in evaluation.groups if g.family_id == family_id for pid in g.lines}
         group_lines = [
-            _line_view(r, evaluation.lines[r.line.position_item_id], rate)
+            _line_with_decisions(scene, participant, r, evaluation.lines[r.line.position_item_id])
             for r in rows
             if r.line.position_item_id in members
         ]
@@ -854,9 +952,17 @@ def build_line_view(
 
     vat_dropped = _vat_dropped_view(scene, row, result)
 
+    template = _template_text(scene, participant, row, result, unit_texts[position_item_id])
+    own_comment = scene.decisions[participant.estimate_id].comments.get(position_item_id)
+    line = {**_line_view(row, result, rate), **_decision_fields(scene, participant, row, result, template)}
     return {
-        "line": _line_view(row, result, rate),
+        "line": line,
         "group_lines": group_lines,
         "contracts": contracts,
         "vat_dropped": vat_dropped,
+        "comment": {
+            "kind": line["comment_kind"],
+            "text": own_comment[0] if own_comment is not None else template,
+            "template_text": template,
+        },
     }

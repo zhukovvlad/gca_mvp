@@ -292,6 +292,8 @@ class KpLineRow:
     #: (`quantity` файла бывает заглушкой «1», спека 4а §2.12).
     quantity: Decimal | None
     section_ref: str | None
+    #: `item_number_in_proposal` как в файле, без подмены ключом позиции.
+    item_number: str | None
     article_root_id: int | None
     family_title: str | None
     variant_label: str | None
@@ -577,6 +579,7 @@ def load_kp_lines(db: Session, estimate_ids: Sequence[int]) -> dict[int, list[Kp
                 suggestion_queue=signal.suggestion_queue,
                 quantity=weight,
                 section_ref=number or key_text,
+                item_number=number,
                 article_root_id=root_of.get(category_id) if category_id is not None else None,
                 family_title=family_title,
                 variant_label=info.label if info is not None else None,
