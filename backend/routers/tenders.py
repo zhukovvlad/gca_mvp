@@ -10,7 +10,9 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import logging
+from collections.abc import Callable
 from decimal import Decimal
+from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from pydantic import BaseModel, Field, field_validator
@@ -20,6 +22,7 @@ from sqlalchemy.orm import Session
 from auth import get_current_user, require_admin
 from config import settings
 from crud import changes_export as crud_changes_export
+from crud import kp_decisions as crud_kp_decisions
 from crud import our_price as crud_our_price
 from crud import position_drilldown as crud_position_drilldown
 from crud import round_unallocated as crud_ru
@@ -176,6 +179,84 @@ def our_price_line(tender_id: int, round_id: int, offer_id: int, position_item_i
             inflation_series_id=inflation_series_id))
     except DomainError as e:
         raise_domain_error(e)
+
+
+class AgreedPut(BaseModel):
+    value: str
+    basis: Literal["net", "shown"]
+
+
+class CommentPut(BaseModel):
+    text: str
+
+
+class RungPut(BaseModel):
+    level: str
+    scope: str
+
+
+def _write_decision(db: Session, write: Callable[[], None]) -> Response:
+    """Транзакцию решения ведёт роутер: commit на успехе, rollback на любом отказе."""
+    try:
+        write()
+        db.commit()
+    except DomainError as e:
+        db.rollback()
+        raise_domain_error(e)
+    except Exception:
+        db.rollback()
+        raise
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+_LINE = "/{tender_id}/rounds/{round_id}/our-price/offers/{offer_id}/lines/{position_item_id}"
+
+
+@router.put(_LINE + "/agreed", status_code=status.HTTP_204_NO_CONTENT)
+def put_line_agreed(tender_id: int, round_id: int, offer_id: int, position_item_id: int, body: AgreedPut,
+                    db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
+    """«Договорились» по строке КП (спека 4б §2.3): цена строкой, `basis` — нетто или в базе НДС КП."""
+    return _write_decision(db, lambda: crud_kp_decisions.put_agreed(
+        db, tender_id, round_id, offer_id, position_item_id, value=crud_kp_decisions.parse_agreed(body.value),
+        basis=body.basis, user_id=current_user.id))
+
+
+@router.delete(_LINE + "/agreed", status_code=status.HTTP_204_NO_CONTENT)
+def delete_line_agreed(tender_id: int, round_id: int, offer_id: int, position_item_id: int,
+                       db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    return _write_decision(db, lambda: crud_kp_decisions.delete_agreed(
+        db, tender_id, round_id, offer_id, position_item_id))
+
+
+@router.put(_LINE + "/comment", status_code=status.HTTP_204_NO_CONTENT)
+def put_line_comment(tender_id: int, round_id: int, offer_id: int, position_item_id: int, body: CommentPut,
+                     db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
+    """Свой комментарий к строке КП (спека 4б §2.4); пустая строка законна."""
+    return _write_decision(db, lambda: crud_kp_decisions.put_comment(
+        db, tender_id, round_id, offer_id, position_item_id, text=body.text, user_id=current_user.id))
+
+
+@router.delete(_LINE + "/comment", status_code=status.HTTP_204_NO_CONTENT)
+def delete_line_comment(tender_id: int, round_id: int, offer_id: int, position_item_id: int,
+                        db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    return _write_decision(db, lambda: crud_kp_decisions.delete_comment(
+        db, tender_id, round_id, offer_id, position_item_id))
+
+
+@router.put(_LINE + "/rung", status_code=status.HTTP_204_NO_CONTENT)
+def put_line_rung(tender_id: int, round_id: int, offer_id: int, position_item_id: int, body: RungPut,
+                  db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
+    """Ручная ступень строки КП (спека 4б §2.5, §2.6): `level` и `scope` строками, отказы кодами."""
+    return _write_decision(db, lambda: crud_kp_decisions.put_rung(
+        db, tender_id, round_id, offer_id, position_item_id, level=body.level, scope=body.scope,
+        user_id=current_user.id))
+
+
+@router.delete(_LINE + "/rung", status_code=status.HTTP_204_NO_CONTENT)
+def delete_line_rung(tender_id: int, round_id: int, offer_id: int, position_item_id: int,
+                     db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    return _write_decision(db, lambda: crud_kp_decisions.delete_rung(
+        db, tender_id, round_id, offer_id, position_item_id))
 
 
 @router.get("/{tender_id}/stage-summary/{work_category_id}")

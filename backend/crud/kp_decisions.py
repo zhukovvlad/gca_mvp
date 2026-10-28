@@ -4,7 +4,8 @@
 и ручная ступень семьи системы — читаются одним вызовом `load_decisions` на все
 сметы этапа: четыре `SELECT`, сколько бы смет, строк и решений ни было. Автор
 решения (идентификатор и почта) приходит соединением с `users`, отдельного запроса
-на него нет. Модуль только читает: ни одного `INSERT`/`UPDATE`/`DELETE`.
+на него нет. Запись решений — `put_*`/`delete_*` ниже: они флешат, транзакцию ведёт
+роутер.
 
 Снимок ключа ступени работы хранится в `jsonb` без внешних ключей; перевод в
 `Hashable`, с которым сравнивает ядро (`LineKey.at`), — пара `snapshot_to_json` /
@@ -17,28 +18,45 @@ from __future__ import annotations
 from collections.abc import Hashable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from crud.our_price_load import KpLineRow
+from crud.common import DomainError
+from crud.our_price_load import KpLineRow, kp_vat_bases, load_kp_lines
 from models import (
+    KP_COMMENT_MAX,
+    Estimate,
     EstimateRawData,
     KpFamilyRung,
     KpLineAgreement,
     KpLineComment,
     KpLineRung,
     Lot,
+    Offer,
     PositionItem,
     Proposal,
+    TenderRound,
     UnitOfMeasure,
     User,
 )
+from money.price import is_price
+from money.vat import gross_to_net
 from parser.constants import JSON_KEY_LOTS, JSON_KEY_UNIT
 from services.estimate_import import extract_positions, extract_single_proposal
 from services.kp_file import KpSourceLine
-from services.our_price import Level, Rung, SavedFamilyRung, SavedRungs, SavedWorkRung
+from services.our_price import RUNG_ORDER, Level, Rung, SavedFamilyRung, SavedRungs, SavedWorkRung
+
+CODE_INVALID_AGREED = "invalid_agreed"
+CODE_COMMENT_TOO_LONG = "comment_too_long"
+CODE_RUNG_EMPTY = "rung_empty"
+CODE_NO_LADDER = "no_ladder"
+CODE_UNKNOWN_VAT_BASE = "unknown_vat_base"
+#: Код отказа панели строки и `PUT …/rung`: ступень не названа целиком, неизвестна
+#: или недоступна строке.
+CODE_UNKNOWN_RUNG = "unknown_rung"
 
 
 @dataclass(frozen=True)
@@ -151,9 +169,12 @@ def load_unit_texts(db: Session, estimate_id: int) -> dict[int, str]:
         .outerjoin(UnitOfMeasure, UnitOfMeasure.id == PositionItem.unit_id)
         .where(Lot.estimate_id == estimate_id, PositionItem.is_chapter.is_(False))
     ).all()
-    raw = db.execute(sa.select(EstimateRawData.raw_data).where(EstimateRawData.estimate_id == estimate_id)).scalar_one_or_none()
+    raw = db.execute(
+        sa.select(EstimateRawData.raw_data).where(EstimateRawData.estimate_id == estimate_id)
+    ).scalar_one_or_none()
     positions_of = {
-        lot_key: extract_positions(extract_single_proposal(lot)) for lot_key, lot in ((raw or {}).get(JSON_KEY_LOTS) or {}).items()
+        lot_key: extract_positions(extract_single_proposal(lot))
+        for lot_key, lot in ((raw or {}).get(JSON_KEY_LOTS) or {}).items()
     }
     texts: dict[int, str] = {}
     for pid, lot_key, position_key, unit_name in rows:
@@ -177,3 +198,191 @@ def kp_source_line(row: KpLineRow, unit_text: str) -> KpSourceLine:
         unit_price=row.line.unit_price,
         total=row.line.total,
     )
+
+
+# --- запись решений (спека 4б §2.3–§2.6, §2.11) -------------------------------------
+
+
+def parse_agreed(text: str) -> Decimal:
+    """Цена «Договорились» из строки запроса: конечное число больше нуля, без `float`."""
+    try:
+        value = Decimal(text)
+    except InvalidOperation:
+        value = None
+    if not is_price(value):
+        raise DomainError(422, "Цена «Договорились» — число больше нуля.", code=CODE_INVALID_AGREED)
+    return value
+
+
+def _line_estimate(db: Session, tender_id: int, round_id: int, offer_id: int, pid: int) -> int:
+    """Смета КП, которой принадлежит строка (не глава) оффера этапа этого тендера.
+
+    Raises:
+        DomainError 404: цепочка тендер, этап, оффер, смета, строка не сходится.
+    """
+    estimate_id = db.execute(
+        sa.select(Lot.estimate_id)
+        .select_from(PositionItem)
+        .join(Proposal, Proposal.id == PositionItem.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .join(Estimate, Estimate.id == Lot.estimate_id)
+        .join(Offer, Offer.id == Estimate.offer_id)
+        .join(TenderRound, TenderRound.id == Offer.round_id)
+        .where(
+            PositionItem.id == pid,
+            PositionItem.is_chapter.is_(False),
+            Offer.id == offer_id,
+            TenderRound.id == round_id,
+            TenderRound.tender_id == tender_id,
+        )
+    ).scalar_one_or_none()
+    if estimate_id is None:
+        raise DomainError(404, f"Строка {pid} не найдена в КП оффера {offer_id}.")
+    return estimate_id
+
+
+def put_agreed(
+    db: Session, tender_id: int, round_id: int, offer_id: int, pid: int, *, value: Decimal, basis: str, user_id: int
+) -> None:
+    """Сохранить «Договорились» нетто. `basis="shown"` — значение в базе НДС КП: нетто
+    считается без округления; `"net"` принимается при любой базе."""
+    estimate_id = _line_estimate(db, tender_id, round_id, offer_id, pid)
+    net = value
+    if basis == "shown":
+        base = kp_vat_bases(db, [estimate_id])[estimate_id]
+        if base is None:
+            raise DomainError(422, "У КП неизвестна база НДС: укажите цену без НДС.", code=CODE_UNKNOWN_VAT_BASE)
+        net = gross_to_net(value, base)
+    stmt = pg_insert(KpLineAgreement).values(position_item_id=pid, net_price=net, set_by=user_id, set_at=sa.func.now())
+    db.execute(
+        stmt.on_conflict_do_update(
+            index_elements=[KpLineAgreement.position_item_id],
+            set_={"net_price": stmt.excluded.net_price, "set_by": stmt.excluded.set_by, "set_at": stmt.excluded.set_at},
+        )
+    )
+    db.flush()
+
+
+def delete_agreed(db: Session, tender_id: int, round_id: int, offer_id: int, pid: int) -> None:
+    _line_estimate(db, tender_id, round_id, offer_id, pid)
+    db.execute(sa.delete(KpLineAgreement).where(KpLineAgreement.position_item_id == pid))
+    db.flush()
+
+
+def put_comment(
+    db: Session, tender_id: int, round_id: int, offer_id: int, pid: int, *, text: str, user_id: int
+) -> None:
+    """Сохранить свой комментарий; пустая строка — тоже решение."""
+    if len(text) > KP_COMMENT_MAX:
+        raise DomainError(422, f"Комментарий длиннее {KP_COMMENT_MAX} символов.", code=CODE_COMMENT_TOO_LONG)
+    _line_estimate(db, tender_id, round_id, offer_id, pid)
+    stmt = pg_insert(KpLineComment).values(position_item_id=pid, text=text, set_by=user_id, set_at=sa.func.now())
+    db.execute(
+        stmt.on_conflict_do_update(
+            index_elements=[KpLineComment.position_item_id],
+            set_={"text": stmt.excluded.text, "set_by": stmt.excluded.set_by, "set_at": stmt.excluded.set_at},
+        )
+    )
+    db.flush()
+
+
+def delete_comment(db: Session, tender_id: int, round_id: int, offer_id: int, pid: int) -> None:
+    _line_estimate(db, tender_id, round_id, offer_id, pid)
+    db.execute(sa.delete(KpLineComment).where(KpLineComment.position_item_id == pid))
+    db.flush()
+
+
+def _unknown_rung() -> DomainError:
+    return DomainError(
+        422,
+        "Такой ступени у строки нет: нужны обе величины — уровень (v, p, f) и охват (cls, all) — "
+        "и ступень из доступных этой строке.",
+        code=CODE_UNKNOWN_RUNG,
+    )
+
+
+def put_rung(
+    db: Session, tender_id: int, round_id: int, offer_id: int, pid: int, *, level: str, scope: str, user_id: int
+) -> None:
+    """Сохранить ручную ступень строки. Работа пишет свою запись; системная строка — ступень
+    семьи `(смета, семья)` и удаляет собственную запись строки: та могла остаться от времени,
+    когда строка была работой, и по ней строка показывала бы сброс поверх ступени семьи.
+
+    Отказы по порядку: пара не образует ступень (`unknown_rung`); строка не дошла до
+    лестницы (`no_ladder`); ступени нет у строки (`unknown_rung`); у ступени нет
+    договоров (`rung_empty`). Строка считается той же сценой, что разбор, без ряда ИПЦ.
+    """
+    from crud.our_price import line_for_rung_check  # crud.our_price читает решения из этого модуля
+
+    estimate_id, row, result = line_for_rung_check(db, tender_id, round_id, offer_id, pid)
+    rung = next((r for r in RUNG_ORDER if r.level == level and r.scope == scope), None)
+    if rung is None:
+        raise _unknown_rung()
+    if not result.rungs:
+        raise DomainError(422, "Строка не дошла до ступеней: сравнивать её не с чем.", code=CODE_NO_LADDER)
+    if rung not in {count.rung for count in result.rungs}:
+        raise _unknown_rung()
+    if rung not in result.selectable:
+        raise DomainError(422, "На этой ступени нет договоров.", code=CODE_RUNG_EMPTY)
+
+    key = row.line.key
+    if row.line.is_system:
+        stmt = pg_insert(KpFamilyRung).values(
+            estimate_id=estimate_id,
+            work_family_id=key.family_id,
+            level=level,
+            scope=scope,
+            first_main_parameter_id=key.first_main[0] if level == "p" else None,
+            set_by=user_id,
+            set_at=sa.func.now(),
+        )
+        db.execute(
+            stmt.on_conflict_do_update(
+                index_elements=[KpFamilyRung.estimate_id, KpFamilyRung.work_family_id],
+                set_={
+                    "level": stmt.excluded.level,
+                    "scope": stmt.excluded.scope,
+                    "first_main_parameter_id": stmt.excluded.first_main_parameter_id,
+                    "set_by": stmt.excluded.set_by,
+                    "set_at": stmt.excluded.set_at,
+                },
+            )
+        )
+        db.execute(sa.delete(KpLineRung).where(KpLineRung.position_item_id == pid))
+    else:
+        stmt = pg_insert(KpLineRung).values(
+            position_item_id=pid,
+            level=level,
+            scope=scope,
+            key=snapshot_to_json(rung.level, key.at(rung.level)),
+            set_by=user_id,
+            set_at=sa.func.now(),
+        )
+        db.execute(
+            stmt.on_conflict_do_update(
+                index_elements=[KpLineRung.position_item_id],
+                set_={
+                    "level": stmt.excluded.level,
+                    "scope": stmt.excluded.scope,
+                    "key": stmt.excluded.key,
+                    "set_by": stmt.excluded.set_by,
+                    "set_at": stmt.excluded.set_at,
+                },
+            )
+        )
+    db.flush()
+
+
+def delete_rung(db: Session, tender_id: int, round_id: int, offer_id: int, pid: int) -> None:
+    """Снять ручную ступень: у работы — запись строки, у системной строки — ступень семьи
+    сметы и собственная запись строки."""
+    estimate_id = _line_estimate(db, tender_id, round_id, offer_id, pid)
+    (row,) = (r for r in load_kp_lines(db, [estimate_id])[estimate_id] if r.line.position_item_id == pid)
+    db.execute(sa.delete(KpLineRung).where(KpLineRung.position_item_id == pid))
+    if row.line.is_system and row.line.key is not None:
+        db.execute(
+            sa.delete(KpFamilyRung).where(
+                KpFamilyRung.estimate_id == estimate_id, KpFamilyRung.work_family_id == row.line.key.family_id
+            )
+        )
+    db.flush()

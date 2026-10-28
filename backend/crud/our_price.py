@@ -19,7 +19,13 @@ from sqlalchemy.orm import Session
 
 from crud.common import DomainError, iso
 from crud.comparison import InflationPlan, _inflation_sentence
-from crud.kp_decisions import EstimateDecisions, kp_source_line, load_decisions, load_unit_texts
+from crud.kp_decisions import (
+    CODE_UNKNOWN_RUNG,
+    EstimateDecisions,
+    kp_source_line,
+    load_decisions,
+    load_unit_texts,
+)
 from crud.our_price_inflation import plan_history_inflation, round_target_month
 from crud.our_price_load import (
     ArticleMeta,
@@ -78,8 +84,6 @@ from services.our_price_money import (
 TOTAL_ROW_TITLE = "Итого на м² объекта"
 #: Подпись «Нераспределённого» — та же, что у свода по этапам.
 UNALLOCATED_TITLE = "Нераспределённое"
-#: Код отказа панели строки: ступень не названа целиком, неизвестна или недоступна строке.
-CODE_UNKNOWN_RUNG = "unknown_rung"
 
 
 @dataclass(frozen=True)
@@ -856,6 +860,22 @@ def _rung_choice(level: str | None, scope: str | None, position_item_id: int, au
             code=CODE_UNKNOWN_RUNG,
         )
     return RungChoice(position_item_id, rung)
+
+
+def line_for_rung_check(
+    db: Session, tender_id: int, round_id: int, offer_id: int, position_item_id: int
+) -> tuple[int, KpLineRow, LineResult]:
+    """Смета, строка и её расчёт для проверки ручной ступени: та же сцена, что у разбора,
+    но без ряда ИПЦ — число договоров ступени от приведения не зависит.
+
+    Raises:
+        DomainError 404: тендера, этапа, оффера или строки этого КП нет, у оффера нет сметы.
+    """
+    scene, participant, evaluation = _offer_context(
+        db, tender_id, round_id, offer_id, inflation_series_id=None, require_line=position_item_id
+    )
+    (row,) = (r for r in scene.kp_lines[participant.estimate_id] if r.line.position_item_id == position_item_id)
+    return participant.estimate_id, row, evaluation.lines[position_item_id]
 
 
 def _vat_dropped_view(scene: _Scene, row: KpLineRow, result: LineResult) -> list[dict]:
