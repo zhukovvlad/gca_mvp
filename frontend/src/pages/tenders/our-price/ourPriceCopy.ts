@@ -323,6 +323,7 @@ export const RUNG_AUTO_TAG = "авто";
 /** Решения человека по строке: блок «Для выгрузки» и сохраняемая ступень (спека 4б §2.3–§2.6, §2.14). */
 export const EXPORT_OURS_LABEL = "Наша расценка";
 export const EXPORT_OURS_NOTE = "считается из данных и следует за ними";
+export const EXPORT_OURS_NONE_NOTE = "цены за единицу в файле не будет";
 export const SAVE_LABEL = "Сохранить";
 export const SAVING_LABEL = "Сохраняем…";
 
@@ -456,6 +457,10 @@ export const KP_FILE_SENT_TITLE = "Отправлено подрядчику";
 export const KP_FILE_SENT_EMPTY = "Файлов ещё не отправляли";
 export const KP_FILE_SENT_ERROR = "Не удалось загрузить список отправленных файлов";
 export const KP_FILE_SENT_DOWNLOAD = "скачать";
+/** Ссылка у участника без сметы: страница файла остаётся единственным местом списка отправленных. */
+export function kpFileSentLink(n: number): string {
+  return `Отправленные файлы (${n})`;
+}
 export const KP_FILE_YEARS_TITLE = "Коэффициенты приведения по ИПЦ";
 export const KP_FILE_FORECAST_TAG = "прогноз";
 export const KP_FILE_EDIT_COMMENT_LABEL = "Править комментарий";

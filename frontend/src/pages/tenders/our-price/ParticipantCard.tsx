@@ -15,6 +15,7 @@ import {
   DETAIL_LINK_LABEL,
   EMPTY_REASON_LABEL,
   emptyReasonOf,
+  kpFileSentLink,
   linesCount,
   medianCaption,
   PER_SQM_UNIT,
@@ -126,6 +127,17 @@ export function ParticipantCard({ participant, view, cheapest, href, tenderId, r
         )}
         {participant.ours_with_contractor > 0 && (
           <Badge variant="outline">{contractsWithContractor(participant.ours_with_contractor)}</Badge>
+        )}
+        {participant.state === "no_estimate" && participant.sent_files_count > 0 && (
+          <div>
+            <Button
+              variant="outline"
+              size="sm"
+              render={<Link to={`/tenders/${tenderId}/rounds/${roundId}/our-price/offers/${participant.offer_id}/file`} />}
+            >
+              {kpFileSentLink(participant.sent_files_count)}
+            </Button>
+          </div>
         )}
         {href !== null && (
           <div>

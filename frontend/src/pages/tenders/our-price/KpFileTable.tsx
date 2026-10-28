@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 import { apiErrorDetail, isFieldRefusal, usePutComment } from "@/services/queries";
 import type { KpFileHeader, KpFileLineRow, KpFilePreview } from "@/types/domain";
 
-import { formatMoney } from "./money";
+import { formatMoney, formatQuantity } from "./money";
 import {
   COMMENT_PLACEHOLDER,
   KP_FILE_CANCEL_LABEL,
@@ -29,9 +29,9 @@ export interface KpFileTableProps {
   canEdit: boolean;
 }
 
-/** Числовые столбцы листа: деньги и объём печатаются строкой ответа с двумя знаками. */
-const MONEY_KEYS: ReadonlySet<string> = new Set(["quantity", "kp_unit_price", "kp_total", "ours"]);
-const NUMERIC_KEYS: ReadonlySet<string> = new Set([...MONEY_KEYS, "deviation_pct"]);
+/** Числовые столбцы листа: деньги печатаются строкой ответа с двумя знаками, объём - до трёх, как в книге. */
+const MONEY_KEYS: ReadonlySet<string> = new Set(["kp_unit_price", "kp_total", "ours"]);
+const NUMERIC_KEYS: ReadonlySet<string> = new Set([...MONEY_KEYS, "quantity", "deviation_pct"]);
 /** Текстовые столбцы, которые переносятся по словам. */
 const WRAPPED_KEYS: ReadonlySet<string> = new Set(["title", "source", "inflation", "comment"]);
 
@@ -44,6 +44,7 @@ function cellText(row: KpFileLineRow, key: string): string {
   const value = (row as unknown as Record<string, unknown>)[key];
   if (typeof value !== "string" || value === "") return "";
   if (MONEY_KEYS.has(key)) return formatMoney(value, "");
+  if (key === "quantity") return formatQuantity(value);
   if (key === "deviation_pct") return roundDecimalPercent(value)?.text ?? "";
   return value;
 }

@@ -2828,6 +2828,7 @@ export function ourPriceRoundFixture(
         per_sqm_reason: null,
         class_median_pct: "10.0",
         ours_with_contractor: 1,
+        sent_files_count: 0,
         totals: ourPriceTotals(),
       },
       {
@@ -2840,6 +2841,7 @@ export function ourPriceRoundFixture(
         per_sqm_reason: null,
         class_median_pct: null,
         ours_with_contractor: 0,
+        sent_files_count: 0,
         totals: null,
       },
       {
@@ -2852,6 +2854,7 @@ export function ourPriceRoundFixture(
         per_sqm_reason: "unknown_vat_base",
         class_median_pct: null,
         ours_with_contractor: 0,
+        sent_files_count: 0,
         totals: null,
       },
     ],
@@ -2913,6 +2916,7 @@ export function ourPriceLineFixture(overrides: Partial<OurPriceLine> = {}): OurP
     agreed: null,
     comment_kind: null,
     manual_rung: null,
+    file_ours: pair("1000", "1220"),
     ...overrides,
   };
 }

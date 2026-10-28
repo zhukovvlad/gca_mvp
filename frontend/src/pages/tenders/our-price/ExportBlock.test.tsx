@@ -26,6 +26,7 @@ import {
   COMMENT_TAG,
   COMMENT_TAG_EMPTY,
   COMMENT_TO_TEMPLATE,
+  EXPORT_OURS_NONE_NOTE,
   EXPORT_OURS_NOTE,
 } from "./ourPriceCopy";
 
@@ -70,6 +71,30 @@ afterEach(() => {
 });
 
 describe("наша расценка справкой и подписи поля", () => {
+  it("система: справка берёт file_ours с единицей подрядчика, а не ставку ₽/м² из ours", () => {
+    renderBlock({
+      line: {
+        kind: "system",
+        unit: "компл",
+        ours: { value: { net: "10", shown: "12.2" }, from_all_classes: false },
+        file_ours: { net: "500", shown: "610" },
+      },
+    });
+    const ours = screen.getByTestId("export-ours");
+    expect(ours).toHaveTextContent("500,00");
+    expect(ours).toHaveTextContent("₽/компл");
+    expect(ours).not.toHaveTextContent("10,00");
+    expect(ours).toHaveTextContent(EXPORT_OURS_NOTE);
+  });
+
+  it("file_ours: null - прочерк и подпись, что цены за единицу в файле не будет", () => {
+    renderBlock({ line: { kind: "system", unit: "компл", file_ours: null } });
+    const ours = screen.getByTestId("export-ours");
+    expect(ours).toHaveTextContent("—");
+    expect(ours).toHaveTextContent(EXPORT_OURS_NONE_NOTE);
+    expect(ours).not.toHaveTextContent(EXPORT_OURS_NOTE);
+  });
+
   it("наша расценка с подписью, что она считается из данных; заглушка и подсказка договорённости", () => {
     renderBlock();
     expect(screen.getByTestId("export-ours")).toHaveTextContent("1 000,00");

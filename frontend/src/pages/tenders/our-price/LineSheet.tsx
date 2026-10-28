@@ -236,6 +236,18 @@ function PanelContent({
           }
         />
       )}
+      {line.rungs.length === 0 && (baseLine ?? line).manual_rung !== null && (
+        // Ступень сохранена, а лестницы нет (вариант сняли): без этой плашки причина и «Вернуть авто» пропали бы.
+        <RungSaveBar
+          tenderId={tenderId}
+          roundId={roundId}
+          offerId={offerId}
+          line={baseLine ?? line}
+          previewRung={null}
+          canEdit={canEdit}
+          onSaved={() => onRung(null)}
+        />
+      )}
       {data.group_lines.length > 0 && <Family line={line} groupLines={data.group_lines} vat={vat} />}
       {data.contracts.length > 0 && <Contracts contracts={data.contracts} vat={vat} />}
       {data.vat_dropped.length > 0 && (

@@ -1,8 +1,8 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { Route, Routes } from "react-router-dom";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { handlerState } from "@/test/handlers";
 import { holdRequests } from "@/test/hold";
@@ -15,6 +15,7 @@ import {
   OUR_PRICE_TENDER_ID,
 } from "@/test/fixtures";
 import { server } from "@/test/server";
+import { OUR_PRICE_POLL_MS } from "@/services/queries";
 import { qk } from "@/services/queryKeys";
 import { createTestQueryClient, renderWithProviders, spyOnDownload } from "@/test/utils";
 
@@ -123,6 +124,58 @@ describe("KpFilePage: загрузка и вид", () => {
     renderPage();
     expect(await screen.findByTestId("kp-file-error")).toBeInTheDocument();
     expect(screen.queryByTestId("kp-file-table")).not.toBeInTheDocument();
+  });
+
+  it("404 предпросмотра: под ошибкой остаётся список отправленных файлов со скачиванием", async () => {
+    server.use(http.get(PREVIEW_PATH, () => HttpResponse.json({ detail: "нет" }, { status: 404 })));
+    renderPage();
+    const error = await screen.findByTestId("kp-file-error");
+    expect(screen.getByRole("heading", { name: KP_FILE_SENT_TITLE })).toBeInTheDocument();
+    const file = await screen.findByTestId("sent-file-12");
+    expect(within(file).getByRole("button")).toBeInTheDocument();
+    expect(error.compareDocumentPosition(file) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("пока in_progress_lines > 0, предпросмотр опрашивается; погасло - плашка уходит и опрос прекращается", async () => {
+    let calls = 0;
+    server.use(
+      http.get(PREVIEW_PATH, () => {
+        calls += 1;
+        const preview = kpFilePreviewFixture({ withInflation: false });
+        preview.header.in_progress_lines = calls === 1 ? 2 : 0;
+        return HttpResponse.json(preview);
+      })
+    );
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    renderPage();
+    await vi.waitFor(() => expect(screen.getByTestId("kp-file-in-progress")).toBeInTheDocument());
+    expect(calls).toBe(1);
+
+    await act(() => vi.advanceTimersByTimeAsync(OUR_PRICE_POLL_MS));
+    await vi.waitFor(() => expect(screen.queryByTestId("kp-file-in-progress")).not.toBeInTheDocument());
+    expect(calls).toBe(2);
+
+    await act(() => vi.advanceTimersByTimeAsync(OUR_PRICE_POLL_MS * 3));
+    expect(calls).toBe(2);
+    vi.useRealTimers();
+  });
+
+  it("при in_progress_lines = 0 повторных запросов нет", async () => {
+    let calls = 0;
+    server.use(
+      http.get(PREVIEW_PATH, () => {
+        calls += 1;
+        const preview = kpFilePreviewFixture({ withInflation: false });
+        preview.header.in_progress_lines = 0;
+        return HttpResponse.json(preview);
+      })
+    );
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    renderPage();
+    await vi.waitFor(() => expect(screen.getByTestId("kp-file-table")).toBeInTheDocument());
+    await act(() => vi.advanceTimersByTimeAsync(OUR_PRICE_POLL_MS * 3));
+    expect(calls).toBe(1);
+    vi.useRealTimers();
   });
 });
 

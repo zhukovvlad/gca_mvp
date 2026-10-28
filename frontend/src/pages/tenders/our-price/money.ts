@@ -1,5 +1,5 @@
 import { compareDecimalStrings } from "@/lib/decimal";
-import { formatDecimalMoney } from "@/lib/format";
+import { formatDecimalMoney, roundDecimal } from "@/lib/format";
 import type { Decimal, MoneyPair, OurPriceLine } from "@/types/domain";
 
 import { PER_SQM_UNIT, SUB_KOPECK_LABEL } from "./ourPriceCopy";
@@ -17,6 +17,25 @@ const MONEY_DIGITS = 2;
  */
 export function formatMoney(value: Decimal | null | undefined, currency = "₽"): string {
   return formatDecimalMoney(value, currency, MONEY_DIGITS);
+}
+
+/** Знаков после запятой у объёма: как формат `#,##0.###` в книге файла подрядчику. */
+const QUANTITY_DIGITS = 3;
+
+/**
+ * Объём строки на экране: до трёх знаков после запятой, без хвостовых нулей, разряды неразрывным
+ * пробелом, запятая. Это печать книги (`#,##0.###`), а не денег: «0.001» не должно стать «0,00».
+ * Округление строкой (половина вверх), `Number` не участвует; неразбираемое отдаётся как есть.
+ */
+export function formatQuantity(value: Decimal): string {
+  const rounded = roundDecimal(value.trim(), QUANTITY_DIGITS);
+  const parsed = /^(-?)(\d+)(?:\.(\d+))?$/.exec(rounded);
+  if (!parsed) return rounded;
+  const [, sign, whole, fraction = ""] = parsed;
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, String.fromCharCode(160));
+  const tail = fraction.replace(/0+$/, "");
+  const zero = /^0*$/.test(whole) && tail === "";
+  return `${zero ? "" : sign}${grouped}${tail === "" ? "" : `,${tail}`}`;
 }
 
 /**

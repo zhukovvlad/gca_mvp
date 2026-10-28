@@ -8,6 +8,7 @@ import type { OurPriceParticipant } from "@/types/domain";
 
 import {
   CHEAPEST_PER_SQM_LABEL,
+  kpFileSentLink,
   PER_SQM_REASON_LABEL,
   VAT_BASE_ASSIGN_LABEL,
   WAITING_ADMIN_LABEL,
@@ -153,5 +154,19 @@ describe("ParticipantCard", () => {
   it("слова про администратора карточка не говорит: это подпись строк, а не участника", () => {
     renderCard(OK);
     expect(screen.getByTestId("card-7001")).not.toHaveTextContent(WAITING_ADMIN_LABEL);
+  });
+
+  it("без сметы с отправленными файлами: ссылка на страницу файла; без файлов и со сметой - нет", () => {
+    const { unmount } = renderCard({ ...NO_ESTIMATE, sent_files_count: 2 });
+    const link = screen.getByRole("link", { name: kpFileSentLink(2) });
+    expect(link).toHaveAttribute("href", "/tenders/1/rounds/2/our-price/offers/7002/file");
+    unmount();
+
+    const none = renderCard({ ...NO_ESTIMATE, sent_files_count: 0 });
+    expect(screen.queryByRole("link", { name: /Отправленные файлы/ })).not.toBeInTheDocument();
+    none.unmount();
+
+    renderCard({ ...OK, sent_files_count: 3 });
+    expect(screen.queryByRole("link", { name: /Отправленные файлы/ })).not.toBeInTheDocument();
   });
 });

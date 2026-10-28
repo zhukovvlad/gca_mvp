@@ -1028,6 +1028,37 @@ describe("ручная ступень в панели", () => {
   });
 });
 
+describe("LineSheet: сохранённая ступень без лестницы", () => {
+  const noLadder = (manual: ManualRung | null) =>
+    view({ state: "no_variant", rungs: [], rung: null, manual_rung: manual }, { contracts: [] });
+
+  it("вариант снят: причина и «Вернуть авто» видны, нажатие шлёт DELETE .../rung", async () => {
+    serveView(() => noLadder(manualRung({ active: false, reset_reason: "key_changed" })));
+    renderSheet();
+    expect(await screen.findByTestId("rung-inactive")).toBeInTheDocument();
+    expect(screen.queryByTestId("rung-v-cls")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Вернуть авто" }));
+    await waitFor(() => expect(kpDecisions()).toHaveLength(1));
+    expect(kpDecisions()[0].method).toBe("DELETE");
+    expect(kpDecisions()[0].url).toMatch(/\/rung$/);
+  });
+
+  it("member: причина видна, кнопки нет", async () => {
+    serveView(() => noLadder(manualRung({ active: false, reset_reason: "key_changed" })));
+    renderSheet({}, MEMBER);
+    expect(await screen.findByTestId("rung-inactive")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Вернуть авто" })).not.toBeInTheDocument();
+  });
+
+  it("без ручной ступени и без лестницы - ничего", async () => {
+    serveView(() => noLadder(null));
+    renderSheet();
+    await screen.findByTestId("export-block");
+    expect(screen.queryByTestId("rung-inactive")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Вернуть авто" })).not.toBeInTheDocument();
+  });
+});
+
 describe("LineSheet: подпись «ждёт решения администратора»", () => {
   const waitingView = () => view({ state: "no_variant", waiting_admin: true, context_id: 777, rungs: [], rung: null }, { contracts: [] });
 

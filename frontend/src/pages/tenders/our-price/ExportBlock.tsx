@@ -26,6 +26,7 @@ import {
   COMMENT_TAG_EMPTY,
   COMMENT_TO_TEMPLATE,
   EXPORT_OURS_LABEL,
+  EXPORT_OURS_NONE_NOTE,
   EXPORT_OURS_NOTE,
   SAVE_LABEL,
   VAT_NET_LABEL,
@@ -67,7 +68,9 @@ export function ExportBlock({ tenderId, roundId, offerId, line, comment, canEdit
   const positionItemId = line.position_item_id;
   const shownRate = vatView === "shown" ? vatRate : null;
   const basis = shownRate !== null ? "shown" : "net";
-  const ours = line.ours === null ? null : pick(line.ours.value, vatView);
+  // Файл ставит цену за единицу подрядчика: у системы `line.ours` - ставка ₽/м² объекта, и подписывать
+  // её единицей подрядчика нельзя; поэтому справка берёт `file_ours` - то, что уйдёт в книгу.
+  const ours = pick(line.file_ours, vatView);
   const unit = priceUnitLabel(line.unit);
 
   const putAgreed = usePutAgreed(tenderId, roundId, offerId);
@@ -138,7 +141,10 @@ export function ExportBlock({ tenderId, roundId, offerId, line, comment, canEdit
         <span className="text-fg-secondary">{EXPORT_OURS_LABEL}</span>{" "}
         <span data-testid="export-ours" className="font-mono tabular-nums">
           {ours === null ? DASH : `${formatUnitPrice(ours)} ${unit}`}
-          <span className="font-sans text-xs text-fg-secondary"> · {EXPORT_OURS_NOTE}</span>
+          <span className="font-sans text-xs text-fg-secondary">
+            {" "}
+            · {ours === null ? EXPORT_OURS_NONE_NOTE : EXPORT_OURS_NOTE}
+          </span>
         </span>
       </p>
 

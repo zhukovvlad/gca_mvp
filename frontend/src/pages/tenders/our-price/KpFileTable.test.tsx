@@ -224,3 +224,17 @@ describe("KpFileTable: комментарий в ячейке", () => {
     expect(screen.getByTestId(`cell-${OUR_PRICE_LINE_ID}-comment`).querySelector('[role="alert"]')).toBeNull();
   });
 });
+
+describe("KpFileTable: объём", () => {
+  it("объём печатается до трёх знаков, как в книге, и остаётся числовым столбцом справа", () => {
+    const preview = kpFilePreviewFixture();
+    const lines = preview.rows.filter((r) => r.kind === "line");
+    if (lines[0].kind === "line") lines[0].quantity = "0.001";
+    if (lines[1].kind === "line") lines[1].quantity = "1234.5";
+    renderTable(preview);
+    const text = (id: number) => screen.getByTestId(`cell-${id}-quantity`).textContent?.replace(/\s/g, " ");
+    expect(text(OUR_PRICE_LINE_ID)).toBe("0,001");
+    expect(text(OUR_PRICE_LINE_ID + 1)).toBe("1 234,5");
+    expect(screen.getByTestId(`cell-${OUR_PRICE_LINE_ID}-quantity`)).toHaveClass("text-right");
+  });
+});

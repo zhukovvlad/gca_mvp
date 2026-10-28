@@ -3392,6 +3392,8 @@ export interface OurPriceParticipant {
   per_sqm_reason: "no_area" | "unknown_vat_base" | null;
   class_median_pct: string | null;
   ours_with_contractor: number;
+  /** Сколько файлов подрядчику уже отправлено по офферу. */
+  sent_files_count: number;
   totals: OurPriceTotals | null;
 }
 
@@ -3465,6 +3467,8 @@ export interface OurPriceLine {
   comment_kind: CommentKind | null;
   /** Ручная ступень (спека 4б §2.5); `null` - ступень автоматическая. */
   manual_rung: ManualRung | null;
+  /** Цена за единицу строки КП, как её поставит файл без договорённости; `null` - цены в файле не будет. */
+  file_ours: MoneyPair | null;
 }
 
 /** Автор решения: `id` и почта пользователя. */

@@ -2838,6 +2838,11 @@ export function useKpFilePreview(
     queryFn: () => tendersApi.kpFilePreview(tenderId, roundId, offerId, seriesId),
     enabled: opts?.enabled ?? true,
     retry: false,
+    // Пока каталог разбирает строки, цены предпросмотра неполны: опрашиваем, пока счётчик
+    // `header.in_progress_lines` не погаснет, иначе выгрузка возьмёт данные, которых не видели.
+    refetchInterval: (query) =>
+      (query.state.data?.header.in_progress_lines ?? 0) > 0 ? OUR_PRICE_POLL_MS : false,
+    refetchIntervalInBackground: false,
   });
 }
 

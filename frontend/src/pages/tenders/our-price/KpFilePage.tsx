@@ -79,6 +79,10 @@ function KpFileScreen({ tenderId, roundId, offerId }: { tenderId: number; roundI
           description={kpFileErrorLabel(status, seriesId !== null, apiErrorDetail(failure))}
           action={backLink}
         />
+        {/* Без сметы предпросмотра нет, а отправленные файлы остаются: это единственное место списка. */}
+        <div className="mt-8">
+          <SentFilesList tenderId={tenderId} roundId={roundId} offerId={offerId} />
+        </div>
       </div>
     );
   }
