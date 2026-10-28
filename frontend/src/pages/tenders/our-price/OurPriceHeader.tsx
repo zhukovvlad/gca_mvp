@@ -34,6 +34,8 @@ export interface OurPriceHeaderProps {
   vatToggleEnabled: boolean;
   /** У страницы файла подрядчику вид НДС не переключается: файл всегда в базе НДС КП. */
   hideVatSwitch?: boolean;
+  /** Кнопки действий разбора (выгрузка файла подрядчику, база НДС) - перед переключателями. */
+  actions?: ReactNode;
 }
 
 /**
@@ -52,6 +54,7 @@ export function OurPriceHeader({
   onSeries,
   vatToggleEnabled,
   hideVatSwitch = false,
+  actions,
 }: OurPriceHeaderProps) {
   const seriesQ = useInflationSeries(true);
   const series = seriesQ.data ?? [];
@@ -67,6 +70,7 @@ export function OurPriceHeader({
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div className="min-w-0">{title}</div>
         <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+          {actions}
           {!hideVatSwitch && (
             <div className="flex items-center gap-2 text-sm text-fg-secondary">
               <Switch

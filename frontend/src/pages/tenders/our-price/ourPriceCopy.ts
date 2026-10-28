@@ -44,6 +44,19 @@ export function emptyReasonOf(participant: OurPriceParticipant): EmptyReason | n
   return participant.per_sqm_reason;
 }
 
+/** Выгрузка файла подрядчику (спека 4б §2.14). */
+export const KP_FILE_EXPORT_LABEL = "Выгрузить КП с нашими расценками";
+export const KP_FILE_BLOCKED_NOTE = "база НДС КП неизвестна";
+
+/** Назначение базы НДС КП вручную (спека 4б §2.12). */
+export const VAT_BASE_ASSIGN_LABEL = "Назначить базу НДС";
+export const VAT_BASE_DIALOG_TITLE = "База НДС КП";
+export const VAT_BASE_DIALOG_DESCRIPTION =
+  "Ставка, которой соответствуют суммы КП. Файл подрядчику и сравнение строятся в этой базе.";
+export const VAT_BASE_FIELD_LABEL = "Ставка НДС, %";
+export const VAT_BASE_SAVE_LABEL = "Сохранить";
+export const VAT_BASE_SAVE_FALLBACK = "Не удалось сохранить базу НДС.";
+
 export const CHEAPEST_PER_SQM_LABEL = "дешевле всех на м²";
 export const DETAIL_LINK_LABEL = "Разобрать по строкам →";
 

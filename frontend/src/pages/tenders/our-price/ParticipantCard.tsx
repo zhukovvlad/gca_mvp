@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import type { Decimal, MoneyPair, OurPriceParticipant } from "@/types/domain";
 
+import { VatBaseDialog } from "./VatBaseDialog";
 import { formatBelow, formatMoney, pick, type VatView } from "./money";
 import {
   CARD_LABEL,
@@ -29,6 +30,8 @@ export interface ParticipantCardProps {
   cheapest: boolean;
   /** Адрес разбора; `null` — разбирать нечего (КП не загружено). */
   href: string | null;
+  tenderId: number;
+  roundId: number;
 }
 
 function vatCaption(participant: OurPriceParticipant, view: VatView): string {
@@ -58,7 +61,7 @@ function Row({ label, value, tone }: { label: string; value: string; tone?: "dea
  * наших договоров класса, суммы «выторговать / ниже всего, что платили / разные
  * единицы / не с чем сравнить» и вход в разбор. Числа выбирает `pick`.
  */
-export function ParticipantCard({ participant, view, cheapest, href }: ParticipantCardProps) {
+export function ParticipantCard({ participant, view, cheapest, href, tenderId, roundId }: ParticipantCardProps) {
   const reason = emptyReasonOf(participant);
   const perSqm = pick(participant.per_sqm, view);
   const totals = participant.totals;
@@ -83,7 +86,12 @@ export function ParticipantCard({ participant, view, cheapest, href }: Participa
       </CardHeader>
       <CardContent className="space-y-3 text-sm">
         {reason !== null ? (
-          <p className="text-fg-secondary">{EMPTY_REASON_LABEL[reason]}</p>
+          <>
+            <p className="text-fg-secondary">{EMPTY_REASON_LABEL[reason]}</p>
+            {reason === "unknown_vat_base" && participant.estimate_id !== null && (
+              <VatBaseDialog estimateId={participant.estimate_id} tenderId={tenderId} roundId={roundId} />
+            )}
+          </>
         ) : (
           <>
             <p>

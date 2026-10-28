@@ -6,22 +6,30 @@ import { ourPriceRoundFixture } from "@/test/fixtures";
 import { renderWithProviders } from "@/test/utils";
 import type { OurPriceParticipant } from "@/types/domain";
 
-import { CHEAPEST_PER_SQM_LABEL, PER_SQM_REASON_LABEL, WAITING_ADMIN_LABEL } from "./ourPriceCopy";
+import {
+  CHEAPEST_PER_SQM_LABEL,
+  PER_SQM_REASON_LABEL,
+  VAT_BASE_ASSIGN_LABEL,
+  WAITING_ADMIN_LABEL,
+} from "./ourPriceCopy";
 import type { VatView } from "./money";
 
 const [OK, NO_ESTIMATE, UNKNOWN_BASE] = ourPriceRoundFixture().participants;
 
 function renderCard(
   participant: OurPriceParticipant,
-  over: { view?: VatView; cheapest?: boolean; href?: string | null } = {}
+  over: { view?: VatView; cheapest?: boolean; href?: string | null; role?: "admin" | "member" } = {}
 ) {
   return renderWithProviders(
     <ParticipantCard
+      tenderId={1}
+      roundId={2}
       participant={participant}
       view={over.view ?? "net"}
       cheapest={over.cheapest ?? false}
       href={over.href === undefined ? "/o/7001" : over.href}
-    />
+    />,
+    { initialUser: { id: 1, email: "u@example.test", role: over.role ?? "admin" } }
   );
 }
 
@@ -106,6 +114,32 @@ describe("ParticipantCard", () => {
     expect(card).toHaveTextContent(PER_SQM_REASON_LABEL.unknown_vat_base);
     expect(card).not.toHaveTextContent("Можно выторговать");
     expect(within(card).getByRole("link")).toBeInTheDocument();
+  });
+
+  it("unknown_vat_base: у admin в карточке «Назначить базу НДС»", () => {
+    renderCard(UNKNOWN_BASE, { href: "/o/7003" });
+    expect(within(screen.getByTestId("card-7003")).getByRole("button", { name: VAT_BASE_ASSIGN_LABEL })).toBeInTheDocument();
+  });
+
+  it("unknown_vat_base: у member «Назначить базу НДС» нет", () => {
+    renderCard(UNKNOWN_BASE, { href: "/o/7003", role: "member" });
+    expect(within(screen.getByTestId("card-7003")).queryByRole("button", { name: VAT_BASE_ASSIGN_LABEL })).not.toBeInTheDocument();
+  });
+
+  it("другие причины пустоты и обычная карточка: «Назначить базу НДС» нет даже у admin", () => {
+    const { unmount } = renderCard(OK);
+    expect(screen.queryByRole("button", { name: VAT_BASE_ASSIGN_LABEL })).not.toBeInTheDocument();
+    unmount();
+    const { unmount: second } = renderCard(NO_ESTIMATE, { href: null });
+    expect(screen.queryByRole("button", { name: VAT_BASE_ASSIGN_LABEL })).not.toBeInTheDocument();
+    second();
+    renderCard({ ...OK, per_sqm: null, per_sqm_reason: "no_area", class_median_pct: null });
+    expect(screen.queryByRole("button", { name: VAT_BASE_ASSIGN_LABEL })).not.toBeInTheDocument();
+  });
+
+  it("unknown_vat_base без сметы в ответе (estimate_id = null): назначать некому", () => {
+    renderCard({ ...UNKNOWN_BASE, estimate_id: null }, { href: null });
+    expect(screen.queryByRole("button", { name: VAT_BASE_ASSIGN_LABEL })).not.toBeInTheDocument();
   });
 
   it("per_sqm_reason = no_area у участника с КП: подпись причины вместо ₽/м²", () => {

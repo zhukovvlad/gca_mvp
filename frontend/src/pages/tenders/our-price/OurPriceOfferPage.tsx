@@ -18,12 +18,15 @@ import type { VatView } from "./money";
 import { OfferArticlesTable } from "./OfferArticlesTable";
 import { OfferTiles, type OfferFilter } from "./OfferTiles";
 import { OurPriceHeader } from "./OurPriceHeader";
+import { VatBaseDialog } from "./VatBaseDialog";
 import {
   BACK_LABEL,
   BREADCRUMB_TENDERS,
   ERROR_TITLE,
   errorLabel,
   inflationCaptionOf,
+  KP_FILE_BLOCKED_NOTE,
+  KP_FILE_EXPORT_LABEL,
   NO_INFLATION_CAPTION,
   OFFER_SWITCHER_LABEL,
   offerCrumbStage,
@@ -123,6 +126,9 @@ export default function OurPriceOfferPage() {
   const stagePath = `/tenders/${tenderId}/rounds/${roundId}/our-price`;
   const stageHref = `${stagePath}${query}`;
   const offerHref = (id: number) => `${stagePath}/offers/${id}${query}`;
+  // Файл подрядчику открывается с тем же рядом ИПЦ, что и разбор; вид НДС в файле не переключается.
+  const fileHref = `${stagePath}/offers/${offerId}/file${seriesId === null ? "" : `?inflation=${seriesId}`}`;
+  const baseUnknown = participant.state === "unknown_vat_base";
 
   const card = cardQ.data;
   const switcher =
@@ -190,6 +196,23 @@ export default function OurPriceOfferPage() {
         seriesId={seriesId}
         onSeries={onSeries}
         vatToggleEnabled={vatToggleEnabled}
+        actions={
+          baseUnknown ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <Button type="button" variant="outline" size="sm" disabled>
+                {KP_FILE_EXPORT_LABEL}
+              </Button>
+              <span className="text-xs text-fg-secondary">{KP_FILE_BLOCKED_NOTE}</span>
+              {participant.estimate_id !== null && (
+                <VatBaseDialog estimateId={participant.estimate_id} tenderId={tenderId} roundId={roundId} />
+              )}
+            </div>
+          ) : (
+            <Button variant="outline" size="sm" render={<Link to={fileHref} />}>
+              {KP_FILE_EXPORT_LABEL}
+            </Button>
+          )
+        }
       />
 
       <InflationRefusalSection

@@ -9,7 +9,7 @@ import { handlerState } from "@/test/handlers";
 import { holdRequests } from "@/test/hold";
 import { OUR_PRICE_ROUND_ID, OUR_PRICE_TENDER_ID, ourPriceRoundFixture, sampleInflationSeries } from "@/test/fixtures";
 import { server } from "@/test/server";
-import { renderWithProviders } from "@/test/utils";
+import { renderWithProviders, waitForDialogFocus } from "@/test/utils";
 import { OUR_PRICE_POLL_MS } from "@/services/queries";
 import type { InflationSeries, OurPriceRound } from "@/types/domain";
 
@@ -21,6 +21,9 @@ import {
   PRICES_CAPTION_NET,
   PRICES_CAPTION_SHOWN_MIXED,
   RECALC_LABEL,
+  VAT_BASE_ASSIGN_LABEL,
+  VAT_BASE_FIELD_LABEL,
+  VAT_BASE_SAVE_LABEL,
   VAT_SWITCH_LABEL,
   errorLabel,
 } from "./ourPriceCopy";
@@ -558,5 +561,54 @@ describe("прежние цифры под слоем — только свое�
     expect(screen.queryByTestId("recalc-overlay")).not.toBeInTheDocument();
     expect(container.querySelector(".container-page .animate-pulse")).not.toBeNull();
     hold.release();
+  });
+});
+
+describe("назначение базы НДС с карточки участника", () => {
+  const withKnownBase = (): OurPriceRound => {
+    const base = ourPriceRoundFixture();
+    return {
+      ...base,
+      participants: base.participants.map((p) =>
+        p.offer_id === 7003 ? { ...p, vat_rate: "22", state: "ok", per_sqm_reason: null } : p
+      ),
+    };
+  };
+
+  it("кнопка только у карточки с неизвестной базой; после сохранения этап перезапрошен, кнопка исчезает", async () => {
+    let assigned = false;
+    let requests = 0;
+    server.use(
+      http.get(ROUND_PATH, () => {
+        requests += 1;
+        return HttpResponse.json(assigned ? withKnownBase() : ourPriceRoundFixture());
+      }),
+      http.patch("/api/v1/estimates/:id/vat", async () => {
+        assigned = true;
+        return HttpResponse.json({
+          estimate_id: 9003,
+          vat_rate_base_override: "22",
+          vat_rate_target: null,
+          vat_rate_updated_at: "2026-03-15T10:00:00+00:00",
+        });
+      })
+    );
+    const user = userEvent.setup();
+    renderPage();
+    await loaded();
+    expect(within(screen.getByTestId("card-7001")).queryByRole("button", { name: VAT_BASE_ASSIGN_LABEL })).not.toBeInTheDocument();
+    await user.click(within(screen.getByTestId("card-7003")).getByRole("button", { name: VAT_BASE_ASSIGN_LABEL }));
+    await waitForDialogFocus();
+    await user.type(screen.getByLabelText(VAT_BASE_FIELD_LABEL), "22");
+    await user.click(screen.getByRole("button", { name: VAT_BASE_SAVE_LABEL }));
+    await waitFor(() => expect(screen.getByTestId("card-7003")).not.toHaveAttribute("data-reason"));
+    expect(screen.queryByRole("button", { name: VAT_BASE_ASSIGN_LABEL })).not.toBeInTheDocument();
+    expect(requests).toBeGreaterThan(1);
+  });
+
+  it("member: кнопки нет и у карточки с неизвестной базой", async () => {
+    renderPage("", { role: "member" });
+    await loaded();
+    expect(screen.queryByRole("button", { name: VAT_BASE_ASSIGN_LABEL })).not.toBeInTheDocument();
   });
 });
