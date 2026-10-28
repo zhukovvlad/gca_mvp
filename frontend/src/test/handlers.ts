@@ -501,8 +501,11 @@ interface HandlerState {
     url: string;
     body: unknown;
   }>;
-  /** `refused` - решение отвергнуто кодом `unknown_rung` (422). */
-  kpFileDecisionOutcome: "ok" | "refused";
+  /**
+   * `refused` - решение отвергнуто кодом `unknown_rung` (422); `invalid_agreed` и
+   * `comment_too_long` - отказы уровня поля с текстом сервера.
+   */
+  kpFileDecisionOutcome: "ok" | "refused" | "invalid_agreed" | "comment_too_long";
   /** `unknown_vat_base` - выгрузка отвечает кодированным 422 с текстом сервера. */
   kpFileExportOutcome: "ok" | "unknown_vat_base";
   /** `missing` - 404, `gone` - 410 (файл пропал из хранилища, запись жива). */
@@ -2044,11 +2047,14 @@ async function kpDecision({ request }: { request: Request }): Promise<Response> 
     url: request.url,
     body: text === "" ? null : JSON.parse(text),
   });
-  if (handlerState.kpFileDecisionOutcome === "refused") {
-    return HttpResponse.json(
-      { detail: { code: "unknown_rung", message: "Такой ступени у строки нет." } },
-      { status: 422 }
-    );
+  const refusals = {
+    refused: { code: "unknown_rung", message: "Такой ступени у строки нет." },
+    invalid_agreed: { code: "invalid_agreed", message: "Цена должна быть числом больше нуля." },
+    comment_too_long: { code: "comment_too_long", message: "Комментарий длиннее 2000 символов." },
+  } as const;
+  const outcome = handlerState.kpFileDecisionOutcome;
+  if (outcome !== "ok") {
+    return HttpResponse.json({ detail: refusals[outcome] }, { status: 422 });
   }
   return new HttpResponse(null, { status: 204 });
 }

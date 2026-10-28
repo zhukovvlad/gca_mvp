@@ -1,5 +1,5 @@
 import { formatDecimalMoney, formatNumber, pluralRu, roundDecimal } from "@/lib/format";
-import type { Decimal, OurPriceLine, OurPriceLineState, OurPriceParticipant } from "@/types/domain";
+import type { Decimal, OurPriceLine, OurPriceLineState, OurPriceParticipant, ResetReason } from "@/types/domain";
 
 import type { OfferFilter } from "./offerFilter";
 
@@ -284,6 +284,7 @@ export const SHEET_SECTION = {
   family: "Вся семья в этом КП",
   contracts: "Договоры на этой ступени",
   vatDropped: "Договоры, не попавшие в сравнение",
+  export: "Для выгрузки",
 } as const;
 export const SHEET_FIELD = {
   kpPrice: "Цена КП",
@@ -305,6 +306,58 @@ export function priceBasisLabel(view: "net" | "shown", rate: Decimal | null): st
 
 export const RUNG_SCOPE_LABEL = { cls: "класс объекта", all: "все классы" } as const;
 export const RUNG_AUTO_TAG = "авто";
+
+/** Решения человека по строке: блок «Для выгрузки» и сохраняемая ступень (спека 4б §2.3–§2.6, §2.14). */
+export const EXPORT_OURS_LABEL = "Наша расценка";
+export const EXPORT_OURS_NOTE = "считается из данных и следует за ними";
+export const SAVE_LABEL = "Сохранить";
+export const SAVING_LABEL = "Сохраняем…";
+
+export const AGREED_PLACEHOLDER = "не договаривались";
+export const AGREED_HINT =
+  "вписываете вы, GCA это число не меняет. В файл подрядчику идёт договорённое число, если оно есть, иначе наша расценка";
+
+/** Подпись поля «Договорились»: единица строки КП и вид цены; единицы нет — без неё. */
+export function agreedLabel(unit: string | null, basis: string): string {
+  return unit === null ? `Договорились, ${basis}` : `Договорились, ${unit}, ${basis}`;
+}
+
+/** Метка под нашей расценкой в таблице строк. */
+export function agreedCaption(value: string): string {
+  return `договорились ${value}`;
+}
+
+export const COMMENT_LABEL = "Комментарий для подрядчика";
+export const COMMENT_PLACEHOLDER = "комментария нет";
+export const COMMENT_TAG = { template: "шаблон", custom: "свой текст" } as const;
+export const COMMENT_TAG_EMPTY = "свой текст (пусто)";
+export const COMMENT_TO_TEMPLATE = "к шаблону";
+export const COMMENT_NO_TEMPLATE_HINT = "комментария не будет";
+
+export const RUNG_SAVE_LABEL = "Сохранить эту ступень";
+export const RUNG_BACK_TO_AUTO_LABEL = "Вернуть авто";
+export const RUNG_MANUAL_TAG = "ручная";
+export const RUNG_MANUAL_FAMILY_TAG = "ручная · для всей семьи в этом КП";
+export const RUNG_MANUAL_INACTIVE_TAG = "ручная не действует";
+
+/** Метка действующей ручной ступени: у ступени семьи — с пояснением, на кого она действует. */
+export function manualRungTag(target: "line" | "family"): string {
+  return target === "family" ? RUNG_MANUAL_FAMILY_TAG : RUNG_MANUAL_TAG;
+}
+
+/** Почему сохранённая ручная ступень не действует: по одному тексту на каждый код ответа. */
+export const RUNG_RESET_REASON: Record<ResetReason, string> = {
+  kind_changed: "строка стала системой, а ступень выбрана для работы",
+  key_changed: "у строки сменился вариант или семья",
+  rung_unavailable: "такой ступени у строки больше нет",
+  rung_empty: "на этой ступени больше нет договоров",
+};
+
+/** Плашка недействующей ручной ступени; код причины может не прийти — тогда без причины. */
+export function rungInactiveNote(rungLabel: string, reason: ResetReason | null): string {
+  const why = reason === null ? "" : `: ${RUNG_RESET_REASON[reason]}`;
+  return `Ручная ступень ${rungLabel} не действует${why} — считается автоматическая`;
+}
 export const RUNG_RESET_LABEL = "Вернуть автоматическую";
 export const RUNG_HINT =
   "Нажмите на другую ступень, чтобы сравнить по ней: вилка, наша расценка и отклонение пересчитаются. Цифры страницы разбора при этом не меняются.";

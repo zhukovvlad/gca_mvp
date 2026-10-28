@@ -7,6 +7,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { handlerState } from "@/test/handlers";
 import {
+  agreedFixture,
+  KP_FILE_AUTHOR,
+  KP_FILE_TEMPLATE_TEXT,
   OUR_PRICE_LINE_ID,
   OUR_PRICE_OFFER_ID,
   OUR_PRICE_ROUND_ID,
@@ -18,7 +21,7 @@ import { server } from "@/test/server";
 import { createTestQueryClient, renderWithProviders } from "@/test/utils";
 import { OUR_PRICE_POLL_MS } from "@/services/queries";
 import { qk } from "@/services/queryKeys";
-import type { MoneyPair, OurPriceLine, OurPriceLineView, OurPriceRungContract } from "@/types/domain";
+import type { ManualRung, MoneyPair, OurPriceLine, OurPriceLineView, OurPriceRungContract } from "@/types/domain";
 
 import { LineSheet, type LineSheetProps } from "./LineSheet";
 import OurPriceOfferPage from "./OurPriceOfferPage";
@@ -30,7 +33,9 @@ import {
   GROUP_THIS_LINE,
   LINE_STATE_LABEL,
   RUNG_AUTO_TAG,
+  SAVING_LABEL,
   SHEET_ERROR_LABEL,
+  SHEET_SECTION,
   UNIT_WARN_TITLE,
   VAT_DROPPED_NOTE,
   WAITING_ADMIN_LABEL,
@@ -94,8 +99,8 @@ const baseProps: LineSheetProps = {
   onClose: () => {},
 };
 
-function renderSheet(props: Partial<LineSheetProps> = {}) {
-  return renderWithProviders(<LineSheet {...baseProps} {...props} />);
+function renderSheet(props: Partial<LineSheetProps> = {}, initialUser?: { id: number; email: string; role: "admin" | "member" }) {
+  return renderWithProviders(<LineSheet {...baseProps} {...props} />, initialUser ? { initialUser } : {});
 }
 
 async function opened() {
@@ -216,11 +221,21 @@ describe("цены панели", () => {
     expect(screen.getByTestId("sheet-ours")).toHaveTextContent("—");
   });
 
-  it("блока «Для выгрузки» нет", async () => {
-    serveView(() => view());
+  it("«Для выгрузки» — последний раздел панели, после договоров и выпавших", async () => {
+    serveView(() =>
+      view(
+        {},
+        { vat_dropped: [{ contract_id: 301, object_title: "Объект Ж", number: "Договор 9", year: 2024 }] }
+      )
+    );
     renderSheet();
     await screen.findByTestId("sheet-prices");
-    expect(screen.queryByText(/Для выгрузки/)).not.toBeInTheDocument();
+    const titles = within(screen.getByTestId("line-sheet"))
+      .getAllByRole("heading", { level: 4 })
+      .map((h) => h.textContent);
+    expect(titles[titles.length - 1]).toBe(SHEET_SECTION.export);
+    expect(titles).toContain(SHEET_SECTION.vatDropped);
+    expect(titles.indexOf(SHEET_SECTION.vatDropped)).toBeLessThan(titles.indexOf(SHEET_SECTION.export));
   });
 });
 
@@ -848,6 +863,168 @@ describe("в составе страницы разбора", () => {
     expect(requestsOf("offer")).toHaveLength(2);
     expect(requestsOf("line")).toHaveLength(2);
     expect(screen.getByTestId("line-sheet")).toBeInTheDocument();
+  });
+});
+
+function manualRung(over: Partial<ManualRung> = {}): ManualRung {
+  return {
+    level: "v",
+    scope: "all",
+    active: true,
+    reset_reason: null,
+    target: "line",
+    set_by: KP_FILE_AUTHOR,
+    set_at: "2026-03-14T09:30:00+00:00",
+    ...over,
+  };
+}
+
+const MEMBER = { id: 2, email: "member@example.test", role: "member" } as const;
+const kpDecisions = () => handlerState.kpFileRequests.filter((r) => r.kind === "decision");
+const AGREED_PATH = `${LINE_PATH}/agreed`;
+
+describe("«Для выгрузки»: сохранение под серым слоем", () => {
+  it("«Договорились»: после ответа поле показывает сохранённое число, слоя нет", async () => {
+    let agreed: OurPriceLine["agreed"] = null;
+    serveView(() => view({ agreed }));
+    renderSheet();
+    const field = await screen.findByLabelText(/Договорились/);
+    await userEvent.type(field, "1234.5");
+    agreed = agreedFixture({ net: "1234.5" });
+    await userEvent.click(screen.getByTestId("agreed-save"));
+    await waitFor(() => expect(kpDecisions()).toHaveLength(1));
+    await waitFor(() => expect(screen.getByLabelText(/Договорились/)).toHaveValue("1234.50"));
+    expect(screen.queryByTestId("recalc-overlay")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agreed-save")).toBeDisabled();
+  });
+
+  it("пока запрос идёт, над панелью серый слой с подписью сохранения; старые цифры видны", async () => {
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    serveView(() => view());
+    server.use(
+      http.put(AGREED_PATH, async () => {
+        await hold;
+        return new HttpResponse(null, { status: 204 });
+      })
+    );
+    renderSheet();
+    await userEvent.type(await screen.findByLabelText(/Договорились/), "5");
+    await userEvent.click(screen.getByTestId("agreed-save"));
+    const overlay = await screen.findByTestId("recalc-overlay");
+    expect(overlay).toHaveTextContent(SAVING_LABEL);
+    expect(screen.getByTestId("sheet-kp-price")).toHaveTextContent("1 200,00");
+    release();
+    await waitFor(() => expect(screen.queryByTestId("recalc-overlay")).not.toBeInTheDocument());
+  });
+
+  it("слой стоит до прихода новых цифр: запрос решения ответил, а перезапрос панели ещё идёт", async () => {
+    let release!: () => void;
+    let gate: Promise<void> | null = null;
+    server.use(
+      http.get(LINE_PATH, async () => {
+        if (gate !== null) await gate;
+        return HttpResponse.json(view());
+      })
+    );
+    renderSheet();
+    await userEvent.type(await screen.findByLabelText(/Договорились/), "5");
+    gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await userEvent.click(screen.getByTestId("agreed-save"));
+    await waitFor(() => expect(kpDecisions()).toHaveLength(1));
+    // Решение сохранено, перезапрос держится: слой на месте, а поле ещё не сброшено.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.getByTestId("recalc-overlay")).toHaveTextContent(SAVING_LABEL);
+    release();
+    await waitFor(() => expect(screen.queryByTestId("recalc-overlay")).not.toBeInTheDocument());
+  });
+
+  it("переключатель НДС запроса не шлёт: ни слоя, ни обращения к серверу", async () => {
+    const asked = serveView(() => view());
+    const { rerender } = renderSheet();
+    await screen.findByLabelText("Договорились, м2, без НДС");
+    const before = asked.length;
+    rerender(<LineSheet {...baseProps} vat="shown" vatRate="22.00" />);
+    expect(await screen.findByLabelText("Договорились, м2, с НДС 22 %")).toBeInTheDocument();
+    expect(screen.queryByTestId("recalc-overlay")).not.toBeInTheDocument();
+    expect(asked).toHaveLength(before);
+  });
+
+  it("«к шаблону» у своего текста без шаблона: DELETE ушёл, после ответа метки «свой текст» нет", async () => {
+    let custom = true;
+    serveView(() =>
+      view(
+        {},
+        {
+          comment: custom
+            ? { kind: "custom", text: "Свой текст", template_text: null }
+            : { kind: "template", text: KP_FILE_TEMPLATE_TEXT, template_text: KP_FILE_TEMPLATE_TEXT },
+        }
+      )
+    );
+    renderSheet();
+    expect(await screen.findByTestId("comment-tag")).toHaveTextContent("свой текст");
+    custom = false;
+    await userEvent.click(screen.getByRole("button", { name: "к шаблону" }));
+    await waitFor(() => expect(kpDecisions()).toHaveLength(1));
+    expect(kpDecisions()[0].method).toBe("DELETE");
+    await waitFor(() => expect(screen.getByTestId("comment-tag")).toHaveTextContent("шаблон"));
+    expect(screen.getByTestId("comment-tag")).not.toHaveTextContent("свой текст");
+  });
+});
+
+describe("ручная ступень в панели", () => {
+  it("действующая ручная ступень помечена «ручная» вместо «авто»", async () => {
+    serveView((asked) =>
+      view({
+        ...onRung(asked),
+        manual_rung: manualRung(),
+        rung: { level: "v", scope: "all", auto: false, threshold_met: true },
+      })
+    );
+    renderSheet();
+    await screen.findByTestId("rung-v-all");
+    expect(rung("v", "all")).toHaveTextContent("ручная");
+    expect(rung("v", "all")).not.toHaveTextContent(RUNG_AUTO_TAG);
+    expect(rung("v", "cls")).not.toHaveTextContent(RUNG_AUTO_TAG);
+  });
+
+  it("недействующая ручная ступень: плашка, а «авто» остаётся на автоматической ступени", async () => {
+    serveView((asked) => view({ ...onRung(asked), manual_rung: manualRung({ active: false, reset_reason: "rung_empty" }) }));
+    renderSheet();
+    expect(await screen.findByTestId("rung-inactive")).toHaveTextContent("на этой ступени больше нет договоров");
+    expect(rung("v", "cls")).toHaveTextContent(RUNG_AUTO_TAG);
+    expect(rung("v", "all")).not.toHaveTextContent("ручная");
+  });
+
+  it("выбор другой ступени → «Сохранить эту ступень» → PUT; выбор сбрасывается, кнопка пропадает", async () => {
+    serveView((asked) => view(onRung(asked)));
+    renderSheet();
+    await screen.findByTestId("rung-v-cls");
+    expect(screen.queryByRole("button", { name: "Сохранить эту ступень" })).not.toBeInTheDocument();
+    fireEvent.click(rung("v", "all"));
+    const save = await screen.findByRole("button", { name: "Сохранить эту ступень" });
+    await userEvent.click(save);
+    await waitFor(() => expect(kpDecisions()).toHaveLength(1));
+    expect(kpDecisions()[0].method).toBe("PUT");
+    expect(kpDecisions()[0].body).toEqual({ level: "v", scope: "all" });
+    await waitFor(() => expect(screen.queryByTestId("rung-reset")).not.toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "Сохранить эту ступень" })).not.toBeInTheDocument();
+  });
+
+  it("member: полей и кнопок сохранения нет ни в «Для выгрузки», ни под лестницей", async () => {
+    serveView((asked) => view({ ...onRung(asked), manual_rung: manualRung() }));
+    renderSheet({}, MEMBER);
+    await screen.findByTestId("export-block");
+    fireEvent.click(rung("v", "cls"));
+    expect(within(screen.getByTestId("export-block")).queryAllByRole("textbox")).toHaveLength(0);
+    expect(within(screen.getByTestId("export-block")).queryAllByRole("button")).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: "Сохранить эту ступень" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Вернуть авто" })).not.toBeInTheDocument();
   });
 });
 

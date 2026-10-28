@@ -2,7 +2,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 
-import { ourPriceLineFixture } from "@/test/fixtures";
+import { agreedFixture, ourPriceLineFixture } from "@/test/fixtures";
 import type { MoneyPair, OurPriceLine } from "@/types/domain";
 
 import { OfferLinesTable } from "./OfferLinesTable";
@@ -566,5 +566,53 @@ describe("OfferLinesTable: подпись «ждёт решения админи
     ]);
 
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
+  });
+});
+
+describe("решения 4б в строках таблицы", () => {
+  const author = { id: 3, email: "admin@example.test" };
+  const manual = (over: Partial<NonNullable<OurPriceLine["manual_rung"]>> = {}): NonNullable<OurPriceLine["manual_rung"]> => ({
+    level: "v",
+    scope: "all",
+    active: true,
+    reset_reason: null,
+    target: "line",
+    set_by: author,
+    set_at: "2026-03-14T09:30:00+00:00",
+    ...over,
+  });
+
+  it("под нашей расценкой — «договорились {X}» в выбранном виде НДС; без решения метки нет", () => {
+    const agreed = agreedFixture();
+    const net = renderTable([line(1, { agreed }), line(2)]);
+    expect(screen.getByTestId("agreed-1")).toHaveTextContent("договорились 1 234,57");
+    expect(screen.queryByTestId("agreed-2")).not.toBeInTheDocument();
+    net.unmount();
+    renderTable([line(1, { agreed })], { vat: "shown" });
+    expect(screen.getByTestId("agreed-1")).toHaveTextContent("договорились 1 506,17");
+  });
+
+  it("вид чисел: 30 знаков в ответе печатаются двумя знаками", () => {
+    renderTable([line(1, { agreed: agreedFixture({ net: "1234.56789012345678901234567890" }) })]);
+    const text = screen.getByTestId("agreed-1").textContent ?? "";
+    expect(text).toContain("1 234,57");
+    expect(text).not.toMatch(/\d[.,]\d{3,}/);
+  });
+
+  it("ручная ступень: у подписи ступени «ручная»; недействующая — «ручная не действует»; авто — без метки", () => {
+    renderTable([
+      line(1, { manual_rung: manual() }),
+      line(2, { manual_rung: manual({ active: false, reset_reason: "key_changed" }) }),
+      line(3),
+    ]);
+    expect(screen.getByTestId("rung-1")).toHaveTextContent(/ручная$/);
+    expect(screen.getByTestId("rung-1")).not.toHaveTextContent("ручная не действует");
+    expect(screen.getByTestId("rung-2")).toHaveTextContent("ручная не действует");
+    expect(screen.getByTestId("rung-3")).not.toHaveTextContent("ручная");
+  });
+
+  it("у строки без ступени и с недействующей ручной метка всё равно видна", () => {
+    renderTable([line(1, { rung: null, manual_rung: manual({ active: false, reset_reason: "rung_empty" }) })]);
+    expect(screen.getByTestId("rung-1")).toHaveTextContent("ручная не действует");
   });
 });

@@ -16,6 +16,7 @@ import { handlerState } from "@/test/handlers";
 import { spyOnDownload } from "@/test/utils";
 import { qk } from "./queryKeys";
 import {
+  apiErrorDetail,
   useDeleteAgreed,
   useDeleteComment,
   useDeleteRung,
@@ -276,6 +277,41 @@ describe("мутации решений: адрес и тело", () => {
     expect(error).toHaveBeenCalledTimes(1);
     expect(error).toHaveBeenCalledWith("Такой ступени у строки нет.");
     for (const key of decisionKeysMarked()) expect(invalidated(queryClient, key)).toBe(false);
+  });
+
+  it.each([
+    ["invalid_agreed", "Цена должна быть числом больше нуля."],
+    ["comment_too_long", "Комментарий длиннее 2000 символов."],
+  ] as const)("отказ уровня поля %s: текст остаётся у поля, тоста нет", async (outcome, message) => {
+    handlerState.kpFileDecisionOutcome = outcome;
+    const error = vi.spyOn(toast, "error").mockImplementation(() => "");
+    const queryClient = makeClient();
+    const { result } = renderHook(
+      () => ({ agreed: usePutAgreed(T, R, O), comment: usePutComment(T, R, O) }),
+      { wrapper: wrapperFor(queryClient) }
+    );
+    let failure: unknown;
+    await act(async () => {
+      const call =
+        outcome === "invalid_agreed"
+          ? result.current.agreed.mutateAsync({ positionItemId: P, value: "abc", basis: "net" })
+          : result.current.comment.mutateAsync({ positionItemId: P, text: "x" });
+      await call.catch((err: unknown) => {
+        failure = err;
+      });
+    });
+    expect(error).not.toHaveBeenCalled();
+    expect(apiErrorDetail(failure)).toBe(message);
+  });
+
+  it("иной отказ того же запроса остаётся тостом", async () => {
+    handlerState.kpFileDecisionOutcome = "refused";
+    const error = vi.spyOn(toast, "error").mockImplementation(() => "");
+    const { result } = renderHook(() => usePutAgreed(T, R, O), { wrapper: wrapperFor(makeClient()) });
+    await act(async () => {
+      await result.current.mutateAsync({ positionItemId: P, value: "10", basis: "net" }).catch(() => undefined);
+    });
+    expect(error).toHaveBeenCalledTimes(1);
   });
 });
 

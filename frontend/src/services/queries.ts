@@ -2860,13 +2860,30 @@ function invalidateAfterDecision(
   roundId: number,
   offerId: number
 ) {
-  qc.invalidateQueries({ queryKey: qk.tenders.ourPriceLinesOfOffer(tenderId, roundId, offerId) });
-  qc.invalidateQueries({ queryKey: qk.tenders.ourPriceOfferAllSeries(tenderId, roundId, offerId) });
-  qc.invalidateQueries({ queryKey: qk.tenders.ourPriceRoundAllSeries(tenderId, roundId) });
-  qc.invalidateQueries({ queryKey: qk.tenders.kpFilePreviewOfOffer(tenderId, roundId, offerId) });
+  return Promise.all([
+    qc.invalidateQueries({ queryKey: qk.tenders.ourPriceLinesOfOffer(tenderId, roundId, offerId) }),
+    qc.invalidateQueries({ queryKey: qk.tenders.ourPriceOfferAllSeries(tenderId, roundId, offerId) }),
+    qc.invalidateQueries({ queryKey: qk.tenders.ourPriceRoundAllSeries(tenderId, roundId) }),
+    qc.invalidateQueries({ queryKey: qk.tenders.kpFilePreviewOfOffer(tenderId, roundId, offerId) }),
+  ]);
 }
 
-/** Общая оболочка шести мутаций решений: вызов, четыре префикса, тост отказа. */
+/** Отказы уровня поля: их текст стоит у поля ввода, тост был бы вторым сигналом. */
+const FIELD_REFUSAL_CODES: ReadonlySet<string> = new Set(["invalid_agreed", "comment_too_long"]);
+
+export function isFieldRefusal(error: unknown): boolean {
+  return FIELD_REFUSAL_CODES.has(apiErrorCode(error) ?? "");
+}
+
+/** Ключ мутаций решений оффера: по нему экран узнаёт, что решение ещё сохраняется. */
+export const kpDecisionMutationKey = (tenderId: number, roundId: number, offerId: number) =>
+  ["kpDecision", tenderId, roundId, offerId] as const;
+
+/**
+ * Общая оболочка шести мутаций решений: вызов, четыре префикса, тост отказа. Мутация остаётся
+ * «идущей», пока перезапрошены активные запросы, - серый слой экрана закрывается вместе с
+ * новыми цифрами, а не раньше. Отказ уровня поля тоста не даёт: вызывающий покажет его у поля.
+ */
 function useKpDecision<V>(
   tenderId: number,
   roundId: number,
@@ -2875,9 +2892,12 @@ function useKpDecision<V>(
 ) {
   const qc = useQueryClient();
   return useMutation({
+    mutationKey: kpDecisionMutationKey(tenderId, roundId, offerId),
     mutationFn: call,
     onSuccess: () => invalidateAfterDecision(qc, tenderId, roundId, offerId),
-    onError: toastApiError,
+    onError: (error) => {
+      if (!isFieldRefusal(error)) toastApiError(error);
+    },
   });
 }
 

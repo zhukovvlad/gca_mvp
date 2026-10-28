@@ -1,11 +1,13 @@
 import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useIsMutating } from "@tanstack/react-query";
 
+import { useCurrentUser } from "@/hooks/useAuth";
 import { Skeleton } from "@/components/ui-domain/Skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
-import { useOurPriceLine } from "@/services/queries";
+import { kpDecisionMutationKey, useOurPriceLine } from "@/services/queries";
 import type { Decimal, OurPriceLine, OurPriceLineView, RungLevel, RungScope } from "@/types/domain";
 
 import { comparedKpPrice, comparedUnit, formatMoney, formatSigned, formatUnitPrice, pick, type VatView } from "./money";
@@ -20,6 +22,7 @@ import {
   groupLinesCaption,
   groupMembership,
   lineStateLabel,
+  manualRungTag,
   priceBasisLabel,
   RECALC_LABEL,
   ratioNote,
@@ -28,6 +31,7 @@ import {
   RUNG_LEVEL_LABEL,
   RUNG_RESET_LABEL,
   RUNG_SCOPE_LABEL,
+  SAVING_LABEL,
   SHEET_DESCRIPTION,
   SHEET_ERROR_LABEL,
   SHEET_FIELD,
@@ -40,8 +44,10 @@ import {
   variantCaption,
   VAT_DROPPED_NOTE,
 } from "./ourPriceCopy";
+import { ExportBlock } from "./ExportBlock";
 import { LineStateText } from "./LineStateText";
 import { RecalcOverlay } from "./RecalcOverlay";
+import { RungSaveBar } from "./RungSaveBar";
 
 export interface LineSheetProps {
   tenderId: number;
@@ -74,9 +80,11 @@ const sameRung = (a: Rung | null, b: Rung | null) => a !== null && b !== null &&
 
 /**
  * Панель строки КП (спека 4а §2.12, дизайн 3.5): цены, лестница ступеней, договоры выбранной
- * ступени, выпавшие из-за базы НДС и плашка про единицы учёта. Только чтение. Выбор ступени —
- * предпросмотр в самой панели: цифры страницы разбора он не трогает (§2.5). Блока «Для
- * выгрузки» здесь нет (§2.14).
+ * ступени, выпавшие из-за базы НДС, плашка про единицы учёта и последним разделом «Для
+ * выгрузки» (спека 4б §2.14). Выбор ступени — предпросмотр в самой панели: цифры страницы
+ * разбора он не трогает (4а §2.5); сохранить его, вернуть авто, вписать «Договорились» и
+ * комментарий может только `admin`, остальные видят те же значения без полей. Сохранение идёт
+ * под серым слоем: старые цифры видны, пока не придут новые.
  */
 export function LineSheet({ positionItemId, onClose, ...rest }: LineSheetProps) {
   return (
@@ -112,11 +120,15 @@ function LineSheetBody({
   canResolve = false,
 }: BodyProps) {
   const [rung, setRung] = useState<Rung | null>(null);
+  const { data: currentUser } = useCurrentUser();
+  const canEdit = currentUser?.role === "admin";
+  const saving = useIsMutating({ mutationKey: kpDecisionMutationKey(tenderId, roundId, offerId) }) > 0;
   // Автоматическая ступень остаётся известной и при предпросмотре другой: это тот же запрос, пока выбора нет.
   const autoQuery = useOurPriceLine(tenderId, roundId, offerId, positionItemId, null, seriesId);
   const query = useOurPriceLine(tenderId, roundId, offerId, positionItemId, rung, seriesId);
   const data = query.data;
-  const autoRung = autoQuery.data?.line.rung ?? null;
+  // Строка на действующей ступени: у неё ручная ступень, лестница и метка «авто» / «ручная».
+  const baseLine = autoQuery.data?.line ?? null;
 
   return (
     <>
@@ -140,14 +152,18 @@ function LineSheetBody({
         </div>
       )}
       {data !== undefined && (
-        <RecalcOverlay active={query.isPlaceholderData} label={RECALC_LABEL}>
+        <RecalcOverlay active={query.isPlaceholderData || saving} label={saving ? SAVING_LABEL : RECALC_LABEL}>
           <PanelContent
+            tenderId={tenderId}
+            roundId={roundId}
+            offerId={offerId}
             data={data}
+            baseLine={baseLine}
             vat={vat}
             vatRate={vatRate}
             canResolve={canResolve}
+            canEdit={canEdit}
             rung={rung}
-            autoRung={autoRung}
             onRung={setRung}
           />
         </RecalcOverlay>
@@ -161,16 +177,33 @@ function subtitle(line: OurPriceLine): string {
 }
 
 interface PanelContentProps {
+  tenderId: number;
+  roundId: number;
+  offerId: number;
   data: OurPriceLineView;
+  /** Строка на действующей ступени; `null`, пока её ответ не пришёл. */
+  baseLine: OurPriceLine | null;
   vat: VatView;
   vatRate: Decimal | null;
   canResolve: boolean;
+  canEdit: boolean;
   rung: Rung | null;
-  autoRung: OurPriceLine["rung"];
   onRung: (rung: Rung | null) => void;
 }
 
-function PanelContent({ data, vat, vatRate, canResolve, rung, autoRung, onRung }: PanelContentProps) {
+function PanelContent({
+  tenderId,
+  roundId,
+  offerId,
+  data,
+  baseLine,
+  vat,
+  vatRate,
+  canResolve,
+  canEdit,
+  rung,
+  onRung,
+}: PanelContentProps) {
   const { line } = data;
   const stateText = lineStateLabel(line);
   return (
@@ -183,7 +216,25 @@ function PanelContent({ data, vat, vatRate, canResolve, rung, autoRung, onRung }
       <UnitWarn line={line} vat={vat} />
       <Prices line={line} vat={vat} vatRate={vatRate} />
       {line.rungs.length > 0 && (
-        <Ladder line={line} rung={rung} autoRung={autoRung} onRung={onRung} />
+        <Ladder
+          line={line}
+          rung={rung}
+          effective={baseLine}
+          onRung={onRung}
+          footer={
+            baseLine === null ? null : (
+              <RungSaveBar
+                tenderId={tenderId}
+                roundId={roundId}
+                offerId={offerId}
+                line={baseLine}
+                previewRung={rung}
+                canEdit={canEdit}
+                onSaved={() => onRung(null)}
+              />
+            )
+          }
+        />
       )}
       {data.group_lines.length > 0 && <Family line={line} groupLines={data.group_lines} vat={vat} />}
       {data.contracts.length > 0 && <Contracts contracts={data.contracts} vat={vat} />}
@@ -199,6 +250,18 @@ function PanelContent({ data, vat, vatRate, canResolve, rung, autoRung, onRung }
           </ul>
         </Section>
       )}
+      <Section title={SHEET_SECTION.export} testId="sheet-export">
+        <ExportBlock
+          tenderId={tenderId}
+          roundId={roundId}
+          offerId={offerId}
+          line={baseLine ?? line}
+          comment={data.comment}
+          canEdit={canEdit}
+          vatView={vat}
+          vatRate={vatRate}
+        />
+      </Section>
     </div>
   );
 }
@@ -265,15 +328,22 @@ function Prices({ line, vat, vatRate }: { line: OurPriceLine; vat: VatView; vatR
 function Ladder({
   line,
   rung,
-  autoRung,
+  effective,
   onRung,
+  footer,
 }: {
   line: OurPriceLine;
   rung: Rung | null;
-  autoRung: OurPriceLine["rung"];
+  /** Строка на действующей ступени; `null`, пока её ответ не пришёл. */
+  effective: OurPriceLine | null;
   onRung: (rung: Rung | null) => void;
+  footer?: ReactNode;
 }) {
   const selected: Rung | null = rung ?? line.rung;
+  const autoRung = effective?.rung ?? null;
+  const manual = effective?.manual_rung ?? null;
+  // Действующая ступень — своя метка: «авто», либо «ручная» (у семьи — с пояснением).
+  const effectiveTag = manual !== null && manual.active ? manualRungTag(manual.target) : RUNG_AUTO_TAG;
   const available = line.rungs.filter((r) => r.contracts > 0);
   const refs = useRef(new Map<string, HTMLButtonElement>());
   const keyOf = (r: Rung) => `${r.level}-${r.scope}`;
@@ -314,7 +384,7 @@ function Ladder({
             >
               <span>
                 {RUNG_LEVEL_LABEL[r.level]} · {RUNG_SCOPE_LABEL[r.scope]}
-                {sameRung(autoRung, r) && <span className="text-xs opacity-70"> · {RUNG_AUTO_TAG}</span>}
+                {sameRung(autoRung, r) && <span className="text-xs opacity-70"> · {effectiveTag}</span>}
               </span>
               <span className="font-mono text-xs">{contractsShort(r.contracts)}</span>
             </Button>
@@ -336,6 +406,7 @@ function Ladder({
           </Button>
         )}
       </p>
+      {footer}
     </Section>
   );
 }
