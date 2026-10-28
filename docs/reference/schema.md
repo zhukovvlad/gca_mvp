@@ -1,4 +1,4 @@
-**Когда читать:** сверяешься с устройством схемы БД: таблицы и FK, идентичность входного написания в каталоге, семантический контур (семьи и контексты), нормативы, служебные поля импорта, очередь семантических предложений, варианты работ и схемы параметров семей.
+**Когда читать:** сверяешься с устройством схемы БД: таблицы и FK, идентичность входного написания в каталоге, семантический контур (семьи и контексты), нормативы, служебные поля импорта, очередь семантических предложений, варианты работ и схемы параметров семей, решения по строкам КП и отправленные файлы.
 
 ## 1. Доменный контур
 
@@ -640,3 +640,44 @@ semantic_events                      -- расширение (0021): тип cont
 **Трёхзначная логика CHECK** (`docs/pitfalls/db.md`): `CK_DRAFT_SHAPE` — один тотальный
 предикат из трёх полных ветвей; остальные равносильности стоят голым равенством только
 на NOT NULL стороне.
+
+## 9. Решения по строкам КП и отправленные файлы
+
+Пять таблиц, миграция `0023` ([спека 4б](../superpowers/specs/2026-10-27-contractor-file-design.md) §2.10, §2.13); существующие таблицы не меняются. Отсутствие решения — отсутствие строки, а не `NULL`. Все внешние ключи на пользователя — `RESTRICT`; на строку КП, смету, семью и оффер — `CASCADE`. Все пять — в `_DOMAIN_TABLES` тестов.
+
+```
+kp_line_agreements                   -- «Договорились» по строке КП, цена в нетто
+  position_item_id PK → position_items ON DELETE CASCADE
+  net_price numeric NOT NULL, set_by NOT NULL → users ON DELETE RESTRICT, set_at
+  # CHECK net_price > 0 AND <> 'NaN' AND <> 'Infinity' — конечность названа явно (NaN больше любого числа)
+
+kp_line_comments                     -- свой комментарий к строке
+  position_item_id PK → position_items ON DELETE CASCADE
+  text NOT NULL, set_by → users RESTRICT, set_at
+  # CHECK char_length(text) <= 2000; пустая строка законна
+
+kp_line_rungs                        -- ручная ступень работы строки
+  position_item_id PK → position_items ON DELETE CASCADE
+  level ('v'|'p'|'f'), scope ('cls'|'all'), key jsonb NOT NULL   # снимок ключа ступени, без внешних ключей
+  set_by → users RESTRICT, set_at
+  # вариант и семья могут уйти — тогда ступень просто не действует
+
+kp_family_rungs                      -- ручная ступень системы для семьи в смете
+  PK (estimate_id → estimates CASCADE, work_family_id → work_families CASCADE)
+  level, scope (те же CHECK), first_main_parameter_id bigint NULL   # снимок family_parameters.id БЕЗ внешнего ключа
+  set_by → users RESTRICT, set_at
+  # CHECK (level = 'p') = (first_main_parameter_id IS NOT NULL) — обе стороны не NULL, равенство тотально
+  # без ключа: версии схем удаляются каскадом, ступень не должна уходить с ними; новая версия — другой id → key_changed
+
+kp_sent_files                        -- отправленный подрядчику файл
+  id PK, offer_id NOT NULL → offers ON DELETE CASCADE
+  file_key text NOT NULL UNIQUE (uq_kp_sent_files_file_key), filename, file_sha256, size_bytes bigint
+  vat_rate numeric NOT NULL, level_label text NOT NULL   # ставка НДС файла и подпись ценового уровня
+  created_by → users RESTRICT, created_at
+```
+
+Владелец отправленного файла — оффер: замена раунда офферы не трогает, файлы её переживают. Принадлежность («смета — смета оффера, строка — не глава») схемой не держится — её держат эндпоинт и тест.
+
+**`downgrade` отказывает**, если есть строка в любой из пяти таблиц, и называет таблицу и счёт.
+
+**Трёхзначная логика CHECK** (`docs/pitfalls/db.md`): CHECK цены стоит явными `<>`, равенство `kp_family_rungs` — на двух NOT NULL сторонах.
