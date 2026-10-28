@@ -20,8 +20,7 @@ from sqlalchemy.orm import Session
 
 from crud import our_price as crud_our_price
 from crud.common import DomainError, iso
-from crud.tenders import _lock_tender
-from models import KpSentFile, Offer, TenderRound, User
+from models import KpSentFile, Offer, Tender, TenderRound, User
 from services.excel_kp_file import build_kp_file, file_columns
 from services.kp_file import FileHeader, FileLine, FileSection, build_file_rows, build_header
 from services.maintenance import purge_files_best_effort
@@ -141,11 +140,17 @@ def export_file(
     KEY SHARE конфликтует с `FOR UPDATE` удалений: либо удаление ждёт и увидит новую запись, либо
     выгрузка ждёт, находит владельца удалённым и получает 404 до сохранения файла.
     """
-    _lock_tender(db, tender_id, exclusive=False)
+    # Именно `read=True, key_share=True`: без `read` SQLAlchemy строит `FOR NO KEY UPDATE`, а он
+    # конфликтует с таким же замком тендера у импорта этапа и у соседней выгрузки.
+    locked_tender = db.execute(
+        sa.select(Tender.id).where(Tender.id == tender_id).with_for_update(read=True, key_share=True)
+    ).scalar_one_or_none()
+    if locked_tender is None:
+        raise DomainError(404, f"Тендер {tender_id} не найден.")
     locked_round = db.execute(
         sa.select(TenderRound.id)
         .where(TenderRound.id == round_id, TenderRound.tender_id == tender_id)
-        .with_for_update(key_share=True)
+        .with_for_update(read=True, key_share=True)
     ).scalar_one_or_none()
     if locked_round is None:
         raise DomainError(404, f"Оффер {offer_id} не найден в этапе {round_id} тендера {tender_id}.")

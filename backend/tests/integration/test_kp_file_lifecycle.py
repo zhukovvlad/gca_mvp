@@ -619,15 +619,235 @@ class TestExportRacesWithOwnerDeletion:
         offer = committing_factories.OfferFactory.create(round=rnd)
         user = committing_factories.UserFactory.create()
         committing_db.commit()
+        # Токен — тот, что пользователь увидел в предпросмотре удаления до выгрузки.
+        token = crud_tenders.participant_deletion_preview(committing_db, tender.id, offer.package_id)["confirmation_token"]
+        committing_db.commit()
 
         class Scene:
             tender_id = tender.id
             round_id = rnd.id
             offer_id = offer.id
+            package_id = offer.package_id
+            confirmation_token = token
             user_id = user.id
             session_factory = committing_session_factory
 
         return Scene()
+
+    @staticmethod
+    def _stub_the_book(monkeypatch, tmp_storage, *, check_offer: bool = False) -> list[str]:
+        """Сборка книги заглушкой, `storage.save` записывает ключи; возвращает их список.
+
+        `check_offer`: заглушка проверяет оффер этапа так же, как настоящая сборка
+        (`_offer_context`: 404 «Оффер … не найден в этапе …»), — без этого выгрузка после
+        удаления участника не узнала бы, что оффера больше нет."""
+        from types import SimpleNamespace
+
+        from crud import kp_sent_files
+
+        header = SimpleNamespace(filename="КП.xlsx", level_label="Уровень цен КП")
+
+        def assemble(db, tender_id, round_id, offer_id, **_):
+            if check_offer:
+                kp_sent_files._check_offer(db, tender_id, round_id, offer_id)
+            return header, [], D("20")
+
+        monkeypatch.setattr(kp_sent_files, "_assemble", assemble)
+        monkeypatch.setattr(kp_sent_files, "build_kp_file", lambda *a, **k: b"book")
+        saved: list[str] = []
+        real_save = tmp_storage.save
+
+        def recording_save(data):
+            key = real_save(data)
+            saved.append(key)
+            return key
+
+        monkeypatch.setattr(tmp_storage, "save", recording_save)
+        return saved
+
+    @staticmethod
+    def _wait_until_blocked(session_factory, pid: int, *, timeout: float = 15.0) -> bool:
+        """Ждёт, пока backend `pid` встанет на чужой замок (`pg_blocking_pids`), а не любой."""
+        import time
+
+        deadline = time.monotonic() + timeout
+        with session_factory() as probe:
+            while time.monotonic() < deadline:
+                blocked = probe.execute(
+                    sa.text("SELECT cardinality(pg_blocking_pids(:pid)) > 0"), {"pid": pid}
+                ).scalar_one()
+                probe.rollback()
+                if blocked:
+                    return True
+                time.sleep(0.05)
+        return False
+
+    def test_participant_deletion_after_an_uncommitted_export_is_refused_by_its_stale_token(
+        self, scene, tmp_storage, monkeypatch
+    ):
+        """Удаление участника приходит, когда выгрузка уже вставила запись, но не закоммитила.
+        Замок выгрузки заставляет удаление ждать; дождавшись, оно пересчитывает состав, видит
+        новый отправленный файл и отказывает устаревшему токену — файл остаётся при записи.
+        Без замка удаление посчитало бы состав без новой записи, токен совпал бы, каскад унёс
+        бы запись, а файл остался бы в хранилище без владельца."""
+        import threading
+        import time
+
+        from crud import kp_sent_files
+
+        saved = self._stub_the_book(monkeypatch, tmp_storage)
+        inserted, may_commit = threading.Event(), threading.Event()
+        outcome: dict = {}
+
+        def exporter():
+            session = scene.session_factory()
+            try:
+                session.execute(sa.text("SET lock_timeout = '20s'"))
+
+                @sa.event.listens_for(session.connection(), "after_cursor_execute")
+                def barrier_after_insert(conn, cursor, statement, parameters, context, executemany):
+                    if "INSERT INTO kp_sent_files" in statement and not inserted.is_set():
+                        inserted.set()
+                        may_commit.wait(timeout=15)
+
+                kp_sent_files.export_file(
+                    session, tmp_storage, scene.tender_id, scene.round_id, scene.offer_id,
+                    inflation_series_id=None, user_id=scene.user_id,
+                )
+                outcome["export"] = "done"
+            except Exception as e:  # noqa: BLE001 — исход потока проверяется ниже
+                outcome["export"] = getattr(e, "status_code", type(e).__name__)
+            finally:
+                session.close()
+
+        def deleter():
+            session = scene.session_factory()
+            try:
+                session.execute(sa.text("SET lock_timeout = '20s'"))
+                outcome["delete_pid"] = session.execute(sa.text("SELECT pg_backend_pid()")).scalar_one()
+                crud_tenders.delete_participant(
+                    session, scene.tender_id, scene.package_id,
+                    confirmation_token=scene.confirmation_token, storage=tmp_storage,
+                )
+                outcome["delete"] = "done"
+            except Exception as e:  # noqa: BLE001
+                outcome["delete"] = getattr(e, "status_code", type(e).__name__)
+                outcome["delete_code"] = getattr(e, "code", None)
+            finally:
+                session.close()
+
+        exporting = threading.Thread(target=exporter, daemon=True)
+        deleting = threading.Thread(target=deleter, daemon=True)
+        exporting.start()
+        try:
+            assert inserted.wait(timeout=15), "выгрузка не дошла до вставки записи"
+            deleting.start()
+            for _ in range(300):
+                if "delete_pid" in outcome or not deleting.is_alive():
+                    break
+                time.sleep(0.05)
+            assert self._wait_until_blocked(scene.session_factory, outcome["delete_pid"]), "удаление не встало на замок"
+            assert deleting.is_alive(), "удаление прошло мимо незавершённой выгрузки"
+        finally:
+            may_commit.set()
+        exporting.join(timeout=30)
+        deleting.join(timeout=30)
+        assert not exporting.is_alive() and not deleting.is_alive(), "потоки зависли"
+
+        assert outcome["export"] == "done"
+        assert len(saved) == 1
+        with scene.session_factory() as check:
+            recorded = set(check.execute(sa.select(KpSentFile.file_key)).scalars())
+        assert [key for key in saved if tmp_storage.exists(key) and key not in recorded] == [], (
+            "в хранилище остался файл без владельца"
+        )
+        assert (outcome["delete"], outcome.get("delete_code")) == (409, "confirmation_required")
+        assert recorded == set(saved) and tmp_storage.exists(saved[0])
+
+    @pytest.mark.parametrize("command", ["round", "tender", "participant"])
+    def test_an_export_that_waited_for_a_deletion_gets_404_and_saves_nothing(
+        self, scene, tmp_storage, monkeypatch, command
+    ):
+        """Обратный порядок: удаление взяло замки и стоит перед коммитом, выгрузка приходит.
+        Выгрузка обязана ждать, а дождавшись — получить 404 до `storage.save`: ни файла, ни
+        записи. Без замка выгрузка прошла бы мимо незакоммиченного удаления, сохранила бы
+        файл и упала бы только на внешнем ключе вставки."""
+        import threading
+        import time
+
+        from crud import kp_sent_files
+        from services.maintenance import purge_files_best_effort
+
+        saved = self._stub_the_book(monkeypatch, tmp_storage, check_offer=True)
+        locked, may_commit = threading.Event(), threading.Event()
+        outcome: dict = {}
+
+        def deleter():
+            session = scene.session_factory()
+            try:
+                session.execute(sa.text("SET lock_timeout = '20s'"))
+
+                @sa.event.listens_for(session, "before_commit")
+                def barrier_before_commit(_session):
+                    if not locked.is_set():
+                        locked.set()
+                        may_commit.wait(timeout=15)
+
+                if command == "round":
+                    purge_files_best_effort(
+                        tmp_storage, crud_tenders.delete_round(session, scene.tender_id, scene.round_id), context="тест"
+                    )
+                elif command == "tender":
+                    purge_files_best_effort(tmp_storage, crud_tenders.delete_tender(session, scene.tender_id), context="тест")
+                else:
+                    crud_tenders.delete_participant(
+                        session, scene.tender_id, scene.package_id,
+                        confirmation_token=scene.confirmation_token, storage=tmp_storage,
+                    )
+                outcome["delete"] = "done"
+            except Exception as e:  # noqa: BLE001
+                outcome["delete"] = getattr(e, "status_code", type(e).__name__)
+            finally:
+                session.close()
+
+        def exporter():
+            session = scene.session_factory()
+            try:
+                session.execute(sa.text("SET lock_timeout = '20s'"))
+                outcome["export_pid"] = session.execute(sa.text("SELECT pg_backend_pid()")).scalar_one()
+                kp_sent_files.export_file(
+                    session, tmp_storage, scene.tender_id, scene.round_id, scene.offer_id,
+                    inflation_series_id=None, user_id=scene.user_id,
+                )
+                outcome["export"] = "done"
+            except Exception as e:  # noqa: BLE001
+                outcome["export"] = getattr(e, "status_code", type(e).__name__)
+            finally:
+                session.close()
+
+        deleting = threading.Thread(target=deleter, daemon=True)
+        exporting = threading.Thread(target=exporter, daemon=True)
+        deleting.start()
+        try:
+            assert locked.wait(timeout=15), "удаление не дошло до коммита"
+            exporting.start()
+            for _ in range(300):
+                if "export_pid" in outcome or not exporting.is_alive():
+                    break
+                time.sleep(0.05)
+            assert self._wait_until_blocked(scene.session_factory, outcome["export_pid"]), "выгрузка не встала на замок"
+            assert exporting.is_alive(), "выгрузка прошла мимо незакоммиченного удаления"
+        finally:
+            may_commit.set()
+        deleting.join(timeout=30)
+        exporting.join(timeout=30)
+        assert not exporting.is_alive() and not deleting.is_alive(), "потоки зависли"
+
+        assert outcome["delete"] == "done"
+        assert outcome["export"] == 404
+        assert saved == [], "выгрузка сохранила файл, хотя владельца уже нет"
+        with scene.session_factory() as check:
+            assert check.execute(sa.select(sa.func.count()).select_from(KpSentFile)).scalar_one() == 0
 
     @pytest.mark.parametrize("command", ["round", "tender"])
     def test_no_orphan_file_stays_in_the_storage(self, scene, tmp_storage, monkeypatch, command):

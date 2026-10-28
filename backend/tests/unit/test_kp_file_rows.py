@@ -453,8 +453,8 @@ def test_kp_file_deviation_is_rounded_half_up_to_one_digit(kp, expected):
     assert str(row.deviation_pct) == expected
 
 
-def test_kp_file_deviation_both_sides_are_rounded_to_kopecks_equal_is_exact_zero():
-    # 100,004 и 99,996 в копейках оба 100,00
+def test_kp_file_deviation_of_sides_equal_in_kopecks_rounds_the_raw_ratio_to_zero():
+    # 100,004 и 99,996 в копейках оба 100,00; ноль даёт округление точного 0,008 %, а не копейки
     row = one(line(unit_price=D("100.004")), result(ours=D("99.996"), contracts=(rate(1, "99.996"),)))
     assert str(row.deviation_pct) == "0.0"
 
@@ -537,6 +537,10 @@ def _row_for(kind: str, kp: str, target: str) -> FileLine:
         ("100", "100", 0, None),
         ("99.99", "100", -1, None),
         ("80", "100", -1, None),
+        # копейки и точное отношение расходятся: «выше» решают копейки (1,01 против 1,00),
+        # отклонение — точное 0,0996 % -> 0,1; знак тот же
+        ("1.005", "1.004", 1, "over"),
+        ("1.004", "1.005", -1, None),
     ],
 )
 def test_kp_file_deviation_sign_agrees_with_the_comment_case_on_every_row(kind, kp, target, sign, case):
