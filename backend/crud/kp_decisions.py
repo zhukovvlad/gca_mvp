@@ -184,6 +184,45 @@ def load_unit_texts(db: Session, estimate_id: int) -> dict[int, str]:
     return texts
 
 
+def load_file_skeleton(db: Session, estimate_id: int) -> tuple[dict[int, int], list[KpSourceLine]]:
+    """Порядок и главы сметы КП для файла: один запрос по всем её строкам.
+
+    Возвращает лот каждой строки, `position_item_id -> lots.id` (главы и позиции), и главы как
+    строки-разделы: номер и название. Позиции сцена уже несёт; здесь они нужны только местом в
+    порядке `(лот, id)`.
+    """
+    rows = db.execute(
+        sa.select(
+            PositionItem.id,
+            Lot.id,
+            PositionItem.is_chapter,
+            PositionItem.chapter_number_in_proposal,
+            PositionItem.job_title_in_proposal,
+        )
+        .select_from(PositionItem)
+        .join(Proposal, Proposal.id == PositionItem.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .where(Lot.estimate_id == estimate_id)
+    ).all()
+    lot_of = {pid: lot_id for pid, lot_id, *_rest in rows}
+    chapters = [
+        KpSourceLine(
+            position_item_id=pid,
+            is_chapter=True,
+            is_system=False,
+            number=number,
+            title=title,
+            unit_text="",
+            quantity=None,
+            unit_price=None,
+            total=None,
+        )
+        for pid, _lot_id, is_chapter, number, title in rows
+        if is_chapter
+    ]
+    return lot_of, chapters
+
+
 def kp_source_line(row: KpLineRow, unit_text: str) -> KpSourceLine:
     """Строка КП в форме, которую берёт комментарий и файл. Номер — как в файле
     (`item_number_in_proposal`), без подмены ключом позиции."""

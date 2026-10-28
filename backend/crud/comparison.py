@@ -573,6 +573,9 @@ class InflationPlan:
     has_forecast: bool
     used_years: list[dict]
     factor_by_estimate: dict[int, Decimal]
+    #: Ценовой период каждой приведённой сметы: тот, из которого посчитан её
+    #: коэффициент. Наружу ответов сравнения не уходит.
+    period_by_estimate: dict[int, YearMonth]
 
 
 def _estimate_period(amendment_no: int | None, prepared_on, signed_date) -> YearMonth | None:
@@ -757,6 +760,7 @@ def resolve_inflation(
         has_forecast=any(values[year].is_forecast for year in required),
         used_years=used_years,
         factor_by_estimate=factor_by_estimate,
+        period_by_estimate=period_by_estimate,
     )
 
 

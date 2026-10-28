@@ -561,7 +561,9 @@ manual_rung: {level, scope, active: bool,
 `rung.auto` — `false`, когда действует ручная ступень. Элемент `rungs` панели
 получает `selectable: bool` (§2.5, §2.6). Ответ панели получает
 `comment: {kind, text, template_text}` — `template_text` нужен кнопке «к
-шаблону» (`null`, если у случая шаблона нет). Текст комментария в строки разбора
+шаблону» (`null`, если у случая шаблона нет); `text` — сохранённый свой текст,
+если запись есть, иначе текст шаблона (у КП с неизвестной базой шаблона нет —
+`null`). Текст комментария в строки разбора
 не кладётся (1 831 строка — лишний вес).
 
 **Мутации решений** (`require_admin`, ответ `204`, транзакция на роутере по
@@ -586,13 +588,21 @@ manual_rung: {level, scope, active: bool,
 - `GET …/export-preview?inflation_series_id=` →
   `{header: {tender, object, round, contractor, vat_label, source_label,
   level_label, in_progress_lines,
-  inflation_years: [{year, coefficient, source, is_forecast, updated_at}] | null},
-  columns: [...],
+  inflation_years: [{year, coefficient, source, is_forecast, updated_at}] | null,
+  filename, exported_on, inflation_series: str | null,
+  inflation_target_month: str | null},
+  columns: [{key, title}],
   rows: [{kind: "section", number, title} |
          {kind: "line", position_item_id, number, title, unit, quantity,
           kp_unit_price, kp_total, ours, deviation_pct, source, inflation,
           comment, comment_kind, state}]}` — значения в том виде, в каком лягут
-  в ячейку (числа строками `Decimal`, тексты готовые).
+  в ячейку (числа строками `Decimal`, тексты готовые). Шапка сверх подписей
+  листа несёт имя файла выгрузки (`filename` — его же фронт даёт скачанному
+  файлу: заголовки ответа CORS не отдаёт), дату выгрузки `exported_on` и
+  название ряда ИПЦ с целевым месяцем — для блока лет над таблицей.
+  `columns` — ключ поля строки и заголовок столбца листа, в порядке листа;
+  столбец ИПЦ — только при ряде. Нечисловые значения КП (`NaN`, `Infinity`) —
+  `null`, как пустая ячейка файла.
 - `POST …/export?inflation_series_id=` → `200` xlsx (`xlsx_response`), запись в
   `kp_sent_files`.
 - `GET …/sent-files` → `[{id, filename, created_at, created_by: {id, email},

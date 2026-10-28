@@ -39,7 +39,7 @@ from services.excel import (
 )
 from services.kp_file import FileHeader, FileLine, FileSection
 
-__all__ = ["KP_FILE_COLUMNS", "build_kp_file"]
+__all__ = ["KP_FILE_COLUMNS", "build_kp_file", "file_columns"]
 
 _INFLATION_LABEL = "Приведение по ИПЦ"
 
@@ -59,6 +59,21 @@ KP_FILE_COLUMNS: list[tuple[str, int, str | None, str]] = [
     ("Комментарий", 48, None, "left"),
 ]
 
+#: Ключ поля строки предпросмотра у каждого столбца листа.
+_COLUMN_KEYS = {
+    "№": "number",
+    "Наименование": "title",
+    "Ед.": "unit",
+    "Кол-во": "quantity",
+    "Цена за ед.": "kp_unit_price",
+    "Стоимость": "kp_total",
+    "Наша расценка за ед.": "ours",
+    "Отклонение, %": "deviation_pct",
+    "Источник": "source",
+    _INFLATION_LABEL: "inflation",
+    "Комментарий": "comment",
+}
+
 #: Первый из наших столбцов («Наша расценка за ед.»), счёт с единицы.
 _FIRST_OURS_COL = 7
 _TEXT_LABELS = {"Наименование", "Источник", _INFLATION_LABEL, "Комментарий"}
@@ -66,6 +81,11 @@ _TEXT_LABELS = {"Наименование", "Источник", _INFLATION_LABEL
 
 def _columns(with_inflation: bool) -> list[tuple[str, int, str | None, str]]:
     return [spec for spec in KP_FILE_COLUMNS if with_inflation or spec[0] != _INFLATION_LABEL]
+
+
+def file_columns(with_inflation: bool) -> list[dict[str, str]]:
+    """Столбцы листа для предпросмотра: ключ поля строки и подпись, в порядке книги."""
+    return [{"key": _COLUMN_KEYS[spec[0]], "title": spec[0]} for spec in _columns(with_inflation)]
 
 
 def _write_section(ws, row: int, section: FileSection, width: int) -> None:

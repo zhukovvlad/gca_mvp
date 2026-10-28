@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal, localcontext
 
 import sqlalchemy as sa
@@ -21,9 +22,11 @@ from crud.common import DomainError, iso
 from crud.comparison import InflationPlan, _inflation_sentence
 from crud.kp_decisions import (
     CODE_UNKNOWN_RUNG,
+    CODE_UNKNOWN_VAT_BASE,
     EstimateDecisions,
     kp_source_line,
     load_decisions,
+    load_file_skeleton,
     load_unit_texts,
 )
 from crud.our_price_inflation import plan_history_inflation, round_target_month
@@ -49,8 +52,9 @@ from models import (
 )
 from money.inflation import adjust_amount
 from money.price import is_price
+from services.excel import iso_date_to_ru
 from services.kp_comment import InflationLabel, template_text
-from services.kp_file import line_comment_inputs
+from services.kp_file import FileContext, KpSourceLine, line_comment_inputs
 from services.our_price import (
     _CONTEXT,
     RUNG_ORDER,
@@ -986,3 +990,81 @@ def build_line_view(
             "template_text": template,
         },
     }
+
+
+@dataclass(frozen=True)
+class FileInputs:
+    """Всё, из чего собираются строки и шапка файла подрядчику."""
+
+    context: FileContext
+    #: Главы и позиции сметы КП в порядке файла `(лот, id)`.
+    source_lines: list[KpSourceLine]
+    evaluation: OfferEvaluation
+    #: position_item_id -> свой комментарий (пустой текст — тоже решение).
+    comments: dict[int, str]
+    #: position_item_id -> (нетто за единицу, дата `ДД.ММ.ГГГГ`).
+    agreements: dict[int, tuple[Decimal, str]]
+
+
+def build_file_inputs(
+    db: Session,
+    tender_id: int,
+    round_id: int,
+    offer_id: int,
+    *,
+    inflation_series_id: int | None,
+    exported_on: date,
+) -> FileInputs:
+    """Сцена участника, превращённая во вход строк файла: та же сцена с сохранёнными решениями,
+    что у разбора и панели (спека 4б §2.8). Файл всегда в базе НДС КП, переключателя НДС нет.
+
+    Raises:
+        DomainError 404: тендера, этапа или оффера этого этапа нет, у оффера нет сметы КП.
+        DomainError 422: отказы приведения по ИПЦ, как у разбора; `unknown_vat_base` — у КП нет базы.
+    """
+    scene, participant, evaluation = _offer_context(
+        db, tender_id, round_id, offer_id, inflation_series_id=inflation_series_id
+    )
+    if participant.base is None:
+        raise DomainError(
+            422,
+            "У КП неизвестна база НДС: наши цены не в чем перевести в его базу, файла подрядчику нет.",
+            code=CODE_UNKNOWN_VAT_BASE,
+        )
+    estimate_id = participant.estimate_id
+    head = scene.head
+    decisions = scene.decisions[estimate_id]
+    unit_texts = load_unit_texts(db, estimate_id)
+    lot_of, chapters = load_file_skeleton(db, estimate_id)
+    lines = [kp_source_line(row, unit_texts[row.line.position_item_id]) for row in scene.kp_lines[estimate_id]]
+    ordered = sorted(chapters + lines, key=lambda source: (lot_of[source.position_item_id], source.position_item_id))
+
+    plan = scene.plan
+    periods = (
+        {}
+        if plan is None
+        else {contract.contract_id: plan.period_by_estimate[contract.estimate_id] for contract in scene.contracts}
+    )
+    context = FileContext(
+        kp_vat_base=participant.base,
+        history=scene.index,
+        tender_class_id=head.rate_class_id,
+        tender_area=head.area,
+        tender_contractor_id=participant.contractor_id,
+        inflation=_inflation_label(plan),
+        inflation_plan=plan,
+        contract_periods=periods,
+        tender_title=head.tender_title,
+        object_title=head.object_title,
+        stage_number=head.stage_no,
+        stage_date=head.held_on,
+        contractor_title=participant.contractor_title,
+        exported_on=exported_on,
+    )
+    return FileInputs(
+        context=context,
+        source_lines=ordered,
+        evaluation=evaluation,
+        comments={pid: record[0] for pid, record in decisions.comments.items()},
+        agreements={pid: (record[0], iso_date_to_ru(iso(record[1]))) for pid, record in decisions.agreements.items()},
+    )
