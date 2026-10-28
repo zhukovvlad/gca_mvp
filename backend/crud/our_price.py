@@ -43,6 +43,7 @@ from crud.stage_summary import pct_str
 from models import (
     Contractor,
     Estimate,
+    KpSentFile,
     ObjectModel,
     Offer,
     OfferPackage,
@@ -53,7 +54,7 @@ from models import (
 from money.inflation import adjust_amount
 from money.price import is_price
 from services.excel import iso_date_to_ru
-from services.kp_comment import InflationLabel, template_text
+from services.kp_comment import CommentInputs, InflationLabel, target_net, template_text
 from services.kp_file import FileContext, KpSourceLine, line_comment_inputs
 from services.our_price import (
     _CONTEXT,
@@ -152,6 +153,8 @@ class _Scene:
     total_fork: tuple[Decimal, Decimal] | None
     #: Решения по строкам каждой сметы КП этапа (спека 4б §2.13).
     decisions: dict[int, EstimateDecisions]
+    #: Число отправленных файлов по офферам этапа: у оффера без сметы они остаются.
+    sent_files: dict[int, int]
 
 
 def _load_head(db: Session, tender_id: int, round_id: int) -> _Head:
@@ -312,6 +315,18 @@ def _whole(per_sqm_value: Decimal | None, fork: tuple[Decimal, Decimal] | None, 
         return (per_sqm_value - fork[0]) * area
 
 
+def _sent_files_counts(db: Session, offer_ids: Sequence[int]) -> dict[int, int]:
+    """Число отправленных файлов по офферам одним сгруппированным запросом."""
+    if not offer_ids:
+        return {}
+    rows = db.execute(
+        sa.select(KpSentFile.offer_id, sa.func.count())
+        .where(KpSentFile.offer_id.in_(offer_ids))
+        .group_by(KpSentFile.offer_id)
+    ).all()
+    return {offer_id: count for offer_id, count in rows}
+
+
 def _build_scene(
     db: Session,
     head: _Head,
@@ -367,6 +382,7 @@ def _build_scene(
         history=history,
         total_fork=_fork(history.total, class_contracts),
         decisions=load_decisions(db, kp_ids),
+        sent_files=_sent_files_counts(db, [raw[0] for raw in participants_raw]),
     )
 
 
@@ -399,6 +415,7 @@ def _participant_view(
         "class_median_pct": None,
         "ours_with_contractor": sum(1 for c in scene.contracts if c.contractor_id == participant.contractor_id),
         "totals": None,
+        "sent_files_count": scene.sent_files.get(participant.offer_id, 0),
     }
     kp_value = None
     if participant.state == "ok":
@@ -725,6 +742,29 @@ def _inflation_label(plan: InflationPlan | None) -> InflationLabel | None:
     return InflationLabel(plan.series_name, f"{month}.{year}")
 
 
+def _comment_inputs(
+    scene: _Scene,
+    participant: _Participant,
+    row: KpLineRow,
+    result: LineResult,
+    unit_text: str,
+    *,
+    agreed_net: Decimal | None,
+) -> CommentInputs:
+    """Вход комментария строки; собирает та же функция, что у файла."""
+    return line_comment_inputs(
+        kp_source_line(row, unit_text),
+        result,
+        history=scene.index,
+        tender_class_id=scene.head.rate_class_id,
+        tender_contractor_id=participant.contractor_id,
+        tender_area=scene.head.area,
+        kp_vat_base=participant.base,
+        inflation=_inflation_label(scene.plan),
+        agreed_net=agreed_net,
+    )
+
+
 def _template_text(
     scene: _Scene, participant: _Participant, row: KpLineRow, result: LineResult, unit_text: str
 ) -> str | None:
@@ -735,18 +775,23 @@ def _template_text(
     pid = row.line.position_item_id
     agreed = scene.decisions[participant.estimate_id].agreements.get(pid)
     return template_text(
-        line_comment_inputs(
-            kp_source_line(row, unit_text),
-            result,
-            history=scene.index,
-            tender_class_id=scene.head.rate_class_id,
-            tender_contractor_id=participant.contractor_id,
-            tender_area=scene.head.area,
-            kp_vat_base=participant.base,
-            inflation=_inflation_label(scene.plan),
-            agreed_net=agreed[0] if agreed is not None else None,
+        _comment_inputs(
+            scene, participant, row, result, unit_text, agreed_net=agreed[0] if agreed is not None else None
         )
     )
+
+
+def _file_ours(
+    scene: _Scene, participant: _Participant, row: KpLineRow, result: LineResult, unit_text: str
+) -> dict | None:
+    """Автоматическая цель строки за единицу строки КП: то, что файл поставил бы в «Нашу расценку
+    за ед.» без договорённости. У системы `line.ours` — ставка за м² объекта, а не цена за единицу
+    подрядчика, поэтому панель получает это поле отдельно (спека 4б §2.2). У КП с неизвестной базой
+    НДС вход комментария не собрать, как и шаблон: целей нет."""
+    if participant.base is None:
+        return None
+    inputs = _comment_inputs(scene, participant, row, result, unit_text, agreed_net=None)
+    return money_pair(target_net(inputs), participant.base, unit=True)
 
 
 def _decision_fields(
@@ -978,7 +1023,11 @@ def build_line_view(
 
     template = _template_text(scene, participant, row, result, unit_texts[position_item_id])
     own_comment = scene.decisions[participant.estimate_id].comments.get(position_item_id)
-    line = {**_line_view(row, result, rate), **_decision_fields(scene, participant, row, result, template)}
+    line = {
+        **_line_view(row, result, rate),
+        **_decision_fields(scene, participant, row, result, template),
+        "file_ours": _file_ours(scene, participant, row, result, unit_texts[position_item_id]),
+    }
     return {
         "line": line,
         "group_lines": group_lines,

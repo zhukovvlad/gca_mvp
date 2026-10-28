@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Literal
 
 from money.inflation import YearMonth, parse_target_month, year_exponents
 from money.price import is_price, is_weight
-from money.vat import gross_to_net, net_to_gross, quantize_money
+from money.vat import gross_to_net, net_to_gross
 from parser.summary_block import ARITHMETIC_PRECISION
 from responses import safe_filename_part
 from services.excel import PRICE_LEVEL_NOMINAL, safe_str
@@ -192,12 +192,13 @@ def line_comment_inputs(
 
 
 def _percent_over(kp: Decimal | None, target: Decimal | None) -> Decimal | None:
-    """`(КП / цель - 1) * 100` по значениям в копейках, один знак, половина вверх."""
-    rounded_target = quantize_money(target)
-    if not is_price(kp) or not is_price(rounded_target):
+    """`(КП / цель - 1) * 100` по исходным нетто-значениям; округляется готовый процент
+    (один знак, половина вверх). Копеечное округление цен здесь не участвует: оно живёт только
+    в выборе случая комментария (спека 4б §2.8)."""
+    if not is_price(kp) or not is_price(target):
         return None
     with localcontext(_CONTEXT):
-        percent = ((quantize_money(kp) / rounded_target - 1) * _HUNDRED).quantize(_ONE_DIGIT, rounding=ROUND_HALF_UP)
+        percent = ((kp / target - 1) * _HUNDRED).quantize(_ONE_DIGIT, rounding=ROUND_HALF_UP)
     return abs(percent) if percent.is_zero() else percent
 
 

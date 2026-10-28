@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from crud import our_price as crud_our_price
 from crud.common import DomainError, iso
+from crud.tenders import _lock_tender
 from models import KpSentFile, Offer, TenderRound, User
 from services.excel_kp_file import build_kp_file, file_columns
 from services.kp_file import FileHeader, FileLine, FileSection, build_file_rows, build_header
@@ -132,7 +133,22 @@ def export_file(
     Транзакцию ведёт сама функция: файл в хранилище и запись должны появиться или исчезнуть
     вместе. Отказы до сохранения файла (404, `unknown_vat_base`, отказы ИПЦ) не оставляют ни файла,
     ни записи.
+
+    Замок: тендер, затем этап, оба `FOR KEY SHARE` и до коммита, в порядке удалений
+    (`crud.tenders`: тендер, затем этапы). Удаление этапа, участника или тендера собирает ключи
+    отправленных файлов, а потом каскадом уносит офферы с записями; выгрузка, закоммитившая
+    запись между сбором и каскадом, оставила бы файл без владельца в хранилище навсегда. Замок
+    KEY SHARE конфликтует с `FOR UPDATE` удалений: либо удаление ждёт и увидит новую запись, либо
+    выгрузка ждёт, находит владельца удалённым и получает 404 до сохранения файла.
     """
+    _lock_tender(db, tender_id, exclusive=False)
+    locked_round = db.execute(
+        sa.select(TenderRound.id)
+        .where(TenderRound.id == round_id, TenderRound.tender_id == tender_id)
+        .with_for_update(key_share=True)
+    ).scalar_one_or_none()
+    if locked_round is None:
+        raise DomainError(404, f"Оффер {offer_id} не найден в этапе {round_id} тендера {tender_id}.")
     header, rows, vat_base = _assemble(db, tender_id, round_id, offer_id, inflation_series_id=inflation_series_id)
     content = build_kp_file(header, rows)
     key = storage.save(content)

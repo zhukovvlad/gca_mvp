@@ -602,3 +602,106 @@ class TestConfirmationToken:
         assert "решений по строкам КП — 1" in exc.value.detail
         assert "отправленных файлов — 1" in exc.value.detail
         assert tmp_storage.exists(key)
+
+
+class TestExportRacesWithOwnerDeletion:
+    """Выгрузка и удаление этапа или тендера на двух соединениях: файл-сирота не остаётся.
+
+    Барьер стоит после вставки записи и до коммита выгрузки: удаление, пришедшее в этот
+    промежуток, собрало бы ключи без новой записи и каскадом унесло бы её. Замок выгрузки на
+    тендер и этап заставляет удаление ждать и собрать ключ новой записи."""
+
+    @pytest.fixture
+    def scene(self, committing_db, committing_factories, committing_session_factory):
+        tender = committing_factories.TenderFactory.create()
+        rnd = committing_factories.TenderRoundFactory.create(tender=tender, stage_no=1)
+        committing_db.flush()
+        offer = committing_factories.OfferFactory.create(round=rnd)
+        user = committing_factories.UserFactory.create()
+        committing_db.commit()
+
+        class Scene:
+            tender_id = tender.id
+            round_id = rnd.id
+            offer_id = offer.id
+            user_id = user.id
+            session_factory = committing_session_factory
+
+        return Scene()
+
+    @pytest.mark.parametrize("command", ["round", "tender"])
+    def test_no_orphan_file_stays_in_the_storage(self, scene, tmp_storage, monkeypatch, command):
+        import threading
+        from types import SimpleNamespace
+
+        from crud import kp_sent_files
+        from services.maintenance import purge_files_best_effort
+        from tests.integration.test_tenders_concurrency import _wait_until_a_backend_blocks
+
+        header = SimpleNamespace(filename="КП.xlsx", level_label="Уровень цен КП")
+        monkeypatch.setattr(kp_sent_files, "_assemble", lambda *a, **k: (header, [], D("20")))
+        monkeypatch.setattr(kp_sent_files, "build_kp_file", lambda *a, **k: b"book")
+        saved: list[str] = []
+        real_save = tmp_storage.save
+
+        def recording_save(data):
+            key = real_save(data)
+            saved.append(key)
+            return key
+
+        monkeypatch.setattr(tmp_storage, "save", recording_save)
+
+        inserted, may_commit = threading.Event(), threading.Event()
+        outcome: dict = {}
+
+        def exporter():
+            session = scene.session_factory()
+            try:
+                session.execute(sa.text("SET lock_timeout = '20s'"))
+
+                @sa.event.listens_for(session.connection(), "after_cursor_execute")
+                def barrier_after_insert(conn, cursor, statement, parameters, context, executemany):
+                    if "INSERT INTO kp_sent_files" in statement and not inserted.is_set():
+                        inserted.set()
+                        may_commit.wait(timeout=15)
+
+                kp_sent_files.export_file(
+                    session, tmp_storage, scene.tender_id, scene.round_id, scene.offer_id,
+                    inflation_series_id=None, user_id=scene.user_id,
+                )
+                outcome["export"] = "done"
+            except DomainError as e:
+                outcome["export"] = e.status_code
+            finally:
+                session.close()
+
+        def deleter():
+            session = scene.session_factory()
+            try:
+                session.execute(sa.text("SET lock_timeout = '20s'"))
+                if command == "round":
+                    keys = crud_tenders.delete_round(session, scene.tender_id, scene.round_id)
+                else:
+                    keys = crud_tenders.delete_tender(session, scene.tender_id)
+                purge_files_best_effort(tmp_storage, keys, context="тест гонки")
+                outcome["delete"] = "done"
+            finally:
+                session.close()
+
+        exporting = threading.Thread(target=exporter, daemon=True)
+        deleting = threading.Thread(target=deleter, daemon=True)
+        exporting.start()
+        try:
+            assert inserted.wait(timeout=15), "выгрузка не дошла до вставки записи"
+            deleting.start()
+            assert _wait_until_a_backend_blocks(scene.session_factory), "удаление не встало на замок"
+            assert deleting.is_alive(), "удаление прошло мимо незавершённой выгрузки"
+        finally:
+            may_commit.set()
+        exporting.join(timeout=30)
+        deleting.join(timeout=30)
+        assert not exporting.is_alive() and not deleting.is_alive(), "потоки зависли"
+
+        assert outcome["delete"] == "done"
+        assert saved, "выгрузка не сохраняла файл: гонка не воспроизведена"
+        assert [key for key in saved if tmp_storage.exists(key)] == [], "в хранилище остался файл без владельца"

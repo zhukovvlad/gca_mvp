@@ -422,16 +422,16 @@ def test_kp_file_deviation_row4_a_system_without_comparison_is_empty(state):
     assert (row.ours, row.deviation_pct) == (None, None)
 
 
-def test_kp_file_deviation_is_empty_when_the_target_quantizes_to_zero():
-    # цель 0,004 — в копейках 0,00: делить нельзя
+def test_kp_file_deviation_of_a_sub_kopeck_target_is_computed_from_the_raw_values():
+    # цель 0,004: процент по исходным значениям, копеечного округления цен нет
     row = one(line(unit_price=D(1)), result(ours=D("0.004"), contracts=(rate(1, "0.004"),)))
     assert row.ours == D("0.004")
-    assert row.deviation_pct is None
+    assert row.deviation_pct == D("24900.0")
 
 
-def test_kp_file_deviation_agreed_that_quantizes_to_zero_is_empty():
+def test_kp_file_deviation_of_a_sub_kopeck_agreement_is_computed_from_the_raw_values():
     row = one(line(unit_price=D(1)), result(), agreements={1: (D("0.004"), AGREED_ON)})
-    assert row.deviation_pct is None
+    assert row.deviation_pct == D("24900.0")
 
 
 # --- отклонение: округление и знак -------------------------------------------------------
@@ -465,10 +465,10 @@ def test_kp_file_deviation_just_below_the_target_is_not_negative_zero():
     assert not row.deviation_pct.is_signed()
 
 
-def test_kp_file_deviation_in_kopecks_uses_rounded_sides_not_raw():
-    # 2,01 / 1,99 - 1 = 1,005 % -> 1,0; от сырых 2,01 / 1,994 - 1 = 0,8 %
+def test_kp_file_deviation_uses_raw_sides_not_kopeck_rounded():
+    # от сырых 2,01 / 1,994 - 1 = 0,8 %; от округлённых до копеек 2,01 / 1,99 было бы 1,0
     row = one(line(unit_price=D("2.01")), result(ours=D("1.994"), contracts=(rate(1, "1.994"),)))
-    assert row.deviation_pct == D("1.0")
+    assert row.deviation_pct == D("0.8")
 
 
 def test_kp_file_deviation_has_no_intermediate_rounding_of_a_long_quotient():
@@ -478,10 +478,10 @@ def test_kp_file_deviation_has_no_intermediate_rounding_of_a_long_quotient():
     assert row.deviation_pct == D("1068153769502421654606450.1")
 
 
-def test_kp_file_deviation_rounds_the_kp_side_to_kopecks_too():
-    # 2,014 в копейках 2,01: (2,01 / 2,00 - 1) * 100 = 0,5; от сырых 0,7
+def test_kp_file_deviation_does_not_round_the_kp_side_to_kopecks():
+    # (2,014 / 2 - 1) * 100 = 0,7; от округлённого до копеек КП 2,01 было бы 0,5
     row = one(line(unit_price=D("2.014")), result(ours=D(2), contracts=(rate(1, "2"),)))
-    assert row.deviation_pct == D("0.5")
+    assert row.deviation_pct == D("0.7")
 
 
 @pytest.mark.parametrize("state", [LineState.in_progress, LineState.no_history, LineState.unit_mismatch])
