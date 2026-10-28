@@ -32,6 +32,8 @@ import type {
   StagePositions,
   StagePositionsRow,
   MoneyPair,
+  KpFilePreview,
+  KpSentFileItem,
   OurPriceCell,
   OurPriceFork,
   OurPriceInflation,
@@ -2895,10 +2897,10 @@ export function ourPriceLineFixture(overrides: Partial<OurPriceLine> = {}): OurP
     kp: { unit_price: pair("1200", "1464"), total: pair("120000.00", "146400.00") },
     rung: { level: "v", scope: "cls", auto: true, threshold_met: true },
     rungs: [
-      { level: "v", scope: "cls", contracts: 3 },
-      { level: "v", scope: "all", contracts: 5 },
-      { level: "f", scope: "cls", contracts: 4 },
-      { level: "f", scope: "all", contracts: 6 },
+      { level: "v", scope: "cls", contracts: 3, selectable: true },
+      { level: "v", scope: "all", contracts: 5, selectable: true },
+      { level: "f", scope: "cls", contracts: 4, selectable: true },
+      { level: "f", scope: "all", contracts: 6, selectable: false },
     ],
     range: { min: pair("900", "1098"), max: pair("1300", "1586"), median: pair("1100", "1342") },
     ours: { value: pair("1000", "1220"), from_all_classes: false },
@@ -2908,6 +2910,9 @@ export function ourPriceLineFixture(overrides: Partial<OurPriceLine> = {}): OurP
     below: null,
     group: null,
     unit_mismatch: null,
+    agreed: null,
+    comment_kind: null,
+    manual_rung: null,
     ...overrides,
   };
 }
@@ -2978,5 +2983,131 @@ export function ourPriceLineViewFixture(
       },
     ],
     vat_dropped: [],
+    comment: { kind: "template", text: KP_FILE_TEMPLATE_TEXT, template_text: KP_FILE_TEMPLATE_TEXT },
   };
+}
+
+// ---------------------------------------------------------------------------
+//  Файл подрядчику (спека 4б §2.11). Форма провода: деньги с длинным хвостом,
+//  `quantity` не единица, время с часовым поясом; названия обезличены.
+// ---------------------------------------------------------------------------
+
+/** Нетто «Договорились» с 24 значащими знаками: JS-число такой хвост потеряло бы. */
+export const KP_FILE_AGREED_NET = "1234.56789012345678901234";
+export const KP_FILE_FILENAME = "КП Подрядчик А этап 3 — наши расценки 2026-03-15.xlsx";
+export const KP_FILE_TEMPLATE_TEXT = "Наша цена ниже: ориентир 1000 за м2 по 3 договорам.";
+
+/** Автор решений фикстур: администратор. */
+export const KP_FILE_AUTHOR = { id: 3, email: "admin@example.test" };
+
+/** Решение «Договорились» строки: нетто и в ставке КП 22 %. */
+export function agreedFixture(overrides: Partial<NonNullable<OurPriceLine["agreed"]>> = {}) {
+  return {
+    net: KP_FILE_AGREED_NET,
+    shown: "1506.17283950617283950605",
+    set_by: KP_FILE_AUTHOR,
+    set_at: "2026-03-14T09:30:00+00:00",
+    ...overrides,
+  };
+}
+
+/** Предпросмотр: глава, строка со своим комментарием, строка в разборе, строка без цены. */
+export function kpFilePreviewFixture(opts: { withInflation?: boolean } = {}): KpFilePreview {
+  const withInflation = opts.withInflation ?? true;
+  const columns = [
+    { key: "number", title: "№" },
+    { key: "title", title: "Наименование" },
+    { key: "unit", title: "Ед." },
+    { key: "quantity", title: "Кол-во" },
+    { key: "kp_unit_price", title: "Цена за ед." },
+    { key: "kp_total", title: "Стоимость" },
+    { key: "ours", title: "Наша расценка за ед." },
+    { key: "deviation_pct", title: "Отклонение, %" },
+    { key: "source", title: "Источник" },
+    ...(withInflation ? [{ key: "inflation", title: "Приведение по ИПЦ" }] : []),
+    { key: "comment", title: "Комментарий" },
+  ];
+  return {
+    header: {
+      tender: "Тендер 1",
+      object: "Объект Т",
+      round: "Этап 3 от 10.03.2026",
+      contractor: "Подрядчик А",
+      vat_label: "Цены КП и наши расценки — с НДС 22 % (база НДС этого КП)",
+      source_label: "Цена источника — как записана в договоре, без НДС",
+      level_label: withInflation
+        ? "приведено по ИПЦ: Ряд А, к 03.2026; КП не приводится"
+        : "номинальные цены договоров",
+      in_progress_lines: 1,
+      inflation_years: withInflation
+        ? [{ year: 2025, coefficient: "1.0873", source: "Источник А", is_forecast: false, updated_at: null }]
+        : null,
+      filename: KP_FILE_FILENAME,
+      exported_on: "15.03.2026",
+      inflation_series: withInflation ? "Ряд А" : null,
+      inflation_target_month: withInflation ? "2026-03" : null,
+    },
+    columns,
+    rows: [
+      { kind: "section", number: "1", title: "Раздел 1" },
+      {
+        kind: "line",
+        position_item_id: OUR_PRICE_LINE_ID,
+        number: "1.1",
+        title: "Работа 1",
+        unit: "м2",
+        quantity: "37.5",
+        kp_unit_price: "1464.00000000000000000001",
+        kp_total: "54900.00",
+        ours: "1220",
+        deviation_pct: "20.0",
+        source: "Договор 1, 2025",
+        inflation: withInflation ? "Договор 1: ×1.0873" : null,
+        comment: "Свой комментарий",
+        comment_kind: "custom",
+        state: "comparable",
+      },
+      {
+        kind: "line",
+        position_item_id: OUR_PRICE_LINE_ID + 1,
+        number: "1.2",
+        title: "Работа 2",
+        unit: "шт",
+        quantity: "4",
+        kp_unit_price: "900",
+        kp_total: "3600",
+        ours: null,
+        deviation_pct: null,
+        source: null,
+        inflation: null,
+        comment: null,
+        comment_kind: null,
+        state: "in_progress",
+      },
+    ],
+  };
+}
+
+/** Список отправленных: новые сверху; время с часовым поясом, база НДС строкой. */
+export function kpSentFilesFixture(): KpSentFileItem[] {
+  return [
+    {
+      id: 12,
+      filename: KP_FILE_FILENAME,
+      created_at: "2026-03-15T10:05:00+00:00",
+      created_by: KP_FILE_AUTHOR,
+      vat_rate: "22",
+      level_label: "приведено по ИПЦ: Ряд А, к 03.2026; КП не приводится",
+      size_bytes: 18432,
+    },
+    {
+      id: 11,
+      filename: "КП Подрядчик А этап 3 — наши расценки 2026-03-12.xlsx",
+      created_at: "2026-03-12T08:00:00+00:00",
+      created_by: { id: 4, email: "member@example.test" },
+      vat_rate: "22",
+      level_label: "номинальные цены договоров",
+      size_bytes: 17920,
+    },
+  ];
 }

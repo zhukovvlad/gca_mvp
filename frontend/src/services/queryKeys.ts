@@ -211,6 +211,26 @@ export const qk = {
       seriesId: number | null
     ) =>
       ["tenders", "our-price", "line", tenderId, roundId, offerId, positionItemId, level, scope, seriesId] as const,
+    /** Префиксы по ряду ИПЦ: все ряды (и `null`) одного этапа, разбора, панелей. */
+    ourPriceRoundAllSeries: (tenderId: number, roundId: number) =>
+      ["tenders", "our-price", "round", tenderId, roundId] as const,
+    ourPriceOfferAllSeries: (tenderId: number, roundId: number, offerId: number) =>
+      ["tenders", "our-price", "offer", tenderId, roundId, offerId] as const,
+    ourPriceLinesOfRound: (tenderId: number, roundId: number) =>
+      ["tenders", "our-price", "line", tenderId, roundId] as const,
+    /**
+     * Файл подрядчику (спека 4б §2.11): предпросмотр и список отправленных. Предпросмотр
+     * ключуется рядом ИПЦ, как разбор; `kpFilePreviewOfOffer` - префикс всех его рядов,
+     * `kpFilePreviewsOfRound` - всех офферов этапа.
+     */
+    kpFilePreviewsOfRound: (tenderId: number, roundId: number) =>
+      ["tenders", "kp-file", "preview", tenderId, roundId] as const,
+    kpFilePreviewOfOffer: (tenderId: number, roundId: number, offerId: number) =>
+      ["tenders", "kp-file", "preview", tenderId, roundId, offerId] as const,
+    kpFilePreview: (tenderId: number, roundId: number, offerId: number, seriesId: number | null) =>
+      ["tenders", "kp-file", "preview", tenderId, roundId, offerId, seriesId] as const,
+    kpSentFiles: (tenderId: number, roundId: number, offerId: number) =>
+      ["tenders", "kp-file", "sent", tenderId, roundId, offerId] as const,
   },
 
   /** Семьи работ (спека 2026-09-22-catalog-families-design.md §2.7, §2.10). */

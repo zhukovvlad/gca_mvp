@@ -94,6 +94,9 @@ import type {
   ReviewQueueParams,
   RoundImportJob,
   RoundInput,
+  AgreedBasis,
+  KpFilePreview,
+  KpSentFileItem,
   OurPriceLineView,
   OurPriceOffer,
   OurPriceRound,
@@ -332,6 +335,13 @@ export const rateStandardsApi = {
 //  Тендерный контур (спека 2026-08-26-tenders-contour-design.md §2.13, §2.14)
 // ---------------------------------------------------------------------------
 
+/** Адрес разбора участника: общая часть путей предпросмотра, выгрузки и отправленных файлов. */
+const offerUrl = (tenderId: number, roundId: number, offerId: number) =>
+  `/v1/tenders/${tenderId}/rounds/${roundId}/our-price/offers/${offerId}`;
+
+const lineDecisionUrl = (tenderId: number, roundId: number, offerId: number, positionItemId: number) =>
+  `${offerUrl(tenderId, roundId, offerId)}/lines/${positionItemId}`;
+
 export const tendersApi = {
   list: (params?: { q?: string; page?: number; page_size?: number }): Promise<Paginated<TenderRow>> =>
     api.get<Paginated<TenderRow>>("/v1/tenders", { params }).then((r) => r.data),
@@ -452,6 +462,63 @@ export const tendersApi = {
           },
         }
       )
+      .then((r) => r.data),
+  /**
+   * Решения по строке КП (спека 4б §2.11): все шесть отвечают `204`. Цена и текст уходят
+   * строками как есть, арифметики над ними на клиенте нет.
+   */
+  putAgreed: (
+    tenderId: number,
+    roundId: number,
+    offerId: number,
+    positionItemId: number,
+    body: { value: Decimal; basis: AgreedBasis }
+  ): Promise<void> => api.put(`${lineDecisionUrl(tenderId, roundId, offerId, positionItemId)}/agreed`, body).then(() => undefined),
+  deleteAgreed: (tenderId: number, roundId: number, offerId: number, positionItemId: number): Promise<void> =>
+    api.delete(`${lineDecisionUrl(tenderId, roundId, offerId, positionItemId)}/agreed`).then(() => undefined),
+  putComment: (
+    tenderId: number,
+    roundId: number,
+    offerId: number,
+    positionItemId: number,
+    body: { text: string }
+  ): Promise<void> => api.put(`${lineDecisionUrl(tenderId, roundId, offerId, positionItemId)}/comment`, body).then(() => undefined),
+  deleteComment: (tenderId: number, roundId: number, offerId: number, positionItemId: number): Promise<void> =>
+    api.delete(`${lineDecisionUrl(tenderId, roundId, offerId, positionItemId)}/comment`).then(() => undefined),
+  putRung: (
+    tenderId: number,
+    roundId: number,
+    offerId: number,
+    positionItemId: number,
+    body: { level: RungLevel; scope: RungScope }
+  ): Promise<void> => api.put(`${lineDecisionUrl(tenderId, roundId, offerId, positionItemId)}/rung`, body).then(() => undefined),
+  deleteRung: (tenderId: number, roundId: number, offerId: number, positionItemId: number): Promise<void> =>
+    api.delete(`${lineDecisionUrl(tenderId, roundId, offerId, positionItemId)}/rung`).then(() => undefined),
+  /** Предпросмотр файла подрядчику; `seriesId = null` - без приведения по ИПЦ. */
+  kpFilePreview: (
+    tenderId: number,
+    roundId: number,
+    offerId: number,
+    seriesId: number | null
+  ): Promise<KpFilePreview> =>
+    api
+      .get<KpFilePreview>(`${offerUrl(tenderId, roundId, offerId)}/export-preview`, {
+        params: seriesId === null ? undefined : { inflation_series_id: seriesId },
+      })
+      .then((r) => r.data),
+  /** Выгрузка: книга xlsx телом ответа; сервер пишет в отправленные ровно одну запись. */
+  kpFileExport: (tenderId: number, roundId: number, offerId: number, seriesId: number | null): Promise<Blob> =>
+    api
+      .post<Blob>(`${offerUrl(tenderId, roundId, offerId)}/export`, undefined, {
+        params: seriesId === null ? undefined : { inflation_series_id: seriesId },
+        responseType: "blob",
+      })
+      .then((r) => r.data),
+  kpSentFiles: (tenderId: number, roundId: number, offerId: number): Promise<KpSentFileItem[]> =>
+    api.get<KpSentFileItem[]>(`${offerUrl(tenderId, roundId, offerId)}/sent-files`).then((r) => r.data),
+  kpSentFile: (tenderId: number, roundId: number, offerId: number, fileId: number): Promise<Blob> =>
+    api
+      .get<Blob>(`${offerUrl(tenderId, roundId, offerId)}/sent-files/${fileId}/file`, { responseType: "blob" })
       .then((r) => r.data),
   roundUnallocated: (tenderId: number, roundId: number): Promise<RoundUnallocated> =>
     api.get<RoundUnallocated>(`/v1/tenders/${tenderId}/rounds/${roundId}/unallocated`).then((r) => r.data),

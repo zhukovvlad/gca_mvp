@@ -3446,7 +3446,8 @@ export interface OurPriceLine {
   kind: "work" | "system";
   kp: { unit_price: MoneyPair | null; total: MoneyPair | null };
   rung: { level: RungLevel; scope: RungScope; auto: boolean; threshold_met: boolean } | null;
-  rungs: Array<{ level: RungLevel; scope: RungScope; contracts: number }>;
+  /** `selectable` - ступень можно выбрать руками: на ней у строки есть что сравнивать. */
+  rungs: Array<{ level: RungLevel; scope: RungScope; contracts: number; selectable: boolean }>;
   range: { min: MoneyPair; max: MoneyPair; median: MoneyPair } | null;
   ours: { value: MoneyPair; from_all_classes: boolean } | null;
   position: "above" | "in" | "below" | null;
@@ -3458,6 +3459,42 @@ export interface OurPriceLine {
     kp_ratio: Decimal | null;
     contracts: Array<{ contract_id: number; ratio: Decimal }>;
   } | null;
+  /** «Договорились» по строке (спека 4б §2.3); `null` - решения нет. */
+  agreed: AgreedValue | null;
+  /** Чей комментарий у строки: свой, шаблонный или никакого. Текст отдаёт только панель. */
+  comment_kind: CommentKind | null;
+  /** Ручная ступень (спека 4б §2.5); `null` - ступень автоматическая. */
+  manual_rung: ManualRung | null;
+}
+
+/** Автор решения: `id` и почта пользователя. */
+export interface UserRef {
+  id: number;
+  email: string;
+}
+
+export type CommentKind = "template" | "custom";
+
+/** Почему сохранённая ручная ступень перестала действовать (спека 4б §2.5). */
+export type ResetReason = "kind_changed" | "key_changed" | "rung_unavailable" | "rung_empty";
+
+export interface ManualRung {
+  level: RungLevel;
+  scope: RungScope;
+  /** `false` - решение сохранено, но не действует (см. `reset_reason`). */
+  active: boolean;
+  reset_reason: ResetReason | null;
+  /** Решение стоит на самой строке или на семье её варианта. */
+  target: "line" | "family";
+  set_by: UserRef;
+  /** ISO с часовым поясом. */
+  set_at: string;
+}
+
+/** Цена «Договорились»: `net` и `shown` считает сервер, клиент их не пересчитывает. */
+export interface AgreedValue extends MoneyPair {
+  set_by: UserRef;
+  set_at: string;
 }
 
 /** Ответ экрана этапа (`GET .../rounds/:id/our-price`). */
@@ -3513,4 +3550,86 @@ export interface OurPriceLineView {
   group_lines: OurPriceLine[];
   contracts: OurPriceRungContract[];
   vat_dropped: OurPriceVatDropped[];
+  /**
+   * Комментарий строки: `text` - свой, если задан, иначе шаблонный; `template_text` -
+   * шаблонный всегда (`null` у КП с неизвестной базой НДС).
+   */
+  comment: { kind: CommentKind | null; text: string | null; template_text: string | null };
+}
+
+// ---------------------------------------------------------------------------
+//  Файл подрядчику (спека 4б §2.9-§2.11). Деньги и проценты - строки `Decimal`.
+// ---------------------------------------------------------------------------
+
+export type AgreedBasis = "net" | "shown";
+
+export interface KpFileHeader {
+  tender: string;
+  object: string;
+  round: string;
+  contractor: string;
+  vat_label: string;
+  source_label: string;
+  level_label: string;
+  in_progress_lines: number;
+  /** Годы коэффициентов приведения; `null` - приведения нет. */
+  inflation_years: ComparisonInflationYear[] | null;
+  filename: string;
+  /** `ДД.ММ.ГГГГ`. */
+  exported_on: string;
+  inflation_series: string | null;
+  /** `ГГГГ-ММ`. */
+  inflation_target_month: string | null;
+}
+
+/** Столбец листа: `key` - поле строки файла, `title` - подпись. */
+export interface KpFileColumn {
+  key: string;
+  title: string;
+}
+
+export interface KpFileSectionRow {
+  kind: "section";
+  number: string | null;
+  title: string;
+}
+
+export interface KpFileLineRow {
+  kind: "line";
+  position_item_id: number;
+  number: string | null;
+  title: string;
+  unit: string;
+  quantity: Decimal | null;
+  kp_unit_price: Decimal | null;
+  kp_total: Decimal | null;
+  ours: Decimal | null;
+  /** Один знак после запятой. */
+  deviation_pct: Decimal | null;
+  source: string | null;
+  inflation: string | null;
+  comment: string | null;
+  comment_kind: CommentKind | null;
+  state: OurPriceLineState;
+}
+
+export type KpFileRow = KpFileSectionRow | KpFileLineRow;
+
+/** Ответ `GET .../offers/:id/export-preview`: то, что ляжет в ячейки книги. */
+export interface KpFilePreview {
+  header: KpFileHeader;
+  columns: KpFileColumn[];
+  rows: KpFileRow[];
+}
+
+/** Элемент `GET .../offers/:id/sent-files`: новые сверху. */
+export interface KpSentFileItem {
+  id: number;
+  filename: string;
+  created_at: string;
+  created_by: UserRef;
+  /** База НДС КП на момент выгрузки. */
+  vat_rate: Decimal;
+  level_label: string;
+  size_bytes: number;
 }

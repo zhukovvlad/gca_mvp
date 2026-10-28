@@ -35,6 +35,8 @@ import {
   sampleTenderBasis,
   sampleTenderCard,
   sampleTenders,
+  kpFilePreviewFixture,
+  kpSentFilesFixture,
   ourPriceLineViewFixture,
   ourPriceOfferFixture,
   ourPriceRoundFixture,
@@ -489,6 +491,24 @@ interface HandlerState {
   changesExportOutcome: "ok" | "no_comparable";
   /** Последний id тендера, для которого запрашивалась книга «Изменения КП». */
   lastChangesExportTenderId: number | null;
+  /**
+   * «Файл подрядчику» (спека 4б §2.11): все запросы шести решений, предпросмотра, выгрузки,
+   * списка, скачивания и правки базы НДС по порядку - вид, метод, адрес и тело.
+   */
+  kpFileRequests: Array<{
+    kind: "decision" | "preview" | "export" | "sent" | "download" | "vat";
+    method: string;
+    url: string;
+    body: unknown;
+  }>;
+  /** `refused` - решение отвергнуто кодом `unknown_rung` (422). */
+  kpFileDecisionOutcome: "ok" | "refused";
+  /** `unknown_vat_base` - выгрузка отвечает кодированным 422 с текстом сервера. */
+  kpFileExportOutcome: "ok" | "unknown_vat_base";
+  /** `missing` - 404, `gone` - 410 (файл пропал из хранилища, запись жива). */
+  kpFileDownloadOutcome: "ok" | "missing" | "gone";
+  /** Сколько раз запрошена карточка тендера `GET /tenders/:id`. */
+  tenderCardRequests: number;
 
   /**
    * Семьи работ (спека 2026-09-22-catalog-families-design.md §2.7, §2.10;
@@ -2012,6 +2032,27 @@ function ourPriceRefusalResponse(request: Request): Response | null {
   return HttpResponse.json({ detail: { code, message: messages[code], ...context } }, { status: 422 });
 }
 
+/**
+ * Решение по строке КП (`PUT`/`DELETE .../lines/:pid/{agreed|comment|rung}`): `204`, а при
+ * `kpFileDecisionOutcome = "refused"` - кодированный `422` с текстом сервера.
+ */
+async function kpDecision({ request }: { request: Request }): Promise<Response> {
+  const text = await request.text();
+  handlerState.kpFileRequests.push({
+    kind: "decision",
+    method: request.method,
+    url: request.url,
+    body: text === "" ? null : JSON.parse(text),
+  });
+  if (handlerState.kpFileDecisionOutcome === "refused") {
+    return HttpResponse.json(
+      { detail: { code: "unknown_rung", message: "Такой ступени у строки нет." } },
+      { status: 422 }
+    );
+  }
+  return new HttpResponse(null, { status: 204 });
+}
+
 export const handlerState: HandlerState = {
   jobStatuses: ["done"],
   jobPolls: 0,
@@ -2053,6 +2094,11 @@ export const handlerState: HandlerState = {
   roundOverrideRequests: [],
   changesExportOutcome: "ok",
   lastChangesExportTenderId: null,
+  kpFileRequests: [],
+  kpFileDecisionOutcome: "ok",
+  kpFileExportOutcome: "ok",
+  kpFileDownloadOutcome: "ok",
+  tenderCardRequests: 0,
   workFamilies: initialWorkFamilies(),
   nextWorkFamilyId: 1000,
   familyCategories: initialFamilyCategories(),
@@ -2643,6 +2689,11 @@ export function resetHandlerState() {
   handlerState.roundOverrideRequests = [];
   handlerState.changesExportOutcome = "ok";
   handlerState.lastChangesExportTenderId = null;
+  handlerState.kpFileRequests = [];
+  handlerState.kpFileDecisionOutcome = "ok";
+  handlerState.kpFileExportOutcome = "ok";
+  handlerState.kpFileDownloadOutcome = "ok";
+  handlerState.tenderCardRequests = 0;
   handlerState.workFamilies = initialWorkFamilies();
   handlerState.nextWorkFamilyId = 1000;
   handlerState.familyCategories = initialFamilyCategories();
@@ -3851,6 +3902,7 @@ export const handlers = [
     return HttpResponse.json(page(items));
   }),
   http.get("/api/v1/tenders/:id", ({ params }) => {
+    handlerState.tenderCardRequests += 1;
     if (Number(params.id) !== sampleTenderCard.id) {
       return HttpResponse.json({ detail: "Тендер не найден." }, { status: 404 });
     }
@@ -4274,6 +4326,57 @@ export const handlers = [
       );
     }
   ),
+  /**
+   * «Файл подрядчику» (спека 4б §2.11): шесть решений по строке, предпросмотр, выгрузка,
+   * список и скачивание отправленных, правка базы НДС сметы. Каждый запрос пишется в
+   * `kpFileRequests`; исходы - `handlerState.kpFile*`.
+   */
+  http.put("/api/v1/tenders/:id/rounds/:roundId/our-price/offers/:offerId/lines/:positionItemId/:decision", kpDecision),
+  http.delete("/api/v1/tenders/:id/rounds/:roundId/our-price/offers/:offerId/lines/:positionItemId/:decision", kpDecision),
+  http.get("/api/v1/tenders/:id/rounds/:roundId/our-price/offers/:offerId/export-preview", ({ request }) => {
+    handlerState.kpFileRequests.push({ kind: "preview", method: "GET", url: request.url, body: null });
+    return HttpResponse.json(
+      kpFilePreviewFixture({ withInflation: new URL(request.url).searchParams.has("inflation_series_id") })
+    );
+  }),
+  http.post("/api/v1/tenders/:id/rounds/:roundId/our-price/offers/:offerId/export", ({ request }) => {
+    handlerState.kpFileRequests.push({ kind: "export", method: "POST", url: request.url, body: null });
+    if (handlerState.kpFileExportOutcome === "unknown_vat_base") {
+      return HttpResponse.json(
+        { detail: { code: "unknown_vat_base", message: "У КП неизвестна база НДС: файл не построить." } },
+        { status: 422 }
+      );
+    }
+    return new HttpResponse(new Blob(["xlsx-stub"]), {
+      headers: { "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" },
+    });
+  }),
+  http.get("/api/v1/tenders/:id/rounds/:roundId/our-price/offers/:offerId/sent-files", ({ request }) => {
+    handlerState.kpFileRequests.push({ kind: "sent", method: "GET", url: request.url, body: null });
+    return HttpResponse.json(kpSentFilesFixture());
+  }),
+  http.get("/api/v1/tenders/:id/rounds/:roundId/our-price/offers/:offerId/sent-files/:fileId/file", ({ request }) => {
+    handlerState.kpFileRequests.push({ kind: "download", method: "GET", url: request.url, body: null });
+    if (handlerState.kpFileDownloadOutcome === "missing") {
+      return HttpResponse.json({ detail: "Файл 11 не найден у оффера 7001." }, { status: 404 });
+    }
+    if (handlerState.kpFileDownloadOutcome === "gone") {
+      return HttpResponse.json({ detail: "Файл больше не хранится: он пропал из хранилища." }, { status: 410 });
+    }
+    return new HttpResponse(new Blob(["xlsx-stub"]), {
+      headers: { "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" },
+    });
+  }),
+  http.patch("/api/v1/estimates/:estimateId/vat", async ({ request, params }) => {
+    const body = (await request.json()) as { base_override?: string | null };
+    handlerState.kpFileRequests.push({ kind: "vat", method: "PATCH", url: request.url, body });
+    return HttpResponse.json({
+      estimate_id: Number(params.estimateId),
+      vat_rate_base_override: body.base_override ?? null,
+      vat_rate_target: null,
+      vat_rate_updated_at: "2026-03-15T10:00:00+00:00",
+    });
+  }),
   /**
    * Книга «Изменения КП» (спека 2026-09-16-tender-changes-export-design.md
    * §2.1, §2.11, план фичи, Task 5). Тот же приём блоб-ответа, что у выгрузок

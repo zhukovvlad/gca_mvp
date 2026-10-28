@@ -33,6 +33,8 @@ import type { AdminUserCreateInput, AdminUserUpdateInput } from "@/types/admin";
 import type {
   AcceptTargetDecisionInput,
   ActivateDiscoveryInput,
+  AgreedBasis,
+  KpFilePreview,
   RungLevel,
   RungScope,
   ArchiveContextInput,
@@ -2812,5 +2814,199 @@ export function useOurPriceLine(
     retry: false,
     placeholderData: (previous, previousQuery) =>
       keepOurPricePrevious(queryKey, previous, previousQuery?.queryKey, 3),
+  });
+}
+
+// ---------------------------------------------------------------------------
+//  Файл подрядчику (спека 4б §2.11, §2.14)
+// ---------------------------------------------------------------------------
+
+/**
+ * Предпросмотр файла подрядчику: то, что лягет в ячейки книги. Ряд ИПЦ - часть ключа,
+ * а запрос без ряда - предпросмотр без приведения. Предыдущий ответ на экране не
+ * держим: чужой ряд под новой шапкой выдал бы себя за предпросмотр нового.
+ */
+export function useKpFilePreview(
+  tenderId: number,
+  roundId: number,
+  offerId: number,
+  seriesId: number | null,
+  opts?: { enabled?: boolean }
+) {
+  return useQuery({
+    queryKey: qk.tenders.kpFilePreview(tenderId, roundId, offerId, seriesId),
+    queryFn: () => tendersApi.kpFilePreview(tenderId, roundId, offerId, seriesId),
+    enabled: opts?.enabled ?? true,
+    retry: false,
+  });
+}
+
+/** Отправленные файлы оффера, новые сверху. */
+export function useKpSentFiles(tenderId: number, roundId: number, offerId: number) {
+  return useQuery({
+    queryKey: qk.tenders.kpSentFiles(tenderId, roundId, offerId),
+    queryFn: () => tendersApi.kpSentFiles(tenderId, roundId, offerId),
+    retry: false,
+  });
+}
+
+/**
+ * Решение по строке КП меняет разбор участника, панели его строк, этап и предпросмотр
+ * этого оффера. Карточка тендера от решений не зависит и не перезапрашивается.
+ */
+function invalidateAfterDecision(
+  qc: ReturnType<typeof useQueryClient>,
+  tenderId: number,
+  roundId: number,
+  offerId: number
+) {
+  qc.invalidateQueries({ queryKey: qk.tenders.ourPriceLinesOfOffer(tenderId, roundId, offerId) });
+  qc.invalidateQueries({ queryKey: qk.tenders.ourPriceOfferAllSeries(tenderId, roundId, offerId) });
+  qc.invalidateQueries({ queryKey: qk.tenders.ourPriceRoundAllSeries(tenderId, roundId) });
+  qc.invalidateQueries({ queryKey: qk.tenders.kpFilePreviewOfOffer(tenderId, roundId, offerId) });
+}
+
+/** Общая оболочка шести мутаций решений: вызов, четыре префикса, тост отказа. */
+function useKpDecision<V>(
+  tenderId: number,
+  roundId: number,
+  offerId: number,
+  call: (variables: V) => Promise<void>
+) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: call,
+    onSuccess: () => invalidateAfterDecision(qc, tenderId, roundId, offerId),
+    onError: toastApiError,
+  });
+}
+
+interface PutAgreedInput {
+  positionItemId: number;
+  /** Цена строкой, как ввёл человек: на клиенте её не разбирают. */
+  value: Decimal;
+  basis: AgreedBasis;
+}
+
+export function usePutAgreed(tenderId: number, roundId: number, offerId: number) {
+  return useKpDecision(tenderId, roundId, offerId, ({ positionItemId, value, basis }: PutAgreedInput) =>
+    tendersApi.putAgreed(tenderId, roundId, offerId, positionItemId, { value, basis })
+  );
+}
+
+export function useDeleteAgreed(tenderId: number, roundId: number, offerId: number) {
+  return useKpDecision(tenderId, roundId, offerId, ({ positionItemId }: { positionItemId: number }) =>
+    tendersApi.deleteAgreed(tenderId, roundId, offerId, positionItemId)
+  );
+}
+
+export function usePutComment(tenderId: number, roundId: number, offerId: number) {
+  return useKpDecision(
+    tenderId,
+    roundId,
+    offerId,
+    ({ positionItemId, text }: { positionItemId: number; text: string }) =>
+      tendersApi.putComment(tenderId, roundId, offerId, positionItemId, { text })
+  );
+}
+
+export function useDeleteComment(tenderId: number, roundId: number, offerId: number) {
+  return useKpDecision(tenderId, roundId, offerId, ({ positionItemId }: { positionItemId: number }) =>
+    tendersApi.deleteComment(tenderId, roundId, offerId, positionItemId)
+  );
+}
+
+export function usePutRung(tenderId: number, roundId: number, offerId: number) {
+  return useKpDecision(
+    tenderId,
+    roundId,
+    offerId,
+    ({ positionItemId, level, scope }: { positionItemId: number; level: RungLevel; scope: RungScope }) =>
+      tendersApi.putRung(tenderId, roundId, offerId, positionItemId, { level, scope })
+  );
+}
+
+export function useDeleteRung(tenderId: number, roundId: number, offerId: number) {
+  return useKpDecision(tenderId, roundId, offerId, ({ positionItemId }: { positionItemId: number }) =>
+    tendersApi.deleteRung(tenderId, roundId, offerId, positionItemId)
+  );
+}
+
+/**
+ * Выгрузка файла подрядчику. Ряд ИПЦ - тот же, что у показанного предпросмотра, а имя
+ * файла берётся из шапки этого предпросмотра: заголовки ответа через CORS не читаются.
+ * Без предпросмотра в кеше запроса нет вовсе - без него неизвестно ни имя, ни то, что
+ * человек видел. Успех помечает список отправленных, отказ объясняет сервер из blob.
+ */
+export function useKpFileExport(
+  tenderId: number,
+  roundId: number,
+  offerId: number,
+  seriesId: number | null
+) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const preview = qc.getQueryData<KpFilePreview>(
+        qk.tenders.kpFilePreview(tenderId, roundId, offerId, seriesId)
+      );
+      if (preview === undefined) {
+        throw new Error("Предпросмотр не загружен: выгружать нечего.");
+      }
+      const blob = await tendersApi.kpFileExport(tenderId, roundId, offerId, seriesId);
+      saveBlob(blob, preview.header.filename);
+      return blob;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.tenders.kpSentFiles(tenderId, roundId, offerId) });
+    },
+    onError: toastReportError,
+  });
+}
+
+/**
+ * Скачивание отправленного файла. 404 значит «такого файла у оффера нет», 410 - «запись
+ * жива, а файл пропал из хранилища»: второе нормальный ход событий, и человеку нужно
+ * знать, что делать (выгрузить заново).
+ */
+export function useDownloadSentFile(tenderId: number, roundId: number, offerId: number) {
+  return useMutation({
+    mutationFn: async ({ fileId, filename }: { fileId: number; filename: string }) => {
+      const blob = await tendersApi.kpSentFile(tenderId, roundId, offerId, fileId);
+      saveBlob(blob, filename);
+      return blob;
+    },
+    onError: (error) => {
+      const status = apiErrorStatus(error);
+      if (status === 410) {
+        toast.error("Файл больше не хранится: он пропал из хранилища. Выгрузите файл заново.");
+        return;
+      }
+      if (status === 404) {
+        toast.error("Отправленный файл не найден.");
+        return;
+      }
+      toastReportError(error);
+    },
+  });
+}
+
+/**
+ * Ручная база НДС сметы КП участника. Тело - только `{base_override}` строкой. База
+ * меняет «в ставке КП» у этапа, разборов, панелей и предпросмотров этого этапа; паспорт
+ * договора здесь не при чём - сметы КП в нём нет.
+ */
+export function useSetOfferVatBase(tenderId: number, roundId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ estimateId, baseOverride }: { estimateId: ID; baseOverride: Decimal | null }) =>
+      estimatesApi.setVat(estimateId, { base_override: baseOverride }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.tenders.ourPriceRoundAllSeries(tenderId, roundId) });
+      qc.invalidateQueries({ queryKey: qk.tenders.ourPriceOffersOfRound(tenderId, roundId) });
+      qc.invalidateQueries({ queryKey: qk.tenders.ourPriceLinesOfRound(tenderId, roundId) });
+      qc.invalidateQueries({ queryKey: qk.tenders.kpFilePreviewsOfRound(tenderId, roundId) });
+    },
+    onError: toastApiError,
   });
 }

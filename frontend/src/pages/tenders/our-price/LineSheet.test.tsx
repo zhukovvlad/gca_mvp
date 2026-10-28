@@ -251,8 +251,8 @@ describe("лестница", () => {
       view(
         onRung(a, {
           rungs: [
-            { level: "v", scope: "cls", contracts: 3 },
-            { level: "f", scope: "all", contracts: 0 },
+            { level: "v", scope: "cls", contracts: 3, selectable: true },
+            { level: "f", scope: "all", contracts: 0, selectable: false },
           ],
         })
       )
@@ -303,10 +303,10 @@ describe("лестница", () => {
       view(
         onRung(a, {
           rungs: [
-            { level: "v", scope: "cls", contracts: contracts[0] },
-            { level: "v", scope: "all", contracts: contracts[1] },
-            { level: "f", scope: "cls", contracts: contracts[2] },
-            { level: "f", scope: "all", contracts: contracts[3] },
+            { level: "v", scope: "cls", contracts: contracts[0], selectable: true },
+            { level: "v", scope: "all", contracts: contracts[1], selectable: true },
+            { level: "f", scope: "cls", contracts: contracts[2], selectable: true },
+            { level: "f", scope: "all", contracts: contracts[3], selectable: true },
           ],
         })
       );

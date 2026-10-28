@@ -324,16 +324,16 @@ describe("колонки строки", () => {
         range: { min: pair("900", "1098"), max: pair("1300", "1586"), median: pair("1100", "1342") },
         rung: { level: "v", scope: "cls", auto: true, threshold_met: true },
         rungs: [
-          { level: "v", scope: "cls", contracts: 3 },
-          { level: "f", scope: "all", contracts: 9 },
+          { level: "v", scope: "cls", contracts: 3, selectable: true },
+          { level: "f", scope: "all", contracts: 9, selectable: true },
         ],
       }),
       line(2, {
         range: { min: pair("5", "6"), max: pair("7", "8"), median: pair("6", "7") },
         rung: { level: "f", scope: "all", auto: true, threshold_met: true },
         rungs: [
-          { level: "v", scope: "cls", contracts: 3 },
-          { level: "f", scope: "all", contracts: 9 },
+          { level: "v", scope: "cls", contracts: 3, selectable: true },
+          { level: "f", scope: "all", contracts: 9, selectable: true },
         ],
       }),
     ]);
@@ -346,7 +346,7 @@ describe("колонки строки", () => {
     renderTable([
       line(1, {
         rung: { level: "v", scope: "cls", auto: true, threshold_met: true },
-        rungs: [{ level: "f", scope: "cls", contracts: 7 }],
+        rungs: [{ level: "f", scope: "cls", contracts: 7, selectable: true }],
       }),
     ]);
     expect(screen.getByTestId("rung-1")).toHaveTextContent("вариант · Класс 2");
@@ -363,7 +363,7 @@ describe("колонки строки", () => {
     renderTable([
       line(1, {
         rung: { level: "p", scope: "cls", auto: true, threshold_met: true },
-        rungs: [{ level: "p", scope: "cls", contracts: 4 }],
+        rungs: [{ level: "p", scope: "cls", contracts: 4, selectable: true }],
       }),
     ]);
     expect(screen.getByTestId("rung-1")).toHaveTextContent("по параметру · Класс 2 · 4 дог.");
