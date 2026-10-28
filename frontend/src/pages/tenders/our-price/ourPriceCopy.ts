@@ -435,3 +435,42 @@ export function contractsShort(n: number): string {
 /** Входы на экраны 4а с карточки тендера: кнопка панели этапа и пункт меню ячейки КП. */
 export const OUR_PRICE_ENTRY_LABEL = "Против нашей цены";
 export const OUR_PRICE_ENTRY_NO_ESTIMATES = "В этапе нет КП со сметой";
+
+/** Страница предпросмотра файла подрядчику (спека 4б §2.9, §2.10, §2.14). */
+export const KP_FILE_TITLE = "Файл подрядчику";
+export const KP_FILE_DOWNLOAD_LABEL = "Скачать xlsx";
+export const KP_FILE_SENT_TITLE = "Отправлено подрядчику";
+export const KP_FILE_SENT_EMPTY = "Файлов ещё не отправляли";
+export const KP_FILE_SENT_ERROR = "Не удалось загрузить список отправленных файлов";
+export const KP_FILE_SENT_DOWNLOAD = "скачать";
+export const KP_FILE_YEARS_TITLE = "Коэффициенты приведения по ИПЦ";
+export const KP_FILE_FORECAST_TAG = "прогноз";
+export const KP_FILE_EDIT_COMMENT_LABEL = "Править комментарий";
+export const KP_FILE_CANCEL_LABEL = "Отмена";
+export const KP_FILE_ERROR_TITLE = "Предпросмотр не построен";
+
+/** Столбцы листа, которые кладёт наша сторона: справа от столбцов подрядчика, выделены фоном. */
+export const KP_FILE_OURS_COLUMNS: ReadonlySet<string> = new Set([
+  "ours",
+  "deviation_pct",
+  "source",
+  "inflation",
+  "comment",
+]);
+
+const KP_FILE_ERROR_NOT_FOUND = "Этап, тендер или КП не найдены";
+const KP_FILE_ERROR_GENERIC = "Не удалось построить предпросмотр файла";
+
+/** Подпись отказа предпросмотра: 404 с выбранным рядом печатает сообщение сервера, оно называет, чего нет. */
+export function kpFileErrorLabel(status: number | undefined, seriesSelected: boolean, serverMessage?: string): string {
+  if (status === 404 && seriesSelected && serverMessage) return serverMessage;
+  return status === 404 ? KP_FILE_ERROR_NOT_FOUND : KP_FILE_ERROR_GENERIC;
+}
+
+/** Плашка «каталог ещё разбирает»: у этих строк в файле не будет наших цен. */
+export function kpFileInProgressNote(n: number): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  const noun = mod10 === 1 && mod100 !== 11 ? "строку" : mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20) ? "строки" : "строк";
+  return `Каталог ещё разбирает ${formatNumber(n)} ${noun} — в файле у них не будет наших цен`;
+}

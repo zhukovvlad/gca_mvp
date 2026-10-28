@@ -21,6 +21,7 @@ import ReportsPage from "@/pages/reports/ReportsPage";
 import ReviewPage from "@/pages/review/ReviewPage";
 import SettingsPage from "@/pages/settings/SettingsPage";
 import StandardsPage from "@/pages/standards/StandardsPage";
+import KpFilePage from "@/pages/tenders/our-price/KpFilePage";
 import OurPriceOfferPage from "@/pages/tenders/our-price/OurPriceOfferPage";
 import OurPriceRoundPage from "@/pages/tenders/our-price/OurPriceRoundPage";
 import StageSummaryPage from "@/pages/tenders/summary/StageSummaryPage";
@@ -107,6 +108,15 @@ export default function App() {
                 <Route
                   path="/tenders/:tenderId/rounds/:roundId/our-price/offers/:offerId"
                   element={<OurPriceOfferPage />}
+                />
+                {/*
+                  Файл подрядчику (спека 4б §2.14): предпросмотр, выгрузка и отправленные
+                  файлы — чтение и выгрузка доступны и `member`, правка комментария в
+                  ячейке — только `admin` (решает сама страница).
+                */}
+                <Route
+                  path="/tenders/:tenderId/rounds/:roundId/our-price/offers/:offerId/file"
+                  element={<KpFilePage />}
                 />
                 <Route path="/review" element={<ReviewPage />} />
                 {/*
