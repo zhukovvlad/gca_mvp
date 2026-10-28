@@ -653,9 +653,12 @@ def delete_round_override(tender_id: int, round_id: int, body: RoundOverrideDele
 
 @router.delete("/{tender_id}/participants/{package_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_participant(tender_id: int, package_id: int, confirmation_token: str | None = Query(default=None),
-                       db: Session = Depends(get_db), _: User = Depends(require_admin)):
+                       db: Session = Depends(get_db), storage: Storage = Depends(get_storage),
+                       _: User = Depends(require_admin)):
     try:
-        crud_tenders.delete_participant(db, tender_id, package_id, confirmation_token=confirmation_token)
+        crud_tenders.delete_participant(
+            db, tender_id, package_id, confirmation_token=confirmation_token, storage=storage,
+        )
     except DomainError as e:
         raise_domain_error(e)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -700,10 +703,18 @@ def upload_round(
         response.status_code = status.HTTP_200_OK
         return job_response(db, current)
     if crud_tenders.round_estimate_ids(db, rnd.id) and not replace:
+        message = "Раунд уже загружен; для замены всех его смет повторите запрос с replace=true."
+        lost = crud_kp_decisions.count_round_decisions(db, rnd.id)
+        context: dict[str, int] = {}
+        if lost.total:
+            context = {"agreements": lost.agreements, "comments": lost.comments, "rungs": lost.rungs}
+            message += (
+                " Заменой будут удалены решения по строкам КП: "
+                f"договорённостей — {lost.agreements}, комментариев — {lost.comments}, "
+                f"ручных ступеней — {lost.rungs}."
+            )
         raise_domain_error(DomainError(
-            status.HTTP_409_CONFLICT,
-            "Раунд уже загружен; для замены всех его смет повторите запрос с replace=true.",
-            code="replace_required",
+            status.HTTP_409_CONFLICT, message, code="replace_required", context=context,
         ))
 
     # До сохранения файла и до задания: отказ не оставляет следов. Правило

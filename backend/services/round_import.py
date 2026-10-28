@@ -20,6 +20,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from crud.kp_decisions import count_round_decisions
 from models import (
     Contractor,
     Estimate,
@@ -279,6 +280,13 @@ def replace_round_estimates(db: Session, round_id: int, replace: bool, warnings:
     ).scalar_one()
     if lost:
         warnings.append(f"Заменой раунда снесён ручной разнос статей; решений потеряно: {lost}.")
+    decisions = count_round_decisions(db, round_id)
+    if decisions.total:
+        warnings.append(
+            "Заменой раунда удалены решения по строкам КП: "
+            f"договорённостей — {decisions.agreements}, комментариев — {decisions.comments}, "
+            f"ручных ступеней — {decisions.rungs}."
+        )
     db.execute(sa.delete(Estimate).where(Estimate.id.in_(ids)))
     warnings.append(f"Заменён раунд: удалено смет предыдущей загрузки — {len(ids)}.")
     return ids

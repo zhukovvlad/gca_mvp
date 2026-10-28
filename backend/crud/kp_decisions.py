@@ -34,6 +34,7 @@ from models import (
     KpLineAgreement,
     KpLineComment,
     KpLineRung,
+    KpSentFile,
     Lot,
     Offer,
     PositionItem,
@@ -134,6 +135,81 @@ def load_decisions(db: Session, estimate_ids: Sequence[int]) -> dict[int, Estima
         )
         for i in ids
     }
+
+
+@dataclass(frozen=True)
+class DecisionCounts:
+    """Сколько решений по строкам КП стоит на сметах раунда или участника."""
+
+    agreements: int
+    comments: int
+    #: ступени строк плюс ступени семей
+    rungs: int
+
+    @property
+    def total(self) -> int:
+        return self.agreements + self.comments + self.rungs
+
+
+def _count_decisions(db: Session, estimate_ids: sa.Select) -> DecisionCounts:
+    """Счёт решений по сметам из подзапроса — один запрос, сколько бы смет ни было."""
+    items = (
+        sa.select(PositionItem.id)
+        .join(Proposal, Proposal.id == PositionItem.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .where(Lot.estimate_id.in_(estimate_ids))
+    )
+
+    def on_items(model) -> sa.ScalarSelect:
+        return sa.select(sa.func.count()).select_from(model).where(model.position_item_id.in_(items)).scalar_subquery()
+
+    family = (
+        sa.select(sa.func.count())
+        .select_from(KpFamilyRung)
+        .where(KpFamilyRung.estimate_id.in_(estimate_ids))
+        .scalar_subquery()
+    )
+    agreements, comments, line_rungs, family_rungs = db.execute(
+        sa.select(on_items(KpLineAgreement), on_items(KpLineComment), on_items(KpLineRung), family)
+    ).one()
+    return DecisionCounts(agreements, comments, line_rungs + family_rungs)
+
+
+def count_round_decisions(db: Session, round_id: int) -> DecisionCounts:
+    """Решения по сметам раунда: и сметы раунда, и сметы его офферов."""
+    offers = sa.select(Offer.id).where(Offer.round_id == round_id)
+    return _count_decisions(
+        db, sa.select(Estimate.id).where(sa.or_(Estimate.round_id == round_id, Estimate.offer_id.in_(offers)))
+    )
+
+
+def count_package_decisions(db: Session, package_id: int) -> DecisionCounts:
+    """Решения по сметам офферов участника во всех раундах."""
+    offers = sa.select(Offer.id).where(Offer.package_id == package_id)
+    return _count_decisions(db, sa.select(Estimate.id).where(Estimate.offer_id.in_(offers)))
+
+
+def sent_file_keys(
+    db: Session, *, round_id: int | None = None, tender_id: int | None = None, package_id: int | None = None
+) -> list[str]:
+    """Ключи хранилища отправленных файлов раунда, тендера или участника.
+
+    Ключи собираются по офферам, а не по сметам: у оффера без сметы файлы тоже есть.
+    Ровно один аргумент.
+    """
+    chosen = [(Offer.round_id, round_id), (Offer.tender_id, tender_id), (Offer.package_id, package_id)]
+    given = [(column, value) for column, value in chosen if value is not None]
+    if len(given) != 1:
+        raise ValueError("sent_file_keys: нужен ровно один из round_id, tender_id, package_id")
+    column, value = given[0]
+    return list(
+        db.execute(
+            sa.select(KpSentFile.file_key)
+            .join(Offer, Offer.id == KpSentFile.offer_id)
+            .where(column == value)
+            .order_by(KpSentFile.id)
+        ).scalars()
+    )
 
 
 def snapshot_to_json(level: Level, key_value: Hashable) -> dict:
