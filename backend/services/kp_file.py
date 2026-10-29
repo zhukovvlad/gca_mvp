@@ -27,11 +27,12 @@ from services.kp_comment import (
     CommentInputs,
     InflationLabel,
     SourceContract,
-    format_rub,
     pick_source,
+    rub_in_base,
     target_net,
     target_sum_net,
     template_text,
+    vat_words,
 )
 from services.our_price import HistoryIndex, LineResult, LineState, OfferEvaluation
 
@@ -185,6 +186,7 @@ def line_comment_inputs(
         tender_contractor_id=tender_contractor_id,
         tender_area=tender_area,
         inflation=inflation,
+        vat_base=kp_vat_base,
     )
 
 
@@ -218,24 +220,25 @@ def _source_text(inp: CommentInputs) -> str:
     """«Источник» строки без договорённости; у строки есть сравнение, значит, есть договор."""
     src = inp.source
     head = f"{src.contract.object_title}, договор № {src.contract.number}, {src.contract.year} г.: "
-    nominal = format_rub(src.rate.nominal)
+    nominal = rub_in_base(inp, src.rate.nominal)
+    vat = vat_words(inp.vat_base)
     if not inp.is_system:
         average = "в среднем " if src.rate.lines >= 2 else ""
-        return f"{head}{average}{nominal} ₽ за {inp.unit_text} без НДС"
-    text = f"{head}{nominal} ₽ на м² объекта без НДС"
+        return f"{head}{average}{nominal} ₽ за {inp.unit_text} {vat}"
+    text = f"{head}{nominal} ₽ на м² объекта {vat}"
     if not is_weight(inp.quantity):
         with localcontext(_CONTEXT):
             nominal_sum = src.rate.nominal * inp.tender_area * inp.result.share
-        text += f" — для вашего объекта {format_rub(nominal_sum)} ₽ за весь объём"
+        text += f" — для вашего объекта {rub_in_base(inp, nominal_sum)} ₽ за весь объём"
     return text
 
 
 def _inflation_text(inp: CommentInputs, label: InflationLabel) -> str:
     if inp.is_system and not is_weight(inp.quantity):
-        amount = f"{format_rub(target_sum_net(inp))} ₽ за весь объём"
+        amount = f"{rub_in_base(inp, target_sum_net(inp))} ₽ за весь объём"
     else:
-        amount = f"{format_rub(target_net(inp))} ₽ за {inp.unit_text}"
-    return f"{label.series_name}, к {label.month}: {amount} без НДС"
+        amount = f"{rub_in_base(inp, target_net(inp))} ₽ за {inp.unit_text}"
+    return f"{label.series_name}, к {label.month}: {amount} {vat_words(inp.vat_base)}"
 
 
 def _file_line(
@@ -348,7 +351,13 @@ def inflation_years_for(
 def _vat_label(base: Decimal) -> str:
     if base == 0:
         return "Цены КП и наши расценки — без НДС (база НДС этого КП — 0 %)"
-    return f"Цены КП и наши расценки — с НДС {format(base.normalize(), 'f')} % (база НДС этого КП)"
+    return f"Цены КП и наши расценки — {vat_words(base)} (база НДС этого КП)"
+
+
+def _source_label(base: Decimal) -> str:
+    if base == 0:
+        return "Цены договоров — без НДС (база НДС этого КП — 0 %)"
+    return f"Цены договоров пересчитаны в базу НДС этого КП — {vat_words(base)}"
 
 
 def build_header(context: FileContext, rows: Sequence[FileSection | FileLine]) -> FileHeader:
@@ -377,7 +386,7 @@ def build_header(context: FileContext, rows: Sequence[FileSection | FileLine]) -
         contractor=context.contractor_title,
         exported_on=f"{context.exported_on:%d.%m.%Y}",
         vat_label=_vat_label(context.kp_vat_base),
-        source_label="Цена источника — как записана в договоре, без НДС",
+        source_label=_source_label(context.kp_vat_base),
         level_label=level_label,
         in_progress_lines=sum(1 for row in lines if row.state == LineState.in_progress.value),
         inflation_years=years,

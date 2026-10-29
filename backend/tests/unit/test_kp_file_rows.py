@@ -19,6 +19,7 @@ from services.kp_comment import (
     InflationLabel,
     SourceContract,
     comment_case,
+    format_rub,
     template_text,
 )
 from services.kp_file import (
@@ -583,6 +584,43 @@ def test_kp_file_source_of_an_agreed_line_is_the_agreement_date():
     assert row.source == "Договорились 12.10.2026"
 
 
+def test_kp_file_texts_of_a_line_in_base_20_agree_with_the_our_price_cell():
+    # КП 1 980,00 с НДС 20 % (нетто 1 650), цитата договора 1 006,25 нетто, цель с рядом 1 037,67... нетто
+    label = InflationLabel("Индекс ЦБ", "03.2026")
+    row = one(
+        line(unit_price=D("1980"), total=D("3960")),
+        result(
+            kp_unit_net=D(1650),
+            kp_total_net=D(3300),
+            ours=D("1037.6712"),
+            contracts=(rate(1, "1037.6712", nominal="1006.25"),),
+        ),
+        ctx=context(kp_vat_base=D(20), inflation=label),
+    )
+    cell = format_rub(row.ours)
+    assert cell == "1 245,21"
+    assert row.comment == (
+        "Ваша цена — 1 980,00 ₽ за м2 с НДС 20 %. В нашем договоре по объекту Объект Т, 2024 г., "
+        "эта работа стоила 1 207,50 ₽ за м2 с НДС 20 %; с учётом инфляции (Индекс ЦБ, к 03.2026) — "
+        f"{cell} ₽. Просим снизить до {cell} ₽ или обосновать разницу."
+    )
+    assert row.source == "Объект Т, договор № Д-1, 2024 г.: 1 207,50 ₽ за м2 с НДС 20 %"
+    assert row.inflation == f"Индекс ЦБ, к 03.2026: {cell} ₽ за м2 с НДС 20 %"
+    assert "без НДС" not in row.comment + row.source + row.inflation
+
+
+def test_kp_file_texts_of_a_line_in_a_zero_base_say_without_vat_and_equal_net():
+    label = InflationLabel("Индекс ЦБ", "03.2026")
+    row = one(
+        line(),
+        result(ours=D("110"), contracts=(rate(1, "110", nominal="100"),)),
+        ctx=context(inflation=label),
+    )
+    assert row.source == "Объект Т, договор № Д-1, 2024 г.: 100,00 ₽ за м2 без НДС"
+    assert row.inflation == "Индекс ЦБ, к 03.2026: 110,00 ₽ за м2 без НДС"
+    assert "110,00 ₽" in row.comment and "без НДС" in row.comment
+
+
 def test_kp_file_source_of_a_work_quotes_the_nominal_rate_without_vat():
     row = one(line(), result())
     assert row.source == "Объект Т, договор № Д-1, 2024 г.: 100,00 ₽ за м2 без НДС"
@@ -987,7 +1025,18 @@ def test_kp_file_header_texts_of_the_sheet():
     assert head.contractor == "Подрядчик А"
     assert head.round == "Этап 3 от 15.10.2026"
     assert head.exported_on == "27.10.2026"
-    assert head.source_label == "Цена источника — как записана в договоре, без НДС"
+    assert head.source_label == "Цены договоров — без НДС (база НДС этого КП — 0 %)"
+
+
+@pytest.mark.parametrize(
+    ("base", "expected"),
+    [
+        (D(20), "Цены договоров пересчитаны в базу НДС этого КП — с НДС 20 %"),
+        (D(0), "Цены договоров — без НДС (база НДС этого КП — 0 %)"),
+    ],
+)
+def test_kp_file_header_source_label_follows_the_kp_vat_base(base, expected):
+    assert header(kp_vat_base=base).source_label == expected
 
 
 def test_kp_file_header_round_without_a_stage_date_is_the_number_only():

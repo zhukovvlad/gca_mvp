@@ -522,7 +522,7 @@ class TestPreviewShape:
         assert header["contractor"] == "Подрядчик А"
         assert header["exported_on"] == today.strftime("%d.%m.%Y")
         assert header["vat_label"] == "Цены КП и наши расценки — с НДС 20 % (база НДС этого КП)"
-        assert header["source_label"] == "Цена источника — как записана в договоре, без НДС"
+        assert header["source_label"] == "Цены договоров пересчитаны в базу НДС этого КП — с НДС 20 %"
         assert header["level_label"] == "номинальный, без приведения"
         assert header["in_progress_lines"] == 0
         assert (header["inflation_years"], header["inflation_series"], header["inflation_target_month"]) == (
@@ -646,7 +646,7 @@ class TestPreviewRows:
         assert row["state"] != "comparable"
         assert (row["ours"], row["deviation_pct"], row["source"], row["inflation"]) == (None, None, None, None)
 
-    def test_the_source_names_the_contract_and_the_nominal_rate_without_vat(
+    def test_the_source_names_the_contract_and_the_nominal_rate_in_the_kp_vat_base(
         self, member_client, stage, db_session, world, factories
     ):
         scene = _file_scene(stage, db_session, world, factories)
@@ -655,7 +655,7 @@ class TestPreviewRows:
         row = _by_item(_preview(member_client, stage, scene.rnd, scene.part), scene.l1)
 
         assert row["source"] == (
-            f"{contract.object.title}, договор № {contract.contract_number}, 2025 г.: 100,00 ₽ за {scene.unit} без НДС"
+            f"{contract.object.title}, договор № {contract.contract_number}, 2025 г.: 120,00 ₽ за {scene.unit} с НДС 20 %"
         )
         assert row["inflation"] is None
 

@@ -120,6 +120,7 @@ def inputs(**overrides) -> CommentInputs:
         tender_contractor_id=TENDER_CONTRACTOR,
         tender_area=AREA,
         inflation=None,
+        vat_base=D(0),
     )
     values.update(overrides)
     return CommentInputs(**values)
@@ -889,24 +890,75 @@ def test_kp_file_comment_text_never_names_contracts_count_or_rung():
         assert banned not in text
 
 
-def test_kp_file_comment_text_signature_has_no_vat_rate():
+def test_kp_file_comment_text_signature_has_no_vat_switch():
+    # переключателя НДС у текста нет: база КП — поле входа
     assert list(inspect.signature(template_text).parameters) == ["inp"]
-    assert [name for name in inspect.signature(CommentInputs).parameters if "vat" in name or "rate" in name] == []
+    assert [name for name in inspect.signature(CommentInputs).parameters if "vat" in name] == ["vat_base"]
 
 
-def test_kp_file_comment_text_always_says_without_vat():
-    cases = [
-        inputs(),
-        inputs(agreed_net=D(100)),
-        inputs(kp_unit_net=D(50), result=result(position="below", kp_unit_net=D(50))),
-        inputs(result=result(state=LineState.unit_mismatch, mismatch=mismatch("9"), ours=None, position=None)),
-        inputs(result=result(state=LineState.unit_mismatch, mismatch=mismatch(None), ours=None, position=None)),
-        system_inputs(),
-        system_inputs(kp_unit_net=None),
-        system_inputs(quantity=D("NaN")),
+def all_text_cases(**extra):
+    return [
+        inputs(**extra),
+        inputs(agreed_net=D(100), **extra),
+        inputs(kp_unit_net=D(50), result=result(position="below", kp_unit_net=D(50)), **extra),
+        inputs(result=result(state=LineState.unit_mismatch, mismatch=mismatch("9"), ours=None, position=None), **extra),
+        inputs(
+            result=result(state=LineState.unit_mismatch, mismatch=mismatch(None), ours=None, position=None), **extra
+        ),
+        system_inputs(**extra),
+        system_inputs(kp_unit_net=None, **extra),
+        system_inputs(quantity=D("NaN"), **extra),
     ]
-    for inp in cases:
+
+
+def test_kp_file_comment_text_says_without_vat_in_a_zero_base():
+    for inp in all_text_cases():
         assert "без НДС" in template_text(inp)
+
+
+def test_kp_file_comment_text_names_the_kp_vat_base_in_words():
+    for inp in all_text_cases(vat_base=D(20)):
+        text = template_text(inp)
+        assert "с НДС 20 %" in text
+        assert "без НДС" not in text
+
+
+def test_kp_file_comment_text_fractional_base_is_printed_like_the_header():
+    assert "с НДС 7,5 %" not in template_text(inputs(vat_base=D("7.5")))
+    assert "с НДС 7.5 %" in template_text(inputs(vat_base=D("7.50")))
+
+
+def test_kp_file_comment_text_work_over_in_base_20_quotes_every_sum_with_vat():
+    inp = inputs(
+        result=result(ours=D(110)),
+        source=source(rate=rate(1, "110", nominal="100")),
+        inflation=InflationLabel("ИПЦ", "09.2026"),
+        vat_base=D(20),
+    )
+    assert template_text(inp) == (
+        "Ваша цена — 144,00 ₽ за м2 с НДС 20 %. В нашем договоре по объекту Объект Т, 2024 г., "
+        "эта работа стоила 120,00 ₽ за м2 с НДС 20 %; с учётом инфляции (ИПЦ, к 09.2026) — "
+        "132,00 ₽. Просим снизить до 132,00 ₽ или обосновать разницу."
+    )
+
+
+def test_kp_file_comment_text_agreed_in_base_20():
+    text = template_text(inputs(agreed_net=D("100"), vat_base=D(20)))
+    assert text == "Согласовано: 120,00 ₽ за м2 с НДС 20 %. Просим отразить в следующей редакции КП."
+
+
+def test_kp_file_comment_text_system_in_base_20_with_valid_volume():
+    text = template_text(system_inputs(vat_base=D(20)))
+    assert text.startswith("Ваша цена — 156,00 ₽ за шт с НДС 20 %. ")
+    assert "на м² объекта с НДС 20 % — для вашего объекта это 600,00 ₽ за весь объём (4 шт), то есть 150,00 ₽ за шт" in text
+    assert text.endswith("Просим снизить до 150,00 ₽ за шт или обосновать разницу.")
+
+
+def test_kp_file_comment_text_system_in_base_20_with_invalid_volume():
+    text = template_text(system_inputs(quantity=D("NaN"), vat_base=D(20)))
+    assert text.startswith("Ваша цена — 624,00 ₽ за весь объём с НДС 20 %. ")
+    assert "на м² объекта с НДС 20 % — для вашего объекта это 600,00 ₽ за весь объём" in text
+    assert text.endswith("Просим снизить до 600,00 ₽ за весь объём или обосновать разницу.")
 
 
 def test_kp_file_comment_text_has_no_float_artifacts():

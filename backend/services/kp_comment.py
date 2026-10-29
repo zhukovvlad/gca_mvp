@@ -2,9 +2,10 @@
 
 Чистый расчёт без базы (спека 4б §2.2, §2.3, §2.7, §2.8). Подрядчику называются
 только цель строки и её источник: ни вилки, ни медианы, ни числа договоров, ни
-ступени в тексте нет. Текст не зависит от переключателя НДС — в нём всегда
-нетто, и это сказано словами. Деньги — `Decimal`, округление до копеек только
-в сравнениях «выше» и при выводе числа.
+ступени в тексте нет. Текст не зависит от переключателя НДС: все суммы в нём
+стоят в базе НДС КП (как «Наша расценка» в файле), и это сказано словами.
+Случай и сравнения «выше» считаются по нетто. Деньги — `Decimal`, округление до
+копеек только в сравнениях «выше» и при выводе числа.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from decimal import Context, Decimal, DivisionByZero, InvalidOperation, Overflow
 from typing import Literal
 
 from money.price import is_price, is_weight
-from money.vat import quantize_money
+from money.vat import net_to_gross, quantize_money
 from parser.summary_block import ARITHMETIC_PRECISION
 from services.our_price import (
     ContractRate,
@@ -68,6 +69,8 @@ class CommentInputs:
     tender_area: Decimal | None
     #: `None` — без ряда ИПЦ.
     inflation: InflationLabel | None
+    #: База НДС КП: в ней печатаются все суммы текстов.
+    vat_base: Decimal
 
 
 def pick_source(
@@ -169,16 +172,28 @@ def _format_quantity(value: Decimal) -> str:
 # --- тексты -----------------------------------------------------------------------
 
 
+def vat_words(base: Decimal) -> str:
+    """Пометка базы: «без НДС» у базы 0 %, иначе «с НДС 20 %»."""
+    if base == 0:
+        return "без НДС"
+    return f"с НДС {format(base.normalize(), 'f')} %"
+
+
+def rub_in_base(inp: CommentInputs, net: Decimal) -> str:
+    """Нетто-сумма в базе КП, `34 154,00`; тот же `net_to_gross`, что у «Нашей расценки»."""
+    return format_rub(net_to_gross(net, inp.vat_base))
+
+
 def _kp_phrase(inp: CommentInputs) -> str:
     """Как названа цена КП: за единицу или суммой строки (три формы §2.7)."""
     unit = inp.unit_text
     if not inp.is_system:
-        return f"{format_rub(inp.kp_unit_net)} ₽ за {unit}"
+        return f"{rub_in_base(inp, inp.kp_unit_net)} ₽ за {unit}"
     if not is_weight(inp.quantity):
-        return f"{format_rub(inp.kp_total_net)} ₽ за весь объём"
+        return f"{rub_in_base(inp, inp.kp_total_net)} ₽ за весь объём"
     if is_price(inp.kp_unit_net):
-        return f"{format_rub(inp.kp_unit_net)} ₽ за {unit}"
-    return f"{format_rub(inp.kp_total_net)} ₽ за весь объём ({_format_quantity(inp.quantity)} {unit})"
+        return f"{rub_in_base(inp, inp.kp_unit_net)} ₽ за {unit}"
+    return f"{rub_in_base(inp, inp.kp_total_net)} ₽ за весь объём ({_format_quantity(inp.quantity)} {unit})"
 
 
 def _what(inp: CommentInputs) -> tuple[str, str]:
@@ -193,10 +208,11 @@ def _over_text(inp: CommentInputs) -> str | None:
     if src is None:
         return None
     unit = inp.unit_text
+    vat = vat_words(inp.vat_base)
     what, verb = _what(inp)
     with_you = "с вами " if src.contract.contractor_id == inp.tender_contractor_id else ""
     head = (
-        f"Ваша цена — {_kp_phrase(inp)} без НДС. "
+        f"Ваша цена — {_kp_phrase(inp)} {vat}. "
         f"В нашем договоре {with_you}по объекту {src.contract.object_title}, {src.contract.year} г., {what} {verb} "
     )
     inflated = inp.inflation is not None and src.rate.net != src.rate.nominal
@@ -204,23 +220,23 @@ def _over_text(inp: CommentInputs) -> str | None:
     nominal = src.rate.nominal
     if not inp.is_system:
         average = "в среднем " if src.rate.lines >= 2 else ""
-        goal = format_rub(target_net(inp))
+        goal = rub_in_base(inp, target_net(inp))
         tail = f"{series}{goal} ₽" if inflated else ""
         return (
-            f"{head}{average}{format_rub(nominal)} ₽ за {unit} без НДС{tail}. "
+            f"{head}{average}{rub_in_base(inp, nominal)} ₽ за {unit} {vat}{tail}. "
             f"Просим снизить до {goal} ₽ или обосновать разницу."
         )
     with localcontext(_CONTEXT):
         nominal_sum = nominal * inp.tender_area * inp.result.share
-    body = f"{head}{format_rub(nominal)} ₽ на м² объекта без НДС — для вашего объекта это {format_rub(nominal_sum)} ₽ за весь объём"
+    body = f"{head}{rub_in_base(inp, nominal)} ₽ на м² объекта {vat} — для вашего объекта это {rub_in_base(inp, nominal_sum)} ₽ за весь объём"
     if is_weight(inp.quantity):
         with localcontext(_CONTEXT):
             nominal_unit = nominal_sum / inp.quantity
-        goal = f"{format_rub(target_net(inp))} ₽ за {unit}"
-        body += f" ({_format_quantity(inp.quantity)} {unit}), то есть {format_rub(nominal_unit)} ₽ за {unit}"
+        goal = f"{rub_in_base(inp, target_net(inp))} ₽ за {unit}"
+        body += f" ({_format_quantity(inp.quantity)} {unit}), то есть {rub_in_base(inp, nominal_unit)} ₽ за {unit}"
         ask = goal
     else:
-        goal = f"{format_rub(target_sum_net(inp))} ₽"
+        goal = f"{rub_in_base(inp, target_sum_net(inp))} ₽"
         ask = f"{goal} за весь объём"
     tail = f"{series}{goal}" if inflated else ""
     return f"{body}{tail}. Просим снизить до {ask} или обосновать разницу."
@@ -233,19 +249,20 @@ def template_text(inp: CommentInputs) -> str | None:
         return None
     if case == "over":
         return _over_text(inp)
+    vat = vat_words(inp.vat_base)
     if case == "agreed":
         return (
-            f"Согласовано: {format_rub(inp.agreed_net)} ₽ за {inp.unit_text} без НДС. "
+            f"Согласовано: {rub_in_base(inp, inp.agreed_net)} ₽ за {inp.unit_text} {vat}. "
             "Просим отразить в следующей редакции КП."
         )
     phrase = _kp_phrase(inp)
     if case == "below":
-        return f"Просим подтвердить, что в цену {phrase} без НДС включены все работы и материалы по ведомости."
+        return f"Просим подтвердить, что в цену {phrase} {vat} включены все работы и материалы по ведомости."
     if case == "kp_unit":
         if inp.is_system and not (is_weight(inp.quantity) and is_price(inp.kp_unit_net)):
-            return f"Ваша цена — {phrase} без НДС. Уточните, пожалуйста, объём и единицу учёта."
+            return f"Ваша цена — {phrase} {vat}. Уточните, пожалуйста, объём и единицу учёта."
         return (
-            f"Цена {phrase} без НДС похожа на цену за весь объём, а не за единицу. "
+            f"Цена {phrase} {vat} похожа на цену за весь объём, а не за единицу. "
             "Уточните, пожалуйста, единицу учёта."
         )
-    return f"Просим расшифровать, что входит в цену {phrase} без НДС и за какую единицу она дана."
+    return f"Просим расшифровать, что входит в цену {phrase} {vat} и за какую единицу она дана."
