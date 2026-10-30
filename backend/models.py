@@ -3120,3 +3120,160 @@ class InflationIndexValue(Base):
         CheckConstraint("coefficient > 0", name="ck_inflation_index_values_coefficient_positive"),
         CheckConstraint("btrim(source) <> ''", name="ck_inflation_index_values_source_not_blank"),
     )
+
+
+# ---------------------------------------------------------------------------
+#  Решения по строкам КП и отправленные файлы (спека 4б §2.13, миграция 0023)
+# ---------------------------------------------------------------------------
+
+#: Ступени ручного выбора цели (спека 4б §2.5): вариант, главный параметр, семья;
+#: охват: класс контекста или все.
+KP_RUNG_LEVELS = ("v", "p", "f")
+KP_RUNG_SCOPES = ("cls", "all")
+#: Предел собственного комментария к строке, в знаках (спека 4б §2.4).
+KP_COMMENT_MAX = 2000
+
+#: Литералы CHECK продублированы в миграции 0023 (она не импортирует `models.py`);
+#: паритет держит `test_kp_file_schema.py`. `NaN` в Postgres больше любого числа,
+#: поэтому конечность названа явно: голое `> 0` пропустило бы его.
+CK_KP_AGREEMENT_NET_PRICE = "net_price > 0 AND net_price <> 'NaN' AND net_price <> 'Infinity'"
+CK_KP_COMMENT_LENGTH = f"char_length(text) <= {KP_COMMENT_MAX}"
+CK_KP_RUNG_LEVEL = "level IN (" + ", ".join(f"'{v}'" for v in KP_RUNG_LEVELS) + ")"
+CK_KP_RUNG_SCOPE = "scope IN (" + ", ".join(f"'{v}'" for v in KP_RUNG_SCOPES) + ")"
+#: Обе стороны равенства не `NULL` (`level` NOT NULL), поэтому предикат тотален.
+CK_KP_FAMILY_RUNG_PARAMETER = "(level = 'p') = (first_main_parameter_id IS NOT NULL)"
+
+
+class KpLineAgreement(Base):
+    """Сохранённое «Договорились» по строке КП: цена в нетто (спека 4б §2.3).
+    Отсутствие решения — отсутствие строки."""
+    __tablename__ = "kp_line_agreements"
+
+    position_item_id = Column(BigInteger, nullable=False)
+    net_price = Column(Numeric, nullable=False)
+    set_by = Column(Integer, nullable=False)
+    set_at = Column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
+
+    __table_args__ = (
+        PrimaryKeyConstraint("position_item_id", name="pk_kp_line_agreements"),
+        ForeignKeyConstraint(
+            ["position_item_id"], ["position_items.id"], ondelete="CASCADE",
+            name="fk_kp_line_agreements_position_item",
+        ),
+        ForeignKeyConstraint(
+            ["set_by"], ["users.id"], ondelete="RESTRICT", name="fk_kp_line_agreements_set_by"
+        ),
+        CheckConstraint(CK_KP_AGREEMENT_NET_PRICE, name="ck_kp_line_agreements_net_price"),
+    )
+
+
+class KpLineComment(Base):
+    """Собственный комментарий к строке КП; пустая строка допустима."""
+    __tablename__ = "kp_line_comments"
+
+    position_item_id = Column(BigInteger, nullable=False)
+    text = Column(Text, nullable=False)
+    set_by = Column(Integer, nullable=False)
+    set_at = Column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
+
+    __table_args__ = (
+        PrimaryKeyConstraint("position_item_id", name="pk_kp_line_comments"),
+        ForeignKeyConstraint(
+            ["position_item_id"], ["position_items.id"], ondelete="CASCADE",
+            name="fk_kp_line_comments_position_item",
+        ),
+        ForeignKeyConstraint(
+            ["set_by"], ["users.id"], ondelete="RESTRICT", name="fk_kp_line_comments_set_by"
+        ),
+        CheckConstraint(CK_KP_COMMENT_LENGTH, name="ck_kp_line_comments_text_length"),
+    )
+
+
+class KpLineRung(Base):
+    """Ручная ступень работы строки КП. `key` — снимок без внешних ключей: вариант
+    и семья могут уйти, тогда ступень просто не действует."""
+    __tablename__ = "kp_line_rungs"
+
+    position_item_id = Column(BigInteger, nullable=False)
+    level = Column(Text, nullable=False)
+    scope = Column(Text, nullable=False)
+    key = Column(JSONB, nullable=False)
+    set_by = Column(Integer, nullable=False)
+    set_at = Column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
+
+    __table_args__ = (
+        PrimaryKeyConstraint("position_item_id", name="pk_kp_line_rungs"),
+        ForeignKeyConstraint(
+            ["position_item_id"], ["position_items.id"], ondelete="CASCADE",
+            name="fk_kp_line_rungs_position_item",
+        ),
+        ForeignKeyConstraint(
+            ["set_by"], ["users.id"], ondelete="RESTRICT", name="fk_kp_line_rungs_set_by"
+        ),
+        CheckConstraint(CK_KP_RUNG_LEVEL, name="ck_kp_line_rungs_level"),
+        CheckConstraint(CK_KP_RUNG_SCOPE, name="ck_kp_line_rungs_scope"),
+    )
+
+
+class KpFamilyRung(Base):
+    """Ручная ступень системы для семьи в смете. `first_main_parameter_id` — снимок
+    `family_parameters.id` без внешнего ключа: версия схемы с каскадом стёрла бы
+    ступень молча, а `RESTRICT` запретил бы удалять версии (спека 4б §2.13)."""
+    __tablename__ = "kp_family_rungs"
+
+    estimate_id = Column(BigInteger, nullable=False)
+    work_family_id = Column(BigInteger, nullable=False)
+    level = Column(Text, nullable=False)
+    scope = Column(Text, nullable=False)
+    first_main_parameter_id = Column(BigInteger, nullable=True)
+    set_by = Column(Integer, nullable=False)
+    set_at = Column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
+
+    __table_args__ = (
+        PrimaryKeyConstraint("estimate_id", "work_family_id", name="pk_kp_family_rungs"),
+        ForeignKeyConstraint(
+            ["estimate_id"], ["estimates.id"], ondelete="CASCADE",
+            name="fk_kp_family_rungs_estimate",
+        ),
+        ForeignKeyConstraint(
+            ["work_family_id"], ["work_families.id"], ondelete="CASCADE",
+            name="fk_kp_family_rungs_work_family",
+        ),
+        ForeignKeyConstraint(
+            ["set_by"], ["users.id"], ondelete="RESTRICT", name="fk_kp_family_rungs_set_by"
+        ),
+        CheckConstraint(CK_KP_RUNG_LEVEL, name="ck_kp_family_rungs_level"),
+        CheckConstraint(CK_KP_RUNG_SCOPE, name="ck_kp_family_rungs_scope"),
+        CheckConstraint(
+            CK_KP_FAMILY_RUNG_PARAMETER, name="ck_kp_family_rungs_first_main_parameter"
+        ),
+    )
+
+
+class KpSentFile(Base):
+    """Файл, отправленный подрядчику: хранится под непрозрачным `file_key`, имя и
+    сумма хэша — в строке (`AGENTS.md` §8)."""
+    __tablename__ = "kp_sent_files"
+
+    id = Column(BigInteger, nullable=False)
+    offer_id = Column(BigInteger, nullable=False)
+    file_key = Column(Text, nullable=False)
+    filename = Column(Text, nullable=False)
+    file_sha256 = Column(Text, nullable=False)
+    size_bytes = Column(BigInteger, nullable=False)
+    vat_rate = Column(Numeric, nullable=False)
+    level_label = Column(Text, nullable=False)
+    created_by = Column(Integer, nullable=False)
+    created_at = _created_at()
+
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_kp_sent_files"),
+        ForeignKeyConstraint(
+            ["offer_id"], ["offers.id"], ondelete="CASCADE", name="fk_kp_sent_files_offer"
+        ),
+        ForeignKeyConstraint(
+            ["created_by"], ["users.id"], ondelete="RESTRICT",
+            name="fk_kp_sent_files_created_by",
+        ),
+        UniqueConstraint("file_key", name="uq_kp_sent_files_file_key"),
+    )

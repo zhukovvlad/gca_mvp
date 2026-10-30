@@ -73,6 +73,7 @@ from services.excel import (
     write_banner,
     write_cell,
     write_column_headers,
+    write_inflation_block,
 )
 
 __all__ = ["build_comparison_sheet"]
@@ -211,80 +212,6 @@ def _write_data_row(
     return row_num + 1
 
 
-#: Месяцы в именительном: на листе месяц стоит ПОСЛЕ двоеточия, то есть подписью
-#: («Цены приведены к: август 2026»), а не продолжением фразы. В подписи оси
-#: (`crud.comparison`) он в дательном, потому что там фраза сплошная.
-_MONTHS_NOMINATIVE = (
-    "январь", "февраль", "март", "апрель", "май", "июнь",
-    "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь",
-)
-
-
-def _month_label(target_month: str) -> str:
-    year, month = target_month.split("-")
-    return f"{_MONTHS_NOMINATIVE[int(month) - 1]} {year}"
-
-
-def _write_inflation_block(ws, row: int, inflation: dict) -> int:
-    """Ряд, целевой месяц и ПО КАЖДОМУ году — пять фактов (DoD 13, спека §2.10).
-
-    **Печатается только на листе.** Экран показывает примечание ряда и уровни по
-    годам, но НЕ источники: три источника рядом с тремя процентами превращают
-    ориентирующую строку в таблицу. Источник нужен там, где задают вопрос «откуда
-    8,3 %», — а задают его к артефакту защиты перед банком, то есть к файлу.
-    Разделение простое: экран ориентирует, файл защищает (§2.12).
-
-    Пять фактов на год — коэффициент, источник, признак прогноза, дата правки и
-    сам год — потому что версионности у ряда нет (§2.10): воспроизводимость
-    лежит на файле, и защищённые числа заморожены в нём. Год без источника или без
-    даты правки эту роль не исполнил бы.
-    """
-    ws.cell(
-        row=row, column=1,
-        value=safe_str(
-            f"Цены приведены к: {_month_label(inflation['target_month'])}"
-            f" · ряд: «{inflation['series_name']}»"
-        ),
-    ).font = font(bold=True, size=9)
-    row += 1
-
-    for item in inflation["used_years"]:
-        kind = "прогноз" if item["is_forecast"] else "факт"
-        parts = [
-            str(item["year"]),
-            format(item["coefficient"], "f"),
-            safe_str(item["source"]),
-            kind,
-        ]
-        if item["updated_at"]:
-            parts.append(f"правлен {_iso_date_to_ru(item['updated_at'])}")
-        ws.cell(row=row, column=1, value=safe_str(" · ".join(parts))).font = font(size=9)
-        row += 1
-
-    if not inflation["used_years"]:
-        # Пустой список — законное состояние (цель совпала с месяцем сметы, DoD 5),
-        # и молчать о нём нельзя: читатель обязан понять, что приведение включено,
-        # а годов не потребовалось, — иначе он решит, что ряд не доехал до листа.
-        ws.cell(
-            row=row, column=1,
-            value="Коэффициенты за годы не потребовались: цены уже в целевом уровне.",
-        ).font = font(size=9)
-        row += 1
-    return row
-
-
-def _iso_date_to_ru(value: str) -> str:
-    """`2026-01-12T…` → `12.01.2026`. Дата правки ряда печатается по-русски.
-
-    Разбор строкой, а не `datetime.fromisoformat`: значение уже пришло в ответе
-    строкой (`crud.common.iso`), и второе преобразование туда-обратно только
-    добавило бы место, где формат может разойтись.
-    """
-    date_part = value.split("T")[0]
-    year, month, day = date_part.split("-")
-    return f"{day}.{month}.{year}"
-
-
 def build_comparison_sheet(data: dict, *, generated_at: dt.date) -> bytes:
     """Лист «статьи × договоры» из готового агрегата `crud.comparison.build_comparison`.
 
@@ -326,7 +253,7 @@ def build_comparison_sheet(data: dict, *, generated_at: dt.date) -> bytes:
     # (DoD 1). `data.get`, а не `data[...]`: номинальный ответ ключа не несёт вовсе.
     inflation = data.get("inflation")
     if inflation is not None:
-        row = _write_inflation_block(ws, row, inflation)
+        row = write_inflation_block(ws, row, inflation)
 
     row += 1
 

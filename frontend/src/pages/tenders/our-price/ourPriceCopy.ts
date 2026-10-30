@@ -1,5 +1,5 @@
 import { formatDecimalMoney, formatNumber, pluralRu, roundDecimal } from "@/lib/format";
-import type { Decimal, OurPriceLine, OurPriceLineState, OurPriceParticipant } from "@/types/domain";
+import type { Decimal, OurPriceLine, OurPriceLineState, OurPriceParticipant, ResetReason } from "@/types/domain";
 
 import type { OfferFilter } from "./offerFilter";
 
@@ -43,6 +43,19 @@ export function emptyReasonOf(participant: OurPriceParticipant): EmptyReason | n
   if (participant.state === "no_estimate") return "no_estimate";
   return participant.per_sqm_reason;
 }
+
+/** Выгрузка файла подрядчику (спека 4б §2.14). */
+export const KP_FILE_EXPORT_LABEL = "Выгрузить КП с нашими расценками";
+export const KP_FILE_BLOCKED_NOTE = "база НДС КП неизвестна";
+
+/** Назначение базы НДС КП вручную (спека 4б §2.12). */
+export const VAT_BASE_ASSIGN_LABEL = "Назначить базу НДС";
+export const VAT_BASE_DIALOG_TITLE = "База НДС КП";
+export const VAT_BASE_DIALOG_DESCRIPTION =
+  "Ставка, которой соответствуют суммы КП. Файл подрядчику и сравнение строятся в этой базе.";
+export const VAT_BASE_FIELD_LABEL = "Ставка НДС, %";
+export const VAT_BASE_SAVE_LABEL = "Сохранить";
+export const VAT_BASE_SAVE_FALLBACK = "Не удалось сохранить базу НДС.";
 
 export const CHEAPEST_PER_SQM_LABEL = "дешевле всех на м²";
 export const DETAIL_LINK_LABEL = "Разобрать по строкам →";
@@ -284,6 +297,7 @@ export const SHEET_SECTION = {
   family: "Вся семья в этом КП",
   contracts: "Договоры на этой ступени",
   vatDropped: "Договоры, не попавшие в сравнение",
+  export: "Для выгрузки",
 } as const;
 export const SHEET_FIELD = {
   kpPrice: "Цена КП",
@@ -305,6 +319,59 @@ export function priceBasisLabel(view: "net" | "shown", rate: Decimal | null): st
 
 export const RUNG_SCOPE_LABEL = { cls: "класс объекта", all: "все классы" } as const;
 export const RUNG_AUTO_TAG = "авто";
+
+/** Решения человека по строке: блок «Для выгрузки» и сохраняемая ступень (спека 4б §2.3–§2.6, §2.14). */
+export const EXPORT_OURS_LABEL = "Наша расценка";
+export const EXPORT_OURS_NOTE = "считается из данных и следует за ними";
+export const EXPORT_OURS_NONE_NOTE = "цены за единицу в файле не будет";
+export const SAVE_LABEL = "Сохранить";
+export const SAVING_LABEL = "Сохраняем…";
+
+export const AGREED_PLACEHOLDER = "не договаривались";
+export const AGREED_HINT =
+  "вписываете вы, GCA это число не меняет. В файл подрядчику идёт договорённое число, если оно есть, иначе наша расценка";
+
+/** Подпись поля «Договорились»: единица строки КП и вид цены; единицы нет — без неё. */
+export function agreedLabel(unit: string | null, basis: string): string {
+  return unit === null ? `Договорились, ${basis}` : `Договорились, ${unit}, ${basis}`;
+}
+
+/** Метка под нашей расценкой в таблице строк. */
+export function agreedCaption(value: string): string {
+  return `договорились ${value}`;
+}
+
+export const COMMENT_LABEL = "Комментарий для подрядчика";
+export const COMMENT_PLACEHOLDER = "комментария нет";
+export const COMMENT_TAG = { template: "шаблон", custom: "свой текст" } as const;
+export const COMMENT_TAG_EMPTY = "свой текст (пусто)";
+export const COMMENT_TO_TEMPLATE = "к шаблону";
+export const COMMENT_NO_TEMPLATE_HINT = "комментария не будет";
+
+export const RUNG_SAVE_LABEL = "Сохранить эту ступень";
+export const RUNG_BACK_TO_AUTO_LABEL = "Вернуть авто";
+export const RUNG_MANUAL_TAG = "ручная";
+export const RUNG_MANUAL_FAMILY_TAG = "ручная · для всей семьи в этом КП";
+export const RUNG_MANUAL_INACTIVE_TAG = "ручная не действует";
+
+/** Метка действующей ручной ступени: у ступени семьи — с пояснением, на кого она действует. */
+export function manualRungTag(target: "line" | "family"): string {
+  return target === "family" ? RUNG_MANUAL_FAMILY_TAG : RUNG_MANUAL_TAG;
+}
+
+/** Почему сохранённая ручная ступень не действует: по одному тексту на каждый код ответа. */
+export const RUNG_RESET_REASON: Record<ResetReason, string> = {
+  kind_changed: "строка стала системой, а ступень выбрана для работы",
+  key_changed: "у строки сменился вариант или семья",
+  rung_unavailable: "такой ступени у строки больше нет",
+  rung_empty: "на этой ступени больше нет договоров",
+};
+
+/** Плашка недействующей ручной ступени; код причины может не прийти — тогда без причины. */
+export function rungInactiveNote(rungLabel: string, reason: ResetReason | null): string {
+  const why = reason === null ? "" : `: ${RUNG_RESET_REASON[reason]}`;
+  return `Ручная ступень ${rungLabel} не действует${why} — считается автоматическая`;
+}
 export const RUNG_RESET_LABEL = "Вернуть автоматическую";
 export const RUNG_HINT =
   "Нажмите на другую ступень, чтобы сравнить по ней: вилка, наша расценка и отклонение пересчитаются. Цифры страницы разбора при этом не меняются.";
@@ -382,3 +449,46 @@ export function contractsShort(n: number): string {
 /** Входы на экраны 4а с карточки тендера: кнопка панели этапа и пункт меню ячейки КП. */
 export const OUR_PRICE_ENTRY_LABEL = "Против нашей цены";
 export const OUR_PRICE_ENTRY_NO_ESTIMATES = "В этапе нет КП со сметой";
+
+/** Страница предпросмотра файла подрядчику (спека 4б §2.9, §2.10, §2.14). */
+export const KP_FILE_TITLE = "Файл подрядчику";
+export const KP_FILE_DOWNLOAD_LABEL = "Скачать xlsx";
+export const KP_FILE_SENT_TITLE = "Отправлено подрядчику";
+export const KP_FILE_SENT_EMPTY = "Файлов ещё не отправляли";
+export const KP_FILE_SENT_ERROR = "Не удалось загрузить список отправленных файлов";
+export const KP_FILE_SENT_DOWNLOAD = "скачать";
+/** Ссылка у участника без сметы: страница файла остаётся единственным местом списка отправленных. */
+export function kpFileSentLink(n: number): string {
+  return `Отправленные файлы (${n})`;
+}
+export const KP_FILE_YEARS_TITLE = "Коэффициенты приведения по ИПЦ";
+export const KP_FILE_FORECAST_TAG = "прогноз";
+export const KP_FILE_EDIT_COMMENT_LABEL = "Править комментарий";
+export const KP_FILE_CANCEL_LABEL = "Отмена";
+export const KP_FILE_ERROR_TITLE = "Предпросмотр не построен";
+
+/** Столбцы листа, которые кладёт наша сторона: справа от столбцов подрядчика, выделены фоном. */
+export const KP_FILE_OURS_COLUMNS: ReadonlySet<string> = new Set([
+  "ours",
+  "deviation_pct",
+  "source",
+  "inflation",
+  "comment",
+]);
+
+const KP_FILE_ERROR_NOT_FOUND = "Этап, тендер или КП не найдены";
+const KP_FILE_ERROR_GENERIC = "Не удалось построить предпросмотр файла";
+
+/** Подпись отказа предпросмотра: 404 с выбранным рядом печатает сообщение сервера, оно называет, чего нет. */
+export function kpFileErrorLabel(status: number | undefined, seriesSelected: boolean, serverMessage?: string): string {
+  if (status === 404 && seriesSelected && serverMessage) return serverMessage;
+  return status === 404 ? KP_FILE_ERROR_NOT_FOUND : KP_FILE_ERROR_GENERIC;
+}
+
+/** Плашка «каталог ещё разбирает»: у этих строк в файле не будет наших цен. */
+export function kpFileInProgressNote(n: number): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  const noun = mod10 === 1 && mod100 !== 11 ? "строку" : mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20) ? "строки" : "строк";
+  return `Каталог ещё разбирает ${formatNumber(n)} ${noun} — в файле у них не будет наших цен`;
+}

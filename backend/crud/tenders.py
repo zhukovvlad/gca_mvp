@@ -16,6 +16,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session, joinedload
 
 from config import settings
+from crud import kp_decisions
 from crud import round_unallocated as crud_round_unallocated
 from crud.common import DomainError, clamp_page, iso, paginated, require_text, translating_integrity
 from crud.estimate_totals import estimate_total_including_vat
@@ -37,8 +38,10 @@ from models import (
     TenderAward,
     TenderRound,
 )
+from services.maintenance import purge_files_best_effort
 from services.semantic_cost import event_cap_from
 from services.semantic_reconcile import contexts_of_estimates, reconcile_semantic_jobs
+from storage import Storage
 
 log = logging.getLogger(__name__)
 
@@ -363,13 +366,14 @@ def delete_round(db: Session, tender_id: int, round_id: int) -> list[str]:
     from crud import tender_awards
     tender_awards.refuse_if_round_has_award(db, round_id, stage_no=rnd.stage_no, action="delete")
     file_keys = list(db.execute(sa.select(ImportJob.file_key).where(ImportJob.round_id == round_id).order_by(ImportJob.id)).scalars())
+    file_keys += kp_decisions.sent_file_keys(db, round_id=round_id)
     affected_contexts = contexts_of_estimates(db, _estimate_ids_of_rounds(db, [round_id]))
     # Ключ — страховка: отметка, поставленная мимо проверки, роняет каскад на офертах.
     with translating_integrity(db, {"fk_tender_awards_offer": tender_awards.stage_has_award_refusal("delete")}):
         db.execute(sa.delete(TenderRound).where(TenderRound.id == round_id))
         _reconcile_after_delete(db, affected_contexts)
         db.commit()
-    log.info("tender_round_deleted tender=%s round=%s jobs=%d", tender_id, round_id, len(file_keys))
+    log.info("tender_round_deleted tender=%s round=%s files=%d", tender_id, round_id, len(file_keys))
     return file_keys
 
 
@@ -386,6 +390,7 @@ def delete_tender(db: Session, tender_id: int) -> list[str]:
         code, text = tender_awards.tender_has_contract_refusal(number)
         raise DomainError(409, text, code=code)
     file_keys = list(db.execute(sa.select(ImportJob.file_key).where(ImportJob.round_id.in_(round_ids)).order_by(ImportJob.id)).scalars()) if round_ids else []
+    file_keys += kp_decisions.sent_file_keys(db, tender_id=tender_id)
     affected_contexts = contexts_of_estimates(db, _estimate_ids_of_rounds(db, round_ids))
     # Порядок НЕСУЩИЙ: `DELETE tender_awards` идёт ДО `DELETE offers`.
     # `fk_tender_awards_offer` — RESTRICT, и без явного удаления отметок
@@ -404,7 +409,7 @@ def delete_tender(db: Session, tender_id: int) -> list[str]:
         db.execute(sa.delete(Tender).where(Tender.id == tender_id))
         _reconcile_after_delete(db, affected_contexts)
         db.commit()
-    log.info("tender_deleted id=%s jobs=%d", tender_id, len(file_keys))
+    log.info("tender_deleted id=%s files=%d", tender_id, len(file_keys))
     return file_keys
 
 
@@ -421,13 +426,17 @@ def _participant_composition(db: Session, package_id: int) -> dict:
         .join(Proposal, Proposal.id == PositionItem.proposal_id).join(Lot, Lot.id == Proposal.lot_id)
         .where(Lot.estimate_id.in_(estimate_ids))
     ).scalar_one() if estimate_ids else 0
+    decisions = kp_decisions.count_package_decisions(db, package_id).total
+    sent_files = len(kp_decisions.sent_file_keys(db, package_id=package_id))
     token = hashlib.sha256(json.dumps(
-        {"offers": offer_ids, "estimates": estimate_ids, "positions": positions, "overrides": overrides},
+        {"offers": offer_ids, "estimates": estimate_ids, "positions": positions, "overrides": overrides,
+         "decisions": decisions, "sent_files": sent_files},
         sort_keys=True,
     ).encode()).hexdigest()
     return {
         "rounds_count": len(offer_ids), "estimates_count": len(estimate_ids),
-        "positions_count": positions, "overrides_count": overrides, "confirmation_token": token,
+        "positions_count": positions, "overrides_count": overrides,
+        "decisions_count": decisions, "sent_files_count": sent_files, "confirmation_token": token,
     }
 
 
@@ -446,9 +455,13 @@ def participant_deletion_preview(db: Session, tender_id: int, package_id: int) -
     return _participant_composition(db, package_id)
 
 
-def delete_participant(db: Session, tender_id: int, package_id: int, *, confirmation_token: str | None) -> None:
+def delete_participant(
+    db: Session, tender_id: int, package_id: int, *, confirmation_token: str | None, storage: Storage | None = None
+) -> None:
     """«Удалить участника и его материализованные предложения; исходные файлы
-    и результаты разбора сохраняются» (§2.11).
+    и результаты разбора сохраняются» (§2.11). Файлы отправленных подрядчику
+    удаляются с носителя после коммита (спека 4б §2.10); без `storage` носитель
+    не трогается — для вызовов, которым файлы не нужны.
 
     tender FOR UPDATE → раунды по id → package FOR UPDATE → пересчёт состава →
     token совпал → явный DELETE offers → DELETE package. Несовпадение — 409 с
@@ -473,7 +486,9 @@ def delete_participant(db: Session, tender_id: int, package_id: int, *, confirma
         raise DomainError(
             409, "Удаление участника требует подтверждения состава: будут удалены предложения "
             f"в раундах — {composition['rounds_count']}, смет — {composition['estimates_count']}, "
-            f"позиций — {composition['positions_count']}, ручных решений — {composition['overrides_count']}. "
+            f"позиций — {composition['positions_count']}, ручных решений — {composition['overrides_count']}, "
+            f"решений по строкам КП — {composition['decisions_count']}, "
+            f"отправленных файлов — {composition['sent_files_count']}. "
             "Исходные файлы и результаты разбора сохраняются.",
             code="confirmation_required", context=composition,
         )
@@ -481,6 +496,8 @@ def delete_participant(db: Session, tender_id: int, package_id: int, *, confirma
         sa.select(Estimate.id).where(Estimate.offer_id.in_(sa.select(Offer.id).where(Offer.package_id == package_id)))
     ).scalars())
     affected_contexts = contexts_of_estimates(db, package_estimate_ids)
+    # Ключи — до удаления оферт: записи отправленных уходят с ними каскадом.
+    sent_keys = kp_decisions.sent_file_keys(db, package_id=package_id)
     from crud import tender_awards
     # Ключ — страховка: отметка, поставленная мимо проверки, роняет удаление оферт.
     with translating_integrity(db, {"fk_tender_awards_offer": tender_awards.participant_has_award_refusal()}):
@@ -490,3 +507,5 @@ def delete_participant(db: Session, tender_id: int, package_id: int, *, confirma
         db.commit()
     log.info("tender_participant_deleted tender=%s package=%s estimates=%d",
              tender_id, package_id, composition["estimates_count"])
+    if storage is not None:
+        purge_files_best_effort(storage, sent_keys, context=f"Удаление участника {package_id} тендера {tender_id}")

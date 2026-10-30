@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { formatBelow, formatMoney, formatSigned, formatUnitPrice } from "./money";
+import { formatBelow, formatMoney, formatQuantity, formatSigned, formatUnitPrice } from "./money";
 import { SUB_KOPECK_LABEL } from "./ourPriceCopy";
 
 const plain = (text: string) => text.replace(new RegExp(String.fromCharCode(160), "g"), " ");
@@ -73,5 +73,15 @@ describe("formatSigned", () => {
   it("сумма, округлившаяся до нуля, знака не получает", () => {
     expect(plain(formatSigned("0.004"))).toBe("0,00 ₽");
     expect(plain(formatSigned("-0.004"))).toBe("0,00 ₽");
+  });
+});
+
+describe("formatQuantity", () => {
+  it("объём печатается как в книге: до трёх знаков, без хвостовых нулей, разряды пробелом, запятая", () => {
+    expect(plain(formatQuantity("0.001"))).toBe("0,001");
+    expect(plain(formatQuantity("1234.5"))).toBe("1 234,5");
+    expect(plain(formatQuantity("2"))).toBe("2");
+    expect(plain(formatQuantity("1.23456"))).toBe("1,235");
+    expect(plain(formatQuantity("2.000"))).toBe("2");
   });
 });

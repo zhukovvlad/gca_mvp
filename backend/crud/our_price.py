@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal, localcontext
 
 import sqlalchemy as sa
@@ -19,6 +20,15 @@ from sqlalchemy.orm import Session
 
 from crud.common import DomainError, iso
 from crud.comparison import InflationPlan, _inflation_sentence
+from crud.kp_decisions import (
+    CODE_UNKNOWN_RUNG,
+    CODE_UNKNOWN_VAT_BASE,
+    EstimateDecisions,
+    kp_source_line,
+    load_decisions,
+    load_file_skeleton,
+    load_unit_texts,
+)
 from crud.our_price_inflation import plan_history_inflation, round_target_month
 from crud.our_price_load import (
     ArticleMeta,
@@ -33,6 +43,7 @@ from crud.stage_summary import pct_str
 from models import (
     Contractor,
     Estimate,
+    KpSentFile,
     ObjectModel,
     Offer,
     OfferPackage,
@@ -42,6 +53,9 @@ from models import (
 )
 from money.inflation import adjust_amount
 from money.price import is_price
+from services.excel import iso_date_to_ru
+from services.kp_comment import CommentInputs, InflationLabel, target_net, template_text
+from services.kp_file import FileContext, KpSourceLine, line_comment_inputs
 from services.our_price import (
     _CONTEXT,
     RUNG_ORDER,
@@ -75,8 +89,6 @@ from services.our_price_money import (
 TOTAL_ROW_TITLE = "Итого на м² объекта"
 #: Подпись «Нераспределённого» — та же, что у свода по этапам.
 UNALLOCATED_TITLE = "Нераспределённое"
-#: Код отказа панели строки: ступень не названа целиком, неизвестна или недоступна строке.
-CODE_UNKNOWN_RUNG = "unknown_rung"
 
 
 @dataclass(frozen=True)
@@ -139,6 +151,10 @@ class _Scene:
     history: _HistorySums
     #: Вилка ₽/м² договоров класса по итогу сметы.
     total_fork: tuple[Decimal, Decimal] | None
+    #: Решения по строкам каждой сметы КП этапа (спека 4б §2.13).
+    decisions: dict[int, EstimateDecisions]
+    #: Число отправленных файлов по офферам этапа: у оффера без сметы они остаются.
+    sent_files: dict[int, int]
 
 
 def _load_head(db: Session, tender_id: int, round_id: int) -> _Head:
@@ -299,6 +315,18 @@ def _whole(per_sqm_value: Decimal | None, fork: tuple[Decimal, Decimal] | None, 
         return (per_sqm_value - fork[0]) * area
 
 
+def _sent_files_counts(db: Session, offer_ids: Sequence[int]) -> dict[int, int]:
+    """Число отправленных файлов по офферам одним сгруппированным запросом."""
+    if not offer_ids:
+        return {}
+    rows = db.execute(
+        sa.select(KpSentFile.offer_id, sa.func.count())
+        .where(KpSentFile.offer_id.in_(offer_ids))
+        .group_by(KpSentFile.offer_id)
+    ).all()
+    return {offer_id: count for offer_id, count in rows}
+
+
 def _build_scene(
     db: Session,
     head: _Head,
@@ -353,6 +381,8 @@ def _build_scene(
         class_contracts=class_contracts,
         history=history,
         total_fork=_fork(history.total, class_contracts),
+        decisions=load_decisions(db, kp_ids),
+        sent_files=_sent_files_counts(db, [raw[0] for raw in participants_raw]),
     )
 
 
@@ -364,6 +394,7 @@ def _evaluate(scene: _Scene, participant: _Participant, choice: RungChoice | Non
         tender_area=scene.head.area,
         tender_class_id=scene.head.rate_class_id,
         choice=choice,
+        saved=scene.decisions[participant.estimate_id].saved,
     )
 
 
@@ -384,6 +415,7 @@ def _participant_view(
         "class_median_pct": None,
         "ours_with_contractor": sum(1 for c in scene.contracts if c.contractor_id == participant.contractor_id),
         "totals": None,
+        "sent_files_count": scene.sent_files.get(participant.offer_id, 0),
     }
     kp_value = None
     if participant.state == "ok":
@@ -672,7 +704,12 @@ def _line_view(row: KpLineRow, result: LineResult, rate: Decimal | None) -> dict
             }
         ),
         "rungs": [
-            {"level": count.rung.level, "scope": count.rung.scope, "contracts": count.contracts}
+            {
+                "level": count.rung.level,
+                "scope": count.rung.scope,
+                "contracts": count.contracts,
+                "selectable": count.rung in result.selectable,
+            }
             for count in result.rungs
         ],
         "range": _range_view(result.range, rate),
@@ -690,6 +727,117 @@ def _line_view(row: KpLineRow, result: LineResult, rate: Decimal | None) -> dict
         "below": money_pair(result.below, rate, unit=False),
         "group": group,
         "unit_mismatch": mismatch,
+    }
+
+
+def _author(user_id: int, email: str) -> dict:
+    return {"id": user_id, "email": email}
+
+
+def _inflation_label(plan: InflationPlan | None) -> InflationLabel | None:
+    """Ряд и целевой месяц `ММ.ГГГГ` для комментария; без ряда — `None`."""
+    if plan is None:
+        return None
+    year, month = plan.target_month.split("-")
+    return InflationLabel(plan.series_name, f"{month}.{year}")
+
+
+def _comment_inputs(
+    scene: _Scene,
+    participant: _Participant,
+    row: KpLineRow,
+    result: LineResult,
+    unit_text: str,
+    *,
+    agreed_net: Decimal | None,
+) -> CommentInputs:
+    """Вход комментария строки; собирает та же функция, что у файла."""
+    return line_comment_inputs(
+        kp_source_line(row, unit_text),
+        result,
+        history=scene.index,
+        tender_class_id=scene.head.rate_class_id,
+        tender_contractor_id=participant.contractor_id,
+        tender_area=scene.head.area,
+        kp_vat_base=participant.base,
+        inflation=_inflation_label(scene.plan),
+        agreed_net=agreed_net,
+    )
+
+
+def _template_text(
+    scene: _Scene, participant: _Participant, row: KpLineRow, result: LineResult, unit_text: str
+) -> str | None:
+    """Шаблонный комментарий строки; вход собирает та же функция, что у файла. У КП с
+    неизвестной базой НДС шаблона нет: нетто цены КП посчитать не из чего."""
+    if participant.base is None:
+        return None
+    pid = row.line.position_item_id
+    agreed = scene.decisions[participant.estimate_id].agreements.get(pid)
+    return template_text(
+        _comment_inputs(
+            scene, participant, row, result, unit_text, agreed_net=agreed[0] if agreed is not None else None
+        )
+    )
+
+
+def _file_ours(
+    scene: _Scene, participant: _Participant, row: KpLineRow, result: LineResult, unit_text: str
+) -> dict | None:
+    """Автоматическая цель строки за единицу строки КП: то, что файл поставил бы в «Нашу расценку
+    за ед.» без договорённости. У системы `line.ours` — ставка за м² объекта, а не цена за единицу
+    подрядчика, поэтому панель получает это поле отдельно (спека 4б §2.2). У КП с неизвестной базой
+    НДС вход комментария не собрать, как и шаблон: целей нет."""
+    if participant.base is None:
+        return None
+    inputs = _comment_inputs(scene, participant, row, result, unit_text, agreed_net=None)
+    return money_pair(target_net(inputs), participant.base, unit=True)
+
+
+def _decision_fields(
+    scene: _Scene, participant: _Participant, row: KpLineRow, result: LineResult, template: str | None
+) -> dict:
+    """Поля решений строки: `agreed`, `comment_kind`, `manual_rung` (спека 4б §2.11).
+    Текст комментария сюда не входит — его отдаёт только панель."""
+    decisions = scene.decisions[participant.estimate_id]
+    pid = row.line.position_item_id
+
+    agreed = None
+    record = decisions.agreements.get(pid)
+    if record is not None:
+        net, at, user_id, email = record
+        agreed = {**money_pair(net, participant.base, unit=True), "set_by": _author(user_id, email), "set_at": iso(at)}
+
+    comment_kind = None
+    if pid in decisions.comments:
+        comment_kind = "custom"
+    elif template is not None:
+        comment_kind = "template"
+
+    manual_rung = None
+    manual = result.manual
+    if manual is not None:
+        owner = pid if manual.target == "line" else row.line.key.family_id
+        at, user_id, email = decisions.rung_meta[(manual.target, owner)]
+        manual_rung = {
+            "level": manual.rung.level,
+            "scope": manual.rung.scope,
+            "active": manual.active,
+            "reset_reason": manual.reset_reason,
+            "target": manual.target,
+            "set_by": _author(user_id, email),
+            "set_at": iso(at),
+        }
+    return {"agreed": agreed, "comment_kind": comment_kind, "manual_rung": manual_rung}
+
+
+def _line_with_decisions(scene: _Scene, participant: _Participant, row: KpLineRow, result: LineResult) -> dict:
+    # Строке разбора нужен только вид комментария, а не его текст, поэтому
+    # единицу КП не читаем: вид от неё не зависит.
+    template = _template_text(scene, participant, row, result, "")
+    return {
+        **_line_view(row, result, participant.base),
+        **_decision_fields(scene, participant, row, result, template),
     }
 
 
@@ -736,7 +884,9 @@ def build_offer_view(
         "participants": [view],
         "articles": articles,
         "total": {**_TOTAL_HEAD, **flat_cell(None, is_total=True)},
-        "lines": [_line_view(row, evaluation.lines[row.line.position_item_id], rate) for row in rows],
+        "lines": [
+            _line_with_decisions(scene, participant, row, evaluation.lines[row.line.position_item_id]) for row in rows
+        ],
     }
     if scene.plan is not None:
         result["inflation"] = _inflation_view(scene.plan)
@@ -759,6 +909,22 @@ def _rung_choice(level: str | None, scope: str | None, position_item_id: int, au
             code=CODE_UNKNOWN_RUNG,
         )
     return RungChoice(position_item_id, rung)
+
+
+def line_for_rung_check(
+    db: Session, tender_id: int, round_id: int, offer_id: int, position_item_id: int
+) -> tuple[int, KpLineRow, LineResult]:
+    """Смета, строка и её расчёт для проверки ручной ступени: та же сцена, что у разбора,
+    но без ряда ИПЦ — число договоров ступени от приведения не зависит.
+
+    Raises:
+        DomainError 404: тендера, этапа, оффера или строки этого КП нет, у оффера нет сметы.
+    """
+    scene, participant, evaluation = _offer_context(
+        db, tender_id, round_id, offer_id, inflation_series_id=None, require_line=position_item_id
+    )
+    (row,) = (r for r in scene.kp_lines[participant.estimate_id] if r.line.position_item_id == position_item_id)
+    return participant.estimate_id, row, evaluation.lines[position_item_id]
 
 
 def _vat_dropped_view(scene: _Scene, row: KpLineRow, result: LineResult) -> list[dict]:
@@ -821,13 +987,14 @@ def build_line_view(
         evaluation = _evaluate(scene, participant, choice)
     result = evaluation.lines[position_item_id]
     rate = participant.base
+    unit_texts = load_unit_texts(db, participant.estimate_id)
 
     group_lines = []
     if result.group_index is not None:
         family_id = evaluation.groups[result.group_index].family_id
         members = {pid for g in evaluation.groups if g.family_id == family_id for pid in g.lines}
         group_lines = [
-            _line_view(r, evaluation.lines[r.line.position_item_id], rate)
+            _line_with_decisions(scene, participant, r, evaluation.lines[r.line.position_item_id])
             for r in rows
             if r.line.position_item_id in members
         ]
@@ -854,9 +1021,99 @@ def build_line_view(
 
     vat_dropped = _vat_dropped_view(scene, row, result)
 
+    template = _template_text(scene, participant, row, result, unit_texts[position_item_id])
+    own_comment = scene.decisions[participant.estimate_id].comments.get(position_item_id)
+    line = {
+        **_line_view(row, result, rate),
+        **_decision_fields(scene, participant, row, result, template),
+        "file_ours": _file_ours(scene, participant, row, result, unit_texts[position_item_id]),
+    }
     return {
-        "line": _line_view(row, result, rate),
+        "line": line,
         "group_lines": group_lines,
         "contracts": contracts,
         "vat_dropped": vat_dropped,
+        "comment": {
+            "kind": line["comment_kind"],
+            "text": own_comment[0] if own_comment is not None else template,
+            "template_text": template,
+        },
     }
+
+
+@dataclass(frozen=True)
+class FileInputs:
+    """Всё, из чего собираются строки и шапка файла подрядчику."""
+
+    context: FileContext
+    #: Главы и позиции сметы КП в порядке файла `(лот, id)`.
+    source_lines: list[KpSourceLine]
+    evaluation: OfferEvaluation
+    #: position_item_id -> свой комментарий (пустой текст — тоже решение).
+    comments: dict[int, str]
+    #: position_item_id -> (нетто за единицу, дата `ДД.ММ.ГГГГ`).
+    agreements: dict[int, tuple[Decimal, str]]
+
+
+def build_file_inputs(
+    db: Session,
+    tender_id: int,
+    round_id: int,
+    offer_id: int,
+    *,
+    inflation_series_id: int | None,
+    exported_on: date,
+) -> FileInputs:
+    """Сцена участника, превращённая во вход строк файла: та же сцена с сохранёнными решениями,
+    что у разбора и панели (спека 4б §2.8). Файл всегда в базе НДС КП, переключателя НДС нет.
+
+    Raises:
+        DomainError 404: тендера, этапа или оффера этого этапа нет, у оффера нет сметы КП.
+        DomainError 422: отказы приведения по ИПЦ, как у разбора; `unknown_vat_base` — у КП нет базы.
+    """
+    scene, participant, evaluation = _offer_context(
+        db, tender_id, round_id, offer_id, inflation_series_id=inflation_series_id
+    )
+    if participant.base is None:
+        raise DomainError(
+            422,
+            "У КП неизвестна база НДС: наши цены не в чем перевести в его базу, файла подрядчику нет.",
+            code=CODE_UNKNOWN_VAT_BASE,
+        )
+    estimate_id = participant.estimate_id
+    head = scene.head
+    decisions = scene.decisions[estimate_id]
+    unit_texts = load_unit_texts(db, estimate_id)
+    lot_of, chapters = load_file_skeleton(db, estimate_id)
+    lines = [kp_source_line(row, unit_texts[row.line.position_item_id]) for row in scene.kp_lines[estimate_id]]
+    ordered = sorted(chapters + lines, key=lambda source: (lot_of[source.position_item_id], source.position_item_id))
+
+    plan = scene.plan
+    periods = (
+        {}
+        if plan is None
+        else {contract.contract_id: plan.period_by_estimate[contract.estimate_id] for contract in scene.contracts}
+    )
+    context = FileContext(
+        kp_vat_base=participant.base,
+        history=scene.index,
+        tender_class_id=head.rate_class_id,
+        tender_area=head.area,
+        tender_contractor_id=participant.contractor_id,
+        inflation=_inflation_label(plan),
+        inflation_plan=plan,
+        contract_periods=periods,
+        tender_title=head.tender_title,
+        object_title=head.object_title,
+        stage_number=head.stage_no,
+        stage_date=head.held_on,
+        contractor_title=participant.contractor_title,
+        exported_on=exported_on,
+    )
+    return FileInputs(
+        context=context,
+        source_lines=ordered,
+        evaluation=evaluation,
+        comments={pid: record[0] for pid, record in decisions.comments.items()},
+        agreements={pid: (record[0], iso_date_to_ru(iso(record[1]))) for pid, record in decisions.agreements.items()},
+    )

@@ -69,8 +69,11 @@ LINE_KEYS = {
     "below",
     "group",
     "unit_mismatch",
+    "agreed",
+    "comment_kind",
+    "manual_rung",
 }
-PANEL_KEYS = {"line", "group_lines", "contracts", "vat_dropped"}
+PANEL_KEYS = {"line", "group_lines", "contracts", "vat_dropped", "comment"}
 TOLERANCE = D("1e-20")
 
 
@@ -113,6 +116,11 @@ def _dec(value: str | None) -> Decimal | None:
 
 def _pair(pair: dict | None) -> tuple[Decimal, Decimal | None] | None:
     return None if pair is None else (D(pair["net"]), _dec(pair["shown"]))
+
+
+def _breakdown_part(line: dict) -> dict:
+    """Строка панели без `file_ours`: это поле есть только у панели, строки разбора его не несут."""
+    return {key: value for key, value in line.items() if key != "file_ours"}
 
 
 def _line_of(body: dict, item) -> dict:
@@ -511,10 +519,10 @@ class TestLineForm:
 
         assert line["rung"] == {"level": "v", "scope": "cls", "auto": True, "threshold_met": True}
         assert line["rungs"] == [
-            {"level": "v", "scope": "cls", "contracts": 2},
-            {"level": "v", "scope": "all", "contracts": 2},
-            {"level": "f", "scope": "cls", "contracts": 3},
-            {"level": "f", "scope": "all", "contracts": 3},
+            {"level": "v", "scope": "cls", "contracts": 2, "selectable": True},
+            {"level": "v", "scope": "all", "contracts": 2, "selectable": True},
+            {"level": "f", "scope": "cls", "contracts": 3, "selectable": True},
+            {"level": "f", "scope": "all", "contracts": 3, "selectable": True},
         ]
 
     def test_a_second_main_parameter_adds_the_p_rungs(self, member_client, stage, world):
@@ -1103,8 +1111,10 @@ class TestLinePanelAuto:
         offer_line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
 
         assert set(panel) == PANEL_KEYS
-        assert panel["line"] == offer_line
-        assert json.dumps(panel["line"], sort_keys=False) == json.dumps(offer_line, sort_keys=False)
+        assert "file_ours" in panel["line"]
+        assert "file_ours" not in offer_line
+        assert _breakdown_part(panel["line"]) == offer_line
+        assert json.dumps(_breakdown_part(panel["line"]), sort_keys=False) == json.dumps(offer_line, sort_keys=False)
         assert panel["group_lines"] == []
 
     def test_panel_line_equals_the_breakdown_line_for_every_state(self, member_client, world, db_session, factories):
@@ -1124,7 +1134,7 @@ class TestLinePanelAuto:
 
         for item in items:
             panel = _panel(member_client, stage_.tender, rnd, part, item)
-            assert panel["line"] == _line_of(body, item), item.id
+            assert _breakdown_part(panel["line"]) == _line_of(body, item), item.id
 
     def test_contracts_of_the_auto_rung_carry_the_contract_card(self, member_client, stage):
         own = stage.participant(stage.round(), "Подрядчик Я")
@@ -1895,7 +1905,7 @@ class TestInflation:
         panel = _panel(member_client, stage.tender, rnd, part, item, inflation_series_id=series_id)
         body = _ok(member_client, stage.tender, rnd, part, inflation_series_id=series_id)
 
-        assert panel["line"] == _line_of(body, item)
+        assert _breakdown_part(panel["line"]) == _line_of(body, item)
 
 
 # ---------------------------------------------------------------------------
@@ -1962,3 +1972,63 @@ class TestSpecNamesTheContract:
 
     def test_participant_without_an_estimate_is_named_as_404(self):
         assert "участник без сметы — 404" in self._section()
+
+
+# ---------------------------------------------------------------------------
+#  Файловая цель панели и счётчик отправленных файлов участника
+# ---------------------------------------------------------------------------
+
+
+class TestFileTargetAndSentFiles:
+    def _system_stage(self, world, db_session, factories, *, quantity):
+        """Объект 100 м²; единственный договор с системой 10 000 на 1000 м² (ставка 10 ₽/м²);
+        КП без НДС с одной системной строкой нужного объёма: доля группы 1."""
+        stage_ = Stage(world, db_session, factories, area=D("100"))
+        _history(stage_, D("1"), total=D("10000"), kind="SYSTEM")
+        rnd = stage_.round()
+        part = stage_.participant(rnd, "Подрядчик А", vat=D("0"))
+        item = _put(stage_, part.proposal, "R", D("1"), qty=quantity, total=D("3000"), kind="SYSTEM")
+        return stage_, rnd, part, item
+
+    def test_system_file_target_is_per_kp_unit_not_the_rate_per_sqm(self, member_client, world, db_session, factories):
+        stage_, rnd, part, item = self._system_stage(world, db_session, factories, quantity=D("2"))
+
+        line = _panel(member_client, stage_.tender, rnd, part, item)["line"]
+
+        assert _pair(line["ours"]["value"]) == (D("10"), D("10"))
+        assert _pair(line["file_ours"]) == (D("500"), D("500"))
+
+    def test_work_file_target_equals_ours(self, member_client, stage):
+        rnd, part, item = _scene(stage)
+
+        line = _panel(member_client, stage.tender, rnd, part, item)["line"]
+
+        assert line["file_ours"] == line["ours"]["value"]
+        assert line["file_ours"] is not None
+
+    def test_system_with_a_volume_that_fails_the_weight_predicate_has_no_file_target(
+        self, member_client, world, db_session, factories
+    ):
+        stage_, rnd, part, item = self._system_stage(world, db_session, factories, quantity=D("0"))
+
+        line = _panel(member_client, stage_.tender, rnd, part, item)["line"]
+
+        assert line["ours"] is not None
+        assert line["file_ours"] is None
+
+    def test_participant_without_an_estimate_counts_its_sent_files(self, member_client, stage, db_session, tmp_storage):
+        from tests.integration.test_kp_file_lifecycle import _sent
+        from tests.integration.test_kp_file_scene import _user
+
+        rnd = stage.round()
+        with_files = stage.participant(rnd, "Подрядчик А", estimate=False)
+        without = stage.participant(rnd, "Подрядчик Б", estimate=False)
+        user = _user(stage.f)
+        _sent(db_session, tmp_storage, with_files.offer.id, user)
+        _sent(db_session, tmp_storage, with_files.offer.id, user)
+
+        body = _round_ok(member_client, stage.tender, rnd)
+
+        counts = {p["offer_id"]: p["sent_files_count"] for p in body["participants"]}
+        assert counts == {with_files.offer.id: 2, without.offer.id: 0}
+        assert {p["state"] for p in body["participants"]} == {"no_estimate"}

@@ -1085,7 +1085,7 @@ class TestUpgradeOnData:
 
     def test_upgrade_on_an_empty_database_reaches_the_new_checks(self):
         with _scratch_alembic("0022 upgrade on empty") as (command, cfg, scratch_url):
-            command.upgrade(cfg, "head")
+            command.upgrade(cfg, "0022")
             engine = sa.create_engine(scratch_url)
             try:
                 with engine.connect() as conn:
@@ -1461,7 +1461,7 @@ class TestDowngradeRefusedByEachCarrier:
         with _scratch_alembic(f"0022 downgrade refusal {carrier}") as (
             command, cfg, scratch_url,
         ):
-            command.upgrade(cfg, "head")
+            command.upgrade(cfg, "0022")
             engine = sa.create_engine(scratch_url)
             try:
                 with engine.begin() as conn:

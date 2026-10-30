@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import type { Decimal, MoneyPair, OurPriceParticipant } from "@/types/domain";
 
+import { VatBaseDialog } from "./VatBaseDialog";
 import { formatBelow, formatMoney, pick, type VatView } from "./money";
 import {
   CARD_LABEL,
@@ -14,6 +15,7 @@ import {
   DETAIL_LINK_LABEL,
   EMPTY_REASON_LABEL,
   emptyReasonOf,
+  kpFileSentLink,
   linesCount,
   medianCaption,
   PER_SQM_UNIT,
@@ -29,6 +31,8 @@ export interface ParticipantCardProps {
   cheapest: boolean;
   /** Адрес разбора; `null` — разбирать нечего (КП не загружено). */
   href: string | null;
+  tenderId: number;
+  roundId: number;
 }
 
 function vatCaption(participant: OurPriceParticipant, view: VatView): string {
@@ -58,7 +62,7 @@ function Row({ label, value, tone }: { label: string; value: string; tone?: "dea
  * наших договоров класса, суммы «выторговать / ниже всего, что платили / разные
  * единицы / не с чем сравнить» и вход в разбор. Числа выбирает `pick`.
  */
-export function ParticipantCard({ participant, view, cheapest, href }: ParticipantCardProps) {
+export function ParticipantCard({ participant, view, cheapest, href, tenderId, roundId }: ParticipantCardProps) {
   const reason = emptyReasonOf(participant);
   const perSqm = pick(participant.per_sqm, view);
   const totals = participant.totals;
@@ -83,7 +87,12 @@ export function ParticipantCard({ participant, view, cheapest, href }: Participa
       </CardHeader>
       <CardContent className="space-y-3 text-sm">
         {reason !== null ? (
-          <p className="text-fg-secondary">{EMPTY_REASON_LABEL[reason]}</p>
+          <>
+            <p className="text-fg-secondary">{EMPTY_REASON_LABEL[reason]}</p>
+            {reason === "unknown_vat_base" && participant.estimate_id !== null && (
+              <VatBaseDialog estimateId={participant.estimate_id} tenderId={tenderId} roundId={roundId} />
+            )}
+          </>
         ) : (
           <>
             <p>
@@ -118,6 +127,17 @@ export function ParticipantCard({ participant, view, cheapest, href }: Participa
         )}
         {participant.ours_with_contractor > 0 && (
           <Badge variant="outline">{contractsWithContractor(participant.ours_with_contractor)}</Badge>
+        )}
+        {participant.state === "no_estimate" && participant.sent_files_count > 0 && (
+          <div>
+            <Button
+              variant="outline"
+              size="sm"
+              render={<Link to={`/tenders/${tenderId}/rounds/${roundId}/our-price/offers/${participant.offer_id}/file`} />}
+            >
+              {kpFileSentLink(participant.sent_files_count)}
+            </Button>
+          </div>
         )}
         {href !== null && (
           <div>

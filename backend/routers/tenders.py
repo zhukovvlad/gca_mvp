@@ -10,7 +10,10 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import logging
+from collections.abc import Callable
 from decimal import Decimal
+from typing import Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from pydantic import BaseModel, Field, field_validator
@@ -20,6 +23,8 @@ from sqlalchemy.orm import Session
 from auth import get_current_user, require_admin
 from config import settings
 from crud import changes_export as crud_changes_export
+from crud import kp_decisions as crud_kp_decisions
+from crud import kp_sent_files as crud_kp_sent_files
 from crud import our_price as crud_our_price
 from crud import position_drilldown as crud_position_drilldown
 from crud import round_unallocated as crud_ru
@@ -29,16 +34,17 @@ from crud import tenders as crud_tenders
 from crud.common import DomainError
 from database import get_db, get_session_factory
 from models import ImportJob, ImportJobStatus, Tender, User, UserRole
-from responses import decimal_json, safe_filename_part, xlsx_response
+from responses import XLSX_MEDIA_TYPE, decimal_json, safe_filename_part, xlsx_response
 from routers.contracts import _MoneyMixin, _PercentMixin
 from routers.domain_errors import raise_domain_error
 from routers.estimates import _read_within_limit, _validate_xlsx, job_response
+from routers.import_jobs import ClosingStreamingResponse
 from services import changes_export as changes_export_sheet
 from services import round_category_override as rco
 from services.excel_changes_export import build_changes_export
 from services.import_pipeline import run_import_job
 from services.maintenance import purge_files_best_effort
-from storage import Storage, get_storage
+from storage import Storage, StorageFileNotFound, StorageKeyError, get_storage
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/tenders", tags=["tenders"])
@@ -176,6 +182,149 @@ def our_price_line(tender_id: int, round_id: int, offer_id: int, position_item_i
             inflation_series_id=inflation_series_id))
     except DomainError as e:
         raise_domain_error(e)
+
+
+class AgreedPut(BaseModel):
+    value: str
+    basis: Literal["net", "shown"]
+
+
+class CommentPut(BaseModel):
+    text: str
+
+
+class RungPut(BaseModel):
+    level: str
+    scope: str
+
+
+def _write_decision(db: Session, write: Callable[[], None]) -> Response:
+    """Транзакцию решения ведёт роутер: commit на успехе, rollback на любом отказе."""
+    try:
+        write()
+        db.commit()
+    except DomainError as e:
+        db.rollback()
+        raise_domain_error(e)
+    except Exception:
+        db.rollback()
+        raise
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+_LINE = "/{tender_id}/rounds/{round_id}/our-price/offers/{offer_id}/lines/{position_item_id}"
+
+
+@router.put(_LINE + "/agreed", status_code=status.HTTP_204_NO_CONTENT)
+def put_line_agreed(tender_id: int, round_id: int, offer_id: int, position_item_id: int, body: AgreedPut,
+                    db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
+    """«Договорились» по строке КП (спека 4б §2.3): цена строкой, `basis` — нетто или в базе НДС КП."""
+    return _write_decision(db, lambda: crud_kp_decisions.put_agreed(
+        db, tender_id, round_id, offer_id, position_item_id, value=crud_kp_decisions.parse_agreed(body.value),
+        basis=body.basis, user_id=current_user.id))
+
+
+@router.delete(_LINE + "/agreed", status_code=status.HTTP_204_NO_CONTENT)
+def delete_line_agreed(tender_id: int, round_id: int, offer_id: int, position_item_id: int,
+                       db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    return _write_decision(db, lambda: crud_kp_decisions.delete_agreed(
+        db, tender_id, round_id, offer_id, position_item_id))
+
+
+@router.put(_LINE + "/comment", status_code=status.HTTP_204_NO_CONTENT)
+def put_line_comment(tender_id: int, round_id: int, offer_id: int, position_item_id: int, body: CommentPut,
+                     db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
+    """Свой комментарий к строке КП (спека 4б §2.4); пустая строка законна."""
+    return _write_decision(db, lambda: crud_kp_decisions.put_comment(
+        db, tender_id, round_id, offer_id, position_item_id, text=body.text, user_id=current_user.id))
+
+
+@router.delete(_LINE + "/comment", status_code=status.HTTP_204_NO_CONTENT)
+def delete_line_comment(tender_id: int, round_id: int, offer_id: int, position_item_id: int,
+                        db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    return _write_decision(db, lambda: crud_kp_decisions.delete_comment(
+        db, tender_id, round_id, offer_id, position_item_id))
+
+
+@router.put(_LINE + "/rung", status_code=status.HTTP_204_NO_CONTENT)
+def put_line_rung(tender_id: int, round_id: int, offer_id: int, position_item_id: int, body: RungPut,
+                  db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
+    """Ручная ступень строки КП (спека 4б §2.5, §2.6): `level` и `scope` строками, отказы кодами."""
+    return _write_decision(db, lambda: crud_kp_decisions.put_rung(
+        db, tender_id, round_id, offer_id, position_item_id, level=body.level, scope=body.scope,
+        user_id=current_user.id))
+
+
+@router.delete(_LINE + "/rung", status_code=status.HTTP_204_NO_CONTENT)
+def delete_line_rung(tender_id: int, round_id: int, offer_id: int, position_item_id: int,
+                     db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    return _write_decision(db, lambda: crud_kp_decisions.delete_rung(
+        db, tender_id, round_id, offer_id, position_item_id))
+
+
+_OFFER = "/{tender_id}/rounds/{round_id}/our-price/offers/{offer_id}"
+
+
+@router.get(_OFFER + "/export-preview")
+def our_price_export_preview(tender_id: int, round_id: int, offer_id: int,
+                             inflation_series_id: int | None = Query(default=None),
+                             db: Session = Depends(get_db)):
+    """Предпросмотр файла подрядчику (спека 4б §2.9, §2.11): шапка, столбцы и строки в том виде,
+    в каком лягут в ячейки книги. Только чтение; `unknown_vat_base` и отказы ИПЦ — кодами."""
+    try:
+        header, rows = crud_kp_sent_files.build_file(
+            db, tender_id, round_id, offer_id, inflation_series_id=inflation_series_id)
+    except DomainError as e:
+        raise_domain_error(e)
+    return decimal_json(crud_kp_sent_files.preview_view(header, rows))
+
+
+@router.post(_OFFER + "/export")
+def our_price_export(tender_id: int, round_id: int, offer_id: int,
+                     inflation_series_id: int | None = Query(default=None),
+                     db: Session = Depends(get_db), storage: Storage = Depends(get_storage),
+                     current_user: User = Depends(get_current_user)):
+    """Выгрузка файла подрядчику (спека 4б §2.9): тело — книга xlsx, в `kp_sent_files` одна запись.
+    Право — любой авторизованный (`member`); транзакцию и чистку файла ведёт `export_file`."""
+    try:
+        content, filename = crud_kp_sent_files.export_file(
+            db, storage, tender_id, round_id, offer_id,
+            inflation_series_id=inflation_series_id, user_id=current_user.id)
+    except DomainError as e:
+        raise_domain_error(e)
+    return xlsx_response(content, filename)
+
+
+@router.get(_OFFER + "/sent-files")
+def our_price_sent_files(tender_id: int, round_id: int, offer_id: int, db: Session = Depends(get_db)):
+    """Отправленные файлы оффера, новые сверху (спека 4б §2.10, §2.11)."""
+    try:
+        return decimal_json(crud_kp_sent_files.list_sent_files(db, tender_id, round_id, offer_id))
+    except DomainError as e:
+        raise_domain_error(e)
+
+
+@router.get(_OFFER + "/sent-files/{file_id}/file")
+def our_price_sent_file(tender_id: int, round_id: int, offer_id: int, file_id: int,
+                        db: Session = Depends(get_db), storage: Storage = Depends(get_storage)):
+    """Выдача отправленного файла — только через авторизованный `GET` (`AGENTS.md` §8).
+    Чужой или неизвестный файл — 404; пропавший с диска — 410, запись остаётся."""
+    try:
+        record = crud_kp_sent_files.sent_file(db, tender_id, round_id, offer_id, file_id)
+    except DomainError as e:
+        raise_domain_error(e)
+    try:
+        handle = storage.get(record.file_key)
+    except StorageFileNotFound as exc:
+        raise HTTPException(status.HTTP_410_GONE, "Файл больше не хранится: он пропал из хранилища.") from exc
+    except StorageKeyError as exc:
+        log.error("Отправленный файл %d: некорректный file_key в БД", file_id)
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Некорректная ссылка на файл.") from exc
+    return ClosingStreamingResponse(
+        handle,
+        media_type=XLSX_MEDIA_TYPE,
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(record.filename)}"},
+    )
 
 
 @router.get("/{tender_id}/stage-summary/{work_category_id}")
@@ -504,9 +653,12 @@ def delete_round_override(tender_id: int, round_id: int, body: RoundOverrideDele
 
 @router.delete("/{tender_id}/participants/{package_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_participant(tender_id: int, package_id: int, confirmation_token: str | None = Query(default=None),
-                       db: Session = Depends(get_db), _: User = Depends(require_admin)):
+                       db: Session = Depends(get_db), storage: Storage = Depends(get_storage),
+                       _: User = Depends(require_admin)):
     try:
-        crud_tenders.delete_participant(db, tender_id, package_id, confirmation_token=confirmation_token)
+        crud_tenders.delete_participant(
+            db, tender_id, package_id, confirmation_token=confirmation_token, storage=storage,
+        )
     except DomainError as e:
         raise_domain_error(e)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -551,10 +703,18 @@ def upload_round(
         response.status_code = status.HTTP_200_OK
         return job_response(db, current)
     if crud_tenders.round_estimate_ids(db, rnd.id) and not replace:
+        message = "Раунд уже загружен; для замены всех его смет повторите запрос с replace=true."
+        lost = crud_kp_decisions.count_round_decisions(db, rnd.id)
+        context: dict[str, int] = {}
+        if lost.total:
+            context = {"agreements": lost.agreements, "comments": lost.comments, "rungs": lost.rungs}
+            message += (
+                " Заменой будут удалены решения по строкам КП: "
+                f"договорённостей — {lost.agreements}, комментариев — {lost.comments}, "
+                f"ручных ступеней — {lost.rungs}."
+            )
         raise_domain_error(DomainError(
-            status.HTTP_409_CONFLICT,
-            "Раунд уже загружен; для замены всех его смет повторите запрос с replace=true.",
-            code="replace_required",
+            status.HTTP_409_CONFLICT, message, code="replace_required", context=context,
         ))
 
     # До сохранения файла и до задания: отказ не оставляет следов. Правило

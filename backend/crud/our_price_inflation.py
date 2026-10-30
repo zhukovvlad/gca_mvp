@@ -176,4 +176,5 @@ def plan_history_inflation(
         has_forecast=any(values[year].is_forecast for year in required),
         used_years=used_years,
         factor_by_estimate=factor_by_estimate,
+        period_by_estimate=period_by_estimate,
     )

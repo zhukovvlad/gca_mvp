@@ -481,6 +481,12 @@ _DOMAIN_TABLES = (
     # Отметки победителя тендера (миграция 0020): ЯВНО, а не в расчёте на
     # каскад от tenders. Порядок в списке значения не имеет.
     "tender_awards",
+    # Решения по строкам КП и отправленные файлы (миграция 0023).
+    "kp_line_agreements",
+    "kp_line_comments",
+    "kp_line_rungs",
+    "kp_family_rungs",
+    "kp_sent_files",
     "position_items",
     "estimate_additional_works",
     "proposal_summary_lines",

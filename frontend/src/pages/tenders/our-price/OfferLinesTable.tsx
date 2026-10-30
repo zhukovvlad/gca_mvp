@@ -17,12 +17,15 @@ import {
   type VatView,
 } from "./money";
 import {
+  agreedCaption,
   ALL_CLASSES_LABEL,
   contractsShort,
   EMPTY_LINES_LABEL,
   LINE_COLUMN,
   lineStateLabel,
   RUNG_LEVEL_LABEL,
+  RUNG_MANUAL_INACTIVE_TAG,
+  RUNG_MANUAL_TAG,
   SECONDARY_MARK,
   variantCaption,
 } from "./ourPriceCopy";
@@ -88,6 +91,13 @@ function rungCaption(line: OurPriceLine, rateClass: string): string | null {
   ]
     .filter((part): part is string => part !== null)
     .join(" · ");
+}
+
+/** Метка ручной ступени у подписи: действующая — «ручная», сохранённая, но не действующая — «ручная не действует». */
+function manualMark(line: OurPriceLine): string | null {
+  const manual = line.manual_rung;
+  if (manual === null) return null;
+  return manual.active ? RUNG_MANUAL_TAG : RUNG_MANUAL_INACTIVE_TAG;
 }
 
 const features = tableFeatures({});
@@ -190,7 +200,9 @@ export function OfferLinesTable({ lines, vat, rateClass, canResolve = false, onO
           const line = row.original;
           const min = pick(line.range?.min ?? null, vat);
           const max = pick(line.range?.max ?? null, vat);
-          const caption = rungCaption(line, rateClass);
+          const caption = [rungCaption(line, rateClass), manualMark(line)]
+            .filter((part): part is string => part !== null)
+            .join(" · ");
           return (
             <div>
               <span data-testid={`fork-${line.position_item_id}`} className="font-mono tabular-nums">
@@ -199,7 +211,7 @@ export function OfferLinesTable({ lines, vat, rateClass, canResolve = false, onO
                   <span className="block text-[0.6875rem] text-fg-secondary">{comparedUnit(line)}</span>
                 )}
               </span>
-              {caption !== null && (
+              {caption !== "" && (
                 <span
                   data-testid={`rung-${line.position_item_id}`}
                   className="block whitespace-normal text-[0.6875rem] leading-snug text-fg-secondary"
@@ -217,6 +229,8 @@ export function OfferLinesTable({ lines, vat, rateClass, canResolve = false, onO
         cell: ({ row }) => {
           const line = row.original;
           const value = pick(line.ours?.value ?? null, vat);
+          // Нет показанной цены (база НДС неизвестна) — метки нет, а не прочерк: решение от вида не зависит.
+          const agreed = line.agreed === null ? null : pick(line.agreed, vat);
           return (
             <span data-testid={`ours-${line.position_item_id}`}>
               <span className="font-mono tabular-nums">{value === null ? DASH : formatUnitPrice(value)}</span>
@@ -227,6 +241,14 @@ export function OfferLinesTable({ lines, vat, rateClass, canResolve = false, onO
                 <Badge variant="outline" className="ml-1">
                   {ALL_CLASSES_LABEL}
                 </Badge>
+              )}
+              {agreed !== null && (
+                <span
+                  data-testid={`agreed-${line.position_item_id}`}
+                  className="block text-[0.6875rem] leading-snug text-fg-secondary"
+                >
+                  {agreedCaption(formatUnitPrice(agreed))}
+                </span>
               )}
             </span>
           );

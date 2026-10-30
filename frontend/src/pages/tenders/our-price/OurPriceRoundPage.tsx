@@ -169,6 +169,8 @@ export default function OurPriceRoundPage() {
                   compareDecimalStrings(participant.per_sqm.net, best) === 0
                 }
                 href={participant.estimate_id === null ? null : offerHref(participant.offer_id, null)}
+                tenderId={tenderId}
+                roundId={roundId}
               />
             ))}
           </div>

@@ -61,6 +61,8 @@ from services.excel import (
     C_TOTAL_BG,
     FMT_MONEY,
     FMT_QTY,
+    PRICE_LEVEL_NOMINAL_CAPTION,
+    TAX_BASIS_CAPTION,
     align,
     apply_column_widths,
     fill,
@@ -68,10 +70,10 @@ from services.excel import (
     safe_str,
     workbook_bytes,
     write_banner,
+    write_caption,
     write_cell,
     write_column_headers,
 )
-from services.stage_summary import TAX_GROSS, TAX_NET, TAX_NONE
 
 __all__ = [
     "LEFT_COLUMNS",
@@ -112,16 +114,6 @@ _DASH = "—"
 #: гейта 1 (`docs/superpowers/specs/2026-09-16-tender-changes-export/gen_mockup.py`,
 #: `td.partial { background: #fff4e0; }`).
 _INCOMPLETE_FILL = fill("FFF4E0")
-
-#: Подписи налогового состава и ценового уровня — обе печатаются на КАЖДОМ
-#: листе (AGENTS.md §10, спека §2.9). Слов «валовые, как в файлах» и «нетто»
-#: держаться дословно: они же употреблены в `gen_mockup.py`.
-_TAX_BASIS_CAPTION = {
-    TAX_GROSS: "Деньги: валовые, как в файлах (одна известная ставка НДС на всех этапах)",
-    TAX_NET: "Деньги: нетто (ставки НДС этапов различаются)",
-    TAX_NONE: "Деньги: сумм нет — ни на одном этапе не известна база НДС",
-}
-_PRICE_LEVEL_CAPTION = "Ценовой уровень: номинальный, без приведения"
 
 #: Формат процента — свой, не `FMT_PCT` из `services/excel.py`: тот формат
 #: рассчитан на уже готовые «пункты», а колонка `Δ %` несёт готовое число со
@@ -280,15 +272,6 @@ def _write_aggregate_row(
     write_cell(ws, row, col, _block_completeness_text(by_stage, stages), horizontal="left", wrap=True)
 
 
-def _write_caption(ws: Worksheet, row: int, text: str, *, wrap: bool = False) -> int:
-    """Строка подписи без рамки — тот же приём, что у `services/excel_comparison.py`
-    (`caption_cell`): подписи шапки не часть таблицы, границ у них нет."""
-    cell = ws.cell(row=row, column=1, value=safe_str(text))
-    cell.font = font(bold=True, size=9)
-    cell.alignment = align(h="left", wrap=wrap)
-    return row + 1
-
-
 def _write_sheet(ws: Worksheet, sheet: Sheet, tender_header: Mapping[str, str | None]) -> None:
     n_stages = len(sheet.stages)
     columns_spec = _columns_spec(n_stages)
@@ -308,10 +291,10 @@ def _write_sheet(ws: Worksheet, sheet: Sheet, tender_header: Mapping[str, str | 
     # Подписи налогового состава и ценового уровня — ОБЕ, на КАЖДОМ листе
     # (AGENTS.md §10, спека §2.9): без них читатель не знает, в чём измерены
     # складываемые числа.
-    row = _write_caption(ws, row, _TAX_BASIS_CAPTION.get(sheet.tax_basis.basis, ""))
-    row = _write_caption(ws, row, _PRICE_LEVEL_CAPTION)
+    row = write_caption(ws, row, TAX_BASIS_CAPTION.get(sheet.tax_basis.basis, ""))
+    row = write_caption(ws, row, PRICE_LEVEL_NOMINAL_CAPTION)
     # `moves_note` печатается ОДИН РАЗ, в шапке (спека §2.8) — не построчно.
-    row = _write_caption(ws, row, f"Что двигалось между этапами (по классификатору): {sheet.moves_note}", wrap=True)
+    row = write_caption(ws, row, f"Что двигалось между этапами (по классификатору): {sheet.moves_note}", wrap=True)
     row += 1  # пустая строка-разделитель перед таблицей
 
     # Баннер-группа на этап — merge над четырьмя колонками этапа (спека §2.3).

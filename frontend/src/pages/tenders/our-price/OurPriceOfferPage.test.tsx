@@ -16,7 +16,7 @@ import {
   sampleTenderCard,
 } from "@/test/fixtures";
 import { server } from "@/test/server";
-import { renderWithProviders } from "@/test/utils";
+import { renderWithProviders, waitForDialogFocus } from "@/test/utils";
 import { OUR_PRICE_POLL_MS } from "@/services/queries";
 import type { MoneyPair, OurPriceLine, OurPriceOffer, TenderCard } from "@/types/domain";
 
@@ -25,11 +25,16 @@ import {
   EMPTY_REASON_LABEL,
   errorLabel,
   FILTER_LABEL,
+  KP_FILE_BLOCKED_NOTE,
+  KP_FILE_EXPORT_LABEL,
   KP_NOT_ADJUSTED_NOTE,
   LINE_STATE_LABEL,
   NO_INFLATION_CAPTION,
   PER_SQM_UNIT,
   PRICES_CAPTION_NET,
+  VAT_BASE_ASSIGN_LABEL,
+  VAT_BASE_FIELD_LABEL,
+  VAT_BASE_SAVE_LABEL,
   WAITING_ADMIN_LABEL,
 } from "./ourPriceCopy";
 
@@ -1083,5 +1088,86 @@ describe("ссылка с подписи «ждёт решения админи�
 
     expect(screen.getByTestId("to-ours-7")).toHaveTextContent(WAITING_ADMIN_LABEL);
     expect(within(screen.getByTestId("to-ours-7")).queryByRole("link")).not.toBeInTheDocument();
+  });
+});
+
+describe("выгрузка файла подрядчику и база НДС", () => {
+  const unknownBase = (): OurPriceOffer => {
+    const base = ourPriceOfferFixture();
+    return {
+      ...base,
+      participants: [
+        { ...base.participants[0], state: "unknown_vat_base", vat_rate: null, per_sqm: null, per_sqm_reason: "unknown_vat_base", class_median_pct: null, totals: null },
+      ],
+    };
+  };
+  const exportLink = () => screen.getByRole("link", { name: KP_FILE_EXPORT_LABEL });
+
+  it("кнопка выгрузки ведёт на страницу предпросмотра без ряда ИПЦ", async () => {
+    renderPage();
+    await loaded();
+    expect(exportLink()).toHaveAttribute("href", `${ROUTE}/file`);
+  });
+
+  it("с рядом ИПЦ в адресе ссылка несёт тот же ряд", async () => {
+    renderPage("?inflation=5");
+    await loaded();
+    expect(exportLink()).toHaveAttribute("href", `${ROUTE}/file?inflation=5`);
+  });
+
+  it("у member кнопка выгрузки есть, а «Назначить базу НДС» нет", async () => {
+    renderPage("", { role: "member" });
+    await loaded();
+    expect(exportLink()).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: VAT_BASE_ASSIGN_LABEL })).not.toBeInTheDocument();
+  });
+
+  it("при известной базе «Назначить базу НДС» нет даже у admin", async () => {
+    renderPage();
+    await loaded();
+    expect(screen.queryByRole("button", { name: VAT_BASE_ASSIGN_LABEL })).not.toBeInTheDocument();
+  });
+
+  it("база неизвестна: выгрузка неактивна с подписью, у admin рядом «Назначить базу НДС»", async () => {
+    serve(unknownBase());
+    renderPage();
+    await loaded();
+    expect(screen.queryByRole("link", { name: KP_FILE_EXPORT_LABEL })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: KP_FILE_EXPORT_LABEL })).toBeDisabled();
+    expect(screen.getByTestId("round-header")).toHaveTextContent(KP_FILE_BLOCKED_NOTE);
+    expect(screen.getByRole("button", { name: VAT_BASE_ASSIGN_LABEL })).toBeInTheDocument();
+  });
+
+  it("база неизвестна, member: выгрузка неактивна, назначить нельзя", async () => {
+    serve(unknownBase());
+    renderPage("", { role: "member" });
+    await loaded();
+    expect(screen.getByRole("button", { name: KP_FILE_EXPORT_LABEL })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: VAT_BASE_ASSIGN_LABEL })).not.toBeInTheDocument();
+  });
+
+  it("после назначения базы разбор перезапрошен, КП сравнимо, выгрузка активна", async () => {
+    let assigned = false;
+    server.use(
+      http.get(OFFER_PATH, () => HttpResponse.json(assigned ? ourPriceOfferFixture() : unknownBase())),
+      http.patch("/api/v1/estimates/:id/vat", async () => {
+        assigned = true;
+        return HttpResponse.json({
+          estimate_id: 9001,
+          vat_rate_base_override: "22",
+          vat_rate_target: null,
+          vat_rate_updated_at: "2026-03-15T10:00:00+00:00",
+        });
+      })
+    );
+    const user = userEvent.setup();
+    renderPage();
+    await loaded();
+    await user.click(screen.getByRole("button", { name: VAT_BASE_ASSIGN_LABEL }));
+    await waitForDialogFocus();
+    await user.type(screen.getByLabelText(VAT_BASE_FIELD_LABEL), "22");
+    await user.click(screen.getByRole("button", { name: VAT_BASE_SAVE_LABEL }));
+    await waitFor(() => expect(exportLink()).toHaveAttribute("href", `${ROUTE}/file`));
+    expect(screen.queryByRole("button", { name: VAT_BASE_ASSIGN_LABEL })).not.toBeInTheDocument();
   });
 });

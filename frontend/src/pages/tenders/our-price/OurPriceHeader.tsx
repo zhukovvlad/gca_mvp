@@ -22,8 +22,8 @@ import {
 
 export interface OurPriceHeaderProps {
   title: ReactNode;
-  /** «цены без НДС» / «цены с НДС 22 %» — решает страница по ответу. */
-  vatCaption: string;
+  /** «цены без НДС» / «цены с НДС 22 %» — решает страница по ответу; `null` — подписи нет. */
+  vatCaption: string | null;
   /** Подпись приведения: `sentence` ответа либо «цены без приведения»; `null` — без ИПЦ. */
   inflationCaption: string | null;
   vat: VatView;
@@ -32,6 +32,10 @@ export interface OurPriceHeaderProps {
   onSeries: (id: number | null) => void;
   /** Нет ни одного участника с известной базой НДС — выбирать нечего. */
   vatToggleEnabled: boolean;
+  /** У страницы файла подрядчику вид НДС не переключается: файл всегда в базе НДС КП. */
+  hideVatSwitch?: boolean;
+  /** Кнопки действий разбора (выгрузка файла подрядчику, база НДС) - перед переключателями. */
+  actions?: ReactNode;
 }
 
 /**
@@ -49,6 +53,8 @@ export function OurPriceHeader({
   seriesId,
   onSeries,
   vatToggleEnabled,
+  hideVatSwitch = false,
+  actions,
 }: OurPriceHeaderProps) {
   const seriesQ = useInflationSeries(true);
   const series = seriesQ.data ?? [];
@@ -64,15 +70,18 @@ export function OurPriceHeader({
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div className="min-w-0">{title}</div>
         <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
-          <div className="flex items-center gap-2 text-sm text-fg-secondary">
-            <Switch
-              aria-label={VAT_SWITCH_LABEL}
-              checked={vat === "shown"}
-              disabled={!vatToggleEnabled}
-              onCheckedChange={(checked) => onVat(checked ? "shown" : "net")}
-            />
-            <span aria-hidden>{VAT_SWITCH_LABEL}</span>
-          </div>
+          {actions}
+          {!hideVatSwitch && (
+            <div className="flex items-center gap-2 text-sm text-fg-secondary">
+              <Switch
+                aria-label={VAT_SWITCH_LABEL}
+                checked={vat === "shown"}
+                disabled={!vatToggleEnabled}
+                onCheckedChange={(checked) => onVat(checked ? "shown" : "net")}
+              />
+              <span aria-hidden>{VAT_SWITCH_LABEL}</span>
+            </div>
+          )}
           <div className="flex items-center gap-2 text-sm text-fg-secondary">
             <Switch
               aria-label={INFLATION_SWITCH_LABEL}
@@ -106,10 +115,17 @@ export function OurPriceHeader({
           )}
         </div>
       </div>
-      <p className="text-sm font-medium text-fg">
-        {vatCaption}
-        {inflationCaption !== null && <span className="text-fg-secondary"> · {inflationCaption}</span>}
-      </p>
+      {(vatCaption !== null || inflationCaption !== null) && (
+        <p className="text-sm font-medium text-fg">
+          {vatCaption}
+          {inflationCaption !== null && (
+            <span className="text-fg-secondary">
+              {vatCaption !== null && " · "}
+              {inflationCaption}
+            </span>
+          )}
+        </p>
+      )}
     </div>
   );
 }
