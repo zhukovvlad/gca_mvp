@@ -6,6 +6,11 @@
 Файл с ценами в гит не кладётся. Приближения: зона — по словам в цепочке
 разделов, отпускаемый параметр — только «марка по водонепроницаемости», без ИПЦ.
 NOZONE=1 — тот же расчёт без требования зоны.
+
+Порядок как в §3.5–3.6 дизайна: строки договоров дешевле 1 ₽ аналогами не
+считаются и отсеиваются ДО выбора первой непустой ступени; выбросы ищутся
+одним проходом по исходному набору ступени (каждый аналог против медианы
+остальных, от двух аналогов); пустой остаток — строка в «разных единицах».
 """
 import os
 NOZONE = os.environ.get("NOZONE") == "1"
@@ -47,12 +52,21 @@ from le join estimates e on e.id=le.id join contracts ct on ct.id=le.contract_id
 join position_items pi on pi.proposal_id=pr.id join context_members m on m.position_item_id=pi.id join catalog_contexts cc on cc.id=m.context_id
 where not pi.is_chapter and cc.work_variant_id is not null and cc.archived_at is null and cc.semantic_kind <> 'SYSTEM'
   and pi.unit_cost_total > 0 and pi.unit_cost_total < 'Infinity' and coalesce(pi.suggested_quantity, pi.quantity) > 0""").fetchall()
-H = []
+H_all = []
 for pid, ct, obj, cls, dt, v, price, vat in hist:
     net = float(price) / (1 + float(vat or 0) / 100)
-    H.append(dict(pid=pid, ct=ct, obj=obj, cls=cls, dt=dt, v=v, k=key_wo_rel(v), z=zone(pid), p=net))
-byv = collections.defaultdict(list); byk = collections.defaultdict(list)
-for h in H: byv[(key_full(h["v"]), h["z"])].append(h); byk[(h["k"], h["z"])].append(h)
+    H_all.append(dict(pid=pid, ct=ct, obj=obj, cls=cls, dt=dt, v=v, k=key_wo_rel(v), z=zone(pid), p=net))
+H = [h for h in H_all if h["p"] >= 1]  # символические цены — не аналоги (§3.6)
+def pools(rows):
+    bv = collections.defaultdict(list); bk = collections.defaultdict(list)
+    for h in rows: bv[(key_full(h["v"]), h["z"])].append(h); bk[(h["k"], h["z"])].append(h)
+    return bv, bk
+byv, byk = pools(H)
+byv_all, byk_all = pools(H_all)  # только чтобы сосчитать, у скольких строк фильтр 1 ₽ меняет ступень
+def outliers(ps):
+    """Один проход по исходному набору: индексы аналогов вне [0,2; 5] к медиане остальных."""
+    if len(ps) < 2: return set()
+    return {i for i, p in enumerate(ps) if not (0.2 <= p / S.median(ps[:i] + ps[i+1:]) <= 5)}
 # --- строки КП последних этапов (из прежнего сбора 4а)
 L = [json.loads(x) for x in open("lines.jsonl", encoding="utf-8")]
 last = {}
@@ -70,28 +84,34 @@ for l in L:
     obj, cls = tinfo[l["offer"]]; z = zone(l["position_item_id"]); zst[z] += 1
     def pick(pool, same_cls):
         return [h for h in pool if h["obj"] != obj and (h["cls"] == cls) == same_cls] if same_cls else [h for h in pool if h["obj"] != obj]
-    r = None
-    for name, pool, sc in (("1 вариант, своя зона", byv[(key_full(v), z)], True), ("2 без W, своя зона", byk[(key_wo_rel(v), z)], True),
-                           ("3а вариант, другой класс", byv[(key_full(v), z)], False), ("3б без W, другой класс", byk[(key_wo_rel(v), z)], False)):
-        got = pick(pool, sc)
-        if got: r = (name, got); break
+    def first_rung(bv, bk):
+        for name, pool, sc in (("1 вариант, своя зона", bv[(key_full(v), z)], True), ("2 без W, своя зона", bk[(key_wo_rel(v), z)], True),
+                               ("3 вариант, другой класс", bv[(key_full(v), z)], False), ("4 без W, другой класс", bk[(key_wo_rel(v), z)], False)):
+            got = pick(pool, sc)
+            if got: return (name, got)
+        return None
+    r = first_rung(byv, byk)
+    r_all = first_rung(byv_all, byk_all)
     name = r[0] if r else "нет аналога"
+    if (r_all[0] if r_all else "нет аналога") != name: sub1 += 1
     stat[name] += 1; money[name] += kpnet
+    if l["state"] == "unit_mismatch": o4["(для сравнения) в разных единицах по 4а"] += 1
     old[(l["rung"]["level"] if l.get("rung") else "-", name)] += 1
     if "жб" in (l["family"] or "") and "Устройство жб конструкций" == l["family"]: jb[name] += 1
     if r:
-        ok1 = [h["p"] for h in r[1] if h["p"] >= 1]
-        if len(ok1) >= 3:
-            outl = [p for i, p in enumerate(ok1) if not (0.2 <= p / S.median(ok1[:i] + ok1[i+1:]) <= 5)]
-            o4["строк с >=3 аналогами"] += 1
-            if outl: o4["есть аналог вне [0,2; 5] к медиане остальных"] += 1
-            if any(p < S.median(ok1) * 0.2 for p in outl): o4["из них выброс вниз"] += 1
-            rest = [p for p in ok1 if p not in outl]
-            kp_unit = float(D(l["kp"]["unit_price"]["net"]))
-            if rest and not (0.2 <= kp_unit / S.median(rest) <= 5): o4["КП вне [0,2; 5] к медиане оставшихся"] += 1
-        ps = sorted(h["p"] for h in r[1]); 
-        if ps[0] < 1: sub1 += 1
-        ok = [p for p in ps if p >= 1]
+        ok1 = [h["p"] for h in r[1]]
+        out = outliers(ok1)
+        rest = [p for i, p in enumerate(ok1) if i not in out]
+        kp_unit = float(D(l["kp"]["unit_price"]["net"]))
+        o4[f"строк с аналогами: {'1' if len(ok1) == 1 else '2' if len(ok1) == 2 else '>=3'}"] += 1
+        if out: o4["есть выброс (правило 4а: строка ушла бы в разные единицы)"] += 1
+        if len(ok1) >= 3 and any(p < S.median(ok1) * 0.2 for i, p in enumerate(ok1) if i in out): o4[">=3 аналогов, есть выброс вниз"] += 1
+        if not rest:
+            o4[f"разные единицы: выбросы все ({len(ok1)} аналога: {'2' if len(ok1) == 2 else '>=3'})"] += 1
+        elif not (0.2 <= kp_unit / S.median(rest) <= 5):
+            o4[f"разные единицы: КП вне [0,2; 5] к медиане оставшихся ({'1' if len(ok1) == 1 else '2' if len(ok1) == 2 else '>=3'} аналога)"] += 1
+        ps = sorted(ok1)
+        ok = ps
         if len(ok) >= 3:
             med = S.median(ok); ratios.append(ok[0] / med)
             if ok[0] < 0.1 * med and len(examples) < 12: examples.append((l["family"], l["variant_label"][:70], round(ok[0], 2), round(med, 2), len(ok)))
@@ -101,7 +121,7 @@ for k in sorted(stat): print(f"  {k:28s} {stat[k]:6d} {stat[k]/tot:6.1%}  КП {
 print("зоны строк КП:", dict(zst))
 print("жб:", dict(jb))
 print("4а ступень -> новая:"); [print("  ", a, b, n) for (a, b), n in sorted(old.items())]
-print("аналоги с ценой < 1 ₽ среди выбранных:", sub1)
+print("строк, у которых фильтр < 1 ₽ меняет ступень:", sub1, "| строк договоров < 1 ₽:", len(H_all) - len(H))
 ratios.sort(); n = len(ratios)
 print("min/медиана, строк с >=3 аналогами:", n)
 for t in (0.05, 0.1, 0.2, 0.3, 0.5): print(f"  min < {t} медианы: {sum(r < t for r in ratios)} ({sum(r < t for r in ratios)/n:.1%})")
@@ -114,4 +134,4 @@ for l in L:
     bt[(l["tender"], l["family"] == "Устройство жб конструкций")] += 1
 print("строк по тендерам (тендер, жб?):", sorted(bt.items()))
 
-print("выбросы по правилу 4а:", dict(o4))
+print("выбросы и разные единицы:"); [print("  ", k, n) for k, n in sorted(o4.items())]
