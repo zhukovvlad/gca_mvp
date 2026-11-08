@@ -2858,6 +2858,10 @@ export interface QueueStatus {
   contexts_with_variant: number;
   contexts_pending: number;
   families_without_schema: number;
+  /** Цепочки разделов с предложением зоны, но без зоны (очередь «Зоны», «спорные»). */
+  zones_disputed: number;
+  /** Действующие предложения «можно отпустить» (очередь «Можно отпустить»). */
+  releasable_open: number;
 }
 
 export interface ConfirmSuggestionsResult {
@@ -2943,6 +2947,17 @@ export interface FamilySchemaParameter {
   off_list: SchemaOffListEntry[];
   /** Живые контексты, у которых значение параметра помечено «уточняется». */
   refreshing: number;
+  /** «Можно отпустить» (лестница аналогов §2.6): `null` — не размечен, `false` — обязателен. */
+  releasable: boolean | null;
+  /** Действующее предложение модели по параметру; `null` — предложения нет. */
+  releasable_proposal: ReleasableProposal | null;
+}
+
+/** Предложение модели «можно отпустить» (уверенность — строка Decimal). */
+export interface ReleasableProposal {
+  releasable: boolean;
+  confidence: string;
+  reason: string;
 }
 
 /**
@@ -2984,6 +2999,11 @@ export interface SchemaEditDraft {
   closed: boolean;
   values: string[];
   range: SchemaRange | null;
+  /**
+   * «Можно отпустить»: ключа нет — пользователь признака не трогал и сервер сохраняет текущий;
+   * `null` — снять признак; `true`/`false` — решение. Ключ ставится только касанием флажка.
+   */
+  releasable?: boolean | null;
 }
 
 /** Число контекстов, у которых модель запросит параметр. */
@@ -3636,4 +3656,56 @@ export interface KpSentFileItem {
   vat_rate: Decimal;
   level_label: string;
   size_bytes: number;
+}
+
+
+// ========== Лестница аналогов: очереди «Зоны» и «Можно отпустить» (спека §2.17) ==========
+
+/** Зона цепочки разделов (`backend/services/section_zone.py::ZONES`). */
+export type SectionZone = "underground" | "aboveground" | "territory" | "whole";
+
+/** Фильтр очереди «Зоны» (`GET /section-chains?filter=`). */
+export type SectionChainFilter = "disputed" | "undetermined" | "rule" | "model" | "human" | "all";
+
+/** Строка очереди «Зоны» (`crud/section_chains.py::list_chains`). */
+export interface SectionChainRow {
+  id: number;
+  titles: string[];
+  zone: SectionZone | null;
+  zone_source: "rule" | "model" | "human" | null;
+  proposed_zone: SectionZone | null;
+  /** Строка Decimal; `null` — предложения нет. */
+  proposed_confidence: string | null;
+  proposed_reason: string | null;
+  job_status: string | null;
+  rows_kp: number;
+  rows_contracts: number;
+  sample_titles: string[];
+}
+
+export interface SectionChainList {
+  items: SectionChainRow[];
+  total: number;
+}
+
+export interface SectionChainsParams {
+  filter: SectionChainFilter;
+  q: string;
+  page: number;
+}
+
+/** Строка очереди «Можно отпустить»: плоский список, группировку по семьям делает экран. */
+export interface ReleasableProposalRow {
+  family: { id: number; title: string };
+  parameter: { id: number; name: string };
+  values: string[];
+  releasable: boolean;
+  confidence: string;
+  reason: string;
+  request_hash: string;
+}
+
+export interface ReleasableProposalList {
+  items: ReleasableProposalRow[];
+  total: number;
 }

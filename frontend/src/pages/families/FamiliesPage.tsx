@@ -12,7 +12,14 @@ import { SourceChip } from "./SourceChip";
 import { SuggestionsTab, type SuggestionTarget } from "./SuggestionsTab";
 
 function suggestionTargetOf(entry: Entry | null): SuggestionTarget | null {
-  return entry?.tab === "suggestions" ? { contextId: entry.contextId, queue: entry.queue, unit: entry.unit } : null;
+  return entry?.tab === "suggestions" && entry.queue !== "zones"
+    ? { contextId: entry.contextId, queue: entry.queue, unit: entry.unit }
+    : null;
+}
+
+/** Цепочка разделов из ссылки `?chain=`: подсвечивается в очереди «Зоны». */
+function chainTargetOf(entry: Entry | null): number | null {
+  return entry?.tab === "suggestions" && entry.queue === "zones" ? entry.chainId : null;
 }
 
 /**
@@ -35,6 +42,7 @@ export default function FamiliesPage() {
   const [tab, setTab] = useState(() => parseEntry(searchParams)?.tab ?? "families");
   // Предложение, к которому привела ссылка: вкладка «Предложения» подсвечивает его.
   const [suggestionTarget, setSuggestionTarget] = useState(() => suggestionTargetOf(parseEntry(searchParams)));
+  const [chainTarget, setChainTarget] = useState(() => chainTargetOf(parseEntry(searchParams)));
 
   // Ссылка на эту же страницу, пока она открыта, ведёт на вкладку входа. Правка состояния во
   // время рендера — приём `FamiliesTab`; запись адреса самой вкладкой «Контексты» сюда же
@@ -47,6 +55,7 @@ export default function FamiliesPage() {
     if (entry) {
       setTab(entry.tab);
       setSuggestionTarget(suggestionTargetOf(entry));
+      setChainTarget(chainTargetOf(entry));
     }
   }
 
@@ -54,6 +63,7 @@ export default function FamiliesPage() {
   function goTab(next: string) {
     setTab(next);
     setSuggestionTarget(null);
+    setChainTarget(null);
     if (ENTRY_PARAMS.some((name) => searchParams.has(name))) {
       setSearchParams(
         (prev) => {
@@ -140,7 +150,7 @@ export default function FamiliesPage() {
         </TabsContent>
 
         <TabsContent value="suggestions" className="mt-6">
-          <SuggestionsTab onOpenFamily={openFamily} target={suggestionTarget} />
+          <SuggestionsTab key={chainTarget ?? "none"} onOpenFamily={openFamily} target={suggestionTarget} chainId={chainTarget} />
         </TabsContent>
       </Tabs>
     </div>

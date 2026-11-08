@@ -70,6 +70,8 @@ import type {
   SchemaEditDraft,
   PrivacyMatch,
   StaleGroupTransferInput,
+  SectionChainsParams,
+  SectionZone,
   SuggestionsParams,
   ObjectInput,
   RateClassInput,
@@ -3033,5 +3035,89 @@ export function useSetOfferVatBase(tenderId: number, roundId: number) {
       qc.invalidateQueries({ queryKey: qk.tenders.kpFilePreviewsOfRound(tenderId, roundId) });
     },
     onError: toastApiError,
+  });
+}
+
+
+// ========== Лестница аналогов: очереди «Зоны» и «Можно отпустить» (спека §2.17, §2.20) ==========
+
+/** Очередь «Зоны»: фильтр, поиск и страница; при смене параметров прежняя страница остаётся на месте. */
+export function useSectionChains(params: SectionChainsParams, { poll = true }: { poll?: boolean } = {}) {
+  return useQuery({
+    queryKey: qk.semanticQueue.zones(params),
+    queryFn: () => semanticApi.listSectionChains(params),
+    placeholderData: keepPreviousData,
+    refetchInterval: poll ? QUEUE_STATUS_POLL_MS : false,
+    refetchIntervalInBackground: false,
+  });
+}
+
+/** Очередь «Можно отпустить»: плоский список страницы, по семьям его раскладывает экран. */
+export function useReleasableProposals(page: number, { poll = true }: { poll?: boolean } = {}) {
+  return useQuery({
+    queryKey: qk.semanticQueue.releasable(page),
+    queryFn: () => semanticApi.listReleasableProposals(page),
+    placeholderData: keepPreviousData,
+    refetchInterval: poll ? QUEUE_STATUS_POLL_MS : false,
+    refetchIntervalInBackground: false,
+  });
+}
+
+/**
+ * Зона и признак меняют аналоги на всех экранах «Против нашей цены» (дизайн §7 п. 7: «без
+ * перезагрузки»), поэтому вместе с очередями, сводкой и схемами семей перечитывается весь
+ * префикс `["tenders", "our-price"]`.
+ */
+function invalidateAfterLadderDecision(qc: ReturnType<typeof useQueryClient>) {
+  return Promise.all([
+    qc.invalidateQueries({ queryKey: qk.semanticQueue.zonesAll }),
+    qc.invalidateQueries({ queryKey: qk.semanticQueue.releasableAll }),
+    qc.invalidateQueries({ queryKey: qk.semanticQueue.status }),
+    qc.invalidateQueries({ queryKey: qk.workFamilies.schemasAll }),
+    qc.invalidateQueries({ queryKey: ["tenders", "our-price"] }),
+  ]);
+}
+
+/** Решение человека по зоне цепочки разделов (`PUT /section-chains/{id}/zone`, 204). */
+export function useDecideChainZone() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ chainId, zone }: { chainId: number; zone: SectionZone }) =>
+      semanticApi.decideChainZone(chainId, zone),
+    onSuccess: () => invalidateAfterLadderDecision(qc),
+    onError: toastApiError,
+  });
+}
+
+/** Текст тоста `409 proposal_stale` (спека §2.20). */
+export const PROPOSAL_STALE_TOAST = "Семью или её схему правили после вопроса — очередь обновлена.";
+
+/**
+ * Решение по признаку «можно отпустить» с `request_hash` предложения. `409 proposal_stale` —
+ * тост и перезапрос очереди: сервер уже убрал недействующее предложение.
+ */
+export function useDecideReleasable() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      familyId,
+      parameterId,
+      releasable,
+      requestHash,
+    }: {
+      familyId: number;
+      parameterId: number;
+      releasable: boolean;
+      requestHash: string;
+    }) => semanticApi.decideReleasable(familyId, parameterId, { releasable, request_hash: requestHash }),
+    onSuccess: () => invalidateAfterLadderDecision(qc),
+    onError: (error) => {
+      if (apiErrorCode(error) === "proposal_stale") {
+        toast.error(PROPOSAL_STALE_TOAST);
+        void invalidateAfterLadderDecision(qc);
+        return;
+      }
+      toastApiError(error);
+    },
   });
 }

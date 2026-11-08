@@ -9,6 +9,7 @@ import type {
   RateStandardParams,
   ReviewQueueParams,
   JobsStatus,
+  SectionChainsParams,
   SuggestionsParams,
   WorkFamilyStatus,
 } from "@/types/domain";
@@ -240,6 +241,8 @@ export const qk = {
       ["work-families", "list", status ?? "any", unitId ?? null, categoryId ?? null] as const,
     /** Схема и варианты семьи (спека 2026-10-02-catalog-variants-design.md §2.12). */
     schema: (familyId: number) => ["work-families", "schema", familyId] as const,
+    /** Префикс схем всех семей: решение зоны меняет аналоги всюду, схема семьи показывает признак. */
+    schemasAll: ["work-families", "schema"] as const,
     variants: (familyId: number) => ["work-families", "variants", familyId] as const,
   },
 
@@ -287,5 +290,11 @@ export const qk = {
     suggestions: (params: SuggestionsParams) => ["semantic-queue", "suggestions", params] as const,
     status: ["semantic-queue", "status"] as const,
     jobs: (status: JobsStatus) => ["semantic-queue", "jobs", status] as const,
+    /** Очередь «Зоны» (лестница аналогов §2.17): префикс и ключ с фильтром, поиском и страницей. */
+    zonesAll: ["semantic-queue", "zones"] as const,
+    zones: (params: SectionChainsParams) => ["semantic-queue", "zones", params] as const,
+    /** Очередь «Можно отпустить»: префикс и ключ страницы. */
+    releasableAll: ["semantic-queue", "releasable"] as const,
+    releasable: (page: number) => ["semantic-queue", "releasable", page] as const,
   },
 };

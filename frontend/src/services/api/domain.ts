@@ -47,6 +47,10 @@ import type {
   JobsStatus,
   PrivacyMatch,
   QueueStatus,
+  ReleasableProposalList,
+  SectionChainList,
+  SectionChainsParams,
+  SectionZone,
   ReaskPreview,
   ReconcileResult,
   SuggestionQueue,
@@ -738,6 +742,30 @@ export const semanticApi = {
 
   queueStatus: (): Promise<QueueStatus> =>
     api.get<QueueStatus>("/v1/semantic/status").then((r) => r.data),
+
+  listSectionChains: (params: SectionChainsParams): Promise<SectionChainList> =>
+    api
+      .get<SectionChainList>("/v1/semantic/section-chains", {
+        params: { filter: params.filter, q: params.q.trim() === "" ? undefined : params.q.trim(), page: params.page },
+      })
+      .then((r) => r.data),
+
+  decideChainZone: (chainId: number, zone: SectionZone): Promise<void> =>
+    api.put(`/v1/semantic/section-chains/${chainId}/zone`, { zone }).then(() => undefined),
+
+  listReleasableProposals: (page: number): Promise<ReleasableProposalList> =>
+    api
+      .get<ReleasableProposalList>("/v1/semantic/releasable-proposals", { params: { page } })
+      .then((r) => r.data),
+
+  decideReleasable: (
+    familyId: number,
+    parameterId: number,
+    input: { releasable: boolean; request_hash: string }
+  ): Promise<void> =>
+    api
+      .put(`/v1/semantic/families/${familyId}/parameters/${parameterId}/releasable`, input)
+      .then(() => undefined),
 
   confirmSuggestions: (suggestionIds: number[]): Promise<ConfirmSuggestionsResult> =>
     api

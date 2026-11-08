@@ -11,6 +11,8 @@ import type {
   WorkFamily,
 } from "@/types/domain";
 
+import { formatConfidence } from "@/lib/format";
+
 import { MergeValuesDialog } from "./MergeValuesDialog";
 import { ListSkeleton } from "./pending";
 import { PreviewDialog } from "./PreviewDialog";
@@ -19,6 +21,7 @@ import {
   PARAMETER_KIND_LABEL,
   PARAMETER_ORIGIN_LABEL,
   PARAMETER_ROLE_GROUP_LABEL,
+  releasableLabel,
   SCHEMA_VALUE_ORIGIN_LABEL,
   valuesRecountLabel,
 } from "./labels";
@@ -38,6 +41,18 @@ function ParameterValues({ parameter }: { parameter: FamilySchemaParameter }) {
         {PARAMETER_ORIGIN_LABEL[parameter.origin]}
         {parameter.value_kind === "exact" && parameter.closed && " · только из списка"}
       </p>
+      {parameter.role === "main" && (
+        <div className="flex flex-wrap items-center gap-1.5 text-xs text-fg-tertiary">
+          <Badge variant="outline" className={parameter.releasable === null ? MARK_TINT : undefined}>
+            {releasableLabel(parameter.releasable)}
+          </Badge>
+          {parameter.releasable === null && parameter.releasable_proposal !== null && (
+            <span>
+              {`предложение модели: ${releasableLabel(parameter.releasable_proposal.releasable)} · ${formatConfidence(parameter.releasable_proposal.confidence)}`}
+            </span>
+          )}
+        </div>
+      )}
       {parameter.values.length === 0 ? (
         <p className="text-xs text-fg-tertiary">Значений нет.</p>
       ) : (

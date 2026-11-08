@@ -1,4 +1,6 @@
 import type {
+  SectionChainFilter,
+  SectionZone,
   BatchSource,
   ComparabilityReason,
   ContextValueSource,
@@ -571,4 +573,37 @@ export function jobErrorClassLabel(errorClass: string | null): string {
   const http = /^http_(\d{3})$/.exec(errorClass);
   if (http) return `HTTP ${http[1]}`;
   return errorClass;
+}
+
+// ========== Лестница аналогов: очереди «Зоны» и «Можно отпустить» ==========
+
+/** Зоны цепочки разделов (спека лестницы аналогов §2.17), порядок - как на макете. */
+export const SECTION_ZONES: SectionZone[] = ["underground", "aboveground", "territory", "whole"];
+
+export const ZONE_LABEL: Record<SectionZone, string> = {
+  underground: "Подземная",
+  aboveground: "Надземная",
+  territory: "Территория",
+  whole: "Весь объект",
+};
+
+export const ZONE_FILTER_LABEL: Record<SectionChainFilter, string> = {
+  disputed: "Спорные",
+  undetermined: "Без зоны",
+  rule: "Зона от правила",
+  model: "Зона от модели",
+  human: "Зона от человека",
+  all: "Все",
+};
+
+export const ZONE_SOURCE_LABEL: Record<"rule" | "model" | "human", string> = {
+  rule: "правило",
+  model: "модель",
+  human: "человек",
+};
+
+/** Признак «можно отпустить» главного параметра: размечен / не размечен. */
+export function releasableLabel(value: boolean | null): string {
+  if (value === null) return "не размечен";
+  return value ? "можно отпустить" : "обязателен";
 }
