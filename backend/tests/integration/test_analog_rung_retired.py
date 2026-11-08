@@ -85,14 +85,15 @@ def test_load_decisions_gives_an_empty_work_map_next_to_other_decisions(stage, d
     assert set(found.agreements) == {item.id} and set(found.comments) == {item.id}
 
 
-def test_load_decisions_makes_three_selects(stage, db_session):
+def test_load_decisions_makes_four_selects(stage, db_session):
     _, part, _ = _work_scene(stage)
     estimate_ids = [part.estimate.id]
 
     with count_statements(db_session) as seen:
         kd.load_decisions(db_session, estimate_ids)
 
-    assert len(seen) == 3
+    # договорённости, комментарии, выборы цели работ (Task 6), ступени семей систем
+    assert len(seen) == 4
 
 
 def test_put_rung_on_a_work_line_is_422_rung_not_applicable_and_writes_nothing(

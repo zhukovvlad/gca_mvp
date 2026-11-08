@@ -16,7 +16,7 @@ from typing import Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -198,6 +198,19 @@ class RungPut(BaseModel):
     scope: str
 
 
+class TargetPut(BaseModel):
+    """Выбор цели: «самая свежая» без аналога или «аналог» с `analog_id`."""
+
+    kind: Literal["freshest", "analog"]
+    analog_id: int | None = None
+
+    @model_validator(mode="after")
+    def _analog_goes_with_the_analog_kind(self):
+        if (self.kind == "analog") != (self.analog_id is not None):
+            raise ValueError("analog_id нужен ровно при kind = analog")
+        return self
+
+
 def _write_decision(db: Session, write: Callable[[], None]) -> Response:
     """Транзакцию решения ведёт роутер: commit на успехе, rollback на любом отказе."""
     try:
@@ -260,6 +273,24 @@ def put_line_rung(tender_id: int, round_id: int, offer_id: int, position_item_id
 def delete_line_rung(tender_id: int, round_id: int, offer_id: int, position_item_id: int,
                      db: Session = Depends(get_db), _: User = Depends(require_admin)):
     return _write_decision(db, lambda: crud_kp_decisions.delete_rung(
+        db, tender_id, round_id, offer_id, position_item_id))
+
+
+@router.put(_LINE + "/target", status_code=status.HTTP_204_NO_CONTENT)
+def put_line_target(tender_id: int, round_id: int, offer_id: int, position_item_id: int, body: TargetPut,
+                    inflation_series_id: int | None = Query(default=None),
+                    db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
+    """Выбор цели строки-работы (спека лестницы аналогов §2.14, §2.17). Строка проверяется с тем же
+    рядом ИПЦ, с которым клиент читал панель: остаток зависит от ряда."""
+    return _write_decision(db, lambda: crud_kp_decisions.put_target(
+        db, tender_id, round_id, offer_id, position_item_id, kind=body.kind, analog_id=body.analog_id,
+        inflation_series_id=inflation_series_id, actor_id=current_user.id))
+
+
+@router.delete(_LINE + "/target", status_code=status.HTTP_204_NO_CONTENT)
+def delete_line_target(tender_id: int, round_id: int, offer_id: int, position_item_id: int,
+                       db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    return _write_decision(db, lambda: crud_kp_decisions.delete_target(
         db, tender_id, round_id, offer_id, position_item_id))
 
 
@@ -708,11 +739,14 @@ def upload_round(
         lost = crud_kp_decisions.count_round_decisions(db, rnd.id)
         context: dict[str, int] = {}
         if lost.total:
-            context = {"agreements": lost.agreements, "comments": lost.comments, "rungs": lost.rungs}
+            context = {
+                "agreements": lost.agreements, "comments": lost.comments, "rungs": lost.rungs,
+                "targets": lost.targets,
+            }
             message += (
                 " Заменой будут удалены решения по строкам КП: "
                 f"договорённостей — {lost.agreements}, комментариев — {lost.comments}, "
-                f"ручных ступеней — {lost.rungs}."
+                f"ручных ступеней — {lost.rungs}, выбранных аналогов — {lost.targets}."
             )
         raise_domain_error(DomainError(
             status.HTTP_409_CONFLICT, message, code="replace_required", context=context,

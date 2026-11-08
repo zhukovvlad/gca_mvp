@@ -30,6 +30,7 @@ from models import (
     KpFamilyRung,
     KpLineAgreement,
     KpLineComment,
+    KpLineTarget,
     KpSentFile,
     Lot,
     Offer,
@@ -44,7 +45,7 @@ from money.vat import gross_to_net
 from parser.constants import JSON_KEY_LOTS, JSON_KEY_UNIT
 from services.estimate_import import extract_positions, extract_single_proposal
 from services.kp_file import KpSourceLine
-from services.our_price import RUNG_ORDER, Rung, SavedFamilyRung, SavedRungs
+from services.our_price import RUNG_ORDER, LineState, Rung, SavedFamilyRung, SavedRungs, TargetKind
 
 CODE_INVALID_AGREED = "invalid_agreed"
 CODE_COMMENT_TOO_LONG = "comment_too_long"
@@ -57,6 +58,12 @@ CODE_UNKNOWN_RUNG = "unknown_rung"
 #: Код отказа `PUT …/rung` у строки-работы: ручной ступени работы больше нет, цель
 #: работы задаётся выбором аналога.
 CODE_RUNG_NOT_APPLICABLE = "rung_not_applicable"
+#: Код отказа `PUT …/target`: у строки нет цели-выбора (система или не `comparable`).
+CODE_TARGET_NOT_APPLICABLE = "target_not_applicable"
+#: Код отказа `PUT …/target`: выбранного аналога нет в остатке ступени (выброс, чужая ступень, ушёл).
+CODE_ANALOG_UNAVAILABLE = "analog_unavailable"
+#: Код отказа `PUT …/target` «самая свежая»: самой свежей у строки нет.
+CODE_NO_FRESHEST = "no_freshest"
 
 
 @dataclass(frozen=True)
@@ -68,6 +75,8 @@ class EstimateDecisions:
     #: position_item_id -> (текст, когда, кто, почта); пустой текст — тоже решение
     comments: dict[int, tuple[str, datetime, int, str]]
     saved: SavedRungs
+    #: position_item_id -> (вид выбора, аналог | None, когда, кто, почта); выбор цели строки-работы
+    targets: dict[int, tuple[str, int | None, datetime, int, str]]
     #: ("line", position_item_id) | ("family", family_id) -> (когда, кто, почта)
     rung_meta: dict[tuple[str, int], tuple[datetime, int, str]]
 
@@ -93,6 +102,7 @@ def load_decisions(db: Session, estimate_ids: Sequence[int]) -> dict[int, Estima
     ids = list(estimate_ids)
     agreements: dict[int, dict[int, tuple[Decimal, datetime, int, str]]] = {i: {} for i in ids}
     comments: dict[int, dict[int, tuple[str, datetime, int, str]]] = {i: {} for i in ids}
+    targets: dict[int, dict[int, tuple[str, int | None, datetime, int, str]]] = {i: {} for i in ids}
     family: dict[int, dict[int, SavedFamilyRung]] = {i: {} for i in ids}
     meta: dict[int, dict[tuple[str, int], tuple[datetime, int, str]]] = {i: {} for i in ids}
 
@@ -102,6 +112,10 @@ def load_decisions(db: Session, estimate_ids: Sequence[int]) -> dict[int, Estima
         agreements[estimate_id][pid] = (net, at, user_id, email)
     for estimate_id, pid, text, at, user_id, email in db.execute(_by_estimate(KpLineComment, ids, KpLineComment.text)):
         comments[estimate_id][pid] = (text, at, user_id, email)
+    for estimate_id, pid, kind, analog_id, at, user_id, email in db.execute(
+        _by_estimate(KpLineTarget, ids, KpLineTarget.kind, KpLineTarget.analog_position_item_id)
+    ):
+        targets[estimate_id][pid] = (kind, analog_id, at, user_id, email)
     for estimate_id, family_id, level, scope, parameter_id, at, user_id, email in db.execute(
         sa.select(
             KpFamilyRung.estimate_id,
@@ -123,6 +137,7 @@ def load_decisions(db: Session, estimate_ids: Sequence[int]) -> dict[int, Estima
         i: EstimateDecisions(
             agreements=agreements[i],
             comments=comments[i],
+            targets=targets[i],
             saved=SavedRungs(family=family[i]),
             rung_meta=meta[i],
         )
@@ -138,10 +153,12 @@ class DecisionCounts:
     comments: int
     #: ступени семей (ручной ступени работы больше нет)
     rungs: int
+    #: выборы цели строк-работ
+    targets: int
 
     @property
     def total(self) -> int:
-        return self.agreements + self.comments + self.rungs
+        return self.agreements + self.comments + self.rungs + self.targets
 
 
 def _count_decisions(db: Session, estimate_ids: sa.Select) -> DecisionCounts:
@@ -162,10 +179,10 @@ def _count_decisions(db: Session, estimate_ids: sa.Select) -> DecisionCounts:
         .where(KpFamilyRung.estimate_id.in_(estimate_ids))
         .scalar_subquery()
     )
-    agreements, comments, family_rungs = db.execute(
-        sa.select(on_items(KpLineAgreement), on_items(KpLineComment), family)
+    agreements, comments, targets, family_rungs = db.execute(
+        sa.select(on_items(KpLineAgreement), on_items(KpLineComment), on_items(KpLineTarget), family)
     ).one()
-    return DecisionCounts(agreements, comments, family_rungs)
+    return DecisionCounts(agreements, comments, family_rungs, targets)
 
 
 def count_round_decisions(db: Session, round_id: int) -> DecisionCounts:
@@ -442,6 +459,70 @@ def put_rung(
             },
         )
     )
+    db.flush()
+
+
+def put_target(
+    db: Session,
+    tender_id: int,
+    round_id: int,
+    offer_id: int,
+    pid: int,
+    *,
+    kind: TargetKind,
+    analog_id: int | None,
+    inflation_series_id: int | None,
+    actor_id: int,
+) -> None:
+    """Сохранить выбор цели строки-работы: «самая свежая» или конкретный аналог остатка.
+
+    Строка проверяется той же сценой, что чтение, и с тем же рядом ИПЦ: остаток от приведения зависит
+    от ряда в обе стороны (спека лестницы аналогов §2.17), поэтому `selectable` панели и исход записи
+    считаются одинаково. Ряд в записи не хранится. Отказы по порядку: ряд и принадлежность (как у
+    чтения), система или не `comparable` (`target_not_applicable`), аналога нет в остатке
+    (`analog_unavailable`), самой свежей нет (`no_freshest`).
+    """
+    from crud.our_price import line_for_rung_check  # crud.our_price читает решения из этого модуля
+
+    _, row, result = line_for_rung_check(
+        db, tender_id, round_id, offer_id, pid, inflation_series_id=inflation_series_id
+    )
+    if row.line.is_system or result.state is not LineState.comparable:
+        raise DomainError(
+            422, "Выбор цели есть только у сравнимой строки-работы.", code=CODE_TARGET_NOT_APPLICABLE
+        )
+    if kind == "analog" and analog_id not in result.ladder.remainder_ids:
+        raise DomainError(
+            422, "Этот аналог не входит в остаток ступени строки: выбрать его нельзя.", code=CODE_ANALOG_UNAVAILABLE
+        )
+    if kind == "freshest" and result.freshest is None:
+        raise DomainError(422, "У строки нет самой свежей расценки.", code=CODE_NO_FRESHEST)
+
+    stmt = pg_insert(KpLineTarget).values(
+        position_item_id=pid,
+        kind=kind,
+        analog_position_item_id=analog_id if kind == "analog" else None,
+        set_by=actor_id,
+        set_at=sa.func.now(),
+    )
+    db.execute(
+        stmt.on_conflict_do_update(
+            index_elements=[KpLineTarget.position_item_id],
+            set_={
+                "kind": stmt.excluded.kind,
+                "analog_position_item_id": stmt.excluded.analog_position_item_id,
+                "set_by": stmt.excluded.set_by,
+                "set_at": stmt.excluded.set_at,
+            },
+        )
+    )
+    db.flush()
+
+
+def delete_target(db: Session, tender_id: int, round_id: int, offer_id: int, pid: int) -> None:
+    """Снять выбор цели: строка возвращается к самой низкой. Нет записи — тот же 204."""
+    _line_estimate(db, tender_id, round_id, offer_id, pid)
+    db.execute(sa.delete(KpLineTarget).where(KpLineTarget.position_item_id == pid))
     db.flush()
 
 

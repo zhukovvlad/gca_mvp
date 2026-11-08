@@ -72,10 +72,12 @@ from services.our_price import (
     RateRange,
     Rung,
     RungChoice,
+    SavedTarget,
     available_rungs,
     evaluate_offer,
     lines_totals,
     offer_totals,
+    resolve_target,
 )
 from services.our_price_money import (
     UNALLOCATED,
@@ -809,8 +811,6 @@ def _line_view(row: KpLineRow, result: LineResult, rate: Decimal | None, history
         "no_history_reason": ladder.no_history_reason if ladder is not None else None,
         "group": group,
         "unit_mismatch": _mismatch_view(result),
-        "target_kind": "lowest" if result.state is LineState.comparable else None,
-        "choice": None,
     }
 
 
@@ -846,7 +846,13 @@ def _comment_inputs(
         kp_vat_base=participant.base,
         inflation=_inflation_label(scene.plan),
         agreed_net=agreed_net,
+        saved_target=_saved_target(scene.decisions[participant.estimate_id], row.line.position_item_id),
     )
+
+
+def _saved_target(decisions: EstimateDecisions, pid: int) -> SavedTarget | None:
+    record = decisions.targets.get(pid)
+    return None if record is None else (record[0], record[1])
 
 
 def _template_text(
@@ -881,8 +887,9 @@ def _file_ours(
 def _decision_fields(
     scene: _Scene, participant: _Participant, row: KpLineRow, result: LineResult, template: str | None
 ) -> dict:
-    """Поля решений строки: `agreed`, `comment_kind`, `manual_rung` (спека 4б §2.11).
-    Текст комментария сюда не входит — его отдаёт только панель."""
+    """Поля решений строки: `agreed`, `comment_kind`, `manual_rung`, `target_kind`, `choice`
+    (спека 4б §2.11, спека лестницы аналогов §2.14, §2.17). Текст комментария сюда не входит — его
+    отдаёт только панель."""
     decisions = scene.decisions[participant.estimate_id]
     pid = row.line.position_item_id
 
@@ -911,7 +918,31 @@ def _decision_fields(
             "set_by": _author(user_id, email),
             "set_at": iso(at),
         }
-    return {"agreed": agreed, "comment_kind": comment_kind, "manual_rung": manual_rung}
+    choice = resolve_target(_saved_target(decisions, pid), result, is_system=row.line.is_system)
+    choice_view = None
+    if choice is not None:
+        _, _, at, user_id, email = decisions.targets[pid]
+        choice_view = {
+            "kind": choice.kind,
+            "analog_id": choice.analog_id,
+            "active": choice.active,
+            "reset_reason": choice.reset_reason,
+            "set_by": _author(user_id, email),
+            "set_at": iso(at),
+        }
+    if agreed is not None:
+        target_kind = "agreed"
+    elif result.state is not LineState.comparable:
+        target_kind = None
+    else:
+        target_kind = choice.kind if choice is not None and choice.active else "lowest"
+    return {
+        "agreed": agreed,
+        "comment_kind": comment_kind,
+        "manual_rung": manual_rung,
+        "target_kind": target_kind,
+        "choice": choice_view,
+    }
 
 
 def _line_with_decisions(scene: _Scene, participant: _Participant, row: KpLineRow, result: LineResult) -> dict:
@@ -995,16 +1026,23 @@ def _rung_choice(level: str | None, scope: str | None, position_item_id: int, au
 
 
 def line_for_rung_check(
-    db: Session, tender_id: int, round_id: int, offer_id: int, position_item_id: int
+    db: Session,
+    tender_id: int,
+    round_id: int,
+    offer_id: int,
+    position_item_id: int,
+    *,
+    inflation_series_id: int | None = None,
 ) -> tuple[int, KpLineRow, LineResult]:
-    """Смета, строка и её расчёт для проверки ручной ступени: та же сцена, что у разбора,
-    но без ряда ИПЦ — число договоров ступени от приведения не зависит.
+    """Смета, строка и её расчёт для проверки решения: та же сцена, что у разбора. Ручная ступень
+    системы ряд не передаёт — число договоров ступени от приведения не зависит; выбор цели работы
+    передаёт ряд чтения: остаток аналогов от приведения зависит (спека лестницы аналогов §2.17).
 
     Raises:
         DomainError 404: тендера, этапа, оффера или строки этого КП нет, у оффера нет сметы.
     """
     scene, participant, evaluation = _offer_context(
-        db, tender_id, round_id, offer_id, inflation_series_id=None, require_line=position_item_id
+        db, tender_id, round_id, offer_id, inflation_series_id=inflation_series_id, require_line=position_item_id
     )
     (row,) = (r for r in scene.kp_lines[participant.estimate_id] if r.line.position_item_id == position_item_id)
     return participant.estimate_id, row, evaluation.lines[position_item_id]
@@ -1184,6 +1222,8 @@ class FileInputs:
     comments: dict[int, str]
     #: position_item_id -> (нетто за единицу, дата `ДД.ММ.ГГГГ`).
     agreements: dict[int, tuple[Decimal, str]]
+    #: position_item_id -> выбор цели работы `(вид, аналог | None)`.
+    targets: dict[int, SavedTarget]
 
 
 def build_file_inputs(
@@ -1247,4 +1287,5 @@ def build_file_inputs(
         evaluation=evaluation,
         comments={pid: record[0] for pid, record in decisions.comments.items()},
         agreements={pid: (record[0], iso_date_to_ru(iso(record[1]))) for pid, record in decisions.agreements.items()},
+        targets={pid: (record[0], record[1]) for pid, record in decisions.targets.items()},
     )

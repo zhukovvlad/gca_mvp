@@ -25,6 +25,7 @@ from models import (
     KpFamilyRung,
     KpLineAgreement,
     KpLineComment,
+    KpLineTarget,
     KpSentFile,
     Lot,
     Offer,
@@ -46,7 +47,7 @@ D = Decimal
 
 REPLACE_REQUIRED_TEXT = "Раунд уже загружен; для замены всех его смет повторите запрос с replace=true."
 LOST_WARNING = (
-    "Заменой раунда удалены решения по строкам КП: договорённостей — {a}, комментариев — {c}, ручных ступеней — {r}."
+    "Заменой раунда удалены решения по строкам КП: договорённостей — {a}, комментариев — {c}, ручных ступеней — {r}, выбранных аналогов — 0."
 )
 
 
@@ -202,7 +203,7 @@ class TestCounts:
         counts = kd.count_round_decisions(db_session, rnd1.id)
 
         # две ступени семьи из разных смет
-        assert counts == kd.DecisionCounts(agreements=2, comments=1, rungs=2)
+        assert counts == kd.DecisionCounts(agreements=2, comments=1, rungs=2, targets=0)
 
     def test_round_counts_nothing_of_another_round(self, stage, db_session):
         rnd1, rnd2, _, _, _, items = _stage_two_rounds(stage, db_session)
@@ -210,14 +211,14 @@ class TestCounts:
         _agree(db_session, items["a2"], D("9"), user)
         _comment(db_session, items["a2"], "Т", user)
 
-        assert kd.count_round_decisions(db_session, rnd2.id) == kd.DecisionCounts(1, 1, 0)
+        assert kd.count_round_decisions(db_session, rnd2.id) == kd.DecisionCounts(1, 1, 0, 0)
         # на первом этапе решений нет, второй им не мешает
-        assert kd.count_round_decisions(db_session, rnd1.id) == kd.DecisionCounts(0, 0, 0)
+        assert kd.count_round_decisions(db_session, rnd1.id) == kd.DecisionCounts(0, 0, 0, 0)
 
     def test_empty_round_counts_zero(self, stage, db_session):
         rnd = stage.round()
 
-        assert kd.count_round_decisions(db_session, rnd.id) == kd.DecisionCounts(0, 0, 0)
+        assert kd.count_round_decisions(db_session, rnd.id) == kd.DecisionCounts(0, 0, 0, 0)
 
     def test_package_counts_every_round_of_the_participant_and_no_other_package(self, stage, db_session):
         _, _, a1, b1, _, items = _stage_two_rounds(stage, db_session)
@@ -229,8 +230,8 @@ class TestCounts:
         _agree(db_session, items["b1"], D("9"), user)
         _comment(db_session, items["b1"], "Т", user)
 
-        assert kd.count_package_decisions(db_session, a1.offer.package_id) == kd.DecisionCounts(2, 1, 1)
-        assert kd.count_package_decisions(db_session, b1.offer.package_id) == kd.DecisionCounts(1, 1, 0)
+        assert kd.count_package_decisions(db_session, a1.offer.package_id) == kd.DecisionCounts(2, 1, 1, 0)
+        assert kd.count_package_decisions(db_session, b1.offer.package_id) == kd.DecisionCounts(1, 1, 0, 0)
 
     def test_count_is_one_statement_however_many_estimates(self, stage, db_session):
         rnd1, _, a1, _, _, items = _stage_two_rounds(stage, db_session)
@@ -310,9 +311,25 @@ class TestReplaceRequired:
         assert detail["agreements"] == 2
         assert detail["comments"] == 1
         assert detail["rungs"] == 1
+        assert detail["targets"] == 0
         assert "договорённостей — 2" in detail["message"]
         assert "комментариев — 1" in detail["message"]
         assert "ручных ступеней — 1" in detail["message"]
+
+    def test_a_work_target_choice_is_counted_and_named_in_the_refusal(
+        self, committing_client, committing_db, committing_factories, tender, round_stub
+    ):
+        user = _loaded(committing_client, tender, round_stub, committing_db, committing_factories)
+        committing_db.add(KpLineTarget(position_item_id=_item(committing_db, "7700000001").id, kind="freshest", set_by=user.id))
+        committing_db.commit()
+
+        response = upload_round(committing_client, tender, content=xlsx_bytes("b"))
+
+        assert response.status_code == 409
+        detail = response.json()["detail"]
+        assert detail["code"] == "replace_required"
+        assert (detail["targets"], detail["agreements"], detail["comments"], detail["rungs"]) == (1, 0, 0, 0)
+        assert "выбранных аналогов — 1" in detail["message"]
 
     def test_without_decisions_the_text_is_the_old_one_and_no_context(
         self, committing_client, committing_db, committing_factories, tender, round_stub

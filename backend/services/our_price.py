@@ -25,6 +25,7 @@ from money.price import is_price, is_weight
 from money.vat import gross_to_net
 from services.analog_ladder import (
     MIN_NOMINAL,
+    Analog,
     FamilyLadderInfo,
     Figure,
     KpWork,
@@ -207,6 +208,57 @@ class ManualRung:
     target: Literal["family"]
     active: bool
     reset_reason: ResetReason | None
+
+
+TargetKind = Literal["freshest", "analog"]
+TargetResetReason = Literal["kind_changed", "not_comparable", "analog_unavailable", "no_freshest"]
+#: Сохранённый выбор цели: вид и аналог (`position_item_id` строки договора; у «самой свежей» — `None`).
+SavedTarget = tuple[TargetKind, int | None]
+
+
+@dataclass(frozen=True)
+class TargetChoice:
+    """Статус сохранённого выбора цели строки-работы: чей он и действует ли (спека лестницы аналогов §2.14)."""
+
+    kind: TargetKind
+    analog_id: int | None
+    active: bool
+    reset_reason: TargetResetReason | None
+
+
+def resolve_target(
+    saved: SavedTarget | None, result: LineResult, *, is_system: bool
+) -> TargetChoice | None:
+    """Статус выбора по сохранённой записи `(вид, аналог)` и расчёту строки.
+
+    Условия идут по таблице §2.14, первое невыполненное даёт причину. Запись остаётся и при сбросе:
+    расчёт идёт на самой низкой.
+    """
+    if saved is None:
+        return None
+    kind, analog_id = saved
+    reason: TargetResetReason | None = None
+    if is_system:
+        reason = "kind_changed"
+    elif result.state is not LineState.comparable:
+        reason = "not_comparable"
+    elif kind == "analog" and (result.ladder is None or analog_id not in result.ladder.remainder_ids):
+        reason = "analog_unavailable"
+    elif kind == "freshest" and result.freshest is None:
+        reason = "no_freshest"
+    return TargetChoice(kind, analog_id, reason is None, reason)
+
+
+def target_analog(result: LineResult, choice: TargetChoice | None) -> Analog | None:
+    """Аналог цели сравнимой работы: действующий выбор, иначе самая низкая; `None` — цели нет."""
+    ladder = result.ladder
+    if ladder is None or result.state is not LineState.comparable:
+        return None
+    if choice is not None and choice.active:
+        analog_id = choice.analog_id if choice.kind == "analog" else result.freshest.analog_id
+    else:
+        analog_id = ladder.lowest.analog_id
+    return next(a for a in ladder.analogs if a.position_item_id == analog_id)
 
 
 @dataclass(frozen=True)

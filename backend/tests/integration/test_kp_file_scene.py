@@ -247,7 +247,8 @@ class TestLoadDecisions:
         with count_statements(db_session) as large:
             kd.load_decisions(db_session, large_ids)
 
-        assert len(small) == len(large) == 3
+        # договорённости, комментарии, выборы цели работ, ступени семей систем
+        assert len(small) == len(large) == 4
         assert all(statement.lstrip().upper().startswith("SELECT") for statement in large)
 
 
@@ -383,9 +384,11 @@ class TestWorkLineHasNoManualRung:
 
         line = _line_of(_offer_ok(member_client, stage.tender, rnd, part), item)
 
-        assert line["rung"] == {"level": "v", "scope": "cls", "auto": True, "threshold_met": True}
+        # у работы ступеней 4а нет: она стоит на лестнице аналогов (спека лестницы аналогов §2.9)
+        assert (line["rung"], line["rungs"]) == (None, [])
+        assert line["work_rung"] == {"no": 1, "released": [], "other_class": False}
         assert (line["state"], _pair(line["over_lowest"])) == ("comparable", (D("500"), D("500")))
-        assert line["manual_rung"] is None
+        assert (line["manual_rung"], line["target_kind"], line["choice"]) == (None, "lowest", None)
 
 
 class TestSavedFamilyRung:
@@ -679,7 +682,9 @@ class TestTemplateInputsOfTheScene:
 
 
 class TestSelectable:
-    def test_work_rung_is_selectable_by_its_own_contracts(self, member_client, stage, factories):
+    def test_work_has_no_selectable_rungs_only_selectable_analogs_of_its_ladder_rung(
+        self, member_client, stage, factories
+    ):
         other_class = factories.RateClassFactory.create(title="Класс Д")
         _history(stage, D("100"), rate_class=other_class)
         rnd = stage.round()
@@ -687,13 +692,11 @@ class TestSelectable:
         item = stage.kp(part, D("150"))
 
         line = _line_of(_offer_ok(member_client, stage.tender, rnd, part), item)
+        panel = _panel(member_client, stage.tender, rnd, part, item)
 
-        assert [(r["level"], r["scope"], r["contracts"], r["selectable"]) for r in line["rungs"]] == [
-            ("v", "cls", 0, False),
-            ("v", "all", 1, True),
-            ("f", "cls", 0, False),
-            ("f", "all", 1, True),
-        ]
+        assert line["rungs"] == []
+        assert line["work_rung"] == {"no": 3, "released": [], "other_class": True}
+        assert [a["selectable"] for a in panel["analogs"]] == [True]
 
     def test_system_rung_is_selectable_by_every_group_of_the_family(self, member_client, stage):
         for total in (100000, 140000):
