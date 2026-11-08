@@ -168,6 +168,10 @@ class TestSystemFreshest:
         # группа: ₽/м² КП 120; к самой низкой +20 000, к самой свежей -20 000; доля первой строки 0,25
         assert line["to_lowest"] == {"net": "5000.00", "shown": "5000.00"}
         assert line["to_freshest"] == {"net": "-5000.00", "shown": "-5000.00"}
+        # за единицу — ₽/м² группы (120) против ставок 100 и 140, одинаково у всех строк группы
+        assert _pair(line["to_lowest_unit"]) == (D("20"), D("20"))
+        assert _pair(line["to_freshest_unit"]) == (D("-20"), D("-20"))
+        assert _line_of(body, large)["to_freshest_unit"] == line["to_freshest_unit"]
         assert line["over_freshest"] == {"net": "0.00", "shown": "0.00"}
         assert _line_of(body, large)["to_freshest"] == {"net": "-15000.00", "shown": "-15000.00"}
 

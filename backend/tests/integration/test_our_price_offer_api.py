@@ -70,6 +70,8 @@ LINE_KEYS = {
     "position",
     "to_lowest",
     "to_freshest",
+    "to_lowest_unit",
+    "to_freshest_unit",
     "over_lowest",
     "over_freshest",
     "below",
@@ -648,7 +650,7 @@ class TestLineForm:
         assert line["unit_mismatch"]["kp_ratio"] is None
         assert len(line["unit_mismatch"]["analogs"]) == 2
         assert line["unit_mismatch"]["contracts"] == []
-        for key in ("range", "lowest", "freshest", "position", "to_lowest", "to_freshest", "over_lowest", "below"):
+        for key in ("range", "lowest", "freshest", "position", "to_lowest", "to_freshest", "to_lowest_unit", "to_freshest_unit", "over_lowest", "below"):
             assert line[key] is None, key
         assert line["target_kind"] is None
 

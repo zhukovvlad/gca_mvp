@@ -25,6 +25,29 @@ describe("карточки цифр работы", () => {
     expect(card).toHaveTextContent("−300,00");
   });
 
+  it("сначала разница за единицу, затем итог: «КП выше на 200,00 за м3 · +20 000,00 ₽»", () => {
+    renderCards(workLineFixture({ unit: "м3" }));
+    const diff = screen.getByTestId("figure-lowest-diff");
+    expect(diff).toHaveTextContent(/^КП выше на 200,00 за м3 · \+20 000,00/);
+  });
+
+  it("«ниже»: разница за единицу без знака после «на», итог со знаком", () => {
+    renderCards(workLineFixture({ unit: "м3", to_lowest: pair("-300.00"), to_lowest_unit: pair("-30", "-36.6") }));
+    expect(screen.getByTestId("figure-lowest-diff")).toHaveTextContent(/^КП ниже на 30,00 за м3 · −300,00/);
+  });
+
+  it("вид «с НДС»: разница за единицу из shown", () => {
+    renderCards(workLineFixture({ unit: "м3" }), "shown");
+    expect(screen.getByTestId("figure-lowest-diff")).toHaveTextContent("КП выше на 244,00 за м3");
+  });
+
+  it("без разницы за единицу (null) — как раньше: «КП выше: +…»", () => {
+    renderCards(workLineFixture({ unit: "м3", to_lowest_unit: null }));
+    const diff = screen.getByTestId("figure-lowest-diff");
+    expect(diff).toHaveTextContent(/^КП выше: \+20 000,00/);
+    expect(diff).not.toHaveTextContent("за м3");
+  });
+
   it("нулевая разница: «КП на уровне расценки», без знака", () => {
     renderCards(workLineFixture({ to_lowest: pair("0.00") }));
     const card = screen.getByTestId("figure-lowest");

@@ -533,3 +533,51 @@ def test_the_threshold_is_taken_after_the_vat_base():
     rate = _rates(contracts, lines)[1]
     assert rate.nominal == D(10)  # 12000 / 1.2 / 1000
     assert rate.lines == 1
+
+
+# --- разница за единицу (to_lowest_unit / to_freshest_unit) ----------------------
+
+
+def test_work_unit_diff_is_the_kp_price_minus_the_figure_in_the_same_axis_as_the_totals():
+    contracts, lines = two_contract_history()
+    result = evaluate([work()], contracts=contracts, work_lines=lines).lines[1]
+    assert result.to_ours_unit == D(50)  # 150 - 100
+    assert result.to_freshest_unit == D(30)  # 150 - 120
+    assert result.to_ours == result.to_ours_unit * D(10)
+
+    below = evaluate([work(price="90")], contracts=contracts, work_lines=lines).lines[1]
+    assert below.to_ours_unit == D(-10) and below.to_freshest_unit == D(-30)
+
+
+def test_work_unit_diff_is_none_without_the_figure():
+    contracts = [contract(1, period=None)]
+    result = evaluate([work()], contracts=contracts, work_lines=[wline(1001, 1, "100")]).lines[1]
+    assert result.to_ours_unit == D(50) and result.freshest is None and result.to_freshest_unit is None
+
+    outliers = evaluate(
+        [work()], contracts=[contract(1), contract(2)], work_lines=[wline(1001, 1, "2"), wline(1002, 2, "100000")]
+    ).lines[1]
+    assert outliers.to_ours_unit is None and outliers.to_freshest_unit is None
+
+    nothing = evaluate([work()], contracts=[contract(1)], work_lines=[]).lines[1]
+    assert nothing.to_ours_unit is None and nothing.to_freshest_unit is None
+
+
+def test_work_unit_diff_survives_a_unit_mismatch_like_to_lowest():
+    contracts, lines = two_contract_history()
+    result = evaluate([work(price="1500")], contracts=contracts, work_lines=lines).lines[1]
+    assert result.state is LineState.unit_mismatch
+    assert result.to_ours_unit == D(1400) and result.to_freshest_unit == D(1380)
+
+
+def test_system_unit_diff_is_the_rate_per_sqm_of_the_group_for_every_member():
+    contracts, lines = _system_history({1: YearMonth(2026, 1), 2: YearMonth(2026, 5)}, {1: "10000", 2: "15000"})
+    evaluation = evaluate([system(1, "12000"), system(2, "8000")], contracts=contracts, sys_lines=lines)
+    for pid in (1, 2):
+        result = evaluation.lines[pid]
+        assert result.to_ours_unit == D(100)  # 20000 / 100 - 100
+        assert result.to_freshest_unit == D(50)  # 200 - 150
+
+    nofresh_contracts, nofresh_lines = _system_history({1: None, 2: None}, {1: "10000", 2: "15000"})
+    one = _system_one(nofresh_contracts, nofresh_lines)
+    assert one.to_ours_unit == D(100) and one.to_freshest_unit is None

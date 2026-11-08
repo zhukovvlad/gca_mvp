@@ -742,6 +742,9 @@ class TestFreshest:
         assert _pair(freshest["value"]) == (D("130"), D("156"))
         assert line["to_lowest"] == {"net": "200.00", "shown": "240.00"}
         assert line["to_freshest"] == {"net": "-100.00", "shown": "-120.00"}
+        # за единицу: цена КП 120 против 100 и 130; без округления до копеек и без веса
+        assert _pair(line["to_lowest_unit"]) == (D("20"), D("24"))
+        assert _pair(line["to_freshest_unit"]) == (D("-10"), D("-12"))
         assert line["over_lowest"] == {"net": "200.00", "shown": "240.00"}
         assert line["over_freshest"] == {"net": "0.00", "shown": "0.00"}
         assert line["target_kind"] == "lowest"
@@ -766,6 +769,7 @@ class TestFreshest:
 
         assert line["state"] == "comparable"
         assert line["freshest"] is None and line["to_freshest"] is None and line["over_freshest"] is None
+        assert line["to_freshest_unit"] is None and _pair(line["to_lowest_unit"]) == (D("20"), D("20"))
         assert _pair(line["lowest"]["value"]) == (D("100"), D("100"))
 
     def test_the_stage_month_comes_from_the_round_even_without_a_series(self, member_client, stage, world):
@@ -806,6 +810,7 @@ class TestFreshest:
 
         assert line["state"] == "unit_mismatch"
         assert line["to_freshest"] == {"net": "13800.00", "shown": "13800.00"}  # (1500 - 120) * 10
+        assert _pair(line["to_freshest_unit"]) == (D("1380"), D("1380"))
         assert (line["over_freshest"], line["over_lowest"], line["target_kind"]) == (None, None, None)
 
 

@@ -2,7 +2,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { compareDecimalStrings } from "@/lib/decimal";
 import type { MoneyPair, OurPriceAnalog, OurPriceLine } from "@/types/domain";
 
-import { formatSigned, formatUnitPrice, pick, priceUnitLabel, type VatView } from "./money";
+import { absDecimal, formatSigned, formatUnitPrice, pick, priceUnitLabel, type VatView } from "./money";
 import {
   FIGURE_KP_ABOVE,
   FIGURE_KP_BELOW,
@@ -27,14 +27,17 @@ interface CardProps {
   analogId: number | null;
   period: string | null;
   diff: MoneyPair | null;
+  /** Разница за единицу строки; `null` — печатается один итог. */
+  diffUnit: MoneyPair | null;
   analogs: OurPriceAnalog[];
   vat: VatView;
 }
 
-function Figure({ testId, label, unit, price, analogId, period, diff, analogs, vat }: CardProps) {
+function Figure({ testId, label, unit, price, analogId, period, diff, diffUnit, analogs, vat }: CardProps) {
   const analog = analogId === null ? undefined : analogs.find((a) => a.analog_id === analogId);
   const value = pick(price, vat);
   const delta = pick(diff, vat);
+  const deltaUnit = pick(diffUnit, vat);
   const sign = delta === null ? null : compareDecimalStrings(delta, "0");
   const date = period ?? analog?.period ?? null;
   const where = analog === undefined ? null : `${analog.object_title} · дог. ${analog.number}`;
@@ -66,7 +69,11 @@ function Figure({ testId, label, unit, price, analogId, period, diff, analogs, v
                   ? "—"
                   : sign === 0
                     ? FIGURE_KP_EQUAL
-                    : `${sign === 1 ? FIGURE_KP_ABOVE : FIGURE_KP_BELOW}: ${formatSigned(delta)}`}
+                    : `${sign === 1 ? FIGURE_KP_ABOVE : FIGURE_KP_BELOW}${
+                        deltaUnit === null || unit === null
+                          ? ":"
+                          : ` на ${formatUnitPrice(absDecimal(deltaUnit))} за ${unit} ·`
+                      } ${formatSigned(delta)}`}
               </span>
             </p>
           </>
@@ -79,7 +86,7 @@ function Figure({ testId, label, unit, price, analogId, period, diff, analogs, v
 /**
  * Две карточки панели работы (спека лестницы аналогов §2.20): самая низкая и самая свежая
  * расценка, цена за единицу строки КП, объект и договор, дата цены и разница КП к ней
- * (`to_lowest`, `to_freshest` — готовые строки сервера). Без цифр (все аналоги — выбросы)
+ * (`to_lowest`, `to_freshest` и разницы за единицу `*_unit` — готовые строки сервера). Без цифр (все аналоги — выбросы)
  * карточек нет.
  */
 export function FigureCards({ line, analogs, vat }: FigureCardsProps) {
@@ -94,6 +101,7 @@ export function FigureCards({ line, analogs, vat }: FigureCardsProps) {
         analogId={line.lowest.analog_id}
         period={null}
         diff={line.to_lowest}
+        diffUnit={line.to_lowest_unit}
         analogs={analogs}
         vat={vat}
       />
@@ -105,6 +113,7 @@ export function FigureCards({ line, analogs, vat }: FigureCardsProps) {
         analogId={line.freshest?.analog_id ?? null}
         period={line.freshest?.period ?? null}
         diff={line.to_freshest}
+        diffUnit={line.to_freshest_unit}
         analogs={analogs}
         vat={vat}
       />

@@ -3559,6 +3559,9 @@ export interface OurPriceLine {
   position: "above" | "in" | "below" | null;
   to_lowest: MoneyPair | null;
   to_freshest: MoneyPair | null;
+  /** Разница цены КП за единицу к самой низкой / свежей (₽ за единицу строки, без округления). */
+  to_lowest_unit: MoneyPair | null;
+  to_freshest_unit: MoneyPair | null;
   over_lowest: MoneyPair | null;
   over_freshest: MoneyPair | null;
   below: MoneyPair | null;

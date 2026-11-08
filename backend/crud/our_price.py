@@ -812,6 +812,8 @@ def _line_view(row: KpLineRow, result: LineResult, rate: Decimal | None, history
         "position": result.position,
         "to_lowest": money_pair(result.to_ours, rate, unit=False),
         "to_freshest": money_pair(result.to_freshest, rate, unit=False),
+        "to_lowest_unit": money_pair(result.to_ours_unit, rate, unit=True),
+        "to_freshest_unit": money_pair(result.to_freshest_unit, rate, unit=True),
         "over_lowest": money_pair(result.bargain, rate, unit=False),
         "over_freshest": money_pair(over_freshest, rate, unit=False),
         "below": money_pair(result.below, rate, unit=False),

@@ -691,6 +691,7 @@ lowest:    {value, analog_id|null, contract_id|null, from_all_classes} | null   
 freshest:  {value, analog_id|null, contract_id|null, period: "ГГГГ-ММ"|null} | null
 range, position                   /* по остатку (работы) */
 to_lowest, to_freshest            /* было to_ours */
+to_lowest_unit, to_freshest_unit  /* разница за единицу: цена КП за ед. − цифра (у систем ₽/м² группы), без веса и доли; null без цифры */
 over_lowest, over_freshest, below /* было bargain, below */
 analogs_count: int                /* аналогов на ступени, с выбросами; у систем 0 */
 no_history_reason: "no_family"|"no_params"|"no_zone_match" | null
@@ -825,7 +826,8 @@ DoD 9.
   «Договоры на этой ступени» —
   - подпись ступени (§2.8) и зона строки;
   - две карточки: «Самая низкая расценка» и «Самая свежая расценка» — цена,
-    объект, дата цены, разница КП к ней (`to_lowest`, `to_freshest`);
+    объект, дата цены, разница КП к ней — сначала за единицу, затем итог («КП выше на 11 200,00 за м³ · +14 078 400 ₽»;
+    `to_lowest_unit`, `to_freshest_unit`, затем `to_lowest`, `to_freshest`);
   - «Аналоги» — таблица справки (`ui/table`): первые пять, «ещё {N}»
     (`ui/collapsible`); у строки — метки, цепочка разделов мелким шрифтом;
     у `admin` — «сделать целью» у аналогов с `selectable`;

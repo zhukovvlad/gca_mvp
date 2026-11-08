@@ -299,6 +299,11 @@ class LineResult:
     #: Самая свежая расценка; `None` — её нет (ни у одного аналога или договора нет даты).
     freshest: Figure | None = None
     to_freshest: Decimal | None = None
+    #: Разница за единицу к самой низкой: цена КП за единицу - ours, без веса и доли
+    #: (в ответе — `to_lowest_unit`). У системы — ₽/м² группы, одна на всех её членов.
+    to_ours_unit: Decimal | None = None
+    #: То же к самой свежей (в ответе — `to_freshest_unit`).
+    to_freshest_unit: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -575,6 +580,8 @@ class _Comparison:
     freshest: Figure | None
     to_freshest: Decimal | None
     over_freshest: Decimal | None
+    to_ours_unit: Decimal
+    to_freshest_unit: Decimal | None
 
 
 def _freshest_rate(
@@ -622,8 +629,10 @@ def _compare(
 
     mismatch = unit_mismatch(price, rung_rates)
     with localcontext(_CONTEXT):
-        to_ours = (price - ours) * quantity
-        to_freshest = None if freshest is None else (price - freshest.value) * quantity
+        to_ours_unit = price - ours
+        to_freshest_unit = None if freshest is None else price - freshest.value
+        to_ours = to_ours_unit * quantity
+        to_freshest = None if to_freshest_unit is None else to_freshest_unit * quantity
         if mismatch is None:
             state = LineState.comparable
             bargain: Decimal | None = max(_ZERO, to_ours)
@@ -649,6 +658,8 @@ def _compare(
         freshest=freshest,
         to_freshest=to_freshest,
         over_freshest=over_freshest,
+        to_ours_unit=to_ours_unit,
+        to_freshest_unit=to_freshest_unit,
     )
 
 
@@ -705,8 +716,10 @@ def _evaluate_work(
     mismatch = None if ladder.kp_ratio is None else Mismatch(kp_ratio=ladder.kp_ratio, contracts=())
     comparable = mismatch is None
     with localcontext(_CONTEXT):
-        to_ours = (kp_unit_net - ladder.lowest.value) * line.weight
-        to_freshest = None if ladder.freshest is None else (kp_unit_net - ladder.freshest.value) * line.weight
+        to_ours_unit = kp_unit_net - ladder.lowest.value
+        to_freshest_unit = None if ladder.freshest is None else kp_unit_net - ladder.freshest.value
+        to_ours = to_ours_unit * line.weight
+        to_freshest = None if to_freshest_unit is None else to_freshest_unit * line.weight
         bargain = max(_ZERO, to_ours) if comparable else None
         below = (kp_unit_net - price_range.min) * line.weight if comparable and position == "below" else None
     return _result(
@@ -725,6 +738,8 @@ def _evaluate_work(
         mismatch=mismatch,
         freshest=ladder.freshest,
         to_freshest=to_freshest,
+        to_ours_unit=to_ours_unit,
+        to_freshest_unit=to_freshest_unit,
     )
 
 
@@ -895,6 +910,8 @@ def _evaluate_family(
                         mismatch=cmp.mismatch,
                         freshest=cmp.freshest,
                         to_freshest=_line_part(cmp.to_freshest, member.kp_total_net, group_net),
+                        to_ours_unit=cmp.to_ours_unit,
+                        to_freshest_unit=cmp.to_freshest_unit,
                     )
             results[member.line.position_item_id] = _result(
                 member.line,
