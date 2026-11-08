@@ -293,16 +293,17 @@ def _totals_view(totals: OfferTotals, rate: Decimal | None) -> dict:
     }
 
 
-def _progress(kp_lines: Mapping[int, Sequence[KpLineRow]]) -> dict:
+def _progress(kp_lines: Mapping[int, Sequence[KpLineRow]], results: Mapping[int, LineResult]) -> dict:
     """Тройка плашки по всем строкам (без глав) всех КП этапа. «Ждёт решения
-    администратора» — строка без варианта, не `in_progress`, с флагом сигнала."""
+    администратора» — то же правило, что у флага строки (`_waiting_admin`); `results` — расчёт
+    строк (у участника без расчёта строк в нём нет: считается только правило без варианта)."""
     lines_total = in_progress = waiting_admin = 0
     for rows in kp_lines.values():
         for row in rows:
             lines_total += 1
             if row.line.in_progress:
                 in_progress += 1
-            elif _is_waiting_admin(row.line):
+            elif _waiting_admin(row.line, results.get(row.line.position_item_id)):
                 waiting_admin += 1
     return {"lines_total": lines_total, "in_progress": in_progress, "waiting_admin": waiting_admin}
 
@@ -622,7 +623,9 @@ def build_round_view(db: Session, tender_id: int, round_id: int, *, inflation_se
     result = {
         "tender": _tender_view(head),
         "round": _round_view(head),
-        "progress": _progress(scene.kp_lines),
+        "progress": _progress(
+            scene.kp_lines, {pid: res for ev in evaluations.values() for pid, res in ev.lines.items()}
+        ),
         "history": _history_view(scene, history_rate),
         "participants": participant_views,
         "articles": articles,
@@ -726,9 +729,12 @@ def _mismatch_view(result: LineResult) -> dict | None:
     }
 
 
-def _waiting_admin(line: KpLine, result: LineResult) -> bool:
-    """«Ждёт решения администратора»: нет варианта (спека 4а §2.11) либо нет зоны у цепочки (§2.10)."""
-    return _is_waiting_admin(line) or (result.state is LineState.no_zone and line.zone_waiting)
+def _waiting_admin(line: KpLine, result: LineResult | None) -> bool:
+    """«Ждёт решения администратора»: нет варианта (спека 4а §2.11) либо нет зоны у цепочки (§2.10).
+    Единственное правило и для флага строки, и для счётчика плашки."""
+    return _is_waiting_admin(line) or (
+        result is not None and result.state is LineState.no_zone and line.zone_waiting
+    )
 
 
 def _line_view(row: KpLineRow, result: LineResult, rate: Decimal | None, history: HistoryIndex) -> dict:
@@ -993,7 +999,7 @@ def build_offer_view(
     result = {
         "tender": _tender_view(head),
         "round": _round_view(head),
-        "progress": _progress({participant.estimate_id: rows}),
+        "progress": _progress({participant.estimate_id: rows}, evaluation.lines),
         "history": _history_view(scene, rate),
         "participants": [view],
         "articles": articles,

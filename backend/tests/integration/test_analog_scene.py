@@ -490,6 +490,31 @@ class TestStates:
         assert line["waiting_admin"] is expected
         assert line["suggestion_queue"] is None
 
+    @pytest.mark.parametrize(
+        ("kind", "waits"),
+        [
+            pytest.param("disputed", True, id="disputed"),
+            pytest.param("error", True, id="error"),
+            pytest.param("live", False, id="live-job"),
+            pytest.param("undetermined", False, id="undetermined"),
+        ],
+    )
+    def test_the_progress_counts_waiting_admin_by_the_rule_of_the_line_flag(
+        self, member_client, stage, world, db_session, kind, waits
+    ):
+        chain = world.chain(("Раздел Б",), None, proposed="territory" if kind == "disputed" else None)
+        if kind in ("error", "live"):
+            _zone_job(db_session, chain, "error" if kind == "error" else "pending")
+        rnd, part, item = _scene_with_chain(stage, chain)
+
+        offer = _ok(member_client, stage.tender, rnd, part)
+        round_body = _round_get(member_client, stage.tender, rnd).json()
+
+        line = _line_of(offer, item)
+        assert line["waiting_admin"] is waits
+        assert offer["progress"]["waiting_admin"] == int(waits)
+        assert round_body["progress"]["waiting_admin"] == int(waits)
+
     def test_a_live_zone_job_makes_the_line_in_progress_and_counts_in_the_progress(
         self, member_client, stage, world, db_session
     ):
