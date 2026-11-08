@@ -718,6 +718,26 @@ class TestSystemRung:
 
         assert [row[:3] for row in _family_rows(db_session, part.estimate)] == [(stage.family.id, "f", "all")]
 
+    def test_a_pair_that_is_not_a_known_rung_is_unknown_rung(self, admin_client, stage, db_session):
+        """Перенесено из удалённого `TestWorkRung` (4б): у системной строки проверка пары
+        осталась прежней."""
+        rnd, first, _, item, _ = _system_scene(stage)
+
+        for level, scope in (("v", "x"), ("x", "cls"), ("", ""), ("V", "cls"), ("v", "CLS")):
+            response = self._put(admin_client, stage, rnd, first, item, level, scope)
+            assert (response.status_code, _code(response)) == (422, "unknown_rung"), (level, scope)
+        assert _everything(db_session) == (0, 0, 0)
+
+    def test_an_unknown_pair_wins_over_no_ladder(self, admin_client, stage):
+        """Порядок отказов 4б у системной строки: неизвестная пара раньше `no_ladder`."""
+        rnd = stage.round()
+        part = stage.participant(rnd, "Подрядчик А", vat=D("0"))
+        item = _put(stage, part.proposal, "R", D("1"), total=D(90000), kind="SYSTEM", variant=None)
+
+        response = self._put(admin_client, stage, rnd, part, item, "v", "x")
+
+        assert (response.status_code, _code(response)) == (422, "unknown_rung")
+
     def test_delete_removes_the_family_rung_of_this_estimate_only(
         self, admin_client, stage, db_session, factories
     ):

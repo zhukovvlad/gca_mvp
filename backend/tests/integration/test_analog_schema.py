@@ -661,6 +661,28 @@ def _constraint_names(conn) -> set:
     }
 
 
+def _constraint_defs(conn) -> dict:
+    """Определения всех ограничений схемы: откат обязан вернуть не только имена, но и
+    тексты переписанных CHECK (`PREVIOUS_*` миграции)."""
+    return dict(
+        conn.execute(
+            sa.text(
+                "SELECT c.conrelid::regclass::text || '.' || c.conname, pg_get_constraintdef(c.oid) "
+                "FROM pg_constraint c JOIN pg_namespace n ON n.oid = c.connamespace "
+                "WHERE n.nspname = 'public'"
+            )
+        ).all()
+    )
+
+
+def _index_defs(conn) -> dict:
+    return dict(
+        conn.execute(
+            sa.text("SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'public'")
+        ).all()
+    )
+
+
 def _column_names(conn, table: str) -> set:
     return {
         row[0]
@@ -798,6 +820,8 @@ class TestDowngradeOnEmptyDatabase:
                 with engine.connect() as conn:
                     before_tables = _table_names(conn)
                     before_constraints = _constraint_names(conn)
+                    before_constraint_defs = _constraint_defs(conn)
+                    before_index_defs = _index_defs(conn)
                     before_columns = {
                         t: _column_names(conn, t)
                         for t in ("position_items", "family_parameters", "semantic_jobs")
@@ -819,6 +843,8 @@ class TestDowngradeOnEmptyDatabase:
                     assert _revision(conn) == "0023"
                     assert _table_names(conn) == before_tables
                     assert _constraint_names(conn) == before_constraints
+                    assert _constraint_defs(conn) == before_constraint_defs
+                    assert _index_defs(conn) == before_index_defs
                     for table, columns in before_columns.items():
                         assert _column_names(conn, table) == columns
                     assert conn.execute(sa.text("SELECT count(*) FROM kp_line_rungs")).scalar_one() == 0
@@ -912,6 +938,93 @@ class TestDowngradeRefusedByEachDecision:
                 command.downgrade(cfg, "0023")
                 with engine.connect() as conn:
                     assert _revision(conn) == "0023"
+            finally:
+                engine.dispose()
+
+
+@pytest.mark.migration_roundtrip
+class TestDowngradeDropsMachineRows:
+    def test_machine_rows_of_the_new_carriers_go_and_the_old_jobs_stay(self):
+        """Машинные строки новых носителей — цепочка правила со ссылкой позиции, задания
+        `section_zone` и `releasable_params`, предложение «можно отпустить» — откат не держат
+        и уходят; задания прежних видов остаются. Без удаления заданий новых видов прежний
+        CHECK вида на откате не встал бы."""
+        from tests.integration.test_catalog_discovery_schema import _seed_three_job_kinds
+
+        with _scratch_alembic("0024 downgrade machine rows") as (command, cfg, scratch_url):
+            command.upgrade(cfg, "0024")
+            engine = sa.create_engine(scratch_url)
+            try:
+                with engine.begin() as conn:
+                    family_id = _seed_three_job_kinds(conn)["family"]
+                    schema_id = conn.execute(
+                        sa.text(
+                            "SELECT id FROM family_parameter_schemas "
+                            "WHERE family_id = :f AND status = 'frozen'"
+                        ),
+                        {"f": family_id},
+                    ).scalar_one()
+                    chain_id = conn.execute(
+                        sa.text(
+                            "INSERT INTO section_chains (chain_key, titles, zone, zone_source) "
+                            "VALUES ('k', ARRAY['t'], 'whole', 'rule') RETURNING id"
+                        )
+                    ).scalar_one()
+                    parameter_id = conn.execute(
+                        sa.text(
+                            "INSERT INTO family_parameters (schema_id, ordinal, name, name_norm) "
+                            "VALUES (:s, 1, 'p', 'p') RETURNING id"
+                        ),
+                        {"s": schema_id},
+                    ).scalar_one()
+                    conn.execute(
+                        sa.text(
+                            "INSERT INTO releasable_proposals "
+                            "(parameter_id, releasable, confidence, reason, request_hash) "
+                            "VALUES (:p, true, 0.9, 'r', 'h')"
+                        ),
+                        {"p": parameter_id},
+                    )
+                    columns = (
+                        "kind, context_id, family_id, schema_id, section_chain_id, request_hash, "
+                        "status, prompt_version, model_requested, place_dictionary_version, "
+                        "candidates_hash, prefix_hash, input_hash, response_schema_version, "
+                        "serialization_version"
+                    )
+                    for kind, fam, schema, chain in (
+                        ("section_zone", None, None, chain_id),
+                        ("releasable_params", family_id, schema_id, None),
+                    ):
+                        conn.execute(
+                            sa.text(
+                                f"INSERT INTO semantic_jobs ({columns}) VALUES "
+                                "(:k, NULL, :f, :s, :c, 'new-kind', 'pending', '1', 'm', 1, "
+                                "'c', 'p', 'i', '1', '1')"
+                            ),
+                            {"k": kind, "f": fam, "s": schema, "c": chain},
+                        )
+                with engine.begin() as conn:
+                    conn.execute(sa.text("SET LOCAL session_replication_role = replica"))
+                    conn.execute(
+                        sa.text(
+                            "INSERT INTO position_items "
+                            "(proposal_id, position_key_in_proposal, job_title_in_proposal, "
+                            " section_chain_id) VALUES (1, '1', 't', :c)"
+                        ),
+                        {"c": chain_id},
+                    )
+
+                command.downgrade(cfg, "0023")
+
+                with engine.connect() as conn:
+                    assert _revision(conn) == "0023"
+                    kinds = conn.execute(
+                        sa.text("SELECT kind FROM semantic_jobs ORDER BY kind")
+                    ).scalars().all()
+                    assert kinds == ["context_values", "family_schema", "family_suggestion"]
+                    assert conn.execute(
+                        sa.text("SELECT count(*) FROM position_items")
+                    ).scalar_one() == 1
             finally:
                 engine.dispose()
 
