@@ -484,9 +484,12 @@ _DOMAIN_TABLES = (
     # Решения по строкам КП и отправленные файлы (миграция 0023).
     "kp_line_agreements",
     "kp_line_comments",
-    "kp_line_rungs",
     "kp_family_rungs",
     "kp_sent_files",
+    # Лестница аналогов (миграция 0024): три новые таблицы — ЯВНО; `kp_line_rungs` ушла.
+    "section_chains",
+    "releasable_proposals",
+    "kp_line_targets",
     "position_items",
     "estimate_additional_works",
     "proposal_summary_lines",

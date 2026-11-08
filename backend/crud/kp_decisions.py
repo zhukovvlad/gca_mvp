@@ -1,15 +1,14 @@
 """Решения по строкам КП: чтение для сцены «Против нашей цены» (спека 4б §2.3–§2.6, §2.13).
 
-Четыре таблицы решений — «Договорились», свой комментарий, ручная ступень работы
-и ручная ступень семьи системы — читаются одним вызовом `load_decisions` на все
-сметы этапа: четыре `SELECT`, сколько бы смет, строк и решений ни было. Автор
-решения (идентификатор и почта) приходит соединением с `users`, отдельного запроса
-на него нет. Запись решений — `put_*`/`delete_*` ниже: они флешат, транзакцию ведёт
+Три таблицы решений — «Договорились», свой комментарий и ручная ступень семьи
+системы — читаются одним вызовом `load_decisions` на все сметы этапа: три `SELECT`,
+сколько бы смет, строк и решений ни было. Ручной ступени работы больше нет (миграция
+0024): `saved.work` всегда пуст. Автор решения (идентификатор и почта) приходит
+соединением с `users`, отдельного запроса на него нет. Запись решений — `put_*`/`delete_*` ниже: они флешат, транзакцию ведёт
 роутер.
 
-Снимок ключа ступени работы хранится в `jsonb` без внешних ключей; перевод в
-`Hashable`, с которым сравнивает ядро (`LineKey.at`), — пара `snapshot_to_json` /
-`snapshot_from_json`. Тексты единиц строк — `load_unit_texts`; строка файла для
+Перевод ключа ступени в `Hashable`, с которым сравнивает ядро (`LineKey.at`), — пара
+`snapshot_to_json` / `snapshot_from_json`. Тексты единиц строк — `load_unit_texts`; строка файла для
 комментария собирается `kp_source_line`.
 """
 
@@ -33,7 +32,6 @@ from models import (
     KpFamilyRung,
     KpLineAgreement,
     KpLineComment,
-    KpLineRung,
     KpSentFile,
     Lot,
     Offer,
@@ -58,6 +56,9 @@ CODE_UNKNOWN_VAT_BASE = "unknown_vat_base"
 #: Код отказа панели строки и `PUT …/rung`: ступень не названа целиком, неизвестна
 #: или недоступна строке.
 CODE_UNKNOWN_RUNG = "unknown_rung"
+#: Код отказа `PUT …/rung` у строки-работы: ручной ступени работы больше нет, цель
+#: работы задаётся выбором аналога.
+CODE_RUNG_NOT_APPLICABLE = "rung_not_applicable"
 
 
 @dataclass(frozen=True)
@@ -104,11 +105,6 @@ def load_decisions(db: Session, estimate_ids: Sequence[int]) -> dict[int, Estima
         agreements[estimate_id][pid] = (net, at, user_id, email)
     for estimate_id, pid, text, at, user_id, email in db.execute(_by_estimate(KpLineComment, ids, KpLineComment.text)):
         comments[estimate_id][pid] = (text, at, user_id, email)
-    for estimate_id, pid, level, scope, key, at, user_id, email in db.execute(
-        _by_estimate(KpLineRung, ids, KpLineRung.level, KpLineRung.scope, KpLineRung.key)
-    ):
-        work[estimate_id][pid] = SavedWorkRung(Rung(level, scope), snapshot_from_json(key))
-        meta[estimate_id][("line", pid)] = (at, user_id, email)
     for estimate_id, family_id, level, scope, parameter_id, at, user_id, email in db.execute(
         sa.select(
             KpFamilyRung.estimate_id,
@@ -143,7 +139,7 @@ class DecisionCounts:
 
     agreements: int
     comments: int
-    #: ступени строк плюс ступени семей
+    #: ступени семей (ручной ступени работы больше нет)
     rungs: int
 
     @property
@@ -169,10 +165,10 @@ def _count_decisions(db: Session, estimate_ids: sa.Select) -> DecisionCounts:
         .where(KpFamilyRung.estimate_id.in_(estimate_ids))
         .scalar_subquery()
     )
-    agreements, comments, line_rungs, family_rungs = db.execute(
-        sa.select(on_items(KpLineAgreement), on_items(KpLineComment), on_items(KpLineRung), family)
+    agreements, comments, family_rungs = db.execute(
+        sa.select(on_items(KpLineAgreement), on_items(KpLineComment), family)
     ).one()
-    return DecisionCounts(agreements, comments, line_rungs + family_rungs)
+    return DecisionCounts(agreements, comments, family_rungs)
 
 
 def count_round_decisions(db: Session, round_id: int) -> DecisionCounts:
@@ -419,17 +415,23 @@ def _unknown_rung() -> DomainError:
 def put_rung(
     db: Session, tender_id: int, round_id: int, offer_id: int, pid: int, *, level: str, scope: str, user_id: int
 ) -> None:
-    """Сохранить ручную ступень строки. Работа пишет свою запись; системная строка — ступень
-    семьи `(смета, семья)` и удаляет собственную запись строки: та могла остаться от времени,
-    когда строка была работой, и по ней строка показывала бы сброс поверх ступени семьи.
+    """Сохранить ручную ступень системной строки: ступень семьи `(смета, семья)`. У строки-работы
+    ступени нет (миграция 0024).
 
-    Отказы по порядку: пара не образует ступень (`unknown_rung`); строка не дошла до
-    лестницы (`no_ladder`); ступени нет у строки (`unknown_rung`); у ступени нет
-    договоров (`rung_empty`). Строка считается той же сценой, что разбор, без ряда ИПЦ.
+    Отказы по порядку: строка — работа (`rung_not_applicable`); пара не образует ступень
+    (`unknown_rung`); строка не дошла до лестницы (`no_ladder`); ступени нет у строки
+    (`unknown_rung`); у ступени нет договоров (`rung_empty`). Строка считается той же сценой,
+    что разбор, без ряда ИПЦ.
     """
     from crud.our_price import line_for_rung_check  # crud.our_price читает решения из этого модуля
 
     estimate_id, row, result = line_for_rung_check(db, tender_id, round_id, offer_id, pid)
+    if not row.line.is_system:
+        raise DomainError(
+            422,
+            "У работы нет ручной ступени: цель работы выбирается среди аналогов.",
+            code=CODE_RUNG_NOT_APPLICABLE,
+        )
     rung = next((r for r in RUNG_ORDER if r.level == level and r.scope == scope), None)
     if rung is None:
         raise _unknown_rung()
@@ -441,59 +443,35 @@ def put_rung(
         raise DomainError(422, "На этой ступени нет договоров.", code=CODE_RUNG_EMPTY)
 
     key = row.line.key
-    if row.line.is_system:
-        stmt = pg_insert(KpFamilyRung).values(
-            estimate_id=estimate_id,
-            work_family_id=key.family_id,
-            level=level,
-            scope=scope,
-            first_main_parameter_id=key.first_main[0] if level == "p" else None,
-            set_by=user_id,
-            set_at=sa.func.now(),
+    stmt = pg_insert(KpFamilyRung).values(
+        estimate_id=estimate_id,
+        work_family_id=key.family_id,
+        level=level,
+        scope=scope,
+        first_main_parameter_id=key.first_main[0] if level == "p" else None,
+        set_by=user_id,
+        set_at=sa.func.now(),
+    )
+    db.execute(
+        stmt.on_conflict_do_update(
+            index_elements=[KpFamilyRung.estimate_id, KpFamilyRung.work_family_id],
+            set_={
+                "level": stmt.excluded.level,
+                "scope": stmt.excluded.scope,
+                "first_main_parameter_id": stmt.excluded.first_main_parameter_id,
+                "set_by": stmt.excluded.set_by,
+                "set_at": stmt.excluded.set_at,
+            },
         )
-        db.execute(
-            stmt.on_conflict_do_update(
-                index_elements=[KpFamilyRung.estimate_id, KpFamilyRung.work_family_id],
-                set_={
-                    "level": stmt.excluded.level,
-                    "scope": stmt.excluded.scope,
-                    "first_main_parameter_id": stmt.excluded.first_main_parameter_id,
-                    "set_by": stmt.excluded.set_by,
-                    "set_at": stmt.excluded.set_at,
-                },
-            )
-        )
-        db.execute(sa.delete(KpLineRung).where(KpLineRung.position_item_id == pid))
-    else:
-        stmt = pg_insert(KpLineRung).values(
-            position_item_id=pid,
-            level=level,
-            scope=scope,
-            key=snapshot_to_json(rung.level, key.at(rung.level)),
-            set_by=user_id,
-            set_at=sa.func.now(),
-        )
-        db.execute(
-            stmt.on_conflict_do_update(
-                index_elements=[KpLineRung.position_item_id],
-                set_={
-                    "level": stmt.excluded.level,
-                    "scope": stmt.excluded.scope,
-                    "key": stmt.excluded.key,
-                    "set_by": stmt.excluded.set_by,
-                    "set_at": stmt.excluded.set_at,
-                },
-            )
-        )
+    )
     db.flush()
 
 
 def delete_rung(db: Session, tender_id: int, round_id: int, offer_id: int, pid: int) -> None:
-    """Снять ручную ступень: у работы — запись строки, у системной строки — ступень семьи
-    сметы и собственная запись строки."""
+    """Снять ручную ступень: у системной строки — ступень семьи сметы; у работы снимать
+    нечего, ответ тот же 204."""
     estimate_id = _line_estimate(db, tender_id, round_id, offer_id, pid)
     (row,) = (r for r in load_kp_lines(db, [estimate_id])[estimate_id] if r.line.position_item_id == pid)
-    db.execute(sa.delete(KpLineRung).where(KpLineRung.position_item_id == pid))
     if row.line.is_system and row.line.key is not None:
         db.execute(
             sa.delete(KpFamilyRung).where(

@@ -249,7 +249,8 @@ def delete_line_comment(tender_id: int, round_id: int, offer_id: int, position_i
 @router.put(_LINE + "/rung", status_code=status.HTTP_204_NO_CONTENT)
 def put_line_rung(tender_id: int, round_id: int, offer_id: int, position_item_id: int, body: RungPut,
                   db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
-    """Ручная ступень строки КП (спека 4б §2.5, §2.6): `level` и `scope` строками, отказы кодами."""
+    """Ручная ступень системной строки КП (спека 4б §2.5, §2.6): `level` и `scope` строками, отказы
+    кодами; у строки-работы — 422 `rung_not_applicable`."""
     return _write_decision(db, lambda: crud_kp_decisions.put_rung(
         db, tender_id, round_id, offer_id, position_item_id, level=body.level, scope=body.scope,
         user_id=current_user.id))

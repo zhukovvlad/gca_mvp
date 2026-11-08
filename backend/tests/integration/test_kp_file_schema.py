@@ -11,6 +11,10 @@ CHECK в PostgreSQL отвергает только `FALSE`: `NULL` проход
 
 `upgrade` и `downgrade` на пустой и непустой схеме — на отдельной scratch-базе
 (`@pytest.mark.migration_roundtrip`).
+
+Миграция 0024 удалила `kp_line_rungs`: проверки живой схемы идут по четырём таблицам
+(`_LIVE_TABLES`), проверки самой миграции 0023 на scratch-базе, остановленной на ней, —
+по всем пяти (`_TABLES`).
 """
 from __future__ import annotations
 
@@ -33,7 +37,6 @@ from models import (
     KpFamilyRung,
     KpLineAgreement,
     KpLineComment,
-    KpLineRung,
     KpSentFile,
 )
 from tests.integration.test_catalog_discovery_schema import rejected_by
@@ -50,6 +53,8 @@ _TABLES = (
     "kp_family_rungs",
     "kp_sent_files",
 )
+#: Таблицы 0023, пережившие миграцию 0024.
+_LIVE_TABLES = tuple(table for table in _TABLES if table != "kp_line_rungs")
 
 
 def _migration_0023():
@@ -92,18 +97,6 @@ def _comment(session, world, **overrides) -> KpLineComment:
     values = dict(position_item_id=world["item"].id, text="Комментарий", set_by=world["user_id"])
     values.update(overrides)
     row = KpLineComment(**values)
-    session.add(row)
-    session.flush()
-    return row
-
-
-def _line_rung(session, world, **overrides) -> KpLineRung:
-    values = dict(
-        position_item_id=world["item"].id, level="v", scope="cls", key={"variant_id": 7},
-        set_by=world["user_id"],
-    )
-    values.update(overrides)
-    row = KpLineRung(**values)
     session.add(row)
     session.flush()
     return row
@@ -158,10 +151,6 @@ _EXPECTED_CONSTRAINTS = {
         "pk_kp_line_comments", "fk_kp_line_comments_position_item",
         "fk_kp_line_comments_set_by", "ck_kp_line_comments_text_length",
     },
-    "kp_line_rungs": {
-        "pk_kp_line_rungs", "fk_kp_line_rungs_position_item", "fk_kp_line_rungs_set_by",
-        "ck_kp_line_rungs_level", "ck_kp_line_rungs_scope",
-    },
     "kp_family_rungs": {
         "pk_kp_family_rungs", "fk_kp_family_rungs_estimate", "fk_kp_family_rungs_work_family",
         "fk_kp_family_rungs_set_by", "ck_kp_family_rungs_level", "ck_kp_family_rungs_scope",
@@ -175,32 +164,33 @@ _EXPECTED_CONSTRAINTS = {
 
 
 class TestTablesAndConstraintNames:
-    def test_the_five_tables_exist(self, db_session):
+    def test_the_four_surviving_tables_exist(self, db_session):
         found = {
             row[0]
             for row in db_session.execute(
                 sa.text(
                     "SELECT table_name FROM information_schema.tables "
-                    "WHERE table_schema = 'public' AND table_name LIKE 'kp\\_%'"
+                    "WHERE table_schema = 'public' AND table_name LIKE 'kp\\_%' "
+                    "AND table_name <> 'kp_line_targets'"
                 )
             )
         }
-        assert found == set(_TABLES)
+        assert found == set(_LIVE_TABLES)
 
-    @pytest.mark.parametrize("table", _TABLES)
+    @pytest.mark.parametrize("table", _LIVE_TABLES)
     def test_constraints_carry_the_convention_names(self, db_session, table):
         assert set(_live_constraints(db_session, table)) == _EXPECTED_CONSTRAINTS[table]
 
     def test_only_the_parameter_snapshot_is_nullable(self, db_session):
         """Отсутствие решения — отсутствие строки: `NULL` допустим ровно в одном
-        столбце из всех пяти таблиц."""
+        столбце из всех четырёх таблиц."""
         nullable = {
             (table, column)
             for table, column in db_session.execute(
                 sa.text(
                     "SELECT table_name, column_name FROM information_schema.columns "
                     "WHERE table_schema = 'public' AND table_name LIKE 'kp\\_%' "
-                    "AND is_nullable = 'YES'"
+                    "AND table_name <> 'kp_line_targets' AND is_nullable = 'YES'"
                 )
             )
         }
@@ -313,41 +303,13 @@ class TestCommentLength:
 
 
 # ---------------------------------------------------------------------------
-#  4. Ступени: level in (v, p, f), scope in (cls, all) — в обеих таблицах
+#  4. Ступени семьи: level in (v, p, f), scope in (cls, all)
 # ---------------------------------------------------------------------------
 
 class TestRungEnums:
     def test_the_constants(self):
         assert KP_RUNG_LEVELS == ("v", "p", "f")
         assert KP_RUNG_SCOPES == ("cls", "all")
-
-    @pytest.mark.parametrize("level", ["v", "f"])
-    def test_a_line_rung_accepts_the_listed_levels(self, db_session, factories, level):
-        world = _world(db_session, factories)
-        row = _line_rung(db_session, world, level=level)
-        assert row.level == level
-
-    def test_a_line_rung_accepts_the_parameter_level(self, db_session, factories):
-        world = _world(db_session, factories)
-        row = _line_rung(db_session, world, level="p")
-        assert row.level == "p"
-
-    @pytest.mark.parametrize("scope", ["cls", "all"])
-    def test_a_line_rung_accepts_the_listed_scopes(self, db_session, factories, scope):
-        world = _world(db_session, factories)
-        assert _line_rung(db_session, world, scope=scope).scope == scope
-
-    @pytest.mark.parametrize("bad", ["x", "V", "", "w"])
-    def test_a_line_rung_rejects_an_unlisted_level(self, db_session, factories, bad):
-        world = _world(db_session, factories)
-        with rejected_by(db_session, "ck_kp_line_rungs_level"):
-            _line_rung(db_session, world, level=bad)
-
-    @pytest.mark.parametrize("bad", ["x", "ALL", "", "object"])
-    def test_a_line_rung_rejects_an_unlisted_scope(self, db_session, factories, bad):
-        world = _world(db_session, factories)
-        with rejected_by(db_session, "ck_kp_line_rungs_scope"):
-            _line_rung(db_session, world, scope=bad)
 
     @pytest.mark.parametrize("bad", ["x", "V", ""])
     def test_a_family_rung_rejects_an_unlisted_level(self, db_session, factories, bad):
@@ -365,31 +327,6 @@ class TestRungEnums:
     def test_a_family_rung_accepts_the_listed_scopes(self, db_session, factories, scope):
         world = _world(db_session, factories)
         assert _family_rung(db_session, world, scope=scope).scope == scope
-
-    def test_the_snapshot_key_round_trips_as_json(self, db_session, factories):
-        world = _world(db_session, factories)
-        snapshot = {"variant_id": 7, "values": [1, 2], "note": None}
-        row = _line_rung(db_session, world, key=snapshot)
-        db_session.expire(row)
-        assert row.key == snapshot
-
-    def test_a_null_snapshot_key_is_rejected(self, db_session, factories):
-        world = _world(db_session, factories)
-        with pytest.raises(sa.exc.IntegrityError) as exc, db_session.begin_nested():
-            db_session.add(
-                KpLineRung(
-                    position_item_id=world["item"].id, level="v", scope="cls", key=sa.null(),
-                    set_by=world["user_id"],
-                )
-            )
-            db_session.flush()
-        assert exc.value.orig.diag.column_name == "key"
-
-    def test_one_rung_per_line(self, db_session, factories):
-        world = _world(db_session, factories)
-        _line_rung(db_session, world)
-        with rejected_by(db_session, "pk_kp_line_rungs"):
-            _line_rung(db_session, world, level="f")
 
 
 # ---------------------------------------------------------------------------
@@ -496,26 +433,22 @@ def _count(session, table: str) -> int:
 
 
 class TestCascades:
-    def test_deleting_the_line_removes_its_agreement_comment_and_rung(
-        self, db_session, factories
-    ):
+    def test_deleting_the_line_removes_its_agreement_and_comment(self, db_session, factories):
         world = _world(db_session, factories)
         _agreement(db_session, world)
         _comment(db_session, world)
-        _line_rung(db_session, world)
         db_session.execute(
             sa.text("DELETE FROM position_items WHERE id = :i"), {"i": world["item"].id}
         )
-        assert [_count(db_session, t) for t in _TABLES[:3]] == [0, 0, 0]
+        assert [_count(db_session, t) for t in _LIVE_TABLES[:2]] == [0, 0]
 
     def test_deleting_another_line_leaves_the_rows_alone(self, db_session, factories):
         world = _world(db_session, factories)
         other = factories.PositionItemFactory.create()
         _agreement(db_session, world)
         _comment(db_session, world)
-        _line_rung(db_session, world)
         db_session.execute(sa.text("DELETE FROM position_items WHERE id = :i"), {"i": other.id})
-        assert [_count(db_session, t) for t in _TABLES[:3]] == [1, 1, 1]
+        assert [_count(db_session, t) for t in _LIVE_TABLES[:2]] == [1, 1]
 
     def test_deleting_the_estimate_removes_its_family_rungs_only(self, db_session, factories):
         world = _world(db_session, factories)
@@ -552,12 +485,11 @@ class TestUserRestrict:
     _MAKERS = {
         "kp_line_agreements": (_agreement, "fk_kp_line_agreements_set_by"),
         "kp_line_comments": (_comment, "fk_kp_line_comments_set_by"),
-        "kp_line_rungs": (_line_rung, "fk_kp_line_rungs_set_by"),
         "kp_family_rungs": (_family_rung, "fk_kp_family_rungs_set_by"),
         "kp_sent_files": (_sent_file, "fk_kp_sent_files_created_by"),
     }
 
-    @pytest.mark.parametrize("table", _TABLES)
+    @pytest.mark.parametrize("table", _LIVE_TABLES)
     def test_a_user_with_a_row_cannot_be_deleted(self, db_session, factories, table):
         world = _world(db_session, factories)
         maker, constraint = self._MAKERS[table]
@@ -626,7 +558,8 @@ class TestParityWithMigration:
         rows = db_session.execute(
             sa.text(
                 "SELECT conrelid::regclass::text, conname, confdeltype FROM pg_constraint "
-                "WHERE contype = 'f' AND conrelid::regclass::text LIKE 'kp\\_%'"
+                "WHERE contype = 'f' AND conrelid::regclass::text LIKE 'kp\\_%' "
+                "AND conrelid::regclass::text <> 'kp_line_targets'"
             )
         ).all()
         actions = {name: kind for _table, name, kind in rows}
@@ -636,8 +569,6 @@ class TestParityWithMigration:
             "fk_kp_line_agreements_set_by": "r",
             "fk_kp_line_comments_position_item": "c",
             "fk_kp_line_comments_set_by": "r",
-            "fk_kp_line_rungs_position_item": "c",
-            "fk_kp_line_rungs_set_by": "r",
             "fk_kp_family_rungs_estimate": "c",
             "fk_kp_family_rungs_work_family": "c",
             "fk_kp_family_rungs_set_by": "r",
@@ -645,14 +576,9 @@ class TestParityWithMigration:
             "fk_kp_sent_files_created_by": "r",
         }
 
-
     _MODEL_CHECKS = {
         KpLineAgreement: {"ck_kp_line_agreements_net_price": "CK_KP_AGREEMENT_NET_PRICE"},
         KpLineComment: {"ck_kp_line_comments_text_length": "CK_KP_COMMENT_LENGTH"},
-        KpLineRung: {
-            "ck_kp_line_rungs_level": "CK_KP_RUNG_LEVEL",
-            "ck_kp_line_rungs_scope": "CK_KP_RUNG_SCOPE",
-        },
         KpFamilyRung: {
             "ck_kp_family_rungs_level": "CK_KP_RUNG_LEVEL",
             "ck_kp_family_rungs_scope": "CK_KP_RUNG_SCOPE",
@@ -690,8 +616,6 @@ class TestParityWithMigration:
             "fk_kp_line_agreements_set_by": "RESTRICT",
             "fk_kp_line_comments_position_item": "CASCADE",
             "fk_kp_line_comments_set_by": "RESTRICT",
-            "fk_kp_line_rungs_position_item": "CASCADE",
-            "fk_kp_line_rungs_set_by": "RESTRICT",
             "fk_kp_family_rungs_estimate": "CASCADE",
             "fk_kp_family_rungs_work_family": "CASCADE",
             "fk_kp_family_rungs_set_by": "RESTRICT",
@@ -730,36 +654,6 @@ class TestDowngradeRefusalLogic:
 
     def test_all_zero_blockers_pass(self):
         assert _migration_0023()._downgrade_refusal(dict(self._ZERO)) is None
-
-
-class TestDowngradeBlockersLive:
-    """Каждая таблица — свой вход на живой схеме: считается ровно её счётчик."""
-
-    _MAKERS = {
-        "kp_line_agreements": _agreement,
-        "kp_line_comments": _comment,
-        "kp_line_rungs": _line_rung,
-        "kp_family_rungs": _family_rung,
-        "kp_sent_files": _sent_file,
-    }
-
-    def _blockers(self, db_session) -> dict:
-        return _migration_0023()._downgrade_blockers(db_session.connection())
-
-    def test_empty_tables_do_not_block(self, db_session):
-        assert self._blockers(db_session) == {table: 0 for table in _TABLES}
-
-    @pytest.mark.parametrize("table", _TABLES)
-    def test_each_table_alone_raises_exactly_its_counter(self, db_session, factories, table):
-        world = _world(db_session, factories)
-        self._MAKERS[table](db_session, world)
-        assert self._blockers(db_session) == {t: (1 if t == table else 0) for t in _TABLES}
-
-    def test_counters_count_rows(self, db_session, factories):
-        world = _world(db_session, factories)
-        _sent_file(db_session, world)
-        _sent_file(db_session, world)
-        assert self._blockers(db_session)["kp_sent_files"] == 2
 
 
 def _constraint_names(conn) -> set:
@@ -880,17 +774,17 @@ class TestDowngradeRefusedByEachTable:
 
 
 # ---------------------------------------------------------------------------
-#  10. Пять таблиц — явно в _DOMAIN_TABLES, очистка их чистит
+#  10. Четыре таблицы — явно в _DOMAIN_TABLES, очистка их чистит
 # ---------------------------------------------------------------------------
 
 class TestDomainTablesCleanup:
-    def test_the_five_tables_are_listed_explicitly(self):
+    def test_the_four_tables_are_listed_explicitly(self):
         from tests.conftest import _DOMAIN_TABLES
 
-        for table in _TABLES:
+        for table in _LIVE_TABLES:
             assert table in _DOMAIN_TABLES
 
-    def test_truncate_clears_the_five_tables(
+    def test_truncate_clears_the_four_tables(
         self, db_engine, committing_db, committing_factories
     ):
         from tests.conftest import _truncate_domain_tables
@@ -899,16 +793,15 @@ class TestDomainTablesCleanup:
         world = _world(session, committing_factories)
         _agreement(session, world)
         _comment(session, world)
-        _line_rung(session, world)
         _family_rung(session, world)
         _sent_file(session, world)
         session.commit()
 
         def counts():
             with db_engine.connect() as conn:
-                return {table: _count(conn, table) for table in _TABLES}
+                return {table: _count(conn, table) for table in _LIVE_TABLES}
 
-        assert counts() == {table: 1 for table in _TABLES}
+        assert counts() == {table: 1 for table in _LIVE_TABLES}
         session.close()
         _truncate_domain_tables(db_engine)
-        assert counts() == {table: 0 for table in _TABLES}
+        assert counts() == {table: 0 for table in _LIVE_TABLES}

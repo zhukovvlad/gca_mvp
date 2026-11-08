@@ -132,7 +132,20 @@ _REWRITTEN_BY_0022 = frozenset(
 )
 
 
+#: То же для миграции 0024: список видов заданий и две равносильности предмета
+#: (`releasable_params` — предмет-семья и версия схемы).
+_REWRITTEN_BY_0024 = frozenset(
+    {"SEMANTIC_JOB_KINDS", "CK_SEMANTIC_JOBS_SCHEMA_SUBJECT", "CK_SEMANTIC_JOBS_SCHEMA_ID_BY_KIND"}
+)
+
+
+def _migration_0024():
+    return _load_migration("*0024-analog_ladder.py", "_migration_0024")
+
+
 def _current_migration_for(name: str):
+    if name in _REWRITTEN_BY_0024:
+        return _migration_0024()
     if name in _REWRITTEN_BY_0022:
         return _migration_0022()
     return _migration_0021() if name in _REWRITTEN_BY_0021 else _migration_0019()
@@ -1644,7 +1657,10 @@ class TestParityWithMigration:
         (VARIANT_SPLIT_HINTS, "VARIANT_SPLIT_HINTS", {"path_conflict"}),
         (
             SEMANTIC_JOB_KINDS, "SEMANTIC_JOB_KINDS",
-            {"family_suggestion", "family_schema", "context_values", "family_discovery"},
+            {
+                "family_suggestion", "family_schema", "context_values", "family_discovery",
+                "section_zone", "releasable_params",
+            },
         ),
         (FAMILY_SOURCES, "FAMILY_SOURCES", {"manual", "suggestion", "auto_suggestion"}),
         (
@@ -1719,11 +1735,13 @@ class TestParityWithMigration:
             "AND (pending_family_source = 'auto_suggestion') = (pending_threshold IS NOT NULL))",
         ),
         (CK_SEMANTIC_JOBS_SCHEMA_SUBJECT, "CK_SEMANTIC_JOBS_SCHEMA_SUBJECT",
-         "(kind = 'family_schema') = (context_id IS NULL AND family_id IS NOT NULL)"),
+         "(kind IN ('family_schema', 'releasable_params')) = "
+         "(context_id IS NULL AND family_id IS NOT NULL)"),
         (CK_SEMANTIC_JOBS_CONTEXT_SUBJECT, "CK_SEMANTIC_JOBS_CONTEXT_SUBJECT",
          "(kind IN ('family_suggestion', 'context_values')) = (context_id IS NOT NULL)"),
         (CK_SEMANTIC_JOBS_SCHEMA_ID_BY_KIND, "CK_SEMANTIC_JOBS_SCHEMA_ID_BY_KIND",
-         "(kind IN ('family_schema', 'context_values')) = (schema_id IS NOT NULL)"),
+         "(kind IN ('family_schema', 'context_values', 'releasable_params')) = "
+         "(schema_id IS NOT NULL)"),
         (CK_SEMANTIC_JOBS_RESULT_SUGGESTION_KIND, "CK_SEMANTIC_JOBS_RESULT_SUGGESTION_KIND",
          "result_suggestion_id IS NULL OR kind = 'family_suggestion'"),
         (

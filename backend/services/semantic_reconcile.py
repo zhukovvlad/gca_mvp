@@ -1581,7 +1581,7 @@ def revive_answered_suggestion_job(db: Session, context_id: int) -> int:
 
 def _job_conflict_arbiter() -> list:
     """Арбитр `ON CONFLICT` — ТЕ ЖЕ выражения, что уникальный индекс миграции
-    0019 (`uq_semantic_jobs_subject_request_hash`): `literal_column`, а не
+    0024 (`uq_semantic_jobs_subject_request_hash`): `literal_column`, а не
     обычный Python-литерал, иначе psycopg3 после `prepare_threshold=5`
     перестанет находить индекс у подготовленного плана
     (`docs/insights/batch-larger-than-five.md`)."""
@@ -1591,6 +1591,7 @@ def _job_conflict_arbiter() -> list:
         sa.func.coalesce(SemanticJob.context_id, no_subject),
         sa.func.coalesce(SemanticJob.family_id, no_subject),
         sa.func.coalesce(SemanticJob.schema_id, no_subject),
+        sa.func.coalesce(SemanticJob.section_chain_id, no_subject),
         SemanticJob.request_hash,
     ]
 

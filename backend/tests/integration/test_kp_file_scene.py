@@ -27,11 +27,10 @@ from models import (
     KpFamilyRung,
     KpLineAgreement,
     KpLineComment,
-    KpLineRung,
     PositionItem,
     UnitOfMeasure,
 )
-from services.our_price import LineKey, Rung, SavedFamilyRung, SavedWorkRung
+from services.our_price import LineKey, Rung, SavedFamilyRung
 from tests.integration.test_our_price_load import World
 from tests.integration.test_our_price_offer_api import (
     FACTOR_FEB_2025,
@@ -41,10 +40,8 @@ from tests.integration.test_our_price_offer_api import (
     _history,
     _inflation_scene,
     _line_of,
-    _offer_article,
     _pair,
     _panel,
-    _panel_get,
     _put,
     _second_variant,
 )
@@ -53,8 +50,6 @@ from tests.integration.test_our_price_offer_api import _json as _offer_json
 from tests.integration.test_our_price_offer_api import _ok as _offer_ok
 from tests.integration.test_our_price_round_api import (
     Stage,
-    _article,
-    _cell,
     _participant,
     count_statements,
 )
@@ -88,11 +83,6 @@ def _agree(db, item, net, user, *, at=SET_AT):
 
 def _comment(db, item, text, user, *, at=SET_AT):
     db.add(KpLineComment(position_item_id=item.id, text=text, set_by=user.id, set_at=at))
-    db.flush()
-
-
-def _line_rung(db, item, level, scope, key, user, *, at=SET_AT):
-    db.add(KpLineRung(position_item_id=item.id, level=level, scope=scope, key=key, set_by=user.id, set_at=at))
     db.flush()
 
 
@@ -221,14 +211,6 @@ class TestLoadDecisions:
         net = D("100.00000000000000000001")
         _agree(db_session, item_a1, net, u1)
         _comment(db_session, item_a2, "Текст", u2)
-        _line_rung(
-            db_session,
-            item_a2,
-            "p",
-            "all",
-            {"level": "p", "family_id": 7, "parameter_id": 3, "value_id": None},
-            u1,
-        )
         _family_rung(db_session, a.estimate, stage.family, "p", "all", u2, first_main=3)
         _family_rung(db_session, b.estimate, stage.family, "f", "cls", u1)
 
@@ -238,12 +220,9 @@ class TestLoadDecisions:
         first = found[a.estimate.id]
         assert first.agreements == {item_a1.id: (net, SET_AT, u1.id, u1.email)}
         assert first.comments == {item_a2.id: ("Текст", SET_AT, u2.id, u2.email)}
-        assert dict(first.saved.work) == {item_a2.id: SavedWorkRung(Rung("p", "all"), (7, (3, None)))}
+        assert dict(first.saved.work) == {}
         assert dict(first.saved.family) == {stage.family.id: SavedFamilyRung(Rung("p", "all"), 3)}
-        assert first.rung_meta == {
-            ("line", item_a2.id): (SET_AT, u1.id, u1.email),
-            ("family", stage.family.id): (SET_AT, u2.id, u2.email),
-        }
+        assert first.rung_meta == {("family", stage.family.id): (SET_AT, u2.id, u2.email)}
         second = found[b.estimate.id]
         assert (second.agreements, second.comments, dict(second.saved.work)) == ({}, {}, {})
         assert dict(second.saved.family) == {stage.family.id: SavedFamilyRung(Rung("f", "cls"), None)}
@@ -268,7 +247,6 @@ class TestLoadDecisions:
         user = _user(factories)
         _agree(db_session, foreign, D("90"), user)
         _comment(db_session, foreign, "Текст", user)
-        _line_rung(db_session, foreign, "f", "all", {"level": "f", "family_id": stage.family.id}, user)
         _family_rung(db_session, other.estimate, stage.family, "f", "all", user)
         _agree(db_session, mine, D("95"), user)
 
@@ -307,13 +285,12 @@ class TestLoadDecisions:
                 item = stage.kp(part, D("100"))
                 _agree(db_session, item, D("90"), user)
                 _comment(db_session, item, "Текст", user)
-                _line_rung(db_session, item, "f", "all", {"level": "f", "family_id": 1}, user)
             _family_rung(db_session, part.estimate, stage.family, "f", "all", user)
         large_ids = [part.estimate.id for part in parts]
         with count_statements(db_session) as large:
             kd.load_decisions(db_session, large_ids)
 
-        assert len(small) == len(large) == 4
+        assert len(small) == len(large) == 3
         assert all(statement.lstrip().upper().startswith("SELECT") for statement in large)
 
 
@@ -439,11 +416,11 @@ class TestSourceLineNumber:
 
 
 # ---------------------------------------------------------------------------
-#  Сохранённая ступень работы: этап, разбор, панель считают одно
+#  У работы ручной ступени нет: строка считается автоматически
 # ---------------------------------------------------------------------------
 
 
-class TestSavedWorkRung:
+class TestWorkLineHasNoManualRung:
     def test_without_a_decision_the_line_is_auto_and_comparable(self, member_client, stage):
         rnd, part, item = _work_scene(stage)
 
@@ -452,146 +429,6 @@ class TestSavedWorkRung:
         assert line["rung"] == {"level": "v", "scope": "cls", "auto": True, "threshold_met": True}
         assert (line["state"], _pair(line["bargain"])) == ("comparable", (D("500"), D("500")))
         assert line["manual_rung"] is None
-
-    def test_a_saved_rung_changes_the_line_the_stage_and_the_cell_together(
-        self, member_client, stage, db_session, admin_user
-    ):
-        rnd, part, item = _work_scene(stage)
-        _line_rung(
-            db_session, item, "f", "cls", {"level": "f", "family_id": stage.family.id}, admin_user
-        )
-
-        offer = _offer_ok(member_client, stage.tender, rnd, part)
-        round_ = _round_ok(member_client, stage.tender, rnd)
-
-        line = _line_of(offer, item)
-        assert line["rung"] == {"level": "f", "scope": "cls", "auto": False, "threshold_met": True}
-        assert line["state"] == "unit_mismatch"
-        assert line["bargain"] is None
-        assert line["manual_rung"] == {
-            "level": "f",
-            "scope": "cls",
-            "active": True,
-            "reset_reason": None,
-            "target": "line",
-            "set_by": _who(admin_user),
-            "set_at": line["manual_rung"]["set_at"],
-        }
-        assert _iso(line["manual_rung"]["set_at"]) == SET_AT
-        totals = _participant(offer, part)["totals"]
-        assert totals["unit_mismatch_lines"] == 1
-        assert _pair(totals["unit_mismatch_amount"]) == (D("1500"), D("1500"))
-        assert _pair(totals["bargain"]) == (D("0"), D("0"))
-        assert _participant(round_, part)["totals"] == totals
-        assert _offer_article(offer, stage, "R")["unit_mismatch_lines"] == 1
-        assert _cell(_article(round_, stage, "R"), part)["unit_mismatch_lines"] == 1
-        assert _cell(round_["total"], part)["unit_mismatch_lines"] == 1
-
-    def test_the_panel_reads_the_same_saved_rung(self, member_client, stage, db_session, admin_user):
-        rnd, part, item = _work_scene(stage)
-        _line_rung(
-            db_session, item, "f", "cls", {"level": "f", "family_id": stage.family.id}, admin_user
-        )
-
-        line = _panel(member_client, stage.tender, rnd, part, item)["line"]
-
-        assert line["rung"]["level"] == "f"
-        assert line["rung"]["auto"] is False
-        assert line["state"] == "unit_mismatch"
-
-    def test_a_preview_choice_wins_over_the_saved_rung(self, member_client, stage, db_session, admin_user):
-        rnd, part, item = _work_scene(stage)
-        _line_rung(
-            db_session, item, "f", "cls", {"level": "f", "family_id": stage.family.id}, admin_user
-        )
-
-        line = _panel(member_client, stage.tender, rnd, part, item, level="v", scope="all")["line"]
-
-        assert line["rung"] == {"level": "v", "scope": "all", "auto": False, "threshold_met": True}
-        assert line["manual_rung"]["active"] is True
-        assert line["manual_rung"]["level"] == "f"
-
-    def test_the_audit_comes_from_the_line_record(self, member_client, stage, db_session, factories):
-        rnd, part, item = _work_scene(stage)
-        author = _user(factories)
-        other = _user(factories)
-        other_item = stage.kp(part, D("150"))
-        _line_rung(db_session, item, "f", "cls", {"level": "f", "family_id": stage.family.id}, author)
-        _line_rung(db_session, other_item, "v", "cls", {"level": "v", "variant_id": stage.variant.id}, other)
-
-        body = _offer_ok(member_client, stage.tender, rnd, part)
-
-        assert _line_of(body, item)["manual_rung"]["set_by"] == _who(author)
-        assert _line_of(body, other_item)["manual_rung"]["set_by"] == _who(other)
-
-
-class TestSavedRungThatDoesNotAct:
-    def test_changed_key_is_a_200_with_a_reason_and_the_auto_numbers(
-        self, member_client, stage, db_session, admin_user
-    ):
-        rnd, part, item = _work_scene(stage)
-        other_variant = _second_variant(stage, "90 мм")
-        _line_rung(
-            db_session, item, "v", "cls", {"level": "v", "variant_id": other_variant.id}, admin_user
-        )
-
-        body = _offer_ok(member_client, stage.tender, rnd, part)
-
-        line = _line_of(body, item)
-        assert line["manual_rung"]["active"] is False
-        assert line["manual_rung"]["reset_reason"] == "key_changed"
-        assert (line["manual_rung"]["level"], line["manual_rung"]["scope"]) == ("v", "cls")
-        assert line["rung"] == {"level": "v", "scope": "cls", "auto": True, "threshold_met": True}
-        assert (line["state"], _pair(line["bargain"])) == ("comparable", (D("500"), D("500")))
-
-    def test_reading_writes_nothing_and_keeps_the_record(self, member_client, stage, db_session, admin_user):
-        rnd, part, item = _work_scene(stage)
-        other_variant = _second_variant(stage, "90 мм")
-        _line_rung(
-            db_session, item, "v", "cls", {"level": "v", "variant_id": other_variant.id}, admin_user
-        )
-        _agree(db_session, item, D("120"), admin_user)
-        _comment(db_session, item, "Текст", admin_user)
-
-        with count_statements(db_session) as seen:
-            assert member_client.get(f"/api/v1/tenders/{stage.tender.id}/rounds/{rnd.id}/our-price").status_code == 200
-            assert _offer_get(member_client, stage.tender, rnd, part).status_code == 200
-            assert _panel_get(member_client, stage.tender, rnd, part, item).status_code == 200
-
-        writes = [s for s in seen if s.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE"))]
-        assert writes == []
-        kept = db_session.execute(sa.select(KpLineRung.position_item_id, KpLineRung.level)).all()
-        assert [tuple(row) for row in kept] == [(item.id, "v")]
-
-    def test_work_record_on_a_system_line_is_kind_changed_and_the_family_rung_acts(
-        self, member_client, stage, db_session, factories
-    ):
-        rnd, part, _second, item, _other = _system_scene(stage)
-        line_author, family_author = _user(factories), _user(factories)
-        _line_rung(
-            db_session, item, "v", "cls", {"level": "v", "variant_id": stage.variant.id}, line_author
-        )
-
-        before = _line_of(_offer_ok(member_client, stage.tender, rnd, part), item)
-
-        assert before["manual_rung"] == {
-            "level": "v",
-            "scope": "cls",
-            "active": False,
-            "reset_reason": "kind_changed",
-            "target": "line",
-            "set_by": _who(line_author),
-            "set_at": before["manual_rung"]["set_at"],
-        }
-        assert before["rung"] == {"level": "v", "scope": "cls", "auto": True, "threshold_met": True}
-
-        _family_rung(db_session, part.estimate, stage.family, "f", "cls", family_author)
-        after = _line_of(_offer_ok(member_client, stage.tender, rnd, part), item)
-
-        assert after["rung"]["level"] == "f"
-        assert after["rung"]["auto"] is False
-        assert after["manual_rung"]["reset_reason"] == "kind_changed"
-        assert after["manual_rung"]["set_by"] == _who(line_author)
 
 
 class TestSavedFamilyRung:
@@ -945,7 +782,6 @@ class TestQueryCount:
         def decide(line):
             _agree(db_session, line, D("120"), admin_user)
             _comment(db_session, line, "Текст", admin_user)
-            _line_rung(db_session, line, "f", "all", {"level": "f", "family_id": stage.family.id}, admin_user)
 
         decide(item)
         base = f"/api/v1/tenders/{stage.tender.id}/rounds/{rnd.id}/our-price"

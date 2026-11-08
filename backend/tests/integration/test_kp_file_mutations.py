@@ -15,14 +15,13 @@ from decimal import Decimal
 import pytest
 import sqlalchemy as sa
 
-from models import FamilyParameter, KpFamilyRung, KpLineAgreement, KpLineComment, KpLineRung
+from models import FamilyParameter, KpFamilyRung, KpLineAgreement, KpLineComment
 from services.our_price import RUNG_ORDER
 from tests.integration.test_kp_file_scene import (
     SET_AT,
     _agree,
     _comment,
     _family_rung,
-    _line_rung,
     _system_scene,
     _user,
     _work_scene,
@@ -36,8 +35,7 @@ from tests.integration.test_our_price_offer_api import (
     _second_variant,
 )
 from tests.integration.test_our_price_offer_api import _ok as _offer_ok
-from tests.integration.test_our_price_round_api import Stage, _participant
-from tests.integration.test_our_price_round_api import _ok as _round_ok
+from tests.integration.test_our_price_round_api import Stage
 
 pytestmark = pytest.mark.integration
 
@@ -51,6 +49,8 @@ SIX = (
     ("PUT", "rung"),
     ("DELETE", "rung"),
 )
+#: Пары, которые на строке-работе дают 204: `PUT …/rung` у работы — 422 `rung_not_applicable`.
+SIX_OK_ON_WORK = tuple(pair for pair in SIX if pair != ("PUT", "rung"))
 BODIES = {
     "agreed": {"value": "100", "basis": "net"},
     "comment": {"text": "Текст"},
@@ -118,14 +118,6 @@ def _comment_rows(db, item):
     ).all()
 
 
-def _rung_rows(db, item):
-    return db.execute(
-        sa.select(KpLineRung.level, KpLineRung.scope, KpLineRung.key, KpLineRung.set_by).where(
-            KpLineRung.position_item_id == item.id
-        )
-    ).all()
-
-
 def _family_rows(db, estimate):
     return db.execute(
         sa.select(
@@ -142,11 +134,11 @@ def _set_at(db, column, *where):
     return db.execute(sa.select(column).where(*where)).scalar_one()
 
 
-def _everything(db) -> tuple[int, int, int, int]:
-    """Число строк во всех четырёх таблицах решений."""
+def _everything(db) -> tuple[int, int, int]:
+    """Число строк во всех трёх таблицах решений."""
     return tuple(
         db.execute(sa.select(sa.func.count()).select_from(model)).scalar_one()
-        for model in (KpLineAgreement, KpLineComment, KpLineRung, KpFamilyRung)
+        for model in (KpLineAgreement, KpLineComment, KpFamilyRung)
     )
 
 
@@ -174,16 +166,6 @@ def _first_param_id(db, stage) -> int:
     ).scalar_one()
 
 
-def _other_class_scene(stage):
-    """История — один договор ДРУГОГО класса: на варианте и семье договор есть
-    (охват «все»), а в классе тендера — нет."""
-    other = stage.f.RateClassFactory.create(title="Класс Ч")
-    _history(stage, D("100"), rate_class=other)
-    rnd = stage.round()
-    part = stage.participant(rnd, "Подрядчик А", vat=D("0"))
-    return rnd, part, stage.kp(part, D("150"))
-
-
 def _two_group_system_scene(stage):
     """Семья-система с двумя вариантами в одном КП; в истории класса — договор только
     варианта 1. На «точном варианте» у группы варианта 2 договоров ноль, на «семье» группа
@@ -197,13 +179,11 @@ def _two_group_system_scene(stage):
     return rnd, part, item, other
 
 
-def _seed(db, stage, item, route, user):
+def _seed(db, item, route, user):
     if route == "agreed":
         _agree(db, item, D("90"), user)
-    elif route == "comment":
-        _comment(db, item, "Прежний", user)
     else:
-        _line_rung(db, item, "v", "all", {"level": "v", "variant_id": stage.variant.id}, user)
+        _comment(db, item, "Прежний", user)
 
 
 # ---------------------------------------------------------------------------
@@ -219,9 +199,9 @@ class TestRights:
         response = _send(member_client, method, _url(stage, rnd, part, item, route), route)
 
         assert response.status_code == 403
-        assert _everything(db_session) == (0, 0, 0, 0)
+        assert _everything(db_session) == (0, 0, 0)
 
-    @pytest.mark.parametrize(("method", "route"), SIX)
+    @pytest.mark.parametrize(("method", "route"), SIX_OK_ON_WORK)
     def test_admin_gets_204_without_a_body(self, admin_client, stage, method, route):
         rnd, part, item = _work_scene(stage)
 
@@ -250,7 +230,7 @@ class TestOwnership:
         response = _send(admin_client, method, _url(stage, rnd, part, foreign, route), route)
 
         assert response.status_code == 404
-        assert _everything(db_session) == (0, 0, 0, 0)
+        assert _everything(db_session) == (0, 0, 0)
 
     @pytest.mark.parametrize(("method", "route"), SIX)
     def test_chapter_is_not_a_line(self, admin_client, stage, method, route):
@@ -297,7 +277,7 @@ class TestOwnership:
 
         assert _send(admin_client, "PUT", _url(stage, rnd, empty, item, route), route).status_code == 404
 
-    @pytest.mark.parametrize("route", ROUTES)
+    @pytest.mark.parametrize("route", ("agreed", "comment"))
     def test_own_line_is_204_next_to_the_foreign_one(self, admin_client, stage, route):
         rnd, part, item = _work_scene(stage)
         stage.participant(rnd, "Подрядчик Б", vat=D("0"))
@@ -357,7 +337,7 @@ class TestAgreed:
 
         assert response.status_code == 422
         assert _code(response) == "unknown_vat_base"
-        assert _everything(db_session) == (0, 0, 0, 0)
+        assert _everything(db_session) == (0, 0, 0)
 
     @pytest.mark.parametrize(
         "value", ["0", "0.0", "-1", "-0.00000000000000000001", "NaN", "sNaN", "Infinity", "-Infinity", "abc", "", "1,5"]
@@ -370,7 +350,7 @@ class TestAgreed:
 
         assert response.status_code == 422
         assert _code(response) == "invalid_agreed"
-        assert _everything(db_session) == (0, 0, 0, 0)
+        assert _everything(db_session) == (0, 0, 0)
 
     def test_the_smallest_positive_value_is_a_price(self, admin_client, stage, db_session):
         rnd, part, item = _plain_scene(stage, vat=D("22"), price=D("122"))
@@ -387,7 +367,7 @@ class TestAgreed:
 
         assert response.status_code == 422
         assert isinstance(response.json()["detail"], list)  # форма FastAPI, не код домена
-        assert _everything(db_session) == (0, 0, 0, 0)
+        assert _everything(db_session) == (0, 0, 0)
 
     @pytest.mark.parametrize("raw", [{"value": "100"}, {"basis": "net"}, {"value": "100", "basis": "gross"}, {}])
     def test_missing_field_or_unknown_basis_is_a_form_error(self, admin_client, stage, db_session, raw):
@@ -397,7 +377,7 @@ class TestAgreed:
 
         assert response.status_code == 422
         assert isinstance(response.json()["detail"], list)
-        assert _everything(db_session) == (0, 0, 0, 0)
+        assert _everything(db_session) == (0, 0, 0)
 
     def test_repeated_put_overwrites_value_author_and_time(self, admin_client, stage, db_session, factories):
         rnd, part, item = _plain_scene(stage, vat=D("22"), price=D("122"))
@@ -433,7 +413,7 @@ class TestAgreed:
         rnd, part, item = _plain_scene(stage, vat=D("22"), price=D("122"))
 
         assert admin_client.delete(_url(stage, rnd, part, item, "agreed")).status_code == 204
-        assert _everything(db_session) == (0, 0, 0, 0)
+        assert _everything(db_session) == (0, 0, 0)
 
     def test_the_decision_is_read_back_by_the_offer_view(self, admin_client, stage):
         rnd, part, item = _plain_scene(stage, vat=D("22"), price=D("122"))
@@ -471,7 +451,7 @@ class TestComment:
 
         assert response.status_code == 422
         assert _code(response) == "comment_too_long"
-        assert _everything(db_session) == (0, 0, 0, 0)
+        assert _everything(db_session) == (0, 0, 0)
 
     def test_the_failed_put_keeps_the_previous_comment(self, admin_client, stage, db_session, factories):
         rnd, part, item = _work_scene(stage)
@@ -517,7 +497,7 @@ class TestComment:
 
         assert response.status_code == 422
         assert isinstance(response.json()["detail"], list)
-        assert _everything(db_session) == (0, 0, 0, 0)
+        assert _everything(db_session) == (0, 0, 0)
 
     def test_delete_returns_the_template_and_missing_is_204(self, admin_client, stage, db_session, factories):
         rnd, part, item = _work_scene(stage)
@@ -548,46 +528,25 @@ class TestComment:
 
 
 class TestWorkRung:
+    """У строки-работы ручной ступени нет (миграция 0024): `PUT` — 422 `rung_not_applicable`,
+    `DELETE` — 204 без действия."""
+
     def _put(self, client, stage, rnd, part, item, level, scope):
         return client.put(_url(stage, rnd, part, item, "rung"), json={"level": level, "scope": scope})
 
-    def test_selectable_rung_is_saved_with_the_key_snapshot(self, admin_client, stage, db_session):
+    @pytest.mark.parametrize(
+        ("level", "scope"),
+        [(rung.level, rung.scope) for rung in RUNG_ORDER] + [("v", "x"), ("x", "cls"), ("", "")],
+    )
+    def test_put_on_a_work_line_is_rung_not_applicable_for_any_pair(
+        self, admin_client, stage, db_session, level, scope
+    ):
         rnd, part, item = _work_scene(stage)
 
-        assert self._put(admin_client, stage, rnd, part, item, "v", "all").status_code == 204
-        assert self._put(admin_client, stage, rnd, part, item, "f", "cls").status_code == 204
+        response = self._put(admin_client, stage, rnd, part, item, level, scope)
 
-        ((level, scope, key, set_by),) = _rung_rows(db_session, item)
-        assert (level, scope, set_by) == ("f", "cls", admin_client.user.id)
-        assert key == {"level": "f", "family_id": stage.family.id}
-
-    def test_the_variant_level_snapshot_names_the_variant(self, admin_client, stage, db_session):
-        rnd, part, item = _work_scene(stage)
-
-        assert self._put(admin_client, stage, rnd, part, item, "v", "cls").status_code == 204
-
-        assert _rung_rows(db_session, item)[0][2] == {"level": "v", "variant_id": stage.variant.id}
-
-    def test_the_parameter_level_snapshot_names_the_first_main(self, admin_client, stage, db_session):
-        rnd, part, item = _work_scene(stage)
-        _two_mains(stage)
-        panel = _panel(admin_client, stage.tender, rnd, part, item)["line"]
-        assert any(r["level"] == "p" and r["selectable"] for r in panel["rungs"])
-
-        assert self._put(admin_client, stage, rnd, part, item, "p", "cls").status_code == 204
-
-        (_, _, key, _) = _rung_rows(db_session, item)[0]
-        assert key["level"] == "p"
-        assert key["family_id"] == stage.family.id
-        assert key["parameter_id"] == _first_param_id(db_session, stage)
-
-    def test_a_pair_that_is_not_a_known_rung_is_unknown_rung(self, admin_client, stage, db_session):
-        rnd, part, item = _work_scene(stage)
-
-        for level, scope in (("v", "x"), ("x", "cls"), ("", ""), ("V", "cls"), ("v", "CLS")):
-            response = self._put(admin_client, stage, rnd, part, item, level, scope)
-            assert (response.status_code, _code(response)) == (422, "unknown_rung"), (level, scope)
-        assert _everything(db_session) == (0, 0, 0, 0)
+        assert (response.status_code, _code(response)) == (422, "rung_not_applicable")
+        assert _everything(db_session) == (0, 0, 0)
 
     @pytest.mark.parametrize("raw", [{"level": "v"}, {"scope": "cls"}, {}, {"level": 1, "scope": "cls"}])
     def test_an_incomplete_body_is_a_form_error(self, admin_client, stage, db_session, raw):
@@ -597,35 +556,12 @@ class TestWorkRung:
 
         assert response.status_code == 422
         assert isinstance(response.json()["detail"], list)
-        assert _everything(db_session) == (0, 0, 0, 0)
-
-    def test_a_known_rung_outside_the_rungs_of_the_line_is_unknown_rung(self, admin_client, stage, db_session):
-        rnd, part, item = _work_scene(stage)  # у варианта нет первого главного: уровня `p` нет
-
-        for scope in ("cls", "all"):
-            response = self._put(admin_client, stage, rnd, part, item, "p", scope)
-            assert (response.status_code, _code(response)) == (422, "unknown_rung"), scope
-        assert _everything(db_session) == (0, 0, 0, 0)
-
-    def test_a_rung_without_contracts_is_rung_empty(self, admin_client, stage, db_session):
-        rnd, part, item = _other_class_scene(stage)
-        panel = _panel(admin_client, stage.tender, rnd, part, item)["line"]
-        listed = {(r["level"], r["scope"]): r for r in panel["rungs"]}
-        assert listed[("v", "cls")]["contracts"] == 0 and listed[("v", "cls")]["selectable"] is False
-
-        response = self._put(admin_client, stage, rnd, part, item, "v", "cls")
-
-        assert (response.status_code, _code(response)) == (422, "rung_empty")
-        assert _everything(db_session) == (0, 0, 0, 0)
-
-    def test_the_neighbour_rung_with_contracts_is_saved(self, admin_client, stage, db_session):
-        rnd, part, item = _other_class_scene(stage)
-
-        assert self._put(admin_client, stage, rnd, part, item, "v", "all").status_code == 204
-        assert _rung_rows(db_session, item)[0][:2] == ("v", "all")
+        assert _everything(db_session) == (0, 0, 0)
 
     @pytest.mark.parametrize("kind", ["no_price", "no_variant"])
-    def test_a_line_that_did_not_reach_the_ladder_is_no_ladder(self, admin_client, stage, db_session, kind):
+    def test_a_line_that_did_not_reach_the_ladder_is_rung_not_applicable_too(
+        self, admin_client, stage, kind
+    ):
         stage.history(D("100"))
         rnd = stage.round()
         part = stage.participant(rnd, "Подрядчик А", vat=D("0"))
@@ -634,125 +570,39 @@ class TestWorkRung:
 
         response = self._put(admin_client, stage, rnd, part, item, "v", "cls")
 
-        assert (response.status_code, _code(response)) == (422, "no_ladder")
-        assert _everything(db_session) == (0, 0, 0, 0)
+        assert (response.status_code, _code(response)) == (422, "rung_not_applicable")
 
-    def test_an_unknown_pair_wins_over_no_ladder(self, admin_client, stage):
-        stage.history(D("100"))
-        rnd = stage.round()
-        part = stage.participant(rnd, "Подрядчик А", vat=D("0"))
-        item = stage.kp(part, D("0"))
-
-        response = self._put(admin_client, stage, rnd, part, item, "v", "x")
-
-        assert (response.status_code, _code(response)) == (422, "unknown_rung")
-
-    def test_the_decision_agrees_with_the_panel_on_every_rung(self, admin_client, stage, db_session):
-        _two_mains(stage)
-        rnd, part, item = _other_class_scene(stage)  # охват «класс» без договоров, «все» — с договором
-        panel = _panel(admin_client, stage.tender, rnd, part, item)["line"]
-        listed = {(r["level"], r["scope"]): r["selectable"] for r in panel["rungs"]}
-        assert any(listed.values()) and not all(listed.values())  # на фикстуре есть оба исхода
-
-        for rung in RUNG_ORDER:
-            response = self._put(admin_client, stage, rnd, part, item, rung.level, rung.scope)
-            key = (rung.level, rung.scope)
-            if key not in listed:
-                assert (response.status_code, _code(response)) == (422, "unknown_rung"), key
-            elif listed[key]:
-                assert response.status_code == 204, key
-            else:
-                assert (response.status_code, _code(response)) == (422, "rung_empty"), key
-
-    def test_repeated_put_replaces_the_rung_and_keeps_one_row(self, admin_client, stage, db_session, factories):
+    def test_the_refusal_keeps_the_family_rung_and_the_other_decisions(
+        self, admin_client, stage, db_session, factories
+    ):
         rnd, part, item = _work_scene(stage)
-        old = _user(factories)
-        _line_rung(db_session, item, "v", "all", {"level": "v", "variant_id": stage.variant.id}, old)
+        user = _user(factories)
+        _family_rung(db_session, part.estimate, stage.family, "f", "all", user)
+        _agree(db_session, item, D("90"), user)
+        _comment(db_session, item, "Прежний", user)
+        before = _everything(db_session)
 
-        assert self._put(admin_client, stage, rnd, part, item, "f", "all").status_code == 204
+        assert self._put(admin_client, stage, rnd, part, item, "v", "all").status_code == 422
 
-        ((level, scope, key, set_by),) = _rung_rows(db_session, item)
-        assert (level, scope, set_by) == ("f", "all", admin_client.user.id)
-        assert key == {"level": "f", "family_id": stage.family.id}
-        assert _set_at(db_session, KpLineRung.set_at, KpLineRung.position_item_id == item.id) > SET_AT
+        assert _everything(db_session) == before
+        assert [row[:3] for row in _family_rows(db_session, part.estimate)] == [(stage.family.id, "f", "all")]
+        assert _agreement(db_session, item)[0][:2] == (D("90"), user.id)
+        assert _comment_rows(db_session, item)[0][:2] == ("Прежний", user.id)
 
-    def test_failed_put_keeps_the_previous_rung(self, admin_client, stage, db_session, factories):
+    def test_delete_on_a_work_line_is_204_and_removes_nothing(self, admin_client, stage, db_session, factories):
         rnd, part, item = _work_scene(stage)
-        snapshot = {"level": "v", "variant_id": stage.variant.id}
-        _line_rung(db_session, item, "v", "all", snapshot, _user(factories))
-
-        assert self._put(admin_client, stage, rnd, part, item, "p", "cls").status_code == 422
-
-        assert [row[:3] for row in _rung_rows(db_session, item)] == [("v", "all", snapshot)]
-
-    def test_delete_removes_the_rung_and_missing_is_204(self, admin_client, stage, db_session, factories):
-        rnd, part, item = _work_scene(stage)
-        _line_rung(db_session, item, "v", "all", {"level": "v", "variant_id": stage.variant.id}, _user(factories))
+        user = _user(factories)
+        _family_rung(db_session, part.estimate, stage.family, "f", "all", user)
+        _agree(db_session, item, D("90"), user)
+        _comment(db_session, item, "Прежний", user)
+        before = _everything(db_session)
         url = _url(stage, rnd, part, item, "rung")
 
         assert admin_client.delete(url).status_code == 204
         assert admin_client.delete(url).status_code == 204
 
-        assert _rung_rows(db_session, item) == []
-
-    def test_work_put_and_delete_do_not_touch_the_family_rung(self, admin_client, stage, db_session, factories):
-        rnd, part, item = _work_scene(stage)
-        _family_rung(db_session, part.estimate, stage.family, "f", "all", _user(factories))
-
-        assert self._put(admin_client, stage, rnd, part, item, "v", "all").status_code == 204
-        assert admin_client.delete(_url(stage, rnd, part, item, "rung")).status_code == 204
-
+        assert _everything(db_session) == before
         assert [row[:3] for row in _family_rows(db_session, part.estimate)] == [(stage.family.id, "f", "all")]
-
-    def test_the_other_line_rung_is_not_touched(self, admin_client, stage, db_session, factories):
-        rnd, part, item = _work_scene(stage)
-        neighbour = stage.kp(part, D("130"))
-        snapshot = {"level": "v", "variant_id": stage.variant.id}
-        _line_rung(db_session, neighbour, "v", "all", snapshot, _user(factories))
-
-        assert self._put(admin_client, stage, rnd, part, item, "f", "cls").status_code == 204
-        assert admin_client.delete(_url(stage, rnd, part, item, "rung")).status_code == 204
-
-        assert [row[:3] for row in _rung_rows(db_session, neighbour)] == [("v", "all", snapshot)]
-
-    def test_the_screen_and_the_breakdown_count_on_the_manual_rung(self, admin_client, stage):
-        """Мутация, затем чтение: «семья, класс» даёт расхождение единиц (ставки 100, 140 и 10)."""
-        rnd, part, item = _work_scene(stage)
-        before_round = _participant(_round_ok(admin_client, stage.tender, rnd), part)
-        before = _line_of(_offer_ok(admin_client, stage.tender, rnd, part), item)
-        assert (before["rung"]["level"], before["rung"]["scope"], before["state"]) == ("v", "cls", "comparable")
-        assert before_round["totals"]["unit_mismatch_lines"] == 0
-
-        assert self._put(admin_client, stage, rnd, part, item, "f", "cls").status_code == 204
-
-        after = _line_of(_offer_ok(admin_client, stage.tender, rnd, part), item)
-        after_round = _participant(_round_ok(admin_client, stage.tender, rnd), part)
-        assert after["state"] == "unit_mismatch"
-        assert after["rung"] == {
-            "level": "f",
-            "scope": "cls",
-            "auto": False,
-            "threshold_met": after["rung"]["threshold_met"],
-        }
-        manual = after["manual_rung"]
-        assert (manual["level"], manual["scope"], manual["target"], manual["active"]) == ("f", "cls", "line", True)
-        assert after_round["totals"]["unit_mismatch_lines"] == 1
-
-    def test_the_agreed_price_survives_a_rung_change_to_the_last_digit(self, admin_client, stage):
-        rnd, part, item = _work_scene(stage)
-        assert (
-            admin_client.put(
-                _url(stage, rnd, part, item, "agreed"), json={"value": str(LONG), "basis": "net"}
-            ).status_code
-            == 204
-        )
-        before = _line_of(_offer_ok(admin_client, stage.tender, rnd, part), item)["agreed"]
-
-        assert self._put(admin_client, stage, rnd, part, item, "f", "cls").status_code == 204
-
-        after = _line_of(_offer_ok(admin_client, stage.tender, rnd, part), item)["agreed"]
-        assert D(after["net"]) == LONG
-        assert after == before
 
 
 # ---------------------------------------------------------------------------
@@ -771,7 +621,6 @@ class TestSystemRung:
 
         assert _family_rows(db_session, first.estimate) == [(stage.family.id, "f", "all", None, admin_client.user.id)]
         assert _family_rows(db_session, second.estimate) == []
-        assert _rung_rows(db_session, item) == []
 
     def test_the_parameter_level_stores_the_first_main_parameter(self, admin_client, stage, db_session):
         rnd, first, _, item, _ = _system_scene(stage)
@@ -835,7 +684,7 @@ class TestSystemRung:
         response = self._put(admin_client, stage, rnd, part, item, "v", "cls")
 
         assert (response.status_code, _code(response)) == (422, "rung_empty")
-        assert _everything(db_session) == (0, 0, 0, 0)
+        assert _everything(db_session) == (0, 0, 0)
 
     def test_the_decision_agrees_with_the_panel_on_every_rung(self, admin_client, stage, db_session):
         rnd, part, item, _ = _two_group_system_scene(stage)
@@ -853,47 +702,32 @@ class TestSystemRung:
             else:
                 assert (response.status_code, _code(response)) == (422, "rung_empty"), key
 
-    def test_a_system_line_without_a_key_drops_only_its_own_record(self, admin_client, stage, db_session, factories):
+    def test_a_system_line_without_a_key_has_no_ladder_and_delete_touches_nothing(
+        self, admin_client, stage, db_session, factories
+    ):
         """Системная строка без варианта: ключа нет, а значит, нет и семьи для ступени —
-        `DELETE` снимает только собственную запись строки, `PUT` — `no_ladder`."""
+        `PUT` — `no_ladder`, `DELETE` ничего не снимает."""
         rnd = stage.round()
         part = stage.participant(rnd, "Подрядчик А", vat=D("0"))
         item = _put(stage, part.proposal, "R", D("1"), total=D(90000), kind="SYSTEM", variant=None)
-        user = _user(factories)
-        _line_rung(db_session, item, "v", "all", {"level": "v", "variant_id": stage.variant.id}, user)
-        _family_rung(db_session, part.estimate, stage.family, "f", "all", user)
+        _family_rung(db_session, part.estimate, stage.family, "f", "all", _user(factories))
 
         put = self._put(admin_client, stage, rnd, part, item, "v", "cls")
         assert (put.status_code, _code(put)) == (422, "no_ladder")
         assert admin_client.delete(_url(stage, rnd, part, item, "rung")).status_code == 204
 
-        assert _rung_rows(db_session, item) == []
         assert [row[:3] for row in _family_rows(db_session, part.estimate)] == [(stage.family.id, "f", "all")]
 
-    def test_put_drops_the_stale_own_record_of_the_line(self, admin_client, stage, db_session, factories):
-        """Запись, сделанная, пока строка была работой, устарела (`kind_changed`): без её
-        удаления строка продолжала бы показывать сброс поверх действующей ступени семьи."""
-        rnd, first, _, item, _ = _system_scene(stage)
-        _line_rung(db_session, item, "v", "all", {"level": "v", "variant_id": stage.variant.id}, _user(factories))
-        stale = _line_of(_offer_ok(admin_client, stage.tender, rnd, first), item)["manual_rung"]
-        assert (stale["target"], stale["active"], stale["reset_reason"]) == ("line", False, "kind_changed")
-
-        assert self._put(admin_client, stage, rnd, first, item, "f", "all").status_code == 204
-
-        assert _rung_rows(db_session, item) == []
-        current = _line_of(_offer_ok(admin_client, stage.tender, rnd, first), item)["manual_rung"]
-        assert (current["target"], current["active"], current["reset_reason"]) == ("family", True, None)
-
-    def test_delete_removes_the_family_rung_and_the_stale_own_record(self, admin_client, stage, db_session, factories):
+    def test_delete_removes_the_family_rung_of_this_estimate_only(
+        self, admin_client, stage, db_session, factories
+    ):
         rnd, first, second, item, other = _system_scene(stage)
         user = _user(factories)
-        _line_rung(db_session, item, "v", "all", {"level": "v", "variant_id": stage.variant.id}, user)
         _family_rung(db_session, first.estimate, stage.family, "f", "all", user)
         _family_rung(db_session, second.estimate, stage.family, "f", "all", user)
 
         assert admin_client.delete(_url(stage, rnd, first, item, "rung")).status_code == 204
 
-        assert _rung_rows(db_session, item) == []
         assert _family_rows(db_session, first.estimate) == []
         assert [row[:3] for row in _family_rows(db_session, second.estimate)] == [(stage.family.id, "f", "all")]
         assert _line_of(_offer_ok(admin_client, stage.tender, rnd, first), item)["manual_rung"] is None
@@ -902,7 +736,7 @@ class TestSystemRung:
         rnd, first, _, item, _ = _system_scene(stage)
 
         assert admin_client.delete(_url(stage, rnd, first, item, "rung")).status_code == 204
-        assert _everything(db_session) == (0, 0, 0, 0)
+        assert _everything(db_session) == (0, 0, 0)
 
     def test_a_system_family_rung_without_contracts_is_rung_empty(self, admin_client, stage, db_session):
         other = stage.f.RateClassFactory.create(title="Класс Ч")
@@ -918,19 +752,13 @@ class TestSystemRung:
         assert full.status_code == 204
         assert [row[:3] for row in _family_rows(db_session, part.estimate)] == [(stage.family.id, "v", "all")]
 
-    def test_the_failed_put_keeps_the_stale_record_and_the_family_rung(
-        self, admin_client, stage, db_session, factories
-    ):
+    def test_the_failed_put_keeps_the_family_rung(self, admin_client, stage, db_session, factories):
         rnd, first, _, item, _ = _system_scene(stage)
-        user = _user(factories)
-        snapshot = {"level": "v", "variant_id": stage.variant.id}
-        _line_rung(db_session, item, "v", "all", snapshot, user)
-        _family_rung(db_session, first.estimate, stage.family, "v", "all", user)
+        _family_rung(db_session, first.estimate, stage.family, "v", "all", _user(factories))
 
         response = self._put(admin_client, stage, rnd, first, item, "p", "all")  # уровня `p` у семьи нет
 
         assert (response.status_code, _code(response)) == (422, "unknown_rung")
-        assert [row[:3] for row in _rung_rows(db_session, item)] == [("v", "all", snapshot)]
         assert [row[:3] for row in _family_rows(db_session, first.estimate)] == [(stage.family.id, "v", "all")]
 
     def test_the_screen_counts_on_the_family_rung(self, admin_client, stage):
@@ -959,10 +787,10 @@ class TestRefusalRollsBack:
             ("agreed", {"value": "0", "basis": "net"}, "invalid_agreed"),
             ("agreed", {"value": "122", "basis": "shown"}, "unknown_vat_base"),
             ("comment", {"text": "x" * 2001}, "comment_too_long"),
-            ("rung", {"level": "v", "scope": "x"}, "unknown_rung"),
+            ("rung", {"level": "v", "scope": "x"}, "rung_not_applicable"),
         ],
     )
-    def test_a_refusal_leaves_all_four_tables_as_they_were(self, admin_client, stage, db_session, route, body, code):
+    def test_a_refusal_leaves_all_three_tables_as_they_were(self, admin_client, stage, db_session, route, body, code):
         rnd, part, item = _plain_scene(stage, vat=None, price=D("122"))
         user = _user(stage.f)
         _agree(db_session, item, D("90"), user)
@@ -997,13 +825,13 @@ class TestTheRouterCommits:
     уносит. Переопределённый `admin_client` коммитит перед КАЖДЫМ запросом, а чтение идёт той
     же сессией, поэтому без этой проверки пропущенный `commit` роутера не был бы виден."""
 
-    @pytest.mark.parametrize(("method", "route"), SIX)
+    @pytest.mark.parametrize(("method", "route"), tuple(pair for pair in SIX if pair[1] != "rung"))
     def test_the_answer_survives_a_rollback_of_the_session(
         self, admin_client, stage, db_session, factories, method, route
     ):
         rnd, part, item = _work_scene(stage)
         if method == "DELETE":
-            _seed(db_session, stage, item, route, _user(factories))
+            _seed(db_session, item, route, _user(factories))
         before = _everything(db_session)
 
         assert _send(admin_client, method, _url(stage, rnd, part, item, route), route).status_code == 204
@@ -1011,6 +839,22 @@ class TestTheRouterCommits:
 
         expected = list(before)
         expected[ROUTES.index(route)] += 1 if method == "PUT" else -1
+        assert _everything(db_session) == tuple(expected)
+
+    @pytest.mark.parametrize("method", ["PUT", "DELETE"])
+    def test_the_family_rung_answer_survives_a_rollback_of_the_session(
+        self, admin_client, stage, db_session, factories, method
+    ):
+        rnd, first, _, item, _ = _system_scene(stage)
+        if method == "DELETE":
+            _family_rung(db_session, first.estimate, stage.family, "f", "all", _user(factories))
+        before = _everything(db_session)
+
+        assert _send(admin_client, method, _url(stage, rnd, first, item, "rung"), "rung").status_code == 204
+        db_session.rollback()
+
+        expected = list(before)
+        expected[2] += 1 if method == "PUT" else -1
         assert _everything(db_session) == tuple(expected)
 
 

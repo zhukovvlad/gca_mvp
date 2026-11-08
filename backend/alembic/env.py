@@ -78,7 +78,8 @@ RAW_SQL_INDEXES = {
     "uq_family_parameter_schemas_frozen",
     "uq_family_parameter_schemas_building",
     # UNIQUE (kind, COALESCE(context_id,-1), COALESCE(family_id,-1), COALESCE(schema_id,-1),
-    # request_hash) — 0019; заменил uq_semantic_jobs_context_request_hash (0018).
+    # request_hash) — 0019; заменил uq_semantic_jobs_context_request_hash (0018);
+    # 0024 добавил COALESCE(section_chain_id,-1) перед request_hash.
     "uq_semantic_jobs_subject_request_hash",
     # UNIQUE (lower(btrim(title))) — 0021, справочник категорий семей.
     "uq_family_categories_title",

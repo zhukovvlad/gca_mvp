@@ -1135,6 +1135,10 @@ class MatchingCache(Base):
     )
 
 
+#: Глава не несёт цепочку разделов (миграция 0024): цепочка — свойство позиции.
+CK_POSITION_ITEM_CHAIN_NOT_CHAPTER = "NOT is_chapter OR section_chain_id IS NULL"
+
+
 class PositionItem(Base):
     """Строка сметы. Перенос из tenders-go.
 
@@ -1193,6 +1197,15 @@ class PositionItem(Base):
     # Одиночного FK на position_items.id НЕТ: цель задаёт составной FK в
     # __table_args__ — он проверяет и существование строки, и совпадение proposal.
     chapter_item_id = Column(BigInteger, nullable=True)
+    # Цепочка разделов позиции (миграция 0024); NULL у глав и у строк, ещё не
+    # прошедших присвоение цепочек.
+    section_chain_id = Column(
+        BigInteger,
+        ForeignKey(
+            "section_chains.id", ondelete="RESTRICT", name="fk_position_items_section_chain"
+        ),
+        nullable=True,
+    )
 
     created_at = _created_at()
     updated_at = _updated_at()
@@ -1227,7 +1240,11 @@ class PositionItem(Base):
             "category_source IS NULL OR category_source IN ('file','manual')",
             name="ck_position_items_category_source",
         ),
+        CheckConstraint(
+            CK_POSITION_ITEM_CHAIN_NOT_CHAPTER, name="ck_position_items_section_chain_not_chapter"
+        ),
         Index("idx_position_items_catalog_id", "catalog_position_id"),
+        Index("idx_position_items_section_chain_id", "section_chain_id"),
         Index("idx_position_items_unit_id", "unit_id"),
         Index(
             "idx_position_items_work_category_id",
@@ -1617,6 +1634,10 @@ class SemanticJobKind(str, enum.Enum):
     context_values = "context_values"
     # Открытие семей единицы (миграция 0021): предмета-контекста и предмета-семьи нет.
     family_discovery = "family_discovery"
+    # Задания лестницы аналогов (миграция 0024): зона цепочки разделов (предмет —
+    # цепочка) и «можно отпустить» параметры семьи (предмет — семья и версия схемы).
+    section_zone = "section_zone"
+    releasable_params = "releasable_params"
 
 
 SCHEMA_STATUSES = _sql_str_list(SchemaStatus)
@@ -1641,6 +1662,8 @@ CK_SCHEMA_ORIGIN_FROZEN_BY_PAIR = "(origin = 'manual') = (frozen_by IS NOT NULL)
 CK_PARAMETER_ORDINAL_RANGE = "ordinal BETWEEN 1 AND 100"
 CK_PARAMETER_NAME_NOT_BLANK = "btrim(name) <> ''"
 CK_PARAMETER_ROLE = f"role IN ({PARAMETER_ROLES})"
+#: Ответ «можно отпустить» бывает только у главного параметра (миграция 0024).
+CK_FAMILY_PARAMETER_RELEASABLE_MAIN = "releasable IS NULL OR role = 'main'"
 CK_PARAMETER_VALUE_KIND = f"value_kind IN ({PARAMETER_VALUE_KINDS})"
 CK_PARAMETER_ORIGIN = f"origin IN ({PARAMETER_ORIGINS})"
 #: Форма диапазона: ОДИН тотальный предикат из двух полных ветвей (CHECK пропускает
@@ -2364,8 +2387,10 @@ CK_FAMILY_SUGGESTIONS_DECISION_AUTHOR_PAIR = (
 #: Заданиям очереди три вида (миграция 0019): предмет `family_schema` — семья,
 #: прочих — контекст; версия схемы обязательна у новых видов; результат-предложение
 #: бывает только у `family_suggestion`.
+#: Миграция 0024 переписала равносильность под `releasable_params`: предмет — семья.
 CK_SEMANTIC_JOBS_SCHEMA_SUBJECT = (
-    "(kind = 'family_schema') = (context_id IS NULL AND family_id IS NOT NULL)"
+    "(kind IN ('family_schema', 'releasable_params')) = "
+    "(context_id IS NULL AND family_id IS NOT NULL)"
 )
 #: Миграция 0021 переписала обе равносильности под четвёртый вид: предмет-контекст
 #: у `family_suggestion` и `context_values`, версия схемы — у `family_schema` и
@@ -2373,8 +2398,16 @@ CK_SEMANTIC_JOBS_SCHEMA_SUBJECT = (
 CK_SEMANTIC_JOBS_CONTEXT_SUBJECT = (
     "(kind IN ('family_suggestion', 'context_values')) = (context_id IS NOT NULL)"
 )
+#: Миграция 0024: версия схемы нужна и `releasable_params`.
 CK_SEMANTIC_JOBS_SCHEMA_ID_BY_KIND = (
-    "(kind IN ('family_schema', 'context_values')) = (schema_id IS NOT NULL)"
+    "(kind IN ('family_schema', 'context_values', 'releasable_params')) = "
+    "(schema_id IS NOT NULL)"
+)
+#: Предмет `section_zone` — цепочка разделов, и только она (миграция 0024); у прочих
+#: видов цепочки нет. Контекст, семья и версия схемы у `section_zone` пусты остальными
+#: равносильностями выше.
+CK_SEMANTIC_JOBS_SECTION_CHAIN_SUBJECT = (
+    "(kind = 'section_zone') = (section_chain_id IS NOT NULL)"
 )
 #: У открытия единицы нет ни контекста, ни семьи (предмет — единица, `unit_id`).
 CK_SEMANTIC_JOBS_DISCOVERY_SUBJECT = (
@@ -2513,6 +2546,12 @@ class SemanticJob(Base):
     # Номера параметров частичного запроса значений (спека 3в §2.4); не входит в
     # уникальный индекс заданий: подмножество — часть тела запроса и его хэша.
     requested_ordinals = Column(ARRAY(SmallInteger), nullable=True)
+    # Предмет задания `section_zone` (миграция 0024); у прочих видов NULL.
+    section_chain_id = Column(
+        BigInteger,
+        ForeignKey("section_chains.id", ondelete="RESTRICT", name="fk_semantic_jobs_section_chain"),
+        nullable=True,
+    )
     # Оси запроса для журнала, вне ключа — NOT NULL (решение оркестратора
     # задачи 1: задание всегда создаётся из отрендеренного запроса).
     prompt_version = Column(Text, nullable=False)
@@ -2528,9 +2567,10 @@ class SemanticJob(Base):
 
     __table_args__ = (
         # UNIQUE (kind, COALESCE(context_id,-1), COALESCE(family_id,-1),
-        # COALESCE(schema_id,-1), request_hash) — выражение с COALESCE, raw SQL в
-        # миграции 0019 (RAW_SQL_INDEXES: uq_semantic_jobs_subject_request_hash);
-        # заменил `uq_semantic_jobs_context_request_hash` миграции 0018.
+        # COALESCE(schema_id,-1), COALESCE(section_chain_id,-1), request_hash) —
+        # выражение с COALESCE, raw SQL в миграциях 0019 и 0024 (RAW_SQL_INDEXES:
+        # uq_semantic_jobs_subject_request_hash); заменил
+        # `uq_semantic_jobs_context_request_hash` миграции 0018.
         CheckConstraint(f"kind IN ({SEMANTIC_JOB_KINDS})", name="ck_semantic_jobs_kind"),
         CheckConstraint(CK_SEMANTIC_JOBS_SCHEMA_SUBJECT, name="ck_semantic_jobs_schema_subject"),
         CheckConstraint(CK_SEMANTIC_JOBS_CONTEXT_SUBJECT, name="ck_semantic_jobs_context_subject"),
@@ -2543,6 +2583,9 @@ class SemanticJob(Base):
         ),
         CheckConstraint(
             CK_SEMANTIC_JOBS_REQUESTED_ORDINALS, name="ck_semantic_jobs_requested_ordinals"
+        ),
+        CheckConstraint(
+            CK_SEMANTIC_JOBS_SECTION_CHAIN_SUBJECT, name="ck_semantic_jobs_section_chain_subject"
         ),
         # UNIQUE (COALESCE(unit_id,-1)) WHERE kind = 'family_discovery' AND status IN
         # ('pending','running','privacy_hold') — raw SQL в миграции 0021
@@ -2815,6 +2858,8 @@ class FamilyParameter(Base):
     origin = Column(Text, nullable=False, server_default=sa_text("'model'"))
     # Убранный параметр архивируется, не удаляется.
     archived_at = Column(DateTime(timezone=True), nullable=True)
+    # «Можно отпустить» (миграция 0024): NULL — не решено; только главный параметр.
+    releasable = Column(Boolean, nullable=True)
 
     schema = relationship("FamilyParameterSchema")
 
@@ -2828,6 +2873,9 @@ class FamilyParameter(Base):
         CheckConstraint(CK_PARAMETER_VALUE_KIND, name="ck_family_parameters_value_kind"),
         CheckConstraint(CK_PARAMETER_ORIGIN, name="ck_family_parameters_origin"),
         CheckConstraint(CK_PARAMETER_RANGE_SHAPE, name="ck_family_parameters_range_shape"),
+        CheckConstraint(
+            CK_FAMILY_PARAMETER_RELEASABLE_MAIN, name="ck_family_parameters_releasable_main"
+        ),
     )
 
 
@@ -3189,32 +3237,6 @@ class KpLineComment(Base):
     )
 
 
-class KpLineRung(Base):
-    """Ручная ступень работы строки КП. `key` — снимок без внешних ключей: вариант
-    и семья могут уйти, тогда ступень просто не действует."""
-    __tablename__ = "kp_line_rungs"
-
-    position_item_id = Column(BigInteger, nullable=False)
-    level = Column(Text, nullable=False)
-    scope = Column(Text, nullable=False)
-    key = Column(JSONB, nullable=False)
-    set_by = Column(Integer, nullable=False)
-    set_at = Column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
-
-    __table_args__ = (
-        PrimaryKeyConstraint("position_item_id", name="pk_kp_line_rungs"),
-        ForeignKeyConstraint(
-            ["position_item_id"], ["position_items.id"], ondelete="CASCADE",
-            name="fk_kp_line_rungs_position_item",
-        ),
-        ForeignKeyConstraint(
-            ["set_by"], ["users.id"], ondelete="RESTRICT", name="fk_kp_line_rungs_set_by"
-        ),
-        CheckConstraint(CK_KP_RUNG_LEVEL, name="ck_kp_line_rungs_level"),
-        CheckConstraint(CK_KP_RUNG_SCOPE, name="ck_kp_line_rungs_scope"),
-    )
-
-
 class KpFamilyRung(Base):
     """Ручная ступень системы для семьи в смете. `first_main_parameter_id` — снимок
     `family_parameters.id` без внешнего ключа: версия схемы с каскадом стёрла бы
@@ -3276,4 +3298,123 @@ class KpSentFile(Base):
             name="fk_kp_sent_files_created_by",
         ),
         UniqueConstraint("file_key", name="uq_kp_sent_files_file_key"),
+    )
+
+
+# ---------------------------------------------------------------------------
+#  Лестница аналогов (миграция 0024, спека §2.18)
+# ---------------------------------------------------------------------------
+
+#: Зона цепочки разделов, источник решения и вид выбора цели строки КП.
+ZONES = ("underground", "aboveground", "territory", "whole")
+ZONE_SOURCES = ("rule", "model", "human")
+KP_TARGET_KINDS = ("freshest", "analog")
+
+#: Литералы CHECK продублированы в миграции 0024 (она не импортирует `models.py`);
+#: паритет держит `test_analog_schema.py`. Предикаты тотальны при `NULL` операндах
+#: (`docs/pitfalls/db.md`): `IS NOT DISTINCT FROM` вместо голого `=` у `zone_source`.
+CK_SECTION_CHAIN_ZONE = "zone IN (" + ", ".join(f"'{v}'" for v in ZONES) + ")"
+CK_SECTION_CHAIN_ZONE_SOURCE = (
+    "zone_source IN (" + ", ".join(f"'{v}'" for v in ZONE_SOURCES) + ")"
+)
+CK_SECTION_CHAIN_ZONE_PAIR = "(zone IS NULL) = (zone_source IS NULL)"
+CK_SECTION_CHAIN_PROPOSED_ZONE = (
+    "proposed_zone IN (" + ", ".join(f"'{v}'" for v in (*ZONES, "unknown")) + ")"
+)
+CK_SECTION_CHAIN_PROPOSAL_ONLY_UNDECIDED = (
+    "zone IS NULL OR (proposed_zone IS NULL AND proposed_confidence IS NULL "
+    "AND proposed_reason IS NULL)"
+)
+CK_SECTION_CHAIN_HUMAN_DECIDED_BY = (
+    "(zone_source IS NOT DISTINCT FROM 'human') = (decided_by IS NOT NULL)"
+)
+CK_RELEASABLE_CONFIDENCE = "confidence BETWEEN 0 AND 1"
+CK_KP_TARGET_KIND = "kind IN (" + ", ".join(f"'{v}'" for v in KP_TARGET_KINDS) + ")"
+CK_KP_TARGET_ANALOG = "(kind = 'analog') = (analog_position_item_id IS NOT NULL)"
+
+
+class SectionChain(Base):
+    """Цепочка названий разделов от корня до позиции: единица, которой присваивается
+    зона. `chain_key` — ключ цепочки (уникален); зона — одно из `ZONES`, источник —
+    правило, модель или человек. Предложение модели (`proposed_*`) живёт только у
+    цепочки без зоны."""
+    __tablename__ = "section_chains"
+
+    id = Column(BigInteger, nullable=False)
+    chain_key = Column(Text, nullable=False)
+    titles = Column(ARRAY(Text), nullable=False)
+    zone = Column(Text, nullable=True)
+    zone_source = Column(Text, nullable=True)
+    proposed_zone = Column(Text, nullable=True)
+    proposed_confidence = Column(Numeric, nullable=True)
+    proposed_reason = Column(Text, nullable=True)
+    decided_by = Column(Integer, nullable=True)
+    decided_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = _created_at()
+
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_section_chains"),
+        UniqueConstraint("chain_key", name="uq_section_chains_chain_key"),
+        ForeignKeyConstraint(
+            ["decided_by"], ["users.id"], ondelete="RESTRICT", name="fk_section_chains_decided_by"
+        ),
+        CheckConstraint(CK_SECTION_CHAIN_ZONE, name="ck_section_chains_zone"),
+        CheckConstraint(CK_SECTION_CHAIN_ZONE_SOURCE, name="ck_section_chains_zone_source"),
+        CheckConstraint(CK_SECTION_CHAIN_ZONE_PAIR, name="ck_section_chains_zone_pair"),
+        CheckConstraint(CK_SECTION_CHAIN_PROPOSED_ZONE, name="ck_section_chains_proposed_zone"),
+        CheckConstraint(
+            CK_SECTION_CHAIN_PROPOSAL_ONLY_UNDECIDED,
+            name="ck_section_chains_proposal_only_undecided",
+        ),
+        CheckConstraint(
+            CK_SECTION_CHAIN_HUMAN_DECIDED_BY, name="ck_section_chains_human_decided_by"
+        ),
+    )
+
+
+class ReleasableProposal(Base):
+    """Предложение модели «можно отпустить» по параметру семьи; решает человек
+    (`family_parameters.releasable`), и решение удаляет предложение."""
+    __tablename__ = "releasable_proposals"
+
+    parameter_id = Column(BigInteger, nullable=False)
+    releasable = Column(Boolean, nullable=False)
+    confidence = Column(Numeric, nullable=False)
+    reason = Column(Text, nullable=False)
+    request_hash = Column(Text, nullable=False)
+    created_at = _created_at()
+
+    __table_args__ = (
+        PrimaryKeyConstraint("parameter_id", name="pk_releasable_proposals"),
+        ForeignKeyConstraint(
+            ["parameter_id"], ["family_parameters.id"], ondelete="CASCADE",
+            name="fk_releasable_proposals_parameter",
+        ),
+        CheckConstraint(CK_RELEASABLE_CONFIDENCE, name="ck_releasable_proposals_confidence"),
+    )
+
+
+class KpLineTarget(Base):
+    """Выбор цели строки КП-работы: самая свежая или конкретный аналог.
+    `analog_position_item_id` — без внешнего ключа: строка договора может уйти с
+    заменой сметы, тогда выбор не действует (как снимок ключа 4б)."""
+    __tablename__ = "kp_line_targets"
+
+    position_item_id = Column(BigInteger, nullable=False)
+    kind = Column(Text, nullable=False)
+    analog_position_item_id = Column(BigInteger, nullable=True)
+    set_by = Column(Integer, nullable=False)
+    set_at = Column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
+
+    __table_args__ = (
+        PrimaryKeyConstraint("position_item_id", name="pk_kp_line_targets"),
+        ForeignKeyConstraint(
+            ["position_item_id"], ["position_items.id"], ondelete="CASCADE",
+            name="fk_kp_line_targets_position_item",
+        ),
+        ForeignKeyConstraint(
+            ["set_by"], ["users.id"], ondelete="RESTRICT", name="fk_kp_line_targets_set_by"
+        ),
+        CheckConstraint(CK_KP_TARGET_KIND, name="ck_kp_line_targets_kind"),
+        CheckConstraint(CK_KP_TARGET_ANALOG, name="ck_kp_line_targets_analog"),
     )
