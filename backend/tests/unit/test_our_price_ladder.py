@@ -419,6 +419,17 @@ def test_rates_rate_that_adjusts_to_zero_is_not_a_rate():
     assert index.rates("v", 50, is_system=False, class_id=None) == []
 
 
+def test_rates_rate_that_adjusts_to_nan_is_not_a_rate():
+    # ставка систем после приведения проходит `is_price`: NaN-множитель договор из ступени убирает
+    lines = [
+        hline(1, None, total=D(10000), is_system=True),
+        hline(2, None, total=D(12000), is_system=True),
+    ]
+    contracts = [contract(1, area=D(100)), contract(2, area=D(100))]
+    index = HistoryIndex(contracts, lines, factor_by_estimate={100: NAN, 200: D(1)})
+    assert index.rates("v", 50, is_system=True, class_id=None) == [ContractRate(2, D(120), D(120), 1)]
+
+
 def test_rates_adjustment_does_not_round_the_nominal_rate_first():
     # номинал (100 + 100.01) / 2 = 100.005; округление до копеек перед приведением дало бы 200.00 или 200.02
     lines = [hline(1, D(100)), hline(1, D("100.01"))]

@@ -755,6 +755,34 @@ class TestFreshest:
         # цена равна у обоих: ближе к февралю 2024 — смета января 2024
         assert line["freshest"]["analog_id"] == nearest.id
 
+    def test_a_price_tie_of_the_lowest_goes_to_the_contract_with_this_contractor(self, member_client, stage, world):
+        """§2.9: при равной цене самая низкая — аналог договора с подрядчиком этого КП. Его строка
+        заведена второй (больший `position_item_id`), даты цены равны: без подрядчика выиграл бы чужой."""
+        chain = world.chain(("Раздел А",), "whole")
+        rnd, part = _kp_part(stage)
+        _, _, other = _hist(stage, D("100"), chain=chain)
+        own_contract, _, own = _hist(stage, D("100"), chain=chain, contractor=part.contractor)
+        item = _line(stage, part.proposal, D("120"), chain=chain)
+        assert other.id < own.id
+
+        line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
+
+        assert (line["lowest"]["analog_id"], line["lowest"]["contract_id"]) == (own.id, own_contract.id)
+
+    def test_a_unit_mismatch_line_keeps_to_freshest_but_has_no_over_freshest(self, member_client, stage, world):
+        """§2.12: «выше самых свежих» — только у `comparable`; у «разных единиц» разница есть, суммы нет."""
+        chain = world.chain(("Раздел А",), "whole")
+        _hist(stage, D("100"), chain=chain, prepared=dt.date(2026, 1, 1))
+        _hist(stage, D("120"), chain=chain, prepared=dt.date(2026, 6, 1))
+        rnd, part = _kp_part(stage)
+        item = _line(stage, part.proposal, D("1500"), chain=chain)  # 1500 / 110 > 5
+
+        line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
+
+        assert line["state"] == "unit_mismatch"
+        assert line["to_freshest"] == {"net": "13800.00", "shown": "13800.00"}  # (1500 - 120) * 10
+        assert (line["over_freshest"], line["over_lowest"], line["target_kind"]) == (None, None, None)
+
 
 # ---------------------------------------------------------------------------
 #  Итоги: покрытие самой свежей (К6)

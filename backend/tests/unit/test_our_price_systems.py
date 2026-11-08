@@ -381,7 +381,11 @@ def test_contract_without_area_does_not_enter_the_rung():
 
 
 def test_works_and_systems_of_one_key_do_not_mix():
-    history = index([contract(1), contract(2)], [sline(1, V50, D(10000)), sline(2, V50, D(20000))])
+    # строки работ того же ключа лежат и в индексе систем (их отдаёт `load_history`): ставки систем их не видят
+    history = index(
+        [contract(1), contract(2)],
+        [sline(1, V50, D(10000)), sline(2, V50, D(20000)), wline(1, V50, D(999999)), wline(2, V50, D(777777))],
+    )
     analogs = [work_analog(11, 1, V50, D(999999)), work_analog(12, 2, V50, D(777777))]
     system = evaluate([kp(1, D(15000), V50)], history, work_history=analogs).lines[1]
     work = evaluate([kp_work(2, D(500000), D(1), V50)], history, work_history=analogs).lines[2]
