@@ -230,6 +230,10 @@ export const qk = {
       ["tenders", "kp-file", "preview", tenderId, roundId, offerId] as const,
     kpFilePreview: (tenderId: number, roundId: number, offerId: number, seriesId: number | null) =>
       ["tenders", "kp-file", "preview", tenderId, roundId, offerId, seriesId] as const,
+    /** Все экраны «Против нашей цены» разом (решения лестницы меняют аналоги везде). */
+    ourPriceAll: ["tenders", "our-price"] as const,
+    /** Все предпросмотры файла подрядчику, без списка отправленных. */
+    kpFilePreviewsAll: ["tenders", "kp-file", "preview"] as const,
     kpSentFiles: (tenderId: number, roundId: number, offerId: number) =>
       ["tenders", "kp-file", "sent", tenderId, roundId, offerId] as const,
   },

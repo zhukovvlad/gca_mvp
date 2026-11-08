@@ -2477,6 +2477,8 @@ export function useUpdateSchema() {
     }) => semanticApi.updateSchema(familyId, parameters, previewHash),
     onSuccess: (_, { familyId }) => {
       invalidateSchema(qc, familyId);
+      // Правка главных параметров и признак «можно отпустить» меняют аналоги: расчёт и файл устарели.
+      void invalidateAfterLadderDecision(qc);
       toast.success("Схема сохранена.");
     },
     onError: (error, { familyId }) => {
@@ -3109,7 +3111,7 @@ export function useReleasableProposals(page: number, { poll = true }: { poll?: b
 /**
  * Зона и признак меняют аналоги на всех экранах «Против нашей цены» (дизайн §7 п. 7: «без
  * перезагрузки»), поэтому вместе с очередями, сводкой и схемами семей перечитывается весь
- * префикс `["tenders", "our-price"]`.
+ * префикс `["tenders", "our-price"]` и все предпросмотры файла подрядчику.
  */
 function invalidateAfterLadderDecision(qc: ReturnType<typeof useQueryClient>) {
   return Promise.all([
@@ -3117,7 +3119,9 @@ function invalidateAfterLadderDecision(qc: ReturnType<typeof useQueryClient>) {
     qc.invalidateQueries({ queryKey: qk.semanticQueue.releasableAll }),
     qc.invalidateQueries({ queryKey: qk.semanticQueue.status }),
     qc.invalidateQueries({ queryKey: qk.workFamilies.schemasAll }),
-    qc.invalidateQueries({ queryKey: ["tenders", "our-price"] }),
+    qc.invalidateQueries({ queryKey: qk.tenders.ourPriceAll }),
+    // Источник и цена в файле подрядчику считаются по тем же аналогам; отправленные не меняются.
+    qc.invalidateQueries({ queryKey: qk.tenders.kpFilePreviewsAll }),
   ]);
 }
 
