@@ -39,6 +39,7 @@ from models import (
     WorkVariant,
     WorkVariantValue,
 )
+from services.releasable import current_proposals
 from services.schema_edit import EditSummary
 from services.semantic_cost import (
     RESERVE_FORMULA_VERSION,
@@ -96,9 +97,20 @@ class OffListOut(TypedDict):
     rows: int
 
 
+class ReleasableProposalOut(TypedDict):
+    """Действующее предложение модели «можно отпустить» (спека лестницы аналогов
+    §2.7): ответ, уверенность строкой и причина."""
+
+    releasable: bool
+    confidence: str
+    reason: str
+
+
 class ParameterOut(TypedDict):
     """Активный параметр версии. `refreshing` — число живых контекстов, у которых
-    строка параметра помечена «уточняется»."""
+    строка параметра помечена «уточняется». `releasable` — признак «можно отпустить»
+    (`None` — не размечен), `releasable_proposal` — действующее предложение модели
+    (по повторному рендеру, не по наличию строки)."""
 
     id: int
     ordinal: int
@@ -111,6 +123,8 @@ class ParameterOut(TypedDict):
     origin: str
     off_list: list[OffListOut]
     refreshing: int
+    releasable: bool | None
+    releasable_proposal: ReleasableProposalOut | None
 
 
 class SchemaOut(TypedDict):
@@ -270,6 +284,19 @@ def schema_out(db: Session, family_id: int) -> SchemaOut | None:
     parameters: list[ParameterOut] = []
     if frozen is not None:
         parameters = _parameters_of(db, frozen.id)
+        proposals = {
+            view.parameter_id: view
+            for view in current_proposals(db, family_ids=[family_id], page=None)
+        }
+        for parameter in parameters:
+            view = proposals.get(parameter["id"])
+            parameter["releasable_proposal"] = (
+                None if view is None
+                else ReleasableProposalOut(
+                    releasable=view.releasable, confidence=str(view.confidence),
+                    reason=view.reason,
+                )
+            )
     return SchemaOut(
         family_id=family_id,
         status=frozen.status if frozen is not None else None,
@@ -315,6 +342,7 @@ def _parameters_of(db: Session, schema_id: int) -> list[ParameterOut]:
             FamilyParameter.range_to,
             FamilyParameter.range_step,
             FamilyParameter.origin.label("parameter_origin"),
+            FamilyParameter.releasable,
             FamilyParameterValue.id.label("value_id"),
             FamilyParameterValue.value,
             FamilyParameterValue.origin,
@@ -356,6 +384,8 @@ def _parameters_of(db: Session, schema_id: int) -> list[ParameterOut]:
                 origin=row.parameter_origin,
                 off_list=off_list.get(row.parameter_id, []),
                 refreshing=refreshing.get(row.parameter_id, 0),
+                releasable=row.releasable,
+                releasable_proposal=None,
             ),
         )
         if row.value_id is not None:

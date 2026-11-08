@@ -13,6 +13,7 @@ from models import SemanticReconcileBatch, User, UserRole
 from security import hash_password
 from services.catalog_backfill import etc_category_share, run_backfill
 from services.family_change import AutoAcceptError, apply_auto_accept, preview_auto_accept
+from services.releasable import enqueue_all_releasable
 from services.semantic_decisions import backfill_family_schemas, enqueue_all
 from services.work_families import load_seed
 
@@ -234,6 +235,25 @@ def zones_backfill(enqueue: bool, reapply_rule: bool) -> None:
         )
         if enqueue:
             click.echo(f"Заданий зоны поставлено={report.enqueued}")
+    finally:
+        db.close()
+
+
+@cli.command("releasable-enqueue-all")
+def releasable_enqueue_all() -> None:
+    """Задания «можно отпустить» (`services/releasable.enqueue_all_releasable`, спека
+    лестницы аналогов §2.7) для всех действующих версий схем, где есть неразмеченный
+    активный главный параметр и нет задания с текущим отпечатком. Счёт и оценка
+    резерва печатаются ДО постановки. Идемпотентна: повторный запуск на неизменных
+    данных ничего не ставит."""
+    _guard("releasable-enqueue-all")
+    db = SessionLocal()
+    try:
+        def _announce(count, estimate) -> None:
+            click.echo(f"К постановке заданий: {count}, оценка резерва: ${estimate:.4f}")
+
+        report = enqueue_all_releasable(db, before_enqueue=_announce)
+        click.echo(f"Заданий поставлено={report.enqueued}")
     finally:
         db.close()
 

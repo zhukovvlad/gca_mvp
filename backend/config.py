@@ -139,6 +139,11 @@ class Settings(BaseSettings):
     SEMANTIC_ZONE_AUTO_ACCEPT_THRESHOLD: Decimal = Field(Decimal("0.95"), gt=0, le=1)
     SEMANTIC_ZONE_MAX_TOKENS: int = Field(300, ge=1)
 
+    # Признак «можно отпустить» (спека §2.7): уверенность не ниже порога пишет
+    # `family_parameters.releasable`; ниже - предложение на разбор администратору.
+    # Модель и тарифы задания - `SEMANTIC_SCHEMA_*`.
+    SEMANTIC_RELEASABLE_AUTO_ACCEPT_THRESHOLD: Decimal = Field(Decimal("0.95"), gt=0, le=1)
+
     @field_validator(
         "SEMANTIC_AUTO_ACCEPT_THRESHOLD", "SEMANTIC_SYSTEM_AUTO_ACCEPT_THRESHOLD", mode="before"
     )

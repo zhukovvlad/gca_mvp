@@ -56,6 +56,7 @@ from models import (
 )
 from services.family_change import _fitting_families
 from services.family_discovery import discovery_scope, render_discovery_request
+from services.releasable import current_proposals
 from services.semantic_answer import is_system_name
 from services.semantic_cost import spent_last_24h
 from services.semantic_request import (
@@ -193,6 +194,7 @@ class QueueStatus(TypedDict):
     contexts_pending: int
     families_without_schema: int
     zones_disputed: int
+    releasable_open: int
 
 
 class JobRow(TypedDict):
@@ -892,6 +894,21 @@ def _zone_job_titles(db: Session, jobs: list) -> dict[int, str]:
     return {job.id: " / ".join(titles[job.section_chain_id]) for job in jobs}
 
 
+def _releasable_job_titles(db: Session, jobs: list) -> dict[int, str]:
+    """Заголовок строки очереди ошибок у заданий `releasable_params` — имя семьи
+    (предмета-контекста у них нет)."""
+    if not jobs:
+        return {}
+    titles = dict(
+        db.execute(
+            sa.select(WorkFamily.id, WorkFamily.title).where(
+                WorkFamily.id.in_({job.family_id for job in jobs})
+            )
+        ).all()
+    )
+    return {job.id: titles[job.family_id] for job in jobs}
+
+
 def _schema_job_rows(db: Session, jobs: list) -> dict[int, dict]:
     """Строки заданий `family_schema` — по семье: имя, номер версии и число
     наименований в запросе. Число наименований считается по заданию отдельным
@@ -989,13 +1006,19 @@ def list_jobs(db: Session, *, status: Literal["error", "privacy_hold"]) -> JobsR
     zone_titles = _zone_job_titles(
         db, [job for job, _ in jobs if job.kind == SemanticJobKind.section_zone.value]
     )
+    releasable_titles = _releasable_job_titles(
+        db, [job for job, _ in jobs if job.kind == SemanticJobKind.releasable_params.value]
+    )
     items: list[JobRow] = []
     for job, error_text in jobs:
         family = schema_rows.get(job.id)
         discovery = discovery_rows.get(job.id)
         material = (
             None
-            if family is not None or discovery is not None or job.id in zone_titles
+            if (
+                family is not None or discovery is not None or job.id in zone_titles
+                or job.id in releasable_titles
+            )
             else materials[job.context_id]
         )
         items.append(
@@ -1015,7 +1038,10 @@ def list_jobs(db: Session, *, status: Literal["error", "privacy_hold"]) -> JobsR
                     family["title"]
                     if family is not None
                     else discovery["title"] if discovery is not None
-                    else zone_titles.get(job.id, material.title if material else None)
+                    else zone_titles.get(
+                        job.id,
+                        releasable_titles.get(job.id, material.title if material else None),
+                    )
                 ),
                 unit_id=job.unit_id,
                 unit_code=unit_codes.get(job.unit_id),
@@ -1182,6 +1208,7 @@ def queue_status(db: Session) -> QueueStatus:
                 SectionChain.zone.is_(None), SectionChain.proposed_zone.is_not(None)
             )
         ).scalar_one(),
+        releasable_open=len(current_proposals(db, family_ids=None, page=None)),
         **promotion,
     )
 

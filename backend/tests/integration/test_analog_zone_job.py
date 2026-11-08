@@ -125,10 +125,6 @@ class TestSettingsAndTariffs:
         assert (tariffs.input_per_m, tariffs.cache_write_per_m, tariffs.cache_read_per_m,
                 tariffs.output_per_m) == (Decimal(11), Decimal(12), Decimal(13), Decimal(14))
 
-    def test_releasable_params_still_has_no_silent_tariff(self):
-        with pytest.raises(ValueError):
-            tariffs_from(S, SemanticJobKind.releasable_params)
-
 
 # ---------------------------------------------------------------------------
 #  Тело запроса

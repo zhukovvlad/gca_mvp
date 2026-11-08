@@ -75,6 +75,7 @@ from services.family_change import (
     record_pending_outcome,
 )
 from services.parameter_ranges import RangeValue, parse_single_number, range_for_number
+from services.releasable import refresh_inputs
 from services.semantic_answer import AnswerSchemaError
 from services.semantic_cost import EventCap, event_cap_from
 from services.semantic_events import record_event
@@ -822,7 +823,7 @@ def _carry_human_parameters(
 ) -> tuple[dict[int, int], dict[int, int], list[dict[str, object]]]:
     """Параметры человека текущей версии переносятся в новую (спека 3в §2.8):
     номера уплотняются в 1..H по порядку прежних; роль, вид, границы, «только из
-    списка», происхождение и активные значения (слитые и выведенные не
+    списка», признак «можно отпустить», происхождение и активные значения (слитые и выведенные не
     переносятся) копируются. Параметры модели прежней версии не переносятся.
     Возвращает `({прежний id параметра: новый}, {прежний id значения: новый},
     описание параметров для события)`."""
@@ -843,7 +844,7 @@ def _carry_human_parameters(
             schema_id=schema.id, ordinal=ordinal, name=old.name, name_norm=old.name_norm,
             role=old.role, value_kind=old.value_kind, closed=old.closed,
             range_from=old.range_from, range_to=old.range_to, range_step=old.range_step,
-            origin=ParameterOrigin.human.value,
+            origin=ParameterOrigin.human.value, releasable=old.releasable,
         )
         db.add(row)
         db.flush()
@@ -1067,6 +1068,12 @@ def freeze_schema(
         job.status = SemanticJobStatus.done.value
         job.claim_token = None
         db.flush()
+    # Прежняя версия ушла из `frozen`: её предложения и задание «можно отпустить»
+    # убираются; новая версия с неразмеченным главным получает задание (спека
+    # лестницы аналогов §2.7).
+    refresh_inputs(
+        db, [schema_id, *([current.id] if current is not None else [])], settings=settings
+    )
     # Контексты семьи получают задания значений по новой версии (спека §2.6,
     # §2.7); сверка идёт в этой же транзакции, до коммита вызывающего.
     reconcile_or_defer(db, _family_context_ids(db, family_id))

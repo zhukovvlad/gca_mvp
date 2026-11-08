@@ -65,6 +65,13 @@ from services.family_discovery import (
     render_discovery_request,
     reserve_of,
 )
+from services.releasable import (
+    load_releasable_material,
+    lock_inputs,
+    parse_releasable_answer,
+    record_releasable_result,
+    render_releasable_material,
+)
 from services.semantic_answer import AnswerSchemaError, parse_model_answer
 from services.semantic_client import (
     ModelClient,
@@ -341,6 +348,13 @@ def render_job_request(db: Session, job: SemanticJob, *, settings: Settings) -> 
         return JobRender(
             rendered=render_zone_request(db, job.section_chain_id, settings=settings)
         )
+    if kind == SemanticJobKind.releasable_params.value:
+        # Спрашивать нечего: версия не действующая, нет активных главных или все
+        # главные уже размечены.
+        material = load_releasable_material(db, job.family_id, job.schema_id)
+        if material is None or not material.has_unmarked:
+            return _not_renderable(SemanticCancelReason.not_applicable)
+        return JobRender(rendered=render_releasable_material(material, settings=settings))
     raise ValueError(f"неизвестный вид задания: {kind!r}")
 
 
@@ -622,6 +636,9 @@ def record_result(
     if claim.kind == SemanticJobKind.section_zone:
         _record_zone_attempt(db, claim, response, now=now, settings=settings)
         return None
+    if claim.kind == SemanticJobKind.releasable_params:
+        _record_releasable_attempt(db, claim, response, now=now, settings=settings)
+        return None
     if claim.kind != SemanticJobKind.family_suggestion:
         _record_variant_result(db, claim, response, now=now, settings=settings)
         return None
@@ -844,6 +861,53 @@ def _record_zone_attempt(
     )
     if owned:
         record_zone_result(db, job, answer, settings=settings)
+    db.flush()
+    _apply_fuse(db, attempt, now=now)
+    db.commit()
+
+
+def _record_releasable_attempt(
+    db: Session,
+    claim: Claim,
+    response: ModelResponse,
+    *,
+    now: datetime,
+    settings: Settings,
+) -> None:
+    """Запись результата `releasable_params` (спека лестницы аналогов §2.7). Порядок
+    замков — «домен раньше задания»: входы запроса (`lock_inputs`: семья, версия,
+    параметры — `FOR SHARE`), затем задание `FOR UPDATE`. Актуальность ответа
+    определяет повторный рендер в `record_releasable_result`, а не статус задания.
+    Ответ не по схеме, в том числе пропуск или повтор параметра, — ошибка попытки.
+    Коммитит сама."""
+    assert claim.attempt_id is not None
+    try:
+        answer = parse_releasable_answer(response.content)
+    except AnswerSchemaError as exc:
+        _record_schema_error(db, claim, response, exc, now=now)
+        return
+
+    subject = db.execute(
+        sa.select(SemanticJob.family_id, SemanticJob.schema_id).where(SemanticJob.id == claim.job_id)
+    ).one()
+    lock_inputs(db, subject.family_id, subject.schema_id)
+    job = _lock_job(db, claim.job_id)
+    attempt = _load_attempt(db, claim.attempt_id)
+    owned = _owns_job(job, claim)
+    if owned:
+        try:
+            record_releasable_result(db, job, answer, settings=settings)
+        except AnswerSchemaError as exc:
+            # До любой записи: `record_releasable_result` проверяет состав ответа
+            # после решений об устаревании и ничего не успевает записать.
+            _record_schema_error(db, claim, response, exc, now=now)
+            return
+    _close_with_response(
+        attempt,
+        response,
+        outcome=SemanticAttemptOutcome.ok if owned else SemanticAttemptOutcome.lost_claim,
+        now=now,
+    )
     db.flush()
     _apply_fuse(db, attempt, now=now)
     db.commit()
