@@ -1,6 +1,6 @@
 """Ручной ступени работы больше нет (миграция 0024; спека §2.17, Task 1).
 
-`load_decisions` отдаёт `saved.work == {}` и три `SELECT`; `PUT …/rung` у строки-работы —
+`load_decisions` не несёт ручных ступеней работ (у `saved` нет `work`) и делает три `SELECT`; `PUT …/rung` у строки-работы —
 422 `rung_not_applicable`, у системной строки — как в 4б; `DELETE …/rung` у работы — 204 без
 действия. Подробные тесты маршрутов — `test_kp_file_mutations.py` и `test_kp_file_scene.py`;
 здесь — заявления брифа задачи, по одному входу на каждое.
@@ -80,7 +80,7 @@ def test_load_decisions_gives_an_empty_work_map_next_to_other_decisions(stage, d
 
     found = kd.load_decisions(db_session, [part.estimate.id])[part.estimate.id]
 
-    assert dict(found.saved.work) == {}
+    assert not hasattr(found.saved, "work")
     assert set(found.saved.family) == {stage.family.id}
     assert set(found.agreements) == {item.id} and set(found.comments) == {item.id}
 

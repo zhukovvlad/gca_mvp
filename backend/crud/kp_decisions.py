@@ -3,18 +3,16 @@
 Три таблицы решений — «Договорились», свой комментарий и ручная ступень семьи
 системы — читаются одним вызовом `load_decisions` на все сметы этапа: три `SELECT`,
 сколько бы смет, строк и решений ни было. Ручной ступени работы больше нет (миграция
-0024): `saved.work` всегда пуст. Автор решения (идентификатор и почта) приходит
+0024). Автор решения (идентификатор и почта) приходит
 соединением с `users`, отдельного запроса на него нет. Запись решений — `put_*`/`delete_*` ниже: они флешат, транзакцию ведёт
 роутер.
 
-Перевод ключа ступени в `Hashable`, с которым сравнивает ядро (`LineKey.at`), — пара
-`snapshot_to_json` / `snapshot_from_json`. Тексты единиц строк — `load_unit_texts`; строка файла для
-комментария собирается `kp_source_line`.
+Тексты единиц строк — `load_unit_texts`; строка файла для комментария собирается `kp_source_line`.
 """
 
 from __future__ import annotations
 
-from collections.abc import Hashable, Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -46,7 +44,7 @@ from money.vat import gross_to_net
 from parser.constants import JSON_KEY_LOTS, JSON_KEY_UNIT
 from services.estimate_import import extract_positions, extract_single_proposal
 from services.kp_file import KpSourceLine
-from services.our_price import RUNG_ORDER, Level, Rung, SavedFamilyRung, SavedRungs, SavedWorkRung
+from services.our_price import RUNG_ORDER, Rung, SavedFamilyRung, SavedRungs
 
 CODE_INVALID_AGREED = "invalid_agreed"
 CODE_COMMENT_TOO_LONG = "comment_too_long"
@@ -95,7 +93,6 @@ def load_decisions(db: Session, estimate_ids: Sequence[int]) -> dict[int, Estima
     ids = list(estimate_ids)
     agreements: dict[int, dict[int, tuple[Decimal, datetime, int, str]]] = {i: {} for i in ids}
     comments: dict[int, dict[int, tuple[str, datetime, int, str]]] = {i: {} for i in ids}
-    work: dict[int, dict[int, SavedWorkRung]] = {i: {} for i in ids}
     family: dict[int, dict[int, SavedFamilyRung]] = {i: {} for i in ids}
     meta: dict[int, dict[tuple[str, int], tuple[datetime, int, str]]] = {i: {} for i in ids}
 
@@ -126,7 +123,7 @@ def load_decisions(db: Session, estimate_ids: Sequence[int]) -> dict[int, Estima
         i: EstimateDecisions(
             agreements=agreements[i],
             comments=comments[i],
-            saved=SavedRungs(work=work[i], family=family[i]),
+            saved=SavedRungs(family=family[i]),
             rung_meta=meta[i],
         )
         for i in ids
@@ -206,25 +203,6 @@ def sent_file_keys(
             .order_by(KpSentFile.id)
         ).scalars()
     )
-
-
-def snapshot_to_json(level: Level, key_value: Hashable) -> dict:
-    """Снимок ключа строки на уровне ступени: то, что отдаёт `LineKey.at(level)`."""
-    if level == "v":
-        return {"level": "v", "variant_id": key_value}
-    if level == "p":
-        family_id, (parameter_id, value_id) = key_value
-        return {"level": "p", "family_id": family_id, "parameter_id": parameter_id, "value_id": value_id}
-    return {"level": "f", "family_id": key_value}
-
-
-def snapshot_from_json(data: Mapping) -> Hashable:
-    """Обратный перевод: `Hashable`, который ядро сравнивает с `LineKey.at(level)`."""
-    if data["level"] == "v":
-        return data["variant_id"]
-    if data["level"] == "p":
-        return (data["family_id"], (data["parameter_id"], data["value_id"]))
-    return data["family_id"]
 
 
 def load_unit_texts(db: Session, estimate_id: int) -> dict[int, str]:

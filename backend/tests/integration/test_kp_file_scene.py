@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import json
 import re
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -30,7 +29,7 @@ from models import (
     PositionItem,
     UnitOfMeasure,
 )
-from services.our_price import LineKey, Rung, SavedFamilyRung
+from services.our_price import Rung, SavedFamilyRung
 from tests.integration.test_our_price_load import World
 from tests.integration.test_our_price_offer_api import (
     FACTOR_FEB_2025,
@@ -152,47 +151,6 @@ def _iso(text: str) -> dt.datetime:
 
 
 # ---------------------------------------------------------------------------
-#  Снимок ключа ступени
-# ---------------------------------------------------------------------------
-
-
-class TestSnapshot:
-    def test_to_json_names_the_key_of_each_level(self):
-        assert kd.snapshot_to_json("v", 7) == {"level": "v", "variant_id": 7}
-        assert kd.snapshot_to_json("p", (5, (3, 9))) == {
-            "level": "p",
-            "family_id": 5,
-            "parameter_id": 3,
-            "value_id": 9,
-        }
-        assert kd.snapshot_to_json("f", 5) == {"level": "f", "family_id": 5}
-
-    def test_unspecified_first_value_stays_null(self):
-        assert kd.snapshot_to_json("p", (5, (3, None))) == {
-            "level": "p",
-            "family_id": 5,
-            "parameter_id": 3,
-            "value_id": None,
-        }
-
-    def test_from_json_gives_the_hashable_the_core_compares(self):
-        assert kd.snapshot_from_json({"level": "v", "variant_id": 7}) == 7
-        assert kd.snapshot_from_json({"level": "p", "family_id": 5, "parameter_id": 3, "value_id": 9}) == (5, (3, 9))
-        assert kd.snapshot_from_json({"level": "p", "family_id": 5, "parameter_id": 3, "value_id": None}) == (
-            5,
-            (3, None),
-        )
-        assert kd.snapshot_from_json({"level": "f", "family_id": 5}) == 5
-
-    @pytest.mark.parametrize("first_main", [(3, 9), (3, None)])
-    def test_the_pair_is_mutually_inverse_on_the_three_levels(self, first_main):
-        key = LineKey(family_id=5, variant_id=7, first_main=first_main)
-        for level in ("v", "p", "f"):
-            stored = json.loads(json.dumps(kd.snapshot_to_json(level, key.at(level))))
-            assert kd.snapshot_from_json(stored) == key.at(level), level
-
-
-# ---------------------------------------------------------------------------
 #  Загрузка решений
 # ---------------------------------------------------------------------------
 
@@ -220,16 +178,15 @@ class TestLoadDecisions:
         first = found[a.estimate.id]
         assert first.agreements == {item_a1.id: (net, SET_AT, u1.id, u1.email)}
         assert first.comments == {item_a2.id: ("Текст", SET_AT, u2.id, u2.email)}
-        assert dict(first.saved.work) == {}
+        assert not hasattr(first.saved, "work")  # ручной ступени работы нет (0024)
         assert dict(first.saved.family) == {stage.family.id: SavedFamilyRung(Rung("p", "all"), 3)}
         assert first.rung_meta == {("family", stage.family.id): (SET_AT, u2.id, u2.email)}
         second = found[b.estimate.id]
-        assert (second.agreements, second.comments, dict(second.saved.work)) == ({}, {}, {})
+        assert (second.agreements, second.comments) == ({}, {})
         assert dict(second.saved.family) == {stage.family.id: SavedFamilyRung(Rung("f", "cls"), None)}
         assert second.rung_meta == {("family", stage.family.id): (SET_AT, u1.id, u1.email)}
         empty = found[c.estimate.id]
-        assert (empty.agreements, empty.comments, dict(empty.saved.work), dict(empty.saved.family)) == (
-            {},
+        assert (empty.agreements, empty.comments, dict(empty.saved.family)) == (
             {},
             {},
             {},
@@ -255,7 +212,7 @@ class TestLoadDecisions:
         assert set(found) == {asked.estimate.id}
         only = found[asked.estimate.id]
         assert only.agreements == {mine.id: (D("95"), SET_AT, user.id, user.email)}
-        assert (only.comments, dict(only.saved.work), dict(only.saved.family), only.rung_meta) == ({}, {}, {}, {})
+        assert (only.comments, dict(only.saved.family), only.rung_meta) == ({}, {}, {})
 
     def test_empty_comment_text_is_a_decision(self, stage, db_session, factories):
         rnd = stage.round()
@@ -427,7 +384,7 @@ class TestWorkLineHasNoManualRung:
         line = _line_of(_offer_ok(member_client, stage.tender, rnd, part), item)
 
         assert line["rung"] == {"level": "v", "scope": "cls", "auto": True, "threshold_met": True}
-        assert (line["state"], _pair(line["bargain"])) == ("comparable", (D("500"), D("500")))
+        assert (line["state"], _pair(line["over_lowest"])) == ("comparable", (D("500"), D("500")))
         assert line["manual_rung"] is None
 
 
@@ -523,8 +480,8 @@ class TestAgreed:
 
         line = _line_of(offer, item)
         assert line["agreed"] is not None
-        assert _pair(line["bargain"]) == (D("500"), D("500"))
-        assert _pair(line["to_ours"]) == (D("500"), D("500"))
+        assert _pair(line["over_lowest"]) == (D("500"), D("500"))
+        assert _pair(line["to_lowest"]) == (D("500"), D("500"))
         assert _participant(offer, part)["totals"] == without
         assert _participant(round_, part)["totals"] == without
 

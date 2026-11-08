@@ -33,16 +33,19 @@ from models import (
     FamilyParameter,
     FamilyParameterSchema,
     PositionItem,
+    SectionChain,
     UnitOfMeasure,
     ValueOrigin,
     WorkCategory,
 )
+from money.inflation import YearMonth
 from money.price import is_price, is_weight
 from services.context_routing import route_position
 from services.our_price import HistoryContract, LineKey
 from services.our_price_money import CategoryRow
 from services.work_families import assign_family
 from services.work_variants import get_or_create_value, get_or_create_variant
+from services.zone_rules import chain_key
 from tests.integration.test_semantic_queue_api import _active_family, _unit_id
 
 pytestmark = pytest.mark.integration
@@ -153,6 +156,7 @@ class TestPricePredicatesAgreeWithTheOracle:
 
 D = Decimal
 NOW = dt.datetime(2026, 1, 1, tzinfo=dt.UTC)
+_DEFAULT_CHAIN = object()
 
 
 class World:
@@ -164,6 +168,31 @@ class World:
         self.admin = admin
         self.unit_id = _unit_id(db, "M2")
         self._n = 0
+        self._whole_chain: SectionChain | None = None
+
+    # -- цепочки разделов -----------------------------------------------------
+
+    def chain(self, titles=("Раздел",), zone="whole", *, proposed=None):
+        """Цепочка разделов с зоной (`None` — не определена); ключ — по названиям."""
+        chain = SectionChain(
+            chain_key=chain_key(titles),
+            titles=list(titles),
+            zone=zone,
+            zone_source=None if zone is None else "rule",
+            proposed_zone=proposed,
+            proposed_confidence=None if proposed is None else D("0.5"),
+            proposed_reason=None if proposed is None else "причина",
+        )
+        self.db.add(chain)
+        self.db.flush()
+        return chain
+
+    @property
+    def whole_chain(self) -> SectionChain:
+        """Цепочка по умолчанию: зона «вся», общая у всех строк сцены, где зона не названа."""
+        if self._whole_chain is None:
+            self._whole_chain = self.chain(("Общий раздел",), "whole")
+        return self._whole_chain
 
     # -- семьи и схемы ------------------------------------------------------
 
@@ -263,8 +292,13 @@ class World:
         quantity=D("10"),
         chapter=None,
         number=None,
+        chain=_DEFAULT_CHAIN,
     ):
-        """Строка с каталожной строкой и членством; семья и вариант — по желанию."""
+        """Строка с каталожной строкой и членством; семья и вариант — по желанию. Цепочка по
+        умолчанию — общая с зоной «вся»: строки КП и истории сравниваются между собой; `chain=None`
+        — строка без цепочки."""
+        if chain is _DEFAULT_CHAIN:
+            chain = self.whole_chain
         self._n += 1
         title = title or f"Работа {self._n}"
         cp = self.f.CatalogPositionFactory.create(unit_id=self.unit_id, standard_job_title=title)
@@ -280,6 +314,7 @@ class World:
             quantity=quantity,
             chapter_item_id=chapter.id if chapter is not None else None,
             item_number_in_proposal=number,
+            section_chain_id=None if chain is None else chain.id,
         )
         context_id = route_position(self.db, position_item_id=item.id).context_id
         if family is not None:
@@ -361,6 +396,7 @@ class TestHistoryComposition:
         obj = world.f.ObjectFactory.create(area_aboveground_sp=D("2000"), area_underground_sp=D("500"))
         contract = world.contract(object_=obj, year=2024, rate_class=rate_class)
         estimate, _ = world.estimate(contract)
+        estimate.data_prepared_on_date = dt.date(2024, 3, 15)
         db_session.flush()
 
         contracts, _ = _history_of(db_session, contract)
@@ -377,8 +413,34 @@ class TestHistoryComposition:
                 contractor_id=contract.contractor_id,
                 contractor_title=contract.contractor.title,
                 area=D("2500"),
+                period=YearMonth(2024, 3),
             )
         ]
+
+    @pytest.mark.parametrize(
+        ("amendment_no", "prepared", "expected"),
+        [
+            pytest.param(None, dt.date(2025, 3, 20), YearMonth(2025, 3), id="base_prepared_date"),
+            pytest.param(None, None, YearMonth(2025, 6), id="base_falls_back_to_signed_date"),
+            pytest.param(1, dt.date(2025, 9, 2), YearMonth(2025, 9), id="amendment_prepared_date"),
+            pytest.param(1, None, None, id="amendment_without_date_has_no_period"),
+        ],
+    )
+    def test_contract_period_is_the_price_period_of_its_latest_estimate(
+        self, world, db_session, amendment_no, prepared, expected
+    ):
+        """Период договора — по последней смете без ряда ИПЦ: у ДС дата договора не подставляется."""
+        contract = world.contract(year=2025)
+        if amendment_no is not None:
+            base, _ = world.estimate(contract)
+            base.data_prepared_on_date = dt.date(2025, 1, 10)
+        estimate, _ = world.estimate(contract, amendment_no=amendment_no)
+        estimate.data_prepared_on_date = prepared
+        db_session.flush()
+
+        contracts, _ = _history_of(db_session, contract)
+
+        assert [c.period for c in contracts] == [expected]
 
     def test_object_without_area_gives_none(self, world, db_session):
         contract = world.contract(area=None)

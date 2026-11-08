@@ -130,7 +130,7 @@ def _months(period: YearMonth) -> int:
     return period.year * 12 + period.month
 
 
-def _date_rank(period: YearMonth | None, target: YearMonth | None) -> tuple[int, int]:
+def date_rank(period: YearMonth | None, target: YearMonth | None) -> tuple[int, int]:
     """Чем меньше, тем ближе к дате КП; без цели — тем позже, тем ближе; без даты — в конец."""
     if period is None:
         return (1, 0)
@@ -265,7 +265,7 @@ def evaluate_work_ladder(
             kp_ratio = ratio if outside(ratio) else None
 
     def rank(c: _Candidate) -> tuple[tuple[int, int], int]:
-        return _date_rank(c.contract.period, target_month), c.line.position_item_id
+        return date_rank(c.contract.period, target_month), c.line.position_item_id
 
     def place(c: _Candidate) -> int:
         return len(kp.chain_titles & c.line.chain_titles)
@@ -285,13 +285,13 @@ def evaluate_work_ladder(
         if dated:
             fresh = min(
                 dated,
-                key=lambda c: (_date_rank(c.contract.period, target_month), -place(c), c.net, c.line.position_item_id),
+                key=lambda c: (date_rank(c.contract.period, target_month), -place(c), c.net, c.line.position_item_id),
             )
             freshest = Figure(fresh.net, fresh.line.position_item_id, fresh.contract.contract_id)
 
     reference = sorted(
         picked,
-        key=lambda c: (-place(c), _date_rank(c.contract.period, target_month), c.net, c.line.position_item_id),
+        key=lambda c: (-place(c), date_rank(c.contract.period, target_month), c.net, c.line.position_item_id),
     )
     analogs = tuple(
         Analog(

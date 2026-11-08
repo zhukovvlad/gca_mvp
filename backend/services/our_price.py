@@ -15,14 +15,24 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Hashable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, localcontext
 from enum import Enum
 from typing import Literal
 
-from money.inflation import adjust_amount
+from money.inflation import YearMonth, adjust_amount
 from money.price import is_price, is_weight
 from money.vat import gross_to_net
+from services.analog_ladder import (
+    MIN_NOMINAL,
+    FamilyLadderInfo,
+    Figure,
+    KpWork,
+    WorkHistoryLine,
+    WorkLadder,
+    date_rank,
+    evaluate_work_ladder,
+)
 from services.price_basis import (  # noqa: F401  (потребители ядра 4а импортируют эти имена отсюда)
     _CONTEXT,
     MISMATCH_HIGH,
@@ -35,6 +45,7 @@ from services.price_basis import (
 from services.price_basis import (
     outside as _outside,
 )
+from services.zone_rules import Zone
 
 Level = Literal["v", "p", "f"]
 Scope = Literal["cls", "all"]
@@ -53,6 +64,7 @@ class LineState(str, Enum):
     no_price = "no_price"
     no_area = "no_area"
     no_variant = "no_variant"
+    no_zone = "no_zone"
     no_history = "no_history"
     unit_mismatch = "unit_mismatch"
     comparable = "comparable"
@@ -129,6 +141,18 @@ class KpLine:
     is_system: bool
     in_progress: bool
     waiting_admin: bool
+    #: Цепочка разделов строки (работа); `None` — у строки нет цепочки.
+    section_chain_id: int | None = None
+    #: Зона цепочки; `None` — не определена (состояние `no_zone`).
+    zone: Zone | None = None
+    #: Нормализованные названия цепочки (множество) — близость места справки.
+    chain_titles: frozenset[str] = frozenset()
+    #: Версия схемы варианта строки.
+    schema_id: int | None = None
+    #: parameter_id -> value_id | `None`; только если вариант на действующей версии схемы.
+    main_values: Mapping[int, int | None] = field(default_factory=dict)
+    #: Цепочка ждёт решения администратора (спорная зона или задание в `error`/`privacy_hold`).
+    zone_waiting: bool = False
 
 
 @dataclass(frozen=True)
@@ -158,16 +182,7 @@ class RungChoice:
     rung: Rung
 
 
-ResetReason = Literal["kind_changed", "key_changed", "rung_unavailable", "rung_empty"]
-
-
-@dataclass(frozen=True)
-class SavedWorkRung:
-    """Сохранённая ступень строки: ступень и снимок ключа строки на её уровне."""
-
-    rung: Rung
-    #: Значение `LineKey.at(rung.level)` на момент выбора.
-    key_snapshot: Hashable
+ResetReason = Literal["key_changed", "rung_unavailable", "rung_empty"]
 
 
 @dataclass(frozen=True)
@@ -180,18 +195,16 @@ class SavedFamilyRung:
 
 @dataclass(frozen=True)
 class SavedRungs:
-    #: position_item_id -> ступень строки
-    work: Mapping[int, SavedWorkRung]
-    #: family_id -> ступень семьи (внутри одного КП)
+    #: family_id -> ступень семьи системы (внутри одного КП); ручной ступени работы нет
     family: Mapping[int, SavedFamilyRung]
 
 
 @dataclass(frozen=True)
 class ManualRung:
-    """Статус сохранённой ступени у строки: чья она и действует ли."""
+    """Статус сохранённой ступени семьи системы: чья она и действует ли."""
 
     rung: Rung
-    target: Literal["line", "family"]
+    target: Literal["family"]
     active: bool
     reset_reason: ResetReason | None
 
@@ -208,11 +221,14 @@ class LineResult:
     rungs: tuple[RungCount, ...]
     contracts: tuple[ContractRate, ...]
     range: RateRange | None
+    #: Самая низкая расценка (в ответе — `lowest`): у работы — цена аналога, у системы — ставка.
     ours: Decimal | None
+    #: Самая низкая взята из другого класса (у работы — ступени 3 и 4).
     ours_from_all_classes: bool
     position: Literal["above", "in", "below"] | None
-    #: Подписанная разница к нашей расценке: (цена КП - ours) * вес * доля.
+    #: Подписанная разница к самой низкой: (цена КП - ours) * вес * доля (в ответе — `to_lowest`).
     to_ours: Decimal | None
+    #: «КП выше самых низких» строки: max(0, to_ours) у сравнимой (в ответе — `over_lowest`).
     bargain: Decimal | None
     below: Decimal | None
     #: Индекс в `OfferEvaluation.groups`.
@@ -223,9 +239,13 @@ class LineResult:
     mismatch: Mismatch | None
     #: Сохранённая ступень строки или её семьи; `None` — сохранённой нет.
     manual: ManualRung | None = None
-    #: Ступени, которые можно сохранить: у работы — с договорами, у системы —
-    #: с договорами у каждой группы семьи; без лестницы — пусто.
+    #: Ступени системы, которые можно сохранить: с договорами у каждой группы семьи; у работы пусто.
     selectable: frozenset[Rung] = frozenset()
+    #: Лестница аналогов работы; `None` — у систем и у работ, не дошедших до лестницы.
+    ladder: WorkLadder | None = None
+    #: Самая свежая расценка; `None` — её нет (ни у одного аналога или договора нет даты).
+    freshest: Figure | None = None
+    to_freshest: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -243,6 +263,10 @@ class GroupResult:
     to_ours: Decimal | None
     bargain: Decimal | None
     below: Decimal | None
+    freshest: Figure | None = None
+    to_freshest: Decimal | None = None
+    #: `max(0, to_freshest)` у сравнимой группы с самой свежей; иначе `None`.
+    over_freshest: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -259,7 +283,12 @@ class StateBucket:
 
 @dataclass(frozen=True)
 class OfferTotals:
+    #: «КП выше самых низких» (в ответе — `over_lowest`).
     bargain: Decimal
+    #: «КП выше самых свежих»; `None` — ни у одной сравнимой строки нет самой свежей (§2.12).
+    over_freshest: Decimal | None
+    comparable_lines: int
+    freshest_lines: int
     below: Decimal
     below_lines: int
     unit_mismatch_lines: int
@@ -269,6 +298,12 @@ class OfferTotals:
 
 
 # --- индекс истории -------------------------------------------------------------
+
+
+def _symbolic(unit_price: Decimal | None, vat_base: Decimal) -> bool:
+    """Цена за единицу есть, конечна и по номиналу нетто меньше 1 ₽ (спека §2.13 п. 1)."""
+    return unit_price is not None and unit_price.is_finite() and gross_to_net(unit_price, vat_base) < MIN_NOMINAL
+
 
 _LEVELS: tuple[Level, ...] = ("v", "p", "f")
 _IndexKey = tuple[Level, Hashable, bool]
@@ -283,6 +318,10 @@ class HistoryIndex:
     не входит; договор, у которого по ключу выпали все пригодные строки, есть в
     `vat_dropped` и отсутствует в `rates`. Договор без площади в ставку системы
     не входит и в `vat_dropped` не попадает. Ставка проходит `is_price`.
+
+    Строка договора системы с номиналом нетто цены за единицу меньше `MIN_NOMINAL` (1 ₽) в
+    сумму ключа не входит — до сложения и деления на площадь; ставка за м² порогу не
+    подчиняется. Номинал — без множителя ИПЦ. Строка без цены за единицу порогом не режется.
     """
 
     def __init__(
@@ -319,6 +358,8 @@ class HistoryIndex:
                     slot = ((level, key_value, line.is_system), line.contract_id)
                     if line.vat_base is None:
                         dropped_lines[slot] += 1
+                        continue
+                    if line.is_system and _symbolic(line.unit_price, line.vat_base):
                         continue
                     acc = sums.setdefault(slot, [_ZERO, _ZERO])
                     if line.is_system:
@@ -360,6 +401,11 @@ class HistoryIndex:
 
     def contract(self, contract_id: int) -> HistoryContract:
         return self._contracts[contract_id]
+
+    @property
+    def contracts(self) -> Mapping[int, HistoryContract]:
+        """Договоры истории по идентификатору (для лестницы работ)."""
+        return self._contracts
 
 
 # --- лестница -------------------------------------------------------------------
@@ -461,15 +507,6 @@ def _result(
     )
 
 
-def _rung_rates(history: HistoryIndex, key: LineKey, rung: Rung, *, tender_class_id: int) -> list[ContractRate]:
-    return history.rates(
-        rung.level,
-        key.at(rung.level),
-        is_system=False,
-        class_id=tender_class_id if rung.scope == "cls" else None,
-    )
-
-
 @dataclass(frozen=True)
 class _Comparison:
     state: LineState
@@ -482,6 +519,26 @@ class _Comparison:
     to_ours: Decimal
     bargain: Decimal | None
     below: Decimal | None
+    freshest: Figure | None
+    to_freshest: Decimal | None
+    over_freshest: Decimal | None
+
+
+def _freshest_rate(
+    history: HistoryIndex, rates: Sequence[ContractRate], target_month: YearMonth | None
+) -> Figure | None:
+    """Самая свежая ставка системы (спека §2.13 п. 3): договор с периодом сметы, ближайшим к дате КП.
+
+    Ничьи — меньшая ставка, меньший `contract_id`. Договор без периода в кандидаты не входит.
+    """
+    dated = [r for r in rates if history.contract(r.contract_id).period is not None]
+    if not dated:
+        return None
+    best = min(
+        dated,
+        key=lambda r: (date_rank(history.contract(r.contract_id).period, target_month), r.net, r.contract_id),
+    )
+    return Figure(best.net, None, best.contract_id)
 
 
 def _compare(
@@ -491,11 +548,17 @@ def _compare(
     *,
     quantity: Decimal,
     tender_class_id: int,
+    target_month: YearMonth | None,
 ) -> _Comparison:
-    """Цена против ставок ступени; `quantity` — вес работы или площадь для системы."""
+    """Цена системы против ставок ступени; `quantity` — площадь объекта.
+
+    Самая низкая и самая свежая берутся из одного охвата: класс тендера, а при его пустоте — все.
+    """
     price_range = rate_range(rung_rates)
     class_rates = [r for r in rung_rates if history.contract(r.contract_id).rate_class_id == tender_class_id]
-    ours = min(r.net for r in (class_rates or rung_rates))
+    scope_rates = class_rates or rung_rates
+    ours = min(r.net for r in scope_rates)
+    freshest = _freshest_rate(history, scope_rates, target_month)
 
     if price > price_range.max:
         position: Literal["above", "in", "below"] = "above"
@@ -507,14 +570,17 @@ def _compare(
     mismatch = unit_mismatch(price, rung_rates)
     with localcontext(_CONTEXT):
         to_ours = (price - ours) * quantity
+        to_freshest = None if freshest is None else (price - freshest.value) * quantity
         if mismatch is None:
             state = LineState.comparable
             bargain: Decimal | None = max(_ZERO, to_ours)
             below = (price - price_range.min) * quantity if price < price_range.min else None
+            over_freshest = None if to_freshest is None else max(_ZERO, to_freshest)
         else:
             state = LineState.unit_mismatch
             bargain = None
             below = None
+            over_freshest = None
 
     return _Comparison(
         state=state,
@@ -527,24 +593,10 @@ def _compare(
         to_ours=to_ours,
         bargain=bargain,
         below=below,
+        freshest=freshest,
+        to_freshest=to_freshest,
+        over_freshest=over_freshest,
     )
-
-
-def _work_manual(
-    key: LineKey | None, record: SavedWorkRung, history: HistoryIndex, *, tender_class_id: int
-) -> ManualRung:
-    """Действует ли сохранённая ступень работы: четыре условия по порядку (спека 4б §2.5).
-
-    Условие «строка — работа» проверяет вызывающий: сюда попадают только работы.
-    """
-    reason: ResetReason | None = None
-    if key is None or key.at(record.rung.level) != record.key_snapshot:
-        reason = "key_changed"
-    elif record.rung not in available_rungs(key):
-        reason = "rung_unavailable"
-    elif not _rung_rates(history, key, record.rung, tender_class_id=tender_class_id):
-        reason = "rung_empty"
-    return ManualRung(record.rung, "line", reason is None, reason)
 
 
 def _evaluate_work(
@@ -553,67 +605,79 @@ def _evaluate_work(
     *,
     kp_unit_net: Decimal,
     kp_total_net: Decimal | None,
+    work_history: Sequence[WorkHistoryLine],
+    families: Mapping[int, FamilyLadderInfo],
     tender_class_id: int,
-    choice: RungChoice | None,
-    saved: SavedRungs | None,
+    tender_contractor_id: int,
+    target_month: YearMonth | None,
+    factors: Mapping[int, Decimal] | None,
 ) -> LineResult:
+    """Работа через лестницу аналогов (спека §2.8, §2.9). Ступеней 4а у неё нет."""
     key = line.key
     assert key is not None and line.weight is not None
-    rungs = available_rungs(key)
-    counts = tuple(
-        RungCount(rung, len(_rung_rates(history, key, rung, tender_class_id=tender_class_id))) for rung in rungs
+    ladder = evaluate_work_ladder(
+        KpWork(
+            position_item_id=line.position_item_id,
+            family_id=key.family_id,
+            variant_id=key.variant_id,
+            schema_id=line.schema_id,
+            main_values=line.main_values,
+            zone=line.zone,
+            chain_titles=line.chain_titles,
+            net=kp_unit_net,
+        ),
+        work_history,
+        families,
+        history.contracts,
+        tender_class_id=tender_class_id,
+        tender_contractor_id=tender_contractor_id,
+        target_month=target_month,
+        factors=factors,
     )
-    selectable = frozenset(count.rung for count in counts if count.contracts >= 1)
-
-    record = saved.work.get(line.position_item_id) if saved is not None else None
-    manual = _work_manual(key, record, history, tender_class_id=tender_class_id) if record is not None else None
-
-    chosen = choice is not None and choice.position_item_id == line.position_item_id
-    pinned = manual is not None and manual.active
-    if chosen:
-        if choice.rung not in rungs:
-            raise ValueError(f"у строки {line.position_item_id} нет ступени {choice.rung}")
-        rung: Rung | None = choice.rung
-    elif pinned:
-        rung = manual.rung
-    else:
-        rung = auto_rung(counts)
-
-    rung_rates = _rung_rates(history, key, rung, tender_class_id=tender_class_id) if rung else []
-    if not rung_rates:
+    if ladder.rung_no is None:
+        return _result(line, LineState.no_history, kp_unit_net, kp_total_net, ladder=ladder)
+    if ladder.all_outliers:
         return _result(
             line,
-            LineState.no_history,
+            LineState.unit_mismatch,
             kp_unit_net,
             kp_total_net,
-            rung=rung,
-            auto=not chosen,
-            rungs=counts,
-            manual=manual,
-            selectable=selectable,
+            ladder=ladder,
+            mismatch=Mismatch(kp_ratio=None, contracts=()),
         )
 
-    cmp = _compare(history, kp_unit_net, rung_rates, quantity=line.weight, tender_class_id=tender_class_id)
+    assert ladder.lowest is not None
+    remainder = [a.net for a in ladder.analogs if a.position_item_id in ladder.remainder_ids]
+    price_range = RateRange(min=min(remainder), max=max(remainder), median=_median(remainder))
+    if kp_unit_net > price_range.max:
+        position: Literal["above", "in", "below"] = "above"
+    elif kp_unit_net < price_range.min:
+        position = "below"
+    else:
+        position = "in"
+    mismatch = None if ladder.kp_ratio is None else Mismatch(kp_ratio=ladder.kp_ratio, contracts=())
+    comparable = mismatch is None
+    with localcontext(_CONTEXT):
+        to_ours = (kp_unit_net - ladder.lowest.value) * line.weight
+        to_freshest = None if ladder.freshest is None else (kp_unit_net - ladder.freshest.value) * line.weight
+        bargain = max(_ZERO, to_ours) if comparable else None
+        below = (kp_unit_net - price_range.min) * line.weight if comparable and position == "below" else None
     return _result(
         line,
-        cmp.state,
+        LineState.comparable if comparable else LineState.unit_mismatch,
         kp_unit_net,
         kp_total_net,
-        rung=rung,
-        auto=not (chosen or pinned),
-        threshold_met=cmp.threshold_met,
-        rungs=counts,
-        contracts=tuple(rung_rates),
-        range=cmp.range,
-        ours=cmp.ours,
-        ours_from_all_classes=cmp.ours_from_all_classes,
-        position=cmp.position,
-        to_ours=cmp.to_ours,
-        bargain=cmp.bargain,
-        below=cmp.below,
-        mismatch=cmp.mismatch,
-        manual=manual,
-        selectable=selectable,
+        ladder=ladder,
+        range=price_range,
+        ours=ladder.lowest.value,
+        ours_from_all_classes=ladder.other_class,
+        position=position,
+        to_ours=to_ours,
+        bargain=bargain,
+        below=below,
+        mismatch=mismatch,
+        freshest=ladder.freshest,
+        to_freshest=to_freshest,
     )
 
 
@@ -673,6 +737,7 @@ def _evaluate_family(
     *,
     tender_area: Decimal,
     tender_class_id: int,
+    target_month: YearMonth | None,
     choice: RungChoice | None,
     saved: SavedRungs | None,
     first_group_index: int,
@@ -726,7 +791,16 @@ def _evaluate_family(
             per_sqm = group_net / tender_area
         rates = _system_rates(history, rung, key_value, tender_class_id=tender_class_id)
         cmp = (
-            _compare(history, per_sqm, rates, quantity=tender_area, tender_class_id=tender_class_id) if rates else None
+            _compare(
+                history,
+                per_sqm,
+                rates,
+                quantity=tender_area,
+                tender_class_id=tender_class_id,
+                target_month=target_month,
+            )
+            if rates
+            else None
         )
         groups.append(
             GroupResult(
@@ -740,23 +814,20 @@ def _evaluate_family(
                 to_ours=cmp.to_ours if cmp else None,
                 bargain=cmp.bargain if cmp else None,
                 below=cmp.below if cmp else None,
+                freshest=cmp.freshest if cmp else None,
+                to_freshest=cmp.to_freshest if cmp else None,
+                over_freshest=cmp.over_freshest if cmp else None,
             )
         )
         for member in members:
             line_counts = tuple(RungCount(r, counts[r][member.key.at(r.level)]) for r in rungs)
-            work_record = saved.work.get(member.line.position_item_id) if saved is not None else None
-            manual = (
-                ManualRung(work_record.rung, "line", False, "kind_changed")
-                if work_record is not None
-                else family_manual
-            )
             with localcontext(_CONTEXT):
                 share = member.kp_total_net / group_net
                 fields = dict(
                     rung=rung,
                     auto=not (chosen or pinned),
                     rungs=line_counts,
-                    manual=manual,
+                    manual=family_manual,
                     selectable=selectable,
                     group_index=group_index,
                     group_lines=len(members),
@@ -775,6 +846,8 @@ def _evaluate_family(
                         bargain=_line_part(cmp.bargain, member.kp_total_net, group_net),
                         below=_line_part(cmp.below, member.kp_total_net, group_net),
                         mismatch=cmp.mismatch,
+                        freshest=cmp.freshest,
+                        to_freshest=_line_part(cmp.to_freshest, member.kp_total_net, group_net),
                     )
             results[member.line.position_item_id] = _result(
                 member.line,
@@ -786,36 +859,27 @@ def _evaluate_family(
     return results, groups
 
 
-def _before_ladder_manual(
-    line: KpLine, history: HistoryIndex, *, tender_class_id: int, saved: SavedRungs | None
-) -> ManualRung | None:
-    """Статус сохранённой ступени строки, которую состояние развело до лестницы.
-
-    Ступень не применяется и не сбрасывается: смысл проверяется по ключу строки.
-    """
-    record = saved.work.get(line.position_item_id) if saved is not None else None
-    if record is None:
-        return None
-    if line.is_system:
-        return ManualRung(record.rung, "line", False, "kind_changed")
-    return _work_manual(line.key, record, history, tender_class_id=tender_class_id)
-
-
 def evaluate_offer(
     lines: Sequence[KpLine],
     history: HistoryIndex,
     *,
+    work_history: Sequence[WorkHistoryLine],
+    families: Mapping[int, FamilyLadderInfo],
     kp_vat_base: Decimal | None,
     tender_area: Decimal | None,
     tender_class_id: int,
+    tender_contractor_id: int,
+    target_month: YearMonth | None,
+    factors: Mapping[int, Decimal] | None,
     choice: RungChoice | None = None,
     saved: SavedRungs | None = None,
 ) -> OfferEvaluation:
-    """Состояние и сравнение каждой строки КП; порядок проверок — спека §2.7.
+    """Состояние и сравнение каждой строки КП; порядок проверок — спека лестницы аналогов §2.10.
 
-    `choice` — ступень из предпросмотра, она побеждает сохранённую `saved` на своей
-    строке или семье. Недействующая сохранённая ступень расчёт не меняет и не
-    роняет: строка идёт на авто и несёт `manual` с причиной.
+    Работы идут через лестницу аналогов (`work_history`, `families`), системы — через ступени 4а
+    (`history`). `target_month` — месяц этапа: к нему ближе всего самая свежая расценка. `factors`
+    — множитель ИПЦ по смете аналога; `None` — без приведения. `choice` — ступень системы из
+    предпросмотра, она побеждает сохранённую `saved` на своей семье; у работы ступеней нет.
     """
     results: dict[int, LineResult] = {}
     family_entries: dict[int, list[_SystemEntry]] = {}
@@ -839,15 +903,11 @@ def evaluate_offer(
             state = LineState.no_price
         elif line.key is None:
             state = LineState.no_variant
+        elif line.zone is None:
+            state = LineState.no_zone
 
         if state is not None:
-            results[line.position_item_id] = _result(
-                line,
-                state,
-                kp_unit_net,
-                kp_total_net,
-                manual=_before_ladder_manual(line, history, tender_class_id=tender_class_id, saved=saved),
-            )
+            results[line.position_item_id] = _result(line, state, kp_unit_net, kp_total_net)
         elif line.is_system:
             assert line.key is not None and kp_total_net is not None
             family_entries.setdefault(line.key.family_id, []).append(
@@ -860,9 +920,12 @@ def evaluate_offer(
                 history,
                 kp_unit_net=kp_unit_net,
                 kp_total_net=kp_total_net,
+                work_history=work_history,
+                families=families,
                 tender_class_id=tender_class_id,
-                choice=choice,
-                saved=saved,
+                tender_contractor_id=tender_contractor_id,
+                target_month=target_month,
+                factors=factors,
             )
 
     groups: list[GroupResult] = []
@@ -873,6 +936,7 @@ def evaluate_offer(
             history,
             tender_area=tender_area,
             tender_class_id=tender_class_id,
+            target_month=target_month,
             choice=choice,
             saved=saved,
             first_group_index=len(groups),
@@ -888,8 +952,15 @@ def evaluate_offer(
 
 
 def _totals(results: Iterable[LineResult], groups: Sequence[GroupResult] | None = None) -> OfferTotals:
-    """Суммы по строкам; с `groups` деньги систем берутся по группе один раз, а не по долям."""
+    """Суммы по строкам; с `groups` деньги систем берутся по группе один раз, а не по долям.
+
+    `over_freshest` — сумма по сравнимым строкам с самой свежей; без таких строк `None`, а не ноль
+    (спека §2.12): сумма пустого набора нулём не показывается.
+    """
     bargain = _ZERO
+    over_freshest = _ZERO
+    comparable_lines = 0
+    freshest_lines = 0
     below = _ZERO
     below_lines = 0
     mismatch_lines = 0
@@ -901,6 +972,11 @@ def _totals(results: Iterable[LineResult], groups: Sequence[GroupResult] | None 
             amount = result.kp_total_net
             if result.state is LineState.comparable:
                 by_group = groups is not None and result.group_index is not None
+                comparable_lines += 1
+                if result.to_freshest is not None:
+                    freshest_lines += 1
+                    if not by_group:
+                        over_freshest += max(_ZERO, result.to_freshest)
                 if result.bargain is not None and not by_group:
                     bargain += result.bargain
                 if result.below is not None:
@@ -919,6 +995,8 @@ def _totals(results: Iterable[LineResult], groups: Sequence[GroupResult] | None 
 
         for group in groups or ():
             if group.state is LineState.comparable:
+                if group.over_freshest is not None:
+                    over_freshest += group.over_freshest
                 if group.bargain is not None:
                     bargain += group.bargain
                 if group.below is not None:
@@ -938,6 +1016,9 @@ def _totals(results: Iterable[LineResult], groups: Sequence[GroupResult] | None 
 
     return OfferTotals(
         bargain=bargain,
+        over_freshest=over_freshest if freshest_lines else None,
+        comparable_lines=comparable_lines,
+        freshest_lines=freshest_lines,
         below=below,
         below_lines=below_lines,
         unit_mismatch_lines=mismatch_lines,

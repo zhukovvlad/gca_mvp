@@ -12,6 +12,7 @@ from decimal import Decimal
 
 import pytest
 
+from services.analog_ladder import FamilyLadderInfo, WorkHistoryLine
 from services.our_price import (
     MISMATCH_HIGH,
     MISMATCH_LOW,
@@ -102,7 +103,26 @@ def history(
     classes = classes or {}
     contracts = [contract(cid, cls=classes.get(cid, TENDER_CLASS)) for cid in rates_by_contract]
     lines = [hline(cid, price, key=key) for cid, price in rates_by_contract.items()]
-    return HistoryIndex(contracts, lines, factor_by_estimate=None)
+    index = HistoryIndex(contracts, lines, factor_by_estimate=None)
+    # те же строки — аналоги лестницы работ: зона «вся», вариант ключа, параметров нет
+    index.test_work_lines = [  # type: ignore[attr-defined]
+        WorkHistoryLine(
+            position_item_id=1000 + cid,
+            contract_id=cid,
+            family_id=key.family_id,
+            chain_id=1,
+            zone="whole",
+            chain_titles=frozenset(),
+            variant_id=key.variant_id,
+            schema_id=3,
+            main_values={},
+            unit_price=price,
+            weight=D(1),
+            vat_base=D(0),
+        )
+        for cid, price in rates_by_contract.items()
+    ]
+    return index
 
 
 def kp(
@@ -127,6 +147,8 @@ def kp(
         is_system=is_system,
         in_progress=in_progress,
         waiting_admin=waiting_admin,
+        zone="whole",
+        schema_id=3,
     )
 
 
@@ -140,9 +162,16 @@ def evaluate(
     return evaluate_offer(
         lines,
         index,
+        work_history=getattr(index, "test_work_lines", []),
+        families={
+            5: FamilyLadderInfo(schema_id=3, main_parameter_ids=(), releasable_ids=frozenset(), names={}),
+        },
         kp_vat_base=base,
         tender_area=D(100),
         tender_class_id=TENDER_CLASS,
+        tender_contractor_id=99,
+        target_month=None,
+        factors=None,
         choice=choice,
     )
 
@@ -168,6 +197,7 @@ def test_line_state_declaration_order_is_the_check_order():
         "no_price",
         "no_area",
         "no_variant",
+        "no_zone",
         "no_history",
         "unit_mismatch",
         "comparable",
@@ -389,15 +419,6 @@ def test_rates_rate_that_adjusts_to_zero_is_not_a_rate():
     assert index.rates("v", 50, is_system=False, class_id=None) == []
 
 
-def test_rates_rate_that_adjusts_to_nan_is_not_a_rate_and_not_counted_on_the_rung():
-    lines = [hline(1, D(100)), hline(2, D(120))]
-    index = HistoryIndex([contract(1), contract(2)], lines, factor_by_estimate={100: NAN, 200: D(1)})
-    assert index.rates("v", 50, is_system=False, class_id=None) == [ContractRate(2, D(120), D(120), 1)]
-    result = one([kp(price=D(130))], index)
-    assert result.rungs[0] == RungCount(V_CLS, 1)
-    assert result.threshold_met is False
-
-
 def test_rates_adjustment_does_not_round_the_nominal_rate_first():
     # номинал (100 + 100.01) / 2 = 100.005; округление до копеек перед приведением дало бы 200.00 или 200.02
     lines = [hline(1, D(100)), hline(1, D("100.01"))]
@@ -577,20 +598,6 @@ def test_state_no_variant_beats_no_history():
     assert result.state is LineState.no_variant
 
 
-def test_state_no_history_when_no_rung_has_contracts():
-    result = one([kp()], EMPTY)
-    assert result.state is LineState.no_history
-    assert result.rung is None
-    assert result.range is None and result.to_ours is None
-    assert [count.contracts for count in result.rungs] == [0, 0, 0, 0, 0, 0]
-    assert [count.rung for count in result.rungs] == list(RUNG_ORDER)
-
-
-def test_state_no_history_without_p_has_four_rungs():
-    result = one([kp(key=KEY_NO_P)], EMPTY)
-    assert [count.rung for count in result.rungs] == [V_CLS, V_ALL, F_CLS, F_ALL]
-
-
 def test_net_of_kp_uses_the_kp_vat_base_and_gross_weight():
     index = history({1: D(100), 2: D(100)})
     result = one([kp(price=D(112), weight=D(3), total=D(336))], index, base=D(12))
@@ -606,36 +613,6 @@ def test_kp_total_net_is_none_for_non_finite_total():
 
 
 # --- сравнение: comparable -----------------------------------------------------
-
-
-def test_comparable_basic_fields():
-    index = history({1: D(100), 2: D(200)})
-    result = one([kp(price=D(150), weight=D(4))], index)
-    assert result.state is LineState.comparable
-    assert result.rung == V_CLS and result.auto is True and result.threshold_met is True
-    assert result.range is not None
-    assert (result.range.min, result.range.max, result.range.median) == (D(100), D(200), D(150))
-    assert result.position == "in"
-    assert result.ours == D(100)
-    assert result.ours_from_all_classes is False
-    assert result.to_ours == D(200)  # (150 - 100) * 4
-    assert result.bargain == D(200)
-    assert result.below is None
-    assert result.mismatch is None
-    assert [c.contract_id for c in result.contracts] == [1, 2]
-    assert result.group_index is None and result.share is None
-
-
-def test_comparable_counterexample_negative_to_ours_inside_the_range():
-    # вилка 100-200, наша расценка класса 200, КП 150: разница отрицательна, торга нет
-    index = history({1: D(100), 2: D(200)}, classes={1: OTHER_CLASS})
-    result = one([kp(price=D(150), weight=D(1))], index, choice=RungChoice(1, V_ALL))
-    assert result.ours == D(200)
-    assert result.ours_from_all_classes is False
-    assert result.to_ours == D(-50)
-    assert result.bargain == D(0)
-    assert result.below is None
-    assert result.position == "in"
 
 
 def test_comparable_above_the_range_has_positive_bargain():
@@ -654,17 +631,6 @@ def test_comparable_below_the_minimum_has_signed_below():
     assert result.to_ours == D(-30)
     assert result.bargain == D(0)
     assert result.below == D(-30)  # (90 - 100) * 3
-
-
-def test_comparable_below_is_measured_from_the_rung_minimum_not_from_ours():
-    # минимум ступени 100 (чужой класс), наша расценка 200 (класс тендера)
-    index = history({1: D(100), 2: D(200)}, classes={1: OTHER_CLASS})
-    result = one([kp(price=D(90), weight=D(2))], index, choice=RungChoice(1, V_ALL))
-    assert result.ours == D(200)
-    assert result.position == "below"
-    assert result.below == D(-20)  # (90 - 100) * 2
-    assert result.to_ours == D(-220)  # (90 - 200) * 2
-    assert result.bargain == D(0)
 
 
 def test_comparable_range_borders_are_inside():
@@ -704,53 +670,6 @@ def test_comparable_ours_from_all_classes_when_no_class_contracts_on_the_rung():
     assert result.ours_from_all_classes is True
 
 
-def test_comparable_ours_is_min_of_class_contracts_on_all_scope():
-    index = history({1: D(50), 2: D(120), 3: D(130)}, classes={1: OTHER_CLASS})
-    result = one([kp(price=D(150))], index, choice=RungChoice(1, V_ALL))
-    assert result.range is not None and result.range.min == D(50)  # вилка — все договоры
-    assert result.ours == D(120)  # а наша расценка — только класс тендера
-    assert result.ours_from_all_classes is False
-
-
-def test_comparable_auto_weakens_class_before_parameters():
-    # на v·cls один договор, на v·all два: авто берёт v·all, не p·cls
-    lines = [
-        hline(1, D(100)),
-        hline(2, D(120)),
-        hline(3, D(130), key=LineKey(5, 51, (7, 70))),
-        hline(4, D(140), key=LineKey(5, 52, (7, 70))),
-        hline(5, D(150), key=LineKey(5, 53, (7, 70))),
-    ]
-    contracts = [contract(1), contract(2, cls=OTHER_CLASS)] + [contract(i) for i in (3, 4, 5)]
-    index = HistoryIndex(contracts, lines, factor_by_estimate=None)
-    result = one([kp(price=D(110))], index)
-    assert result.rung == V_ALL
-    assert [count.contracts for count in result.rungs] == [1, 2, 4, 5, 4, 5]
-
-
-def test_comparable_single_contract_rung_is_used_when_no_rung_reaches_the_threshold():
-    index = history({1: D(100)})
-    result = one([kp(price=D(100))], index)
-    assert result.rung == V_CLS
-    assert result.threshold_met is False
-    assert result.state is LineState.comparable
-
-
-def test_comparable_on_line_without_first_main_uses_four_rungs():
-    index = history({1: D(100), 2: D(100)}, key=KEY_NO_P)
-    result = one([kp(key=KEY_NO_P, price=D(100))], index)
-    assert result.state is LineState.comparable
-    assert [count.rung for count in result.rungs] == [V_CLS, V_ALL, F_CLS, F_ALL]
-
-
-def test_unit_mismatch_single_penny_contract_does_not_divide_by_zero():
-    index = history({1: D("0.0000001")})
-    result = one([kp(price=D(1))], index)
-    assert result.state is LineState.unit_mismatch
-    assert result.mismatch is not None
-    assert result.mismatch.kp_ratio == D(1) / D("0.0000001")
-
-
 def test_lines_are_evaluated_independently():
     index = history({1: D(100), 2: D(200)})
     lines = [kp(1, price=D(150)), kp(2, price=D(0)), kp(3, key=None)]
@@ -787,31 +706,12 @@ def test_unit_mismatch_counterexample_kp_far_below():
     assert result.mismatch is not None and result.mismatch.kp_ratio == D("0.1")
 
 
-def test_unit_mismatch_by_contract_only_has_no_kp_ratio():
-    index = history({1: D(100), 2: D(100), 3: D(100), 4: D(1000)})
-    result = one([kp(price=D(100))], index)
-    assert result.state is LineState.unit_mismatch
-    assert result.mismatch is not None
-    assert result.mismatch.kp_ratio is None
-    assert result.mismatch.contracts == ((4, D(10)),)
-    assert result.to_ours == D(0)
-    assert result.bargain is None and result.below is None
-
-
 def test_unit_mismatch_kp_ratio_boundary_five_is_comparable_in_evaluate():
     index = history({1: D(100), 2: D(100)})
     assert one([kp(price=D(500))], index).state is LineState.comparable
     assert one([kp(price=D("500.01"))], index).state is LineState.unit_mismatch
     assert one([kp(price=D(20))], index).state is LineState.comparable
     assert one([kp(price=D("19.99"))], index).state is LineState.unit_mismatch
-
-
-def test_unit_mismatch_tiny_contract_next_to_hundreds_in_evaluate():
-    index = history({1: D(100), 2: D(150), 3: D("0.0000001")})
-    result = one([kp(price=D(120))], index)
-    assert result.state is LineState.unit_mismatch
-    assert result.mismatch is not None
-    assert 3 in dict(result.mismatch.contracts)
 
 
 def test_unit_mismatch_compares_with_the_median_of_the_selected_rung():
@@ -831,63 +731,6 @@ def _two_level_history() -> HistoryIndex:
         hline(3, D(300), key=LineKey(5, 51, (7, 70))),
     ]
     return HistoryIndex([contract(1), contract(2), contract(3)], lines, factor_by_estimate=None)
-
-
-def test_choice_changes_only_the_chosen_line():
-    index = _two_level_history()
-    lines = [kp(1, price=D(200)), kp(2, price=D(200))]
-    evaluation = evaluate(lines, index, choice=RungChoice(2, F_ALL))
-    chosen, other = evaluation.lines[2], evaluation.lines[1]
-    assert chosen.rung == F_ALL and chosen.auto is False
-    assert chosen.range is not None and chosen.range.max == D(300)
-    assert other.rung == V_CLS and other.auto is True
-    assert other.range is not None and other.range.max == D(100)
-
-
-def test_choice_threshold_met_counts_contracts_of_the_chosen_rung():
-    index = _two_level_history()
-    two = one([kp(price=D(200))], index, choice=RungChoice(1, V_ALL))
-    assert two.threshold_met is True
-    one_contract = one(
-        [kp(price=D(200))],
-        history({1: D(100)}),
-        choice=RungChoice(1, V_ALL),
-    )
-    assert one_contract.threshold_met is False
-    assert one_contract.state is LineState.comparable
-
-
-def test_choice_threshold_met_is_about_the_chosen_rung_not_any_rung():
-    # v·cls — один договор, v·all — два: выбор v·cls порога не достигает
-    index = history({1: D(100), 2: D(120)}, classes={2: OTHER_CLASS})
-    chosen = one([kp(price=D(110))], index, choice=RungChoice(1, V_CLS))
-    assert chosen.rung == V_CLS and chosen.auto is False
-    assert chosen.threshold_met is False
-    automatic = one([kp(price=D(110))], index)
-    assert automatic.rung == V_ALL and automatic.threshold_met is True
-
-
-def test_choice_of_a_rung_the_line_does_not_have_is_value_error():
-    index = history({1: D(100), 2: D(100)}, key=KEY_NO_P)
-    with pytest.raises(ValueError):
-        evaluate([kp(key=KEY_NO_P)], index, choice=RungChoice(1, P_CLS))
-
-
-def test_choice_of_an_empty_rung_is_no_history_on_that_rung():
-    index = history({1: D(100), 2: D(100)}, classes={1: OTHER_CLASS, 2: OTHER_CLASS})
-    result = one([kp()], index, choice=RungChoice(1, V_CLS))
-    assert result.state is LineState.no_history
-    assert result.rung == V_CLS
-    assert result.auto is False
-    assert result.range is None and result.ours is None and result.to_ours is None
-    assert [count.contracts for count in result.rungs][:2] == [0, 2]
-
-
-def test_choice_for_another_line_leaves_a_line_automatic():
-    index = history({1: D(100), 2: D(100)})
-    evaluation = evaluate([kp(1)], index, choice=RungChoice(99, F_ALL))
-    assert evaluation.lines[1].auto is True
-    assert evaluation.lines[1].rung == V_CLS
 
 
 def test_choice_on_a_line_that_is_not_comparable_does_not_raise_for_its_state():

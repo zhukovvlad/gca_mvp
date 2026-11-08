@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from decimal import Decimal
 
 import pytest
@@ -25,9 +24,7 @@ from services.our_price import (
     RungChoice,
     SavedFamilyRung,
     SavedRungs,
-    SavedWorkRung,
     evaluate_offer,
-    offer_totals,
 )
 
 D = Decimal
@@ -53,7 +50,7 @@ V51 = LineKey(family_id=5, variant_id=51, first_main=None)
 V52 = LineKey(family_id=5, variant_id=52, first_main=None)
 OTHER_FAMILY = LineKey(family_id=6, variant_id=60, first_main=None)
 
-NO_SAVED = SavedRungs(work={}, family={})
+NO_SAVED = SavedRungs(family={})
 
 
 def contract(cid: int, *, cls: int = TENDER_CLASS, area: Decimal | None = AREA) -> HistoryContract:
@@ -117,20 +114,21 @@ def run(
     return evaluate_offer(
         lines,
         history,
+        work_history=[],
+        families={},
         kp_vat_base=base,
         tender_area=area,
         tender_class_id=TENDER_CLASS,
+        tender_contractor_id=99,
+        target_month=None,
+        factors=None,
         choice=choice,
         saved=saved,
     )
 
 
-def work_saved(pid: int, rung: Rung, snapshot) -> SavedRungs:
-    return SavedRungs(work={pid: SavedWorkRung(rung, snapshot)}, family={})
-
-
 def family_saved(rung: Rung, first_main_parameter_id: int | None = None, family_id: int = 5) -> SavedRungs:
-    return SavedRungs(work={}, family={family_id: SavedFamilyRung(rung, first_main_parameter_id)})
+    return SavedRungs(family={family_id: SavedFamilyRung(rung, first_main_parameter_id)})
 
 
 @pytest.fixture
@@ -223,19 +221,6 @@ def test_without_saved_the_system_result_has_empty_manual(buildings):
 # --- selectable ---------------------------------------------------------------------
 
 
-def test_selectable_of_a_work_is_the_rungs_with_a_contract(works):
-    assert only(run([kp_work(1, KEY50)], works)).selectable == frozenset({V_CLS, V_ALL, P_CLS, P_ALL, F_CLS, F_ALL})
-
-
-def test_selectable_of_a_work_drops_empty_rungs(works):
-    # у варианта 52 договоров нет, но семья и параметр общие с вариантом 50 и 51
-    assert only(run([kp_work(1, KEY52)], works)).selectable == frozenset({P_CLS, P_ALL, F_CLS, F_ALL})
-
-
-def test_selectable_of_a_work_without_first_main_has_no_p_rungs(works):
-    assert only(run([kp_work(1, KEY_NO_P)], works)).selectable == frozenset({V_CLS, V_ALL, F_CLS, F_ALL})
-
-
 @pytest.mark.parametrize(
     "line",
     [
@@ -268,151 +253,7 @@ def test_selectable_of_a_system_line_before_the_family_is_empty(buildings):
     assert only(run([kp_sys(1, V50)], buildings, area=None)).selectable == frozenset()
 
 
-# --- работа: четыре условия §2.5 -----------------------------------------------------
-
-WORK_REASONS = [
-    # точный вариант сменился: снимок 50, у строки теперь 51
-    pytest.param(V_CLS, 50, KEY51, "key_changed", id="key_changed"),
-    # ступень p при строке без первого главного и пустом снимке: ключа нет, снимок совпал с ним
-    pytest.param(P_CLS, None, KEY_NO_P, "rung_unavailable", id="rung_unavailable"),
-    # ключ совпал, но на ступени ноль договоров
-    pytest.param(V_CLS, 52, KEY52, "rung_empty", id="rung_empty"),
-]
-
-
-@pytest.mark.parametrize(("rung", "snapshot", "key", "reason"), WORK_REASONS)
-def test_work_rung_that_does_not_apply_goes_to_auto_and_keeps_the_reason(works, rung, snapshot, key, reason):
-    baseline = only(run([kp_work(1, key)], works))
-    result = only(run([kp_work(1, key)], works, saved=work_saved(1, rung, snapshot)))
-    assert result.manual is not None
-    assert (result.manual.rung, result.manual.target, result.manual.active) == (rung, "line", False)
-    assert result.manual.reset_reason == reason
-    assert result.auto is True
-    # расчёт идёт как без сохранённой ступени
-    assert result.rung == baseline.rung
-    assert (result.ours, result.to_ours, result.bargain, result.state) == (
-        baseline.ours,
-        baseline.to_ours,
-        baseline.bargain,
-        baseline.state,
-    )
-
-
-def test_work_rung_with_a_changed_key_and_an_empty_rung_reports_the_key_first(works):
-    # снимок 50, у строки вариант 52 без договоров: первым по порядку падает ключ
-    result = only(run([kp_work(1, KEY52)], works, saved=work_saved(1, V_CLS, 50)))
-    assert result.manual.reset_reason == "key_changed"
-
-
-def test_work_rung_without_a_key_is_key_changed():
-    index = HistoryIndex([contract(1)], [wline(1, KEY50, D(100))], factor_by_estimate=None)
-    result = only(run([kp_work(1, None)], index, saved=work_saved(1, F_CLS, 5)))
-    assert result.state is LineState.no_variant
-    assert (result.manual.active, result.manual.reset_reason) == (False, "key_changed")
-
-
-def test_work_rung_that_applies_changes_the_rung_the_numbers_and_the_totals(works):
-    line = kp_work(1, KEY50)  # цена 150, вес 2
-    baseline = only(run([line], works))
-    assert (baseline.rung, baseline.auto, baseline.ours, baseline.to_ours) == (V_ALL, True, D(100), D(100))
-
-    evaluation = run([line], works, saved=work_saved(1, F_CLS, 5))
-    result = only(evaluation)
-    assert (result.manual.rung, result.manual.target, result.manual.active, result.manual.reset_reason) == (
-        F_CLS,
-        "line",
-        True,
-        None,
-    )
-    # f·cls: ставки 100, 200, 80; наша — минимум 80; (150 - 80) * 2 = 140
-    assert (result.rung, result.auto, result.ours) == (F_CLS, False, D(80))
-    assert (result.to_ours, result.bargain) == (D(140), D(140))
-    assert [r.contract_id for r in result.contracts] == [1, 2, 4]
-    assert offer_totals(evaluation).bargain == D(140)
-    assert offer_totals(run([line], works)).bargain == D(100)
-
-
-def test_work_rung_of_the_same_family_survives_a_variant_change(works):
-    # сохранена «вся семья» (снимок 5): вариант сменился с 50 на 51, ступень действует
-    result = only(run([kp_work(1, KEY51)], works, saved=work_saved(1, F_CLS, 5)))
-    assert (result.manual.active, result.manual.reset_reason, result.rung, result.auto) == (True, None, F_CLS, False)
-
-
-def test_work_rung_of_the_exact_variant_does_not_survive_a_variant_change(works):
-    # сохранён «точный вариант» (снимок 50): строке назначили вариант 51
-    result = only(run([kp_work(1, KEY51)], works, saved=work_saved(1, V_CLS, 50)))
-    assert (result.manual.active, result.manual.reset_reason, result.auto) == (False, "key_changed", True)
-
-
-def test_work_rung_on_the_p_level_is_checked_by_the_family_parameter_and_value(works):
-    snapshot = (5, (7, 70))
-    assert only(run([kp_work(1, KEY51)], works, saved=work_saved(1, P_CLS, snapshot))).manual.active is True
-    other_value = LineKey(5, 51, (7, 71))
-    result = only(run([kp_work(1, other_value)], works, saved=work_saved(1, P_CLS, snapshot)))
-    assert (result.manual.active, result.manual.reset_reason) == (False, "key_changed")
-
-
-def test_saved_record_of_another_line_does_not_touch_this_one(works):
-    result = only(run([kp_work(1, KEY50)], works, saved=work_saved(2, F_CLS, 5)))
-    assert result.manual is None
-    assert result.rung == V_ALL
-
-
 # --- строки, которых состояние разводит до лестницы ------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("line", "base", "state"),
-    [
-        pytest.param(kp_work(1, KEY50, in_progress=True), D(0), LineState.in_progress, id="in_progress"),
-        pytest.param(kp_work(1, KEY50), None, LineState.unknown_vat_base, id="unknown_vat_base"),
-        pytest.param(kp_work(1, KEY50, None), D(0), LineState.no_price, id="no_price"),
-    ],
-)
-def test_line_resolved_before_the_ladder_keeps_its_state_and_reports_the_manual_status(works, line, base, state):
-    baseline = only(run([line], works, base=base))
-    result = only(run([line], works, base=base, saved=work_saved(1, F_CLS, 5)))
-    assert result.state is state
-    assert result.manual is not None
-    assert (result.manual.rung, result.manual.target, result.manual.active) == (F_CLS, "line", True)
-    assert result.manual.reset_reason is None
-    assert (result.rung, result.auto, result.ours, result.selectable) == (None, True, None, frozenset())
-    assert result == _with_manual(baseline, result.manual)
-
-
-def _with_manual(result: LineResult, manual) -> LineResult:
-    return replace(result, manual=manual)
-
-
-def test_line_resolved_before_the_ladder_checks_the_key_of_the_saved_rung(works):
-    line = kp_work(1, KEY51, in_progress=True)
-    result = only(run([line], works, saved=work_saved(1, V_CLS, 50)))
-    assert result.state is LineState.in_progress
-    assert (result.manual.active, result.manual.reset_reason) == (False, "key_changed")
-
-
-def test_line_resolved_before_the_ladder_checks_that_the_rung_has_contracts(works):
-    line = kp_work(1, KEY52, None)
-    result = only(run([line], works, saved=work_saved(1, V_CLS, 52)))
-    assert result.state is LineState.no_price
-    assert (result.manual.active, result.manual.reset_reason) == (False, "rung_empty")
-
-
-def test_line_without_a_key_before_the_ladder_is_key_changed(works):
-    result = only(run([kp_work(1, None)], works, saved=work_saved(1, F_CLS, 5)))
-    assert result.state is LineState.no_variant
-    assert result.manual.reset_reason == "key_changed"
-
-
-@pytest.mark.parametrize("area", [pytest.param(D(100), id="no_price"), pytest.param(None, id="no_area")])
-def test_system_line_resolved_before_the_family_has_a_line_record_as_kind_changed(buildings, area):
-    total = None if area is not None else D(12000)
-    line = kp_sys(1, V50, total)
-    saved = SavedRungs(work={1: SavedWorkRung(V_CLS, 50)}, family={5: SavedFamilyRung(F_CLS, None)})
-    result = only(run([line], buildings, saved=saved, area=area))
-    assert result.state in (LineState.no_price, LineState.no_area)
-    assert (result.manual.rung, result.manual.target, result.manual.active) == (V_CLS, "line", False)
-    assert result.manual.reset_reason == "kind_changed"
 
 
 def test_system_line_resolved_before_the_family_ignores_a_family_record(buildings):
@@ -525,46 +366,7 @@ def test_family_rung_with_an_empty_group_is_rung_empty(buildings):
     assert only(run(lines, buildings, saved=family_saved(F_CLS)), 1).manual.active is True
 
 
-def test_work_rung_of_a_line_that_became_a_system_is_kind_changed_and_the_family_rung_applies(buildings):
-    saved = SavedRungs(work={1: SavedWorkRung(F_ALL, 5)}, family={5: SavedFamilyRung(V_CLS, None)})
-    evaluation = run([kp_sys(1, V50), kp_sys(2, V51)], buildings, saved=saved)
-    own = only(evaluation, 1)
-    assert (own.manual.rung, own.manual.target, own.manual.active, own.manual.reset_reason) == (
-        F_ALL,
-        "line",
-        False,
-        "kind_changed",
-    )
-    assert (own.rung, own.auto) == (V_CLS, False)
-    sibling = only(evaluation, 2)
-    assert (sibling.manual.target, sibling.manual.active, sibling.rung) == ("family", True, V_CLS)
-
-
-def test_work_rung_of_a_line_that_became_a_system_without_a_family_rung_goes_to_auto(buildings):
-    saved = work_saved(1, F_ALL, 5)
-    evaluation = run([kp_sys(1, V50), kp_sys(2, V51)], buildings, saved=saved)
-    own = only(evaluation, 1)
-    assert (own.manual.target, own.manual.active, own.manual.reset_reason) == ("line", False, "kind_changed")
-    assert (own.rung, own.auto) == (F_CLS, True)
-    assert only(evaluation, 2).manual is None
-
-
 # --- предпросмотр побеждает сохранённое --------------------------------------------------
-
-
-def test_choice_wins_over_a_saved_work_rung_and_the_manual_status_stays(works):
-    line = kp_work(1, KEY50)
-    result = only(run([line], works, saved=work_saved(1, F_CLS, 5), choice=RungChoice(1, V_ALL)))
-    assert (result.rung, result.auto) == (V_ALL, False)
-    assert (result.manual.rung, result.manual.active) == (F_CLS, True)
-    assert result.ours == D(100)
-
-
-def test_choice_of_another_line_does_not_win_over_this_saved_rung(works):
-    lines = [kp_work(1, KEY50), kp_work(2, KEY50)]
-    evaluation = run(lines, works, saved=work_saved(1, F_CLS, 5), choice=RungChoice(2, V_ALL))
-    assert (only(evaluation, 1).rung, only(evaluation, 1).auto) == (F_CLS, False)
-    assert (only(evaluation, 2).rung, only(evaluation, 2).auto) == (V_ALL, False)
 
 
 def test_choice_wins_over_a_saved_family_rung_and_the_manual_status_stays(buildings):
@@ -576,36 +378,11 @@ def test_choice_wins_over_a_saved_family_rung_and_the_manual_status_stays(buildi
         assert (result.manual.rung, result.manual.active) == (V_CLS, True)
 
 
-def test_choice_still_raises_for_a_rung_the_line_does_not_have(works):
-    with pytest.raises(ValueError):
-        run([kp_work(1, KEY_NO_P)], works, choice=RungChoice(1, P_CLS))
-
-
-def test_saved_unavailable_rung_never_raises(works, buildings):
-    run([kp_work(1, KEY_NO_P)], works, saved=work_saved(1, P_CLS, None))
+def test_saved_unavailable_rung_never_raises(buildings):
     run([kp_sys(1, V50)], buildings, saved=family_saved(P_CLS, 7))
 
 
 # --- соседние причины: вход, где нарушены обе, отдаёт первую по порядку -------------------
-
-
-def test_work_rung_with_a_changed_key_on_an_unavailable_rung_reports_the_key_first(works):
-    # снимок уровня p сделан при первом главном параметре; у строки его больше нет:
-    # ключ на уровне p пуст и не равен снимку, и ступени p среди доступных нет
-    result = only(run([kp_work(1, KEY_NO_P)], works, saved=work_saved(1, P_CLS, (5, (7, 70)))))
-    assert (result.manual.active, result.manual.reset_reason) == (False, "key_changed")
-
-
-def test_system_line_before_the_family_reports_kind_changed_before_the_key(buildings):
-    # запись строки сделана на варианте 51, строка стала системой варианта 50: сменились и вид, и ключ
-    result = only(run([kp_sys(1, V50, None)], buildings, saved=work_saved(1, V_CLS, 51)))
-    assert result.state is LineState.no_price
-    assert (result.manual.active, result.manual.reset_reason) == (False, "kind_changed")
-
-
-def test_system_line_of_the_family_reports_kind_changed_before_the_key(buildings):
-    evaluation = run([kp_sys(1, V50), kp_sys(2, V51)], buildings, saved=work_saved(1, V_CLS, 51))
-    assert (only(evaluation, 1).manual.active, only(evaluation, 1).manual.reset_reason) == (False, "kind_changed")
 
 
 def test_family_p_rung_with_another_first_parameter_and_an_empty_group_reports_the_key_first():
@@ -617,32 +394,3 @@ def test_family_p_rung_with_another_first_parameter_and_an_empty_group_reports_t
     assert (result.manual.active, result.manual.reset_reason) == (False, "key_changed")
     # вход по соседству: тот же параметр в снимке — остаётся только пустая группа
     assert only(run(lines, index, saved=family_saved(P_CLS, 7))).manual.reset_reason == "rung_empty"
-
-
-# --- счёт договоров ступени и края без истории ---------------------------------------------
-
-
-def test_work_rung_count_respects_the_class_of_the_rung():
-    # у варианта 50 только договор иного класса: на v·cls договоров нет, на v·all — один
-    index = HistoryIndex([contract(3, cls=OTHER_CLASS)], [wline(3, KEY50, D(300))], factor_by_estimate=None)
-    in_class = only(run([kp_work(1, KEY50)], index, saved=work_saved(1, V_CLS, 50)))
-    assert (in_class.manual.active, in_class.manual.reset_reason) == (False, "rung_empty")
-    every_class = only(run([kp_work(1, KEY50)], index, saved=work_saved(1, V_ALL, 50)))
-    assert (every_class.manual.active, every_class.rung, every_class.auto) == (True, V_ALL, False)
-
-
-def test_work_line_without_any_history_keeps_the_manual_status():
-    # договоры есть только у другой семьи: у строки ни одной ступени с договорами
-    index = HistoryIndex([contract(1)], [wline(1, OTHER_FAMILY, D(100))], factor_by_estimate=None)
-    result = only(run([kp_work(1, KEY50)], index, saved=work_saved(1, F_CLS, 5)))
-    assert result.state is LineState.no_history
-    assert (result.manual.rung, result.manual.active, result.manual.reset_reason) == (F_CLS, False, "rung_empty")
-    assert result.selectable == frozenset()
-
-
-def test_choice_of_an_empty_rung_keeps_selectable_and_the_manual_status(works):
-    # у варианта 52 на v·cls договоров нет: предпросмотр этой ступени даёт «нет в договорах»
-    result = only(run([kp_work(1, KEY52)], works, saved=work_saved(1, F_CLS, 5), choice=RungChoice(1, V_CLS)))
-    assert (result.state, result.rung, result.auto) == (LineState.no_history, V_CLS, False)
-    assert result.selectable == frozenset({P_CLS, P_ALL, F_CLS, F_ALL})
-    assert (result.manual.rung, result.manual.active) == (F_CLS, True)

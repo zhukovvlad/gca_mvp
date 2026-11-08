@@ -450,7 +450,7 @@ class TestParticipants:
         totals = _participant(_ok(member_client, stage.tender, rnd), part)["totals"]
 
         # нетто КП 120, наша расценка 100, вес 10: (120 - 100) * 10 = 200; в ставке КП 20 % — 240
-        assert totals["bargain"] == {"net": "200.00", "shown": "240.00"}
+        assert totals["over_lowest"] == {"net": "200.00", "shown": "240.00"}
         assert totals["below"] == {"net": "0.00", "shown": "0.00"}
         assert (totals["below_lines"], totals["unit_mismatch_lines"]) == (0, 0)
         assert totals["unit_mismatch_amount"] == {"net": "0.00", "shown": "0.00"}
@@ -934,7 +934,7 @@ class TestShownRate:
         assert _dec(zero_cell["min"]["shown"]) == D("1.0")
         # «статья целиком» и итоги — тоже в ставке участника, а не общей колонки
         assert _cell(article, with20)["whole"] == {"net": "200.00", "shown": "240.00"}
-        assert _participant(body, with20)["totals"]["bargain"]["shown"] is not None
+        assert _participant(body, with20)["totals"]["over_lowest"]["shown"] is not None
 
     def test_one_participant_rate_is_shared_by_the_common_column(self, member_client, stage):
         stage.history(D("100"))
@@ -1052,8 +1052,8 @@ class TestInflation:
         # КП не приводится
         assert _participant(body, part)["per_sqm"] == _participant(nominal, part)["per_sqm"]
         # ставка ступени приведена: (120 - 100 * k) * 10 = 88.97 вместо 200.00
-        assert _participant(nominal, part)["totals"]["bargain"]["net"] == "200.00"
-        assert _participant(body, part)["totals"]["bargain"]["net"] == "88.97"
+        assert _participant(nominal, part)["totals"]["over_lowest"]["net"] == "200.00"
+        assert _participant(body, part)["totals"]["over_lowest"]["net"] == "88.97"
 
     def test_a_kp_prepared_long_before_the_target_is_not_adjusted(self, member_client, stage, db_session):
         """КП на своей дате не приводится, даже если она далека от месяца этапа: у

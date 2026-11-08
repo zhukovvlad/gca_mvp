@@ -11,6 +11,7 @@ from decimal import Decimal
 
 import pytest
 
+from services.analog_ladder import FamilyLadderInfo, WorkHistoryLine
 from services.our_price import (
     HistoryContract,
     HistoryIndex,
@@ -62,6 +63,35 @@ def contract(cid: int, *, cls: int = TENDER_CLASS, area: D | None = AREA) -> His
     )
 
 
+def work_analog(pid: int, cid: int, key: LineKey, price: D) -> WorkHistoryLine:
+    """Строка договора по работе для лестницы аналогов: зона «вся», параметров нет."""
+    return WorkHistoryLine(
+        position_item_id=pid,
+        contract_id=cid,
+        family_id=key.family_id,
+        chain_id=1,
+        zone="whole",
+        chain_titles=frozenset(),
+        variant_id=key.variant_id,
+        schema_id=3,
+        main_values={},
+        unit_price=price,
+        weight=D(1),
+        vat_base=D(0),
+    )
+
+
+def kp_work(pid: int, price: D, weight: D, key: LineKey) -> KpLine:
+    return KpLine(pid, price, price * weight, weight, key, False, False, False, zone="whole", schema_id=3)
+
+
+def families() -> dict[int, FamilyLadderInfo]:
+    return {
+        family: FamilyLadderInfo(schema_id=3, main_parameter_ids=(), releasable_ids=frozenset(), names={})
+        for family in (5, 6)
+    }
+
+
 def sline(cid: int, key: LineKey, total: D) -> HistoryLine:
     return HistoryLine(cid, key, True, None, total, None, D(0))
 
@@ -101,13 +131,19 @@ def evaluate(
     base: D | None = D(0),
     area: D | None = AREA,
     choice: RungChoice | None = None,
+    work_history: list[WorkHistoryLine] | None = None,
 ) -> OfferEvaluation:
     return evaluate_offer(
         lines,
         history,
+        work_history=work_history or [],
+        families=families(),
         kp_vat_base=base,
         tender_area=area,
         tender_class_id=TENDER_CLASS,
+        tender_contractor_id=99,
+        target_month=None,
+        factors=None,
         choice=choice,
     )
 
@@ -345,15 +381,15 @@ def test_contract_without_area_does_not_enter_the_rung():
 
 
 def test_works_and_systems_of_one_key_do_not_mix():
-    history = index(
-        [contract(1), contract(2)],
-        [sline(1, V50, D(10000)), sline(2, V50, D(20000)), wline(1, V50, D(999999)), wline(2, V50, D(777777))],
-    )
-    system = evaluate([kp(1, D(15000), V50)], history).lines[1]
-    work = evaluate([kp(2, D(500000), V50, is_system=False)], history).lines[2]
+    history = index([contract(1), contract(2)], [sline(1, V50, D(10000)), sline(2, V50, D(20000))])
+    analogs = [work_analog(11, 1, V50, D(999999)), work_analog(12, 2, V50, D(777777))]
+    system = evaluate([kp(1, D(15000), V50)], history, work_history=analogs).lines[1]
+    work = evaluate([kp_work(2, D(500000), D(1), V50)], history, work_history=analogs).lines[2]
 
+    # системы читают ставки договоров, работы — аналогов лестницы; общего ключа у них нет
     assert [c.net for c in system.contracts] == [D(100), D(200)]
-    assert [c.net for c in work.contracts] == [D(999999), D(777777)]
+    assert sorted(a.net for a in work.ladder.analogs) == [D(777777), D(999999)]
+    assert work.contracts == ()
     assert work.group_index is None
     assert work.share is None
 
@@ -497,17 +533,10 @@ def test_articles_split_one_group_and_sum_to_the_offer_within_tolerance():
 
 
 def test_work_money_still_adds_per_line_next_to_a_system_group():
-    history = index(
-        [contract(1), contract(2)],
-        [
-            sline(1, V50, D(10000)),
-            sline(2, V50, D(20000)),
-            wline(1, OTHER_FAMILY, D(10)),
-            wline(2, OTHER_FAMILY, D(20)),
-        ],
-    )
-    work = KpLine(9, D(15), D(15), D(2), OTHER_FAMILY, False, False, False)
-    result = evaluate([kp(1, D(15000), V50), work], history)
+    history = index([contract(1), contract(2)], [sline(1, V50, D(10000)), sline(2, V50, D(20000))])
+    analogs = [work_analog(11, 1, OTHER_FAMILY, D(10)), work_analog(12, 2, OTHER_FAMILY, D(20))]
+    work = kp_work(9, D(15), D(2), OTHER_FAMILY)
+    result = evaluate([kp(1, D(15000), V50), work], history, work_history=analogs)
 
     # system group: (150 - 100) * 100; work: (15 - 10) * 2
     assert offer_totals(result).bargain == D(5010)
@@ -528,18 +557,16 @@ def test_family_with_every_total_unusable_is_no_price_without_groups(buildings):
 
 
 def test_no_area_makes_every_system_line_no_area_and_leaves_works_alone(buildings):
-    work = KpLine(9, D(150), D(150), D(1), LineKey(5, 50, None), False, False, False)
-    work_history = index(
-        [contract(1), contract(2)],
-        [wline(1, LineKey(5, 50, None), D(100)), wline(2, LineKey(5, 50, None), D(200))],
-    )
+    work = kp_work(9, D(150), D(1), LineKey(5, 50, None))
+    work_history = index([contract(1), contract(2)], [])
+    analogs = [work_analog(11, 1, V50, D(100)), work_analog(12, 2, V50, D(200))]
     for area in (None, D(0), NAN, D(-100)):
         result = evaluate([kp(1, D(15000), V50), kp(2, D(14000), V51), work], buildings, area=area)
         assert result.groups == ()
         assert result.lines[1].state is LineState.no_area
         assert result.lines[2].state is LineState.no_area
         assert result.lines[9].state is LineState.no_history  # the history here holds systems only
-    assert evaluate([work], work_history, area=None).lines[9].state is LineState.comparable
+    assert evaluate([work], work_history, area=None, work_history=analogs).lines[9].state is LineState.comparable
 
 
 @pytest.mark.parametrize(

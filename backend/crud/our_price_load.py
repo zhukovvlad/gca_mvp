@@ -12,8 +12,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Literal
 
@@ -21,6 +21,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session, aliased
 
 from crud.analytics import latest_estimates
+from crud.comparison import _estimate_period
 from crud.project_passport import CATEGORY_TOTALS
 from crud.semantic_queue import open_suggestion_queues
 from models import (
@@ -43,6 +44,7 @@ from models import (
     RateClass,
     ReconcileBatchStatus,
     SchemaStatus,
+    SectionChain,
     SemanticJob,
     SemanticJobKind,
     SemanticJobStatus,
@@ -54,8 +56,10 @@ from models import (
     WorkVariant,
     WorkVariantValue,
 )
+from services.analog_ladder import FamilyLadderInfo, WorkHistoryLine
 from services.our_price import HistoryContract, HistoryLine, KpLine, LineKey
 from services.our_price_money import CategoryRow
+from services.zone_rules import Zone, normalize_title
 
 #: Задание разбирается прямо сейчас (спека 4а §2.11).
 _LIVE_STATUSES = (SemanticJobStatus.pending.value, SemanticJobStatus.running.value)
@@ -314,6 +318,12 @@ class _VariantInfo:
     family_title: str
     first_main: tuple[int, int | None] | None
     label: str
+    #: Версия схемы варианта и действующая версия семьи (`None` — действующей нет).
+    schema_id: int
+    current_schema_id: int | None
+    #: parameter_id -> value_id | `None` по активным главным параметрам; только у варианта
+    #: на действующей версии (у варианта на замещённой версии значения несопоставимы).
+    main_values: Mapping[int, int | None] = field(default_factory=dict)
 
 
 def _variant_infos(db: Session, variant_ids: Sequence[int]) -> dict[int, _VariantInfo]:
@@ -379,7 +389,8 @@ def _variant_infos(db: Session, variant_ids: Sequence[int]) -> dict[int, _Varian
         parameters = mains.get(head.schema_id, [])
         own = values.get(head.id, {})
         first_main = None
-        if head.current_schema_id == head.schema_id and len(parameters) >= 2:
+        on_current = head.current_schema_id == head.schema_id
+        if on_current and len(parameters) >= 2:
             first_main = (parameters[0], own.get(parameters[0], (None, None))[0])
         parts = [head.title] + [own.get(parameter_id, (None, None))[1] or _UNKNOWN_LABEL for parameter_id in parameters]
         infos[head.id] = _VariantInfo(
@@ -387,6 +398,13 @@ def _variant_infos(db: Session, variant_ids: Sequence[int]) -> dict[int, _Varian
             family_title=head.title,
             first_main=first_main,
             label=_LABEL_SEPARATOR.join(parts),
+            schema_id=head.schema_id,
+            current_schema_id=head.current_schema_id,
+            main_values=(
+                {parameter_id: own.get(parameter_id, (None, None))[0] for parameter_id in parameters}
+                if on_current
+                else {}
+            ),
         )
     return infos
 
@@ -403,7 +421,8 @@ def load_history(db: Session, *, exclude_object_id: int) -> tuple[list[HistoryCo
     последней сметы без глав, чей контекст несёт вариант и не архивирован; цена
     и вес проходят предикаты в SQL (у системы — предикат на сумме строки).
     Строка с неизвестной базой НДС остаётся: она нужна ядру для названия
-    причины выпадения договора. Версия сметы выбирается один раз, первым запросом;
+    причины выпадения договора. Период договора (`period`) — ценовой период его последней сметы
+    без ряда ИПЦ (`_estimate_period`). Версия сметы выбирается один раз, первым запросом;
     строки читаются по её идентификаторам, а не по повторному выбору «последней».
     """
     latest = latest_estimates()
@@ -419,6 +438,8 @@ def load_history(db: Session, *, exclude_object_id: int) -> tuple[list[HistoryCo
             Contract.contractor_id,
             Contractor.title,
             ObjectModel.area_total_sp,
+            latest.c.amendment_no,
+            latest.c.data_prepared_on_date,
         )
         .select_from(latest)
         .join(Contract, Contract.id == latest.c.contract_id)
@@ -440,6 +461,7 @@ def load_history(db: Session, *, exclude_object_id: int) -> tuple[list[HistoryCo
             contractor_id=row[7],
             contractor_title=row[8],
             area=row[9],
+            period=_estimate_period(row[10], row[11], row[4]),
         )
         for row in contract_rows
     ]
@@ -491,6 +513,197 @@ def load_history(db: Session, *, exclude_object_id: int) -> tuple[list[HistoryCo
     return contracts, lines
 
 
+def _family_ladder_infos(db: Session) -> dict[int, FamilyLadderInfo]:
+    """Сведения семей для ступеней 2 и 4: действующая версия, активные главные параметры по
+    порядку `ordinal`, отпускаемые (`releasable IS TRUE`) и имена. Один запрос на все семьи."""
+    ordered: dict[int, tuple[int, list[tuple[int, str, bool]]]] = {}
+    for family_id, schema_id, parameter_id, name, releasable in db.execute(
+        sa.select(
+            FamilyParameterSchema.family_id,
+            FamilyParameterSchema.id,
+            FamilyParameter.id,
+            FamilyParameter.name,
+            FamilyParameter.releasable,
+        )
+        .select_from(FamilyParameterSchema)
+        .outerjoin(
+            FamilyParameter,
+            sa.and_(
+                FamilyParameter.schema_id == FamilyParameterSchema.id,
+                FamilyParameter.role == ParameterRole.main.value,
+                FamilyParameter.archived_at.is_(None),
+            ),
+        )
+        .where(FamilyParameterSchema.status == SchemaStatus.frozen.value)
+        .order_by(FamilyParameterSchema.family_id, FamilyParameter.ordinal)
+    ).all():
+        _, parameters = ordered.setdefault(family_id, (schema_id, []))
+        if parameter_id is not None:
+            parameters.append((parameter_id, name, releasable is True))
+    return {
+        family_id: FamilyLadderInfo(
+            schema_id=schema_id,
+            main_parameter_ids=tuple(pid for pid, _, _ in parameters),
+            releasable_ids=frozenset(pid for pid, _, releasable in parameters if releasable),
+            names={pid: name for pid, name, _ in parameters},
+        )
+        for family_id, (schema_id, parameters) in ordered.items()
+    }
+
+
+def load_work_history(
+    db: Session, *, exclude_object_id: int
+) -> tuple[list[WorkHistoryLine], dict[int, FamilyLadderInfo]]:
+    """Строки последних смет договоров по работам для лестницы аналогов и сведения семей.
+
+    История та же, что у `load_history`: договор объекта тендера и сметы КП не входят
+    (`Contract.object_id != exclude_object_id`, соединение с договорами). Строка — не глава,
+    не система, с вариантом в неархивном контексте, ценой и весом, прошедшими предикаты, и с
+    цепочкой, у которой зона определена: аналог без зоны не аналог (спека §2.8). Строка с
+    неизвестной базой НДС остаётся — ядро называет по ней выпавший договор. Выбор последней
+    сметы и строки — один оператор. Число запросов фиксировано: строки, три запроса вариантов,
+    семьи.
+    """
+    latest = latest_estimates()
+    is_system = CatalogContext.semantic_kind == "SYSTEM"
+    rows = db.execute(
+        sa.select(
+            PositionItem.id,
+            latest.c.contract_id,
+            PositionItem.section_chain_id,
+            SectionChain.zone,
+            SectionChain.titles,
+            CatalogContext.work_variant_id,
+            PositionItem.unit_cost_total,
+            _WEIGHT,
+            sa.func.coalesce(Estimate.vat_rate_base_override, Proposal.vat_rate),
+        )
+        .select_from(PositionItem)
+        .join(Proposal, Proposal.id == PositionItem.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .join(Estimate, Estimate.id == Lot.estimate_id)
+        .join(latest, latest.c.estimate_id == Estimate.id)
+        .join(Contract, Contract.id == latest.c.contract_id)
+        .join(SectionChain, SectionChain.id == PositionItem.section_chain_id)
+        .join(ContextMember, ContextMember.position_item_id == PositionItem.id)
+        .join(CatalogContext, CatalogContext.id == ContextMember.context_id)
+        .where(
+            Contract.object_id != exclude_object_id,
+            PositionItem.is_chapter.is_(False),
+            SectionChain.zone.is_not(None),
+            CatalogContext.work_variant_id.is_not(None),
+            CatalogContext.archived_at.is_(None),
+            sa.not_(is_system),
+            _price_ok(PositionItem.unit_cost_total),
+            _weight_ok(_WEIGHT),
+        )
+        .order_by(latest.c.contract_id, PositionItem.id)
+    ).all()
+    infos = _variant_infos(db, [row[5] for row in rows])
+    titles_of: dict[int, frozenset[str]] = {}
+    lines: list[WorkHistoryLine] = []
+    for item_id, contract_id, chain_id, zone, titles, variant_id, unit_price, weight, vat_base in rows:
+        if chain_id not in titles_of:
+            titles_of[chain_id] = frozenset(normalize_title(title) for title in titles)
+        info = infos[variant_id]
+        lines.append(
+            WorkHistoryLine(
+                position_item_id=item_id,
+                contract_id=contract_id,
+                family_id=info.family_id,
+                chain_id=chain_id,
+                zone=zone,
+                chain_titles=titles_of[chain_id],
+                variant_id=variant_id,
+                schema_id=info.schema_id,
+                main_values=info.main_values,
+                unit_price=unit_price,
+                weight=weight,
+                vat_base=vat_base,
+            )
+        )
+    return lines, _family_ladder_infos(db)
+
+
+def load_analog_details(db: Session, position_item_ids: Sequence[int]) -> dict[int, tuple[str, str | None, list[str]]]:
+    """Наименование, единица и названия разделов строк договоров для справки панели: один запрос."""
+    ids = sorted(set(position_item_ids))
+    if not ids:
+        return {}
+    return {
+        item_id: (title, unit, list(titles or []))
+        for item_id, title, unit, titles in db.execute(
+            sa.select(
+                PositionItem.id,
+                PositionItem.job_title_in_proposal,
+                UnitOfMeasure.symbol,
+                SectionChain.titles,
+            )
+            .select_from(PositionItem)
+            .outerjoin(UnitOfMeasure, UnitOfMeasure.id == PositionItem.unit_id)
+            .outerjoin(SectionChain, SectionChain.id == PositionItem.section_chain_id)
+            .where(PositionItem.id.in_(ids))
+        ).all()
+    }
+
+
+@dataclass(frozen=True)
+class _Chain:
+    zone: Zone | None
+    titles: frozenset[str]
+    #: Зона не определена, но у цепочки есть предложение модели или ответ «не знаю».
+    disputed: bool
+    live: bool
+    stuck: bool
+
+
+def _chain_states(db: Session, chain_ids: Sequence[int]) -> dict[int, _Chain]:
+    """Зона, названия и состояние задания `section_zone` цепочек: два запроса на любое число."""
+    ids = sorted(set(chain_ids))
+    if not ids:
+        return {}
+    statuses: dict[int, set[str]] = defaultdict(set)
+    for chain_id, status in db.execute(
+        sa.select(SemanticJob.section_chain_id, SemanticJob.status).where(
+            SemanticJob.kind == SemanticJobKind.section_zone.value,
+            SemanticJob.section_chain_id.in_(ids),
+            SemanticJob.status.in_(_LIVE_STATUSES + _STUCK_STATUSES),
+        )
+    ).all():
+        statuses[chain_id].add(status)
+    return {
+        chain_id: _Chain(
+            zone=zone,
+            titles=frozenset(normalize_title(title) for title in titles),
+            disputed=zone is None and proposed is not None,
+            live=bool(statuses[chain_id] & set(_LIVE_STATUSES)),
+            stuck=bool(statuses[chain_id] & set(_STUCK_STATUSES)),
+        )
+        for chain_id, zone, titles, proposed in db.execute(
+            sa.select(SectionChain.id, SectionChain.zone, SectionChain.titles, SectionChain.proposed_zone).where(
+                SectionChain.id.in_(ids)
+            )
+        ).all()
+    }
+
+
+def _releasable_live(db: Session, current_schema_of: Mapping[int, int]) -> set[int]:
+    """Семьи, у которых живое задание `releasable_params` на действующую схему (спека §2.16 п. 5)."""
+    if not current_schema_of:
+        return set()
+    return {
+        family_id
+        for family_id, schema_id in db.execute(
+            sa.select(SemanticJob.family_id, SemanticJob.schema_id).where(
+                SemanticJob.kind == SemanticJobKind.releasable_params.value,
+                SemanticJob.status.in_(_LIVE_STATUSES),
+                SemanticJob.family_id.in_(list(current_schema_of)),
+            )
+        ).all()
+        if current_schema_of.get(family_id) == schema_id
+    }
+
+
 def load_kp_lines(db: Session, estimate_ids: Sequence[int]) -> dict[int, list[KpLineRow]]:
     """Строки КП заданных смет (не главы) с семантикой и сигналом каталога.
 
@@ -521,6 +734,7 @@ def load_kp_lines(db: Session, estimate_ids: Sequence[int]) -> dict[int, list[Kp
             CatalogContext.semantic_kind,
             WorkFamily.title,
             CatalogPosition.unit_id,
+            PositionItem.section_chain_id,
         )
         .select_from(PositionItem)
         .join(Proposal, Proposal.id == PositionItem.proposal_id)
@@ -540,6 +754,12 @@ def load_kp_lines(db: Session, estimate_ids: Sequence[int]) -> dict[int, list[Kp
     infos = _variant_infos(db, [row[11] for row in rows if row[11] is not None])
     secondary = _secondary_values(db, [row[10] for row in rows if row[10] is not None])
     root_of, _ = category_roots(db)
+    chains = _chain_states(db, [row[15] for row in rows if row[15] is not None])
+    current_schema_of = {
+        info.family_id: info.current_schema_id for info in infos.values() if info.current_schema_id is not None
+    }
+    releasable_live = _releasable_live(db, current_schema_of)
+    paused = _claim_paused(db) if chains or releasable_live else False
     for row in rows:
         (
             estimate_id,
@@ -557,9 +777,24 @@ def load_kp_lines(db: Session, estimate_ids: Sequence[int]) -> dict[int, list[Kp
             kind,
             family_title,
             unit_id,
+            chain_id,
         ) = row
         info = infos.get(variant_id) if variant_id is not None else None
         signal = signals.get(item_id, CatalogSignal(False, False))
+        is_system = kind == "SYSTEM"
+        chain = chains.get(chain_id) if chain_id is not None else None
+        # у работы с вариантом: живое задание зоны цепочки без зоны или признака «можно
+        # отпустить» семьи на действующую схему (спека §2.16); пауза — не «разбирает», а «ждёт»
+        waiting_chain = chain is not None and chain.zone is None and chain.live and paused
+        analog_live = (
+            not is_system
+            and info is not None
+            and not paused
+            and (
+                (chain is not None and chain.zone is None and chain.live)
+                or info.family_id in releasable_live
+            )
+        )
         result[estimate_id].append(
             KpLineRow(
                 line=KpLine(
@@ -568,9 +803,17 @@ def load_kp_lines(db: Session, estimate_ids: Sequence[int]) -> dict[int, list[Kp
                     total=total,
                     weight=weight,
                     key=_line_key(info, variant_id) if info is not None else None,
-                    is_system=kind == "SYSTEM",
-                    in_progress=signal.in_progress,
+                    is_system=is_system,
+                    in_progress=signal.in_progress or analog_live,
                     waiting_admin=signal.waiting_admin,
+                    section_chain_id=chain_id,
+                    zone=chain.zone if chain is not None else None,
+                    chain_titles=chain.titles if chain is not None else frozenset(),
+                    schema_id=info.schema_id if info is not None else None,
+                    main_values=info.main_values if info is not None else {},
+                    zone_waiting=chain is not None
+                    and chain.zone is None
+                    and (chain.disputed or chain.stuck or waiting_chain),
                 ),
                 title=title,
                 unit=unit,
