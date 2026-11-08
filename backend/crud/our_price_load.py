@@ -552,24 +552,27 @@ def _family_ladder_infos(db: Session) -> dict[int, FamilyLadderInfo]:
 
 
 def load_work_history(
-    db: Session, *, exclude_object_id: int
+    db: Session, *, estimate_of: Mapping[int, int]
 ) -> tuple[list[WorkHistoryLine], dict[int, FamilyLadderInfo]]:
-    """Строки последних смет договоров по работам для лестницы аналогов и сведения семей.
+    """Строки смет договоров по работам для лестницы аналогов и сведения семей.
 
-    История та же, что у `load_history`: договор объекта тендера и сметы КП не входят
-    (`Contract.object_id != exclude_object_id`, соединение с договорами). Строка — не глава,
+    `estimate_of` — отображение `contract_id -> estimate_id` смет, которые выбрал
+    `load_history` (`HistoryContract.contract_id`, `.estimate_id`). Сметы здесь заново не
+    выбираются: иначе допсоглашение, закоммиченное между двумя чтениями, дало бы строки новой
+    сметы под договором со старым периодом и коэффициентом ИПЦ. Состав истории (договор
+    объекта тендера и сметы КП не входят) наследуется от `load_history`. Строка — не глава,
     не система, с вариантом в неархивном контексте, ценой и весом, прошедшими предикаты, и с
     цепочкой, у которой зона определена: аналог без зоны не аналог (спека §2.8). Строка с
-    неизвестной базой НДС остаётся — ядро называет по ней выпавший договор. Выбор последней
-    сметы и строки — один оператор. Число запросов фиксировано: строки, три запроса вариантов,
+    неизвестной базой НДС остаётся — ядро называет по ней выпавший договор. Строки читаются
+    по идентификаторам смет. Число запросов фиксировано: строки, три запроса вариантов,
     семьи.
     """
-    latest = latest_estimates()
+    contract_of = {estimate_id: contract_id for contract_id, estimate_id in estimate_of.items()}
     is_system = CatalogContext.semantic_kind == "SYSTEM"
     rows = db.execute(
         sa.select(
             PositionItem.id,
-            latest.c.contract_id,
+            Estimate.id,
             PositionItem.section_chain_id,
             SectionChain.zone,
             SectionChain.titles,
@@ -582,13 +585,11 @@ def load_work_history(
         .join(Proposal, Proposal.id == PositionItem.proposal_id)
         .join(Lot, Lot.id == Proposal.lot_id)
         .join(Estimate, Estimate.id == Lot.estimate_id)
-        .join(latest, latest.c.estimate_id == Estimate.id)
-        .join(Contract, Contract.id == latest.c.contract_id)
         .join(SectionChain, SectionChain.id == PositionItem.section_chain_id)
         .join(ContextMember, ContextMember.position_item_id == PositionItem.id)
         .join(CatalogContext, CatalogContext.id == ContextMember.context_id)
         .where(
-            Contract.object_id != exclude_object_id,
+            Estimate.id.in_(list(contract_of)),
             PositionItem.is_chapter.is_(False),
             SectionChain.zone.is_not(None),
             CatalogContext.work_variant_id.is_not(None),
@@ -597,19 +598,19 @@ def load_work_history(
             _price_ok(PositionItem.unit_cost_total),
             _weight_ok(_WEIGHT),
         )
-        .order_by(latest.c.contract_id, PositionItem.id)
+        .order_by(Estimate.contract_id, PositionItem.id)
     ).all()
     infos = _variant_infos(db, [row[5] for row in rows])
     titles_of: dict[int, frozenset[str]] = {}
     lines: list[WorkHistoryLine] = []
-    for item_id, contract_id, chain_id, zone, titles, variant_id, unit_price, weight, vat_base in rows:
+    for item_id, estimate_id, chain_id, zone, titles, variant_id, unit_price, weight, vat_base in rows:
         if chain_id not in titles_of:
             titles_of[chain_id] = frozenset(normalize_title(title) for title in titles)
         info = infos[variant_id]
         lines.append(
             WorkHistoryLine(
                 position_item_id=item_id,
-                contract_id=contract_id,
+                contract_id=contract_of[estimate_id],
                 family_id=info.family_id,
                 chain_id=chain_id,
                 zone=zone,

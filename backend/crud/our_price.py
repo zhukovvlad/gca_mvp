@@ -366,7 +366,9 @@ def _build_scene(
         raise DomainError(404, f"Строка {require_line} не найдена в КП оффера {participants_raw[0][0]}.")
 
     contracts, history_lines = load_history(db, exclude_object_id=head.object_id)
-    work_history, families = load_work_history(db, exclude_object_id=head.object_id)
+    work_history, families = load_work_history(
+        db, estimate_of={contract.contract_id: contract.estimate_id for contract in contracts}
+    )
     target_month = round_target_month(db, head.round_id)
     plan: InflationPlan | None = None
     if inflation_series_id is not None:

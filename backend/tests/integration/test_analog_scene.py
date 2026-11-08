@@ -16,7 +16,7 @@ from decimal import Decimal
 import pytest
 import sqlalchemy as sa
 
-from crud.our_price_load import load_kp_lines, load_work_history
+from crud.our_price_load import load_history, load_kp_lines, load_work_history
 from models import FamilyParameter, SemanticJob, WorkVariantValue
 from services.analog_ladder import FamilyLadderInfo
 from tests.integration.test_our_price_load import World
@@ -151,8 +151,17 @@ def _writes(seen) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+def _estimate_of(db, stage) -> dict[int, int]:
+    contracts, _ = load_history(db, exclude_object_id=stage.tender.object_id)
+    return {contract.contract_id: contract.estimate_id for contract in contracts}
+
+
+def _load_work(db, stage):
+    return load_work_history(db, estimate_of=_estimate_of(db, stage))
+
+
 def _history_ids(db, stage) -> set[int]:
-    lines, _ = load_work_history(db, exclude_object_id=stage.tender.object_id)
+    lines, _ = _load_work(db, stage)
     return {line.position_item_id for line in lines}
 
 
@@ -161,7 +170,7 @@ class TestWorkHistoryLoader:
         chain = world.chain(("Подземная часть", "  ПАРКИНГ "), "underground")
         _, _, item = _hist(stage, D("100"), chain=chain)
 
-        lines, _ = load_work_history(db_session, exclude_object_id=stage.tender.object_id)
+        lines, _ = _load_work(db_session, stage)
 
         (line,) = lines
         param = db_session.execute(
@@ -239,7 +248,7 @@ class TestWorkHistoryLoader:
         old_schema = stage.schema
         new_schema = world.supersede(stage.family, old_schema)
 
-        lines, families = load_work_history(db_session, exclude_object_id=stage.tender.object_id)
+        lines, families = _load_work(db_session, stage)
 
         (line,) = lines
         assert line.position_item_id == item.id
@@ -258,7 +267,7 @@ class TestWorkHistoryLoader:
         world.param(stage.schema, 5, "Старый", archived=True)
         db_session.flush()
 
-        _, families = load_work_history(db_session, exclude_object_id=stage.tender.object_id)
+        _, families = _load_work(db_session, stage)
 
         assert families[stage.family.id] == FamilyLadderInfo(
             schema_id=stage.schema.id,
@@ -271,12 +280,12 @@ class TestWorkHistoryLoader:
         chain = world.chain(("Раздел А",), "whole")
         _hist(stage, D("100"), chain=chain)
         with count_statements(db_session) as small:
-            load_work_history(db_session, exclude_object_id=stage.tender.object_id)
+            _load_work(db_session, stage)
         v2 = _second_variant(stage)
         for index in range(6):
             _hist(stage, D("100") + index, chain=world.chain((f"Раздел {index}",), "whole"), variant=v2)
         with count_statements(db_session) as large:
-            lines, _ = load_work_history(db_session, exclude_object_id=stage.tender.object_id)
+            lines, _ = _load_work(db_session, stage)
 
         assert len(lines) == 7
         assert len(small) == len(large)
