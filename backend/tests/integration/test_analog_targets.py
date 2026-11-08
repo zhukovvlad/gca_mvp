@@ -34,6 +34,8 @@ from tests.integration.test_our_price_offer_api import (
     _panel_get,
     _second_variant,
 )
+from tests.integration.test_our_price_offer_api import _history as _sys_history
+from tests.integration.test_our_price_offer_api import _put as _sys_line
 from tests.integration.test_our_price_round_api import SERIES_NAME, Stage
 from tests.integration.test_our_price_round_api import _get as _round_get
 
@@ -256,6 +258,27 @@ class TestPutTarget:
         db_session.flush()
 
         response = _put(admin_client, stage, scene, {"kind": "freshest"}, item=system)
+
+        assert (response.status_code, _code(response)) == (422, "target_not_applicable")
+        assert _rows(db_session) == []
+
+    def test_a_comparable_system_with_a_freshest_is_still_422_target_not_applicable(
+        self, admin_client, stage, world, db_session
+    ):
+        """Система сравнима и самая свежая у неё есть: отказ держит только условие «строка — работа»,
+        а не «строка `comparable`» (у системы предыдущего теста истории нет)."""
+        for total, prepared in (("100000", dt.date(2025, 1, 10)), ("90000", dt.date(2026, 6, 15))):
+            _, estimate, _ = _sys_history(stage, D("1"), total=D(total), kind="SYSTEM")
+            estimate.data_prepared_on_date = prepared
+        rnd, part = _kp_part(stage)
+        system = _sys_line(stage, part.proposal, "R", D("1"), total=D("95000"), kind="SYSTEM")
+        db_session.flush()
+        scene = Scene(rnd, part, system, {}, None, {})
+        line = _line_of(_ok(admin_client, stage.tender, rnd, part), system)
+        assert (line["kind"], line["state"]) == ("system", "comparable")
+        assert line["freshest"] is not None
+
+        response = _put(admin_client, stage, scene, {"kind": "freshest"})
 
         assert (response.status_code, _code(response)) == (422, "target_not_applicable")
         assert _rows(db_session) == []
