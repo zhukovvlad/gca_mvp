@@ -72,6 +72,7 @@ from services.variant_request import SchemaParameterIn
 from services.work_families import (
     REFUSE_FAMILY_NOT_ACTIVE,
     REFUSE_FAMILY_NOT_FOUND,
+    UNSET,
     WorkFamilyError,
 )
 from services.work_variants import (
@@ -141,9 +142,11 @@ class ParameterDraft:
     closed: bool
     values: tuple[str, ...]
     range: RangeSpec | None
-    #: «Можно отпустить» (спека лестницы аналогов §2.6): `None` — не размечен; у
-    #: неглавного параметра всегда `None`.
-    releasable: bool | None = None
+    #: «Можно отпустить» (спека лестницы аналогов §2.6): `UNSET` — в теле не прислано,
+    #: сохраняется текущее значение параметра (у нового — не размечен); `True`/`False`
+    #: — решение человека; явный `None` — снять признак. У неглавного параметра после
+    #: проверки тела всегда `None`.
+    releasable: bool | None | object = UNSET
 
 
 @dataclass(frozen=True)
@@ -952,6 +955,21 @@ def _build_plan(
             f"номера параметров {sorted(ordinals)}: нужны различные номера активных "
             "параметров версии",
         )
+    # «Не прислано» -> текущее значение параметра (у нового — не размечен): тело
+    # канонизируется и хэшируется по разрешённому значению, поэтому предпросмотр и
+    # применение совпадают, а правка, не меняющая признак, его не трогает.
+    checked = [
+        replace(
+            draft,
+            releasable=(
+                None if draft.ordinal is None
+                else active_by_ordinal[draft.ordinal].releasable
+            ),
+        )
+        if draft.releasable is UNSET
+        else draft
+        for draft in checked
+    ]
     new_count = sum(1 for draft in checked if draft.ordinal is None)
     top = max((p.ordinal for p in state.parameters.values()), default=0)
     if top + new_count > MAX_ORDINAL:

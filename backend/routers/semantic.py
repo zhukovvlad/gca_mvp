@@ -1899,7 +1899,12 @@ def _drafts_of(body: EditSchemaRequest) -> list[schema_edit.ParameterDraft]:
             value_kind=parameter.value_kind,
             closed=parameter.closed,
             values=tuple(parameter.values),
-            releasable=parameter.releasable,
+            # Не прислано — сохранить текущее; явный `null` — снять признак (спека §2.6).
+            releasable=(
+                parameter.releasable
+                if "releasable" in parameter.model_fields_set
+                else work_families.UNSET
+            ),
             range=None
             if parameter.range is None
             else schema_edit.RangeSpec(

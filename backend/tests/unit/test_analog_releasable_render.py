@@ -25,6 +25,7 @@ from services.releasable import (
 from services.schema_edit import ParameterDraft, _body_canon, _checked_drafts
 from services.semantic_answer import AnswerSchemaError
 from services.semantic_cost import tariffs_from
+from services.work_families import UNSET
 
 
 def _settings(**overrides) -> Settings:
@@ -271,12 +272,17 @@ class TestTariffsAndSettings:
 
 
 class TestSchemaEditDraft:
-    def test_the_draft_defaults_to_an_undecided_flag(self):
-        assert _draft().releasable is None
+    def test_the_draft_defaults_to_not_sent(self):
+        assert _draft().releasable is UNSET
+
+    def test_a_secondary_parameter_not_sent_resolves_to_none(self):
+        (checked,) = _checked_drafts([_draft(role=ParameterRole.secondary)])
+
+        assert checked.releasable is None
 
     def test_the_flag_is_part_of_the_canonical_body(self):
         marked = _body_canon([_draft(releasable=True)])
-        unmarked = _body_canon([_draft()])
+        unmarked = _body_canon([_draft(releasable=None)])
         other = _body_canon([_draft(releasable=False)])
 
         assert marked != unmarked and marked != other and other != unmarked

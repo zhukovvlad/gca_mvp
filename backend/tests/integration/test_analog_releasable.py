@@ -14,6 +14,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
+from dataclasses import replace
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -52,11 +53,22 @@ from services.releasable import (
 from services.semantic_client import ModelResponse
 from services.semantic_worker import claim_next, record_result, render_job_request
 from services.unit_resolution import UnitResolver
-from services.work_families import merge_families, set_unit, update_family
+from services.work_families import UNSET, merge_families, set_unit, update_family
+from services.work_variants import merge_parameter_values
+from tests.integration.test_work_variants_core import (
+    _answer as _values_answer,
+)
+from tests.integration.test_work_variants_core import (
+    _apply as _apply_values,
+)
 from tests.integration.test_work_variants_core import (
     _freeze,
     _freeze_world,
     _lock_sequence,
+    _named,
+)
+from tests.integration.test_work_variants_core import (
+    _world as _values_world,
 )
 from tests.integration.test_work_variants_material import _capturing_sql, _frozen_schema, _uid
 from tests.integration.test_work_variants_schema import _family
@@ -897,6 +909,105 @@ class TestHygieneOfOrdinaryEdits:
         assert _jobs(db_session, world.schema.id)[-1].status == "pending"  # второй параметр
 
 
+def _merge_values(db, factories, world):
+    values = list(
+        db.execute(
+            sa.select(FamilyParameterValue.id)
+            .where(FamilyParameterValue.parameter_id == world.ids[0])
+            .order_by(FamilyParameterValue.id)
+        ).scalars()
+    )
+    merge_parameter_values(
+        db, parameter_id=world.ids[0], source_value_id=values[0], target_value_id=values[1],
+        actor_id=_admin(factories).id,
+    )
+
+
+def _extend_values(db, factories, world):
+    """Ответ `context_values` дописывает новое значение первому параметру."""
+    _apply_values(
+        db, world.values_world,
+        _values_answer((1, "new", "70 мм", "name"), _named(2, "бетон", "path")),
+    )
+
+
+def _merge_scene(db, factories):
+    return _queued(db, factories)
+
+
+def _extend_scene(db, factories):
+    """Мир `apply_values`: активная семья, контекст и параметры по умолчанию."""
+    values_world = _values_world(db, factories)
+    db.execute(
+        sa.update(WorkFamily).where(WorkFamily.id == values_world.family.id)
+        .values(status="active")
+    )
+    ids = list(
+        db.execute(
+            sa.select(FamilyParameter.id)
+            .where(FamilyParameter.schema_id == values_world.schema.id)
+            .order_by(FamilyParameter.ordinal)
+        ).scalars()
+    )
+    world = SimpleNamespace(
+        family=values_world.family, schema=values_world.schema, ids=ids,
+        values_world=values_world,
+    )
+    assert enqueue_releasable(db, world.schema.id, settings=S) is True
+    world.job_id = _jobs(db)[-1].id
+    return world
+
+
+VALUE_PATHS = [
+    pytest.param(_merge_values, _merge_scene, id="merge_parameter_values"),
+    pytest.param(_extend_values, _extend_scene, id="apply_values_new_value"),
+]
+
+
+class TestHygieneOfValuePaths:
+    @pytest.mark.parametrize(("edit", "build"), VALUE_PATHS)
+    def test_stale_proposals_are_dropped_and_a_new_job_is_queued(
+        self, db_session, factories, edit, build
+    ):
+        world = build(db_session, factories)
+        old_hash = _hash_now(db_session, world)
+        for parameter_id in world.ids:
+            db_session.add(
+                ReleasableProposal(
+                    parameter_id=parameter_id, releasable=True, confidence=Decimal("0.6"),
+                    reason="р", request_hash=old_hash,
+                )
+            )
+        db_session.flush()
+        assert len(_proposals(db_session, world)) == 2
+
+        edit(db_session, factories, world)
+
+        assert _proposals(db_session, world) == []
+        jobs = _jobs(db_session, world.schema.id)
+        assert jobs[-1].status == "pending"
+        assert jobs[-1].request_hash == _hash_now(db_session, world) != old_hash
+
+    @pytest.mark.parametrize(("edit", "build"), VALUE_PATHS)
+    def test_an_unfinished_job_is_cancelled_as_input_changed_and_a_new_one_queued(
+        self, db_session, factories, edit, build
+    ):
+        world = build(db_session, factories)
+        claim = _claim(db_session)
+        old_hash = claim.rendered.request_hash
+        assert _reload(db_session, SemanticJob, claim.job_id).status == "running"
+        assert old_hash == _hash_now(db_session, world)
+
+        edit(db_session, factories, world)
+
+        jobs = _jobs(db_session, world.schema.id)
+        assert [(j.id, j.status, j.cancel_reason, j.claim_token) for j in jobs[:1]] == [
+            (claim.job_id, "cancelled", "input_changed", None)
+        ]
+        assert jobs[-1].status == "pending"
+        assert jobs[-1].request_hash == _hash_now(db_session, world) != old_hash
+
+
 class TestVersionLeavesFrozen:
     def test_freezing_a_new_version_retires_the_old_proposals_and_jobs(self, db_session, factories):
         world = _freeze_world(db_session, factories)
@@ -1081,14 +1192,14 @@ class TestEnqueue:
 #  Правка схемы: поле параметра
 # ---------------------------------------------------------------------------
 
-def _drafts(world, *, releasable=None, role=ParameterRole.main):
+def _drafts(world, *, releasable=UNSET, role=ParameterRole.main):
     out = []
     for i, (name, values) in enumerate(_PARAMS, 1):
         out.append(
             se.ParameterDraft(
                 ordinal=i, name=name, role=role if i == 1 else ParameterRole.main,
                 value_kind=ParameterValueKind.exact, closed=False, values=tuple(values),
-                range=None, releasable=releasable if i == 1 else None,
+                range=None, releasable=releasable if i == 1 else UNSET,
             )
         )
     return out
@@ -1137,6 +1248,103 @@ class TestSchemaEditField:
         _apply(db_session, factories, world, _drafts(world, releasable=None))
 
         assert _flags(db_session, world) == [None, None]
+        assert _reload(db_session, FamilyParameter, world.ids[0]).origin == "human"
+
+    def test_a_body_without_the_field_keeps_the_flag_and_the_origin(self, db_session, factories):
+        world = _world(db_session, factories)
+        _apply(db_session, factories, world, _drafts(world, releasable=False))
+        revision = _reload(db_session, FamilyParameterSchema, world.schema.id).revision
+
+        _apply(db_session, factories, world, _drafts(world))  # поле не прислано
+
+        parameter = _reload(db_session, FamilyParameter, world.ids[0])
+        assert (parameter.releasable, parameter.origin) == (False, "human")
+        assert _reload(db_session, FamilyParameterSchema, world.schema.id).revision == revision
+
+    def test_a_body_without_the_field_does_not_touch_a_model_parameters_origin(
+        self, db_session, factories
+    ):
+        world = _world(db_session, factories)
+        db_session.execute(
+            sa.update(FamilyParameter).where(FamilyParameter.id == world.ids[1])
+            .values(releasable=True)
+        )
+        revision = _reload(db_session, FamilyParameterSchema, world.schema.id).revision
+
+        _apply(db_session, factories, world, _drafts(world))
+
+        parameter = _reload(db_session, FamilyParameter, world.ids[1])
+        assert (parameter.releasable, parameter.origin) == (True, "model")
+        assert _reload(db_session, FamilyParameterSchema, world.schema.id).revision == revision
+
+    def test_the_preview_hash_of_a_body_without_the_field_equals_the_hash_with_the_current_value(
+        self, db_session, factories
+    ):
+        world = _world(db_session, factories)
+        _apply(db_session, factories, world, _drafts(world, releasable=True))
+
+        def preview(drafts):
+            return se.preview_schema_edit(
+                db_session, family_id=world.family.id, drafts=drafts
+            ).preview_hash
+
+        current = [
+            replace(d, releasable=flag)
+            for d, flag in zip(_drafts(world), _flags(db_session, world), strict=True)
+        ]
+        assert preview(_drafts(world)) == preview(current)
+        assert preview(_drafts(world)) != preview(_drafts(world, releasable=False))
+
+    def test_an_explicit_null_is_a_human_decision(self, db_session, factories):
+        world = _world(db_session, factories)
+        _apply(db_session, factories, world, _drafts(world, releasable=True))
+        db_session.execute(
+            sa.update(FamilyParameter).where(FamilyParameter.id == world.ids[0])
+            .values(origin="model")
+        )
+
+        _apply(db_session, factories, world, _drafts(world, releasable=None))
+
+        parameter = _reload(db_session, FamilyParameter, world.ids[0])
+        assert (parameter.releasable, parameter.origin) == (None, "human")
+
+    def test_a_new_parameter_without_the_field_is_not_marked(self, db_session, factories):
+        world = _world(db_session, factories)
+        drafts = [
+            *_drafts(world),
+            se.ParameterDraft(
+                ordinal=None, name="Новый", role=ParameterRole.main,
+                value_kind=ParameterValueKind.exact, closed=False, values=("а",), range=None,
+            ),
+        ]
+
+        _apply(db_session, factories, world, drafts)
+
+        created = db_session.execute(
+            sa.select(FamilyParameter.releasable).where(
+                FamilyParameter.schema_id == world.schema.id, FamilyParameter.name == "Новый"
+            )
+        ).scalar_one()
+        assert created is None
+
+    def test_the_route_reads_a_missing_field_as_keep_and_null_as_clear(
+        self, admin_client, db_session, factories
+    ):
+        world = _world(db_session, factories)
+        _apply(db_session, factories, world, _drafts(world, releasable=True))
+        db_session.commit()
+        url = f"{BASE}/families/{world.family.id}/schema"
+
+        def edit(first):
+            body = {"parameters": [
+                {"ordinal": 1, "name": "Толщина", "values": ["50 мм", "80 мм"], **first},
+                {"ordinal": 2, "name": "Армирование", "values": ["сетка", "фибра"]},
+            ]}
+            preview = admin_client.post(f"{url}/edit-preview", json=body).json()["preview_hash"]
+            return admin_client.patch(url, json={**body, "preview_hash": preview})
+
+        assert edit({}).json()["parameters"][0]["releasable"] is True
+        assert edit({"releasable": None}).json()["parameters"][0]["releasable"] is None
 
     def test_a_flag_only_edit_recomputes_no_variants_and_asks_no_values(
         self, db_session, factories, monkeypatch
@@ -1192,6 +1400,34 @@ class TestSchemaEditField:
             )
         ).scalar_one()
         assert created is False
+
+    def test_a_value_only_edit_of_a_human_parameter_writes_no_empty_update(
+        self, db_session, factories
+    ):
+        # Параметр человека с одной правкой значений: полей параметра менять нечего,
+        # `UPDATE family_parameters SET` без столбцов — синтаксическая ошибка
+        # (`schema_edit._write_plan`, `if values:`).
+        world = _world(db_session, factories)
+        _apply(db_session, factories, world, _drafts(world, releasable=True))
+        db_session.expire_all()
+        assert db_session.get(FamilyParameter, world.ids[0]).origin == "human"
+        drafts = _drafts(world, releasable=True)
+        drafts[0] = se.ParameterDraft(
+            ordinal=1, name=_PARAMS[0][0], role=ParameterRole.main,
+            value_kind=ParameterValueKind.exact, closed=False,
+            values=(*_PARAMS[0][1], "120 мм"), range=None, releasable=True,
+        )
+
+        _apply(db_session, factories, world, drafts)
+
+        db_session.expire_all()
+        values = db_session.execute(
+            sa.select(FamilyParameterValue.value)
+            .where(FamilyParameterValue.parameter_id == world.ids[0])
+            .order_by(FamilyParameterValue.id)
+        ).scalars().all()
+        assert values == [*_PARAMS[0][1], "120 мм"]
+        assert _flags(db_session, world) == [True, None]
 
     def test_the_change_is_named_in_the_event(self, db_session, factories):
         world = _world(db_session, factories)

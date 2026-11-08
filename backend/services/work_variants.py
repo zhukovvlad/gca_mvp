@@ -1637,6 +1637,10 @@ def apply_values(
     # в той же транзакции.
     for parameter_id in sorted(extended_parameter_ids):
         schedule_extension_wave(db, family_id=family_id, parameter_id=parameter_id)
+    if added:
+        # Список значений параметра — вход запроса «можно отпустить» (спека лестницы
+        # аналогов §2.7): предложения и задание версии пересматриваются.
+        refresh_inputs(db, [schema_id], settings=settings)
     reconcile_or_defer(db, [context_id])
 
     return ApplyValuesOutcome(
@@ -2252,6 +2256,8 @@ def merge_parameter_values(
             "merged_variants": [[source, target] for source, target in sorted(merged.items())],
         },
     )
+    # Слитое значение ушло из запроса «можно отпустить» (спека лестницы аналогов §2.7).
+    refresh_inputs(db, [schema_id], settings=app_settings)
     # Список значений в запросе контекстов семьи изменился: задания со старым
     # отпечатком заменяет сверка.
     reconcile_or_defer(db, _family_context_ids(db, family_id))
