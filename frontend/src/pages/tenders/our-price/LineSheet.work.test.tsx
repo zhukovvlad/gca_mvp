@@ -178,7 +178,7 @@ describe("панель строки-работы: сравнение", () => {
     const table = await screen.findByTestId("analogs-table");
     for (const title of Object.values(ANALOGS_COLUMN)) expect(table).toHaveTextContent(title);
     expect(within(screen.getByTestId("analog-8001")).getByText("самая низкая")).toBeInTheDocument();
-    expect(within(screen.getByTestId("analog-8002")).getByText("самая свежая")).toBeInTheDocument();
+    expect(within(screen.getByTestId("analog-8002")).getByText("свежая")).toBeInTheDocument();
     expect(within(screen.getByTestId("analog-8001")).getByText("договор с этим подрядчиком")).toBeInTheDocument();
   });
 });

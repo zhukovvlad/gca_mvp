@@ -254,9 +254,8 @@ export const FILTER_LABEL: Record<OfferFilter, string> = {
   not_comparable: CARD_LABEL.notComparable,
 };
 
-export const FILTER_HINT: Record<Exclude<OfferFilter, "all">, string> = {
-  above_lowest: "потенциал торга",
-  above_freshest: "торг по свежим договорам",
+/** Подписи плиток нейтральные: у «выше» подписи нет, только счёт строк (спека лестницы аналогов §2.12). */
+export const FILTER_HINT: Partial<Record<Exclude<OfferFilter, "all">, string>> = {
   below_lowest: "риск допработ и замены",
   unit_mismatch: "вопрос подрядчику про единицу учёта",
   not_comparable: "не разобраны, нет в договорах, нет цены",
@@ -415,9 +414,9 @@ export function analogsMore(n: number): string {
 }
 export const ANALOGS_LESS = "свернуть";
 export const ANALOG_LOWEST = "самая низкая";
-export const ANALOG_FRESHEST = "самая свежая";
+export const ANALOG_FRESHEST = "свежая";
 export const ANALOG_THIS_CONTRACTOR = "договор с этим подрядчиком";
-export const ANALOG_MAKE_TARGET = "сделать целью";
+export const ANALOG_MAKE_TARGET = "целью";
 export const ANALOG_IS_TARGET = "цель";
 export const ANALOGS_EMPTY = "Аналогов на этой ступени нет.";
 export const ANALOGS_NOMINAL_TITLE = "номинал в договоре";

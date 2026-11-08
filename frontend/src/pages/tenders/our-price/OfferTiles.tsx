@@ -125,7 +125,7 @@ export function OfferTiles({ offer, vat, filter, onFilter }: OfferTilesProps) {
               <span className="block text-xs text-fg-secondary">{FILTER_LABEL[key]}</span>
               <span className={cn("block font-mono text-lg tabular-nums", TONE_CLASS[key])}>{money(key)}</span>
               <span className="block text-xs text-fg-secondary">
-                {linesCount(n)} · {FILTER_HINT[key]}
+                {FILTER_HINT[key] === undefined ? linesCount(n) : `${linesCount(n)} · ${FILTER_HINT[key]}`}
               </span>
               {key === "above_freshest" && totals !== null && freshestCoverageNote(totals) !== null && (
                 <span data-testid="freshest-coverage" className="block text-xs text-fg-secondary">

@@ -88,7 +88,7 @@ describe("справка аналогов", () => {
     });
     const row = screen.getByTestId("analog-1");
     expect(within(row).getByText("самая низкая")).toBeInTheDocument();
-    expect(within(row).getByText("самая свежая")).toBeInTheDocument();
+    expect(within(row).getByText("свежая")).toBeInTheDocument();
     expect(within(row).getByText("договор с этим подрядчиком")).toBeInTheDocument();
   });
 
@@ -128,6 +128,15 @@ describe("справка аналогов", () => {
     expect(price.className).toMatch(/tabular-nums/);
     expect(price.closest("td")!.className).toMatch(/text-right/);
     expect(screen.getByTestId("analog-9000").querySelector("td")!.className).toMatch(/whitespace-normal/);
+  });
+
+  it("раскладка листа: фиксированная таблица, цепочка в два ряда с полным текстом в подсказке", () => {
+    renderTable({ analogs: [ourPriceAnalogFixture({ analog_id: 1, section_titles: ["А", "Б", "В"] })] });
+    expect(screen.getByTestId("analogs-table").className).toMatch(/table-fixed/);
+    const chain = screen.getByText("А / Б / В");
+    expect(chain.className).toMatch(/line-clamp-2/);
+    expect(chain).toHaveAttribute("title", "А / Б / В");
+    expect(screen.getByTestId("analogs-table").className).not.toMatch(/min-w-/);
   });
 
   it("пустая справка: подпись вместо таблицы", () => {

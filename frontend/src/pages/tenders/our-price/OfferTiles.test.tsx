@@ -135,3 +135,13 @@ describe("фильтры строк по свежим расценкам", () =>
     expect(matchesFilter(workLineFixture({ state: "no_zone" }), "not_comparable")).toBe(true);
   });
 });
+
+describe("нейтральные подписи плиток", () => {
+  it("у плиток «выше» нет слов про торг, только счёт строк", () => {
+    renderTiles(ourPriceOfferFixture());
+    for (const key of ["above_lowest", "above_freshest"] as const) {
+      expect(screen.getByTestId(`tile-${key}`).textContent).not.toMatch(/торг/i);
+      expect(screen.getByTestId(`tile-${key}`)).toHaveTextContent(/\d+ стр\./);
+    }
+  });
+});

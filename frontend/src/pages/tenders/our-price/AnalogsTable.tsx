@@ -56,14 +56,14 @@ export function AnalogsTable({ analogs, vat, canChoose, targetAnalogId, busy, on
   const hidden = analogs.length - ANALOG_FIRST;
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
-      <Table data-testid="analogs-table" className="text-xs">
+      <Table data-testid="analogs-table" className="table-fixed text-xs">
         <TableHeader>
           <TableRow>
-            <TableHead>{ANALOGS_COLUMN.contract}</TableHead>
-            <TableHead>{ANALOGS_COLUMN.line}</TableHead>
-            <TableHead>{ANALOGS_COLUMN.date}</TableHead>
-            <TableHead className="text-right">{ANALOGS_COLUMN.price}</TableHead>
-            <TableHead />
+            <TableHead className="w-[22%] whitespace-normal">{ANALOGS_COLUMN.contract}</TableHead>
+            <TableHead className="whitespace-normal">{ANALOGS_COLUMN.line}</TableHead>
+            <TableHead className="w-[14%] whitespace-normal">{ANALOGS_COLUMN.date}</TableHead>
+            <TableHead className="w-[17%] whitespace-normal text-right">{ANALOGS_COLUMN.price}</TableHead>
+            <TableHead className="w-[19%]" />
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -78,7 +78,7 @@ export function AnalogsTable({ analogs, vat, canChoose, targetAnalogId, busy, on
                 data-outlier={outlier ? "true" : undefined}
                 className={cn("align-top", outlier && "bg-warning-soft")}
               >
-                <TableCell className="min-w-32 whitespace-normal align-top">
+                <TableCell className="whitespace-normal break-words align-top">
                   {a.object_title}
                   <span className="block text-[0.6875rem] text-fg-secondary">
                     дог. {a.number} · {a.contractor_title}
@@ -89,12 +89,17 @@ export function AnalogsTable({ analogs, vat, canChoose, targetAnalogId, busy, on
                     </Badge>
                   )}
                 </TableCell>
-                <TableCell className="min-w-40 whitespace-normal align-top">
+                <TableCell className="whitespace-normal break-words align-top">
                   <span className="line-clamp-3" title={a.title}>
                     {a.title}
                   </span>
                   {a.section_titles.length > 0 && (
-                    <span className="block text-[0.6875rem] text-fg-secondary">{a.section_titles.join(" / ")}</span>
+                    <span
+                      className="line-clamp-2 text-[0.6875rem] text-fg-secondary"
+                      title={a.section_titles.join(" / ")}
+                    >
+                      {a.section_titles.join(" / ")}
+                    </span>
                   )}
                 </TableCell>
                 <TableCell className="whitespace-normal align-top">
@@ -133,6 +138,7 @@ export function AnalogsTable({ analogs, vat, canChoose, targetAnalogId, busy, on
                           type="button"
                           size="sm"
                           variant="outline"
+                          aria-label="сделать целью"
                           disabled={busy}
                           onClick={() => onChoose(a.analog_id)}
                         >
