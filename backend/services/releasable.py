@@ -369,6 +369,12 @@ def _lock_family_statement(family_id: int):
     return sa.select(WorkFamily.id).where(WorkFamily.id == family_id).with_for_update(read=True)
 
 
+def _lock_family_exclusive_statement(family_id: int):
+    """Семья `FOR UPDATE` — замок писателя входов (отдельно от исполнения: тест компилирует
+    запрос и проверяет режим)."""
+    return sa.select(WorkFamily.id).where(WorkFamily.id == family_id).with_for_update()
+
+
 def _lock_schema_statement(schema_id: int, *, for_update: bool = False):
     stmt = sa.select(FamilyParameterSchema.id).where(FamilyParameterSchema.id == schema_id)
     return stmt.with_for_update(key_share=True) if for_update else stmt.with_for_update(read=True)
@@ -692,7 +698,8 @@ def enqueue_releasable(db: Session, schema_id: int, *, settings: Settings) -> bo
     Задание ставится, если у версии есть неразмеченный активный главный параметр и
     задания с текущим отпечатком нет; отменённое задание с текущим отпечатком (вход
     вернули к прежнему) возвращается в очередь, а не заводится заново. Вызывающий
-    держит семью `FOR UPDATE` (или это отдельная команда без правок входов)."""
+    держит семью `FOR UPDATE` до коммита: пути правки — сами, `enqueue_all_releasable` —
+    на каждую версию."""
     schema = db.execute(
         sa.select(FamilyParameterSchema.family_id).where(FamilyParameterSchema.id == schema_id)
     ).one_or_none()
@@ -824,13 +831,17 @@ def enqueue_all_releasable(
     db: Session,
     *,
     settings: Settings = app_settings,
-    batch: int = 100,
     before_enqueue: Callable[[int, Decimal], None] | None = None,
 ) -> EnqueueAllReport:
     """Задания для всех действующих версий, где есть неразмеченный активный главный
     параметр и нет задания (не отменённого) с текущим отпечатком. Перед постановкой
-    зовёт `before_enqueue(число заданий, оценка резерва)`; коммит на пачку.
-    Идемпотентна."""
+    зовёт `before_enqueue(число заданий, оценка резерва)`. Идемпотентна.
+
+    Команда идёт параллельно с приложением, поэтому каждая версия ставится под своей
+    семьёй `FOR UPDATE`, взятой до чтения материала, и коммитится сразу: замок живёт одну
+    постановку, больше одной семьи команда не держит, а порядка замков нескольких семей
+    (по возрастанию `id`, как у слияния) не требуется. Подсчёт до `before_enqueue` читает
+    без замков и только оценивает; решение принимает постановка под замком."""
     tariffs = tariffs_from(settings, SemanticJobKind.releasable_params)
     known: dict[str, int | None] = {}
     wanted: list[int] = []
@@ -864,8 +875,11 @@ def enqueue_all_releasable(
     if before_enqueue is not None:
         before_enqueue(len(wanted), estimate)
     enqueued = 0
-    for start in range(0, len(wanted), batch):
-        for schema_id in wanted[start:start + batch]:
-            enqueued += int(enqueue_releasable(db, schema_id, settings=settings))
+    for schema_id in wanted:
+        family_id = db.execute(
+            sa.select(FamilyParameterSchema.family_id).where(FamilyParameterSchema.id == schema_id)
+        ).scalar_one()
+        db.execute(_lock_family_exclusive_statement(family_id)).all()
+        enqueued += int(enqueue_releasable(db, schema_id, settings=settings))
         db.commit()
     return EnqueueAllReport(len(wanted), estimate, enqueued)

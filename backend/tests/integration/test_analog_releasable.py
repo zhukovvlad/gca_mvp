@@ -1774,6 +1774,50 @@ class TestEnqueueAllCommand:
         assert reached
 
 
+class TestEnqueueAllHoldsTheFamily:
+    """`releasable-enqueue-all` идёт параллельно с приложением: постановка версии обязана держать
+    семью `FOR UPDATE` от чтения материала до коммита (ревью Codex, P2). Барьер стоит ПОСЛЕ
+    чтения материала: писатель входов другим соединением пробует взять семью, когда постановка
+    уже прочла вход."""
+
+    def test_the_family_lock_is_for_update(self):
+        sql = str(releasable._lock_family_exclusive_statement(1).compile(dialect=sa.dialects.postgresql.dialect()))
+
+        assert sql.rstrip().endswith("FOR UPDATE")
+
+    def test_an_input_writer_cannot_take_the_family_between_the_read_and_the_enqueue(
+        self, committing_db, committing_factories, committing_session_factory, monkeypatch
+    ):
+        world = _world(committing_db, committing_factories)
+        committing_db.commit()
+        real = releasable.load_releasable_material
+        outcomes: list[str] = []
+
+        def read_then_try_to_write(db, family_id, schema_id):
+            material = real(db, family_id, schema_id)
+            with committing_session_factory() as writer:
+                try:
+                    writer.execute(sa.text("SET LOCAL lock_timeout = '300ms'"))
+                    writer.execute(
+                        sa.select(WorkFamily.id).where(WorkFamily.id == family_id).with_for_update()
+                    ).all()
+                    outcomes.append("took")
+                except sa.exc.OperationalError:
+                    outcomes.append("blocked")
+                finally:
+                    writer.rollback()
+            return material
+
+        monkeypatch.setattr(releasable, "load_releasable_material", read_then_try_to_write)
+
+        report = releasable.enqueue_all_releasable(committing_db, settings=S)
+
+        # первое чтение — подсчёт без замков, второе — постановка под замком семьи
+        assert outcomes == ["took", "blocked"]
+        assert report.enqueued == 1
+        assert [j.schema_id for j in _jobs(committing_db)] == [world.schema.id]
+
+
 def test_the_module_exposes_the_agreed_names():
     for name in (
         "render_releasable_request", "lock_inputs", "record_releasable_result",
