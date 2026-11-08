@@ -7,12 +7,16 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
-import { kpDecisionMutationKey, useOurPriceLine } from "@/services/queries";
+import { kpDecisionMutationKey, useOurPriceLine, usePutTarget } from "@/services/queries";
 import type { Decimal, OurPriceLine, OurPriceLineView, RungLevel, RungScope } from "@/types/domain";
+
+import { AnalogsTable } from "./AnalogsTable";
+import { FigureCards } from "./FigureCards";
 
 import { comparedKpPrice, comparedUnit, formatMoney, formatSigned, formatUnitPrice, pick, type VatView } from "./money";
 import {
   ALL_CLASSES_LABEL,
+  analogsInContracts,
   contractNumber,
   contractsShort,
   CONTRACT_LOWER_BOUND,
@@ -37,8 +41,11 @@ import {
   SHEET_FIELD,
   SHEET_SECTION,
   SHEET_TITLE,
+  UNIT_WARN_ALL_OUTLIERS,
   UNIT_WARN_TAIL,
   UNIT_WARN_TITLE,
+  workRungLabel,
+  ZONE_CAPTION,
   unitWarnContracts,
   unitWarnKp,
   variantCaption,
@@ -163,6 +170,7 @@ function LineSheetBody({
             vatRate={vatRate}
             canResolve={canResolve}
             canEdit={canEdit}
+            seriesId={seriesId}
             rung={rung}
             onRung={setRung}
           />
@@ -187,6 +195,8 @@ interface PanelContentProps {
   vatRate: Decimal | null;
   canResolve: boolean;
   canEdit: boolean;
+  /** Ряд ИПЦ экрана: выбор цели работы проверяется сервером с ним. */
+  seriesId: number | null;
   rung: Rung | null;
   onRung: (rung: Rung | null) => void;
 }
@@ -201,6 +211,7 @@ function PanelContent({
   vatRate,
   canResolve,
   canEdit,
+  seriesId,
   rung,
   onRung,
 }: PanelContentProps) {
@@ -215,6 +226,18 @@ function PanelContent({
       )}
       <UnitWarn line={line} vat={vat} />
       <Prices line={line} vat={vat} vatRate={vatRate} />
+      {line.kind === "work" && line.work_rung !== null && (
+        <WorkComparison
+          tenderId={tenderId}
+          roundId={roundId}
+          offerId={offerId}
+          seriesId={seriesId}
+          line={line}
+          data={data}
+          vat={vat}
+          canEdit={canEdit}
+        />
+      )}
       {line.rungs.length > 0 && (
         <Ladder
           line={line}
@@ -272,6 +295,8 @@ function PanelContent({
           canEdit={canEdit}
           vatView={vat}
           vatRate={vatRate}
+          seriesId={seriesId}
+          analogs={data.analogs}
         />
       </Section>
     </div>
@@ -292,8 +317,10 @@ function Prices({ line, vat, vatRate }: { line: OurPriceLine; vat: VatView; vatR
   const priceUnit = comparedUnit(line);
   const system = line.kind === "system";
   const total = pick(line.kp.total, vat);
-  const toOurs = pick(line.to_ours, vat);
-  const ours = line.ours === null ? null : pick(line.ours.value, vat);
+  const toOurs = pick(line.to_lowest, vat);
+  const ours = line.lowest === null ? null : pick(line.lowest.value, vat);
+  // Работа на лестнице аналогов показывает самую низкую и разницу карточками раздела «Сравнение».
+  const onLadder = line.work_rung !== null;
   const unit = line.unit === null ? "" : ` ${line.unit}`;
   return (
     <Section title={SHEET_SECTION.prices} testId="sheet-prices">
@@ -315,17 +342,21 @@ function Prices({ line, vat, vatRate }: { line: OurPriceLine; vat: VatView; vatR
         <dd data-testid="sheet-quantity" className="font-mono tabular-nums">
           {line.quantity === null ? DASH : `${formatMoney(line.quantity, "")}${unit}`}
         </dd>
-        <dt className="text-fg-secondary">{SHEET_FIELD.toOurs}</dt>
-        <dd data-testid="sheet-to-ours" className="font-mono tabular-nums">
-          {toOurs === null ? DASH : formatSigned(toOurs)}
-        </dd>
-        <dt className="text-fg-secondary">{SHEET_FIELD.ours}</dt>
-        <dd data-testid="sheet-ours" className="font-mono tabular-nums">
-          {ours === null ? DASH : `${formatUnitPrice(ours)} ${priceUnit}`}
-          {line.ours?.from_all_classes === true && (
-            <span className="ml-2 text-xs text-fg-secondary">{ALL_CLASSES_LABEL}</span>
-          )}
-        </dd>
+        {!onLadder && (
+          <>
+            <dt className="text-fg-secondary">{SHEET_FIELD.toOurs}</dt>
+            <dd data-testid="sheet-to-ours" className="font-mono tabular-nums">
+              {toOurs === null ? DASH : formatSigned(toOurs)}
+            </dd>
+            <dt className="text-fg-secondary">{SHEET_FIELD.ours}</dt>
+            <dd data-testid="sheet-ours" className="font-mono tabular-nums">
+              {ours === null ? DASH : `${formatUnitPrice(ours)} ${priceUnit}`}
+              {line.lowest?.from_all_classes === true && (
+                <span className="ml-2 text-xs text-fg-secondary">{ALL_CLASSES_LABEL}</span>
+              )}
+            </dd>
+          </>
+        )}
         {line.secondary.length > 0 && (
           <>
             <dt className="text-fg-secondary">{SHEET_FIELD.secondary}</dt>
@@ -333,6 +364,57 @@ function Prices({ line, vat, vatRate }: { line: OurPriceLine; vat: VatView; vatR
           </>
         )}
       </dl>
+    </Section>
+  );
+}
+
+interface WorkComparisonProps {
+  tenderId: number;
+  roundId: number;
+  offerId: number;
+  seriesId: number | null;
+  line: OurPriceLine;
+  data: OurPriceLineView;
+  vat: VatView;
+  canEdit: boolean;
+}
+
+/**
+ * «Сравнение» строки-работы (спека лестницы аналогов §2.20): подпись ступени и зона, две
+ * карточки цифр и справка аналогов. «Сделать целью» — у `admin` и только у сравнимой строки:
+ * сервер отвечает `422 target_not_applicable` на выбор у остальных.
+ */
+function WorkComparison({ tenderId, roundId, offerId, seriesId, line, data, vat, canEdit }: WorkComparisonProps) {
+  const put = usePutTarget(tenderId, roundId, offerId, seriesId);
+  const rungNo = line.work_rung;
+  if (rungNo === null) return null;
+  const contracts = new Set(data.analogs.map((a) => a.contract_id)).size;
+  const choice = line.choice;
+  const targetAnalogId = choice !== null && choice.active && choice.kind === "analog" ? choice.analog_id : null;
+  return (
+    <Section title={SHEET_SECTION.comparison} testId="sheet-comparison">
+      <div className="flex flex-wrap items-center gap-1.5 text-sm">
+        <Badge variant="secondary">{workRungLabel(rungNo)}</Badge>
+        <span className="text-fg-secondary">
+          {analogsInContracts(line.analogs_count, contracts)}
+          {line.zone !== null && (
+            <>
+              {" · "}
+              <span data-testid="sheet-zone">{ZONE_CAPTION[line.zone]}</span>
+            </>
+          )}
+        </span>
+      </div>
+      <FigureCards line={line} analogs={data.analogs} vat={vat} />
+      <h4 className="pt-1 text-xs font-semibold uppercase tracking-wide text-fg-secondary">{SHEET_SECTION.analogs}</h4>
+      <AnalogsTable
+        analogs={data.analogs}
+        vat={vat}
+        canChoose={canEdit && line.state === "comparable"}
+        targetAnalogId={targetAnalogId}
+        busy={put.isPending}
+        onChoose={(analogId) => put.mutate({ positionItemId: line.position_item_id, kind: "analog", analogId })}
+      />
     </Section>
   );
 }
@@ -512,6 +594,7 @@ function UnitWarn({ line, vat }: { line: OurPriceLine; vat: VatView }) {
       {mismatch.kp_ratio !== null && (
         <p>{unitWarnKp(mismatch.kp_ratio, median === null ? null : formatUnitPrice(median))}</p>
       )}
+      {mismatch.all_outliers && <p>{UNIT_WARN_ALL_OUTLIERS}</p>}
       {mismatch.contracts.length > 0 && <p>{unitWarnContracts(mismatch.contracts.map((c) => c.ratio))}</p>}
       <p>{UNIT_WARN_TAIL}</p>
     </div>

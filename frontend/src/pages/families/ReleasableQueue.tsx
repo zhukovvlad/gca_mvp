@@ -5,7 +5,12 @@ import { EmptyState } from "@/components/ui-domain/EmptyState";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { formatConfidence } from "@/lib/format";
-import { useDecideReleasable, useReleasableProposals } from "@/services/queries";
+import { RecalcOverlay } from "@/pages/tenders/our-price/RecalcOverlay";
+import { SAVING_LABEL } from "@/pages/tenders/our-price/ourPriceCopy";
+import {
+  useDecideReleasable,
+  useReleasableProposals,
+} from "@/services/queries";
 import type { ReleasableProposalRow } from "@/types/domain";
 
 import { releasableLabel } from "./labels";
@@ -24,7 +29,11 @@ interface FamilyGroup {
 function groupByFamily(rows: ReleasableProposalRow[]): FamilyGroup[] {
   const groups = new Map<number, FamilyGroup>();
   for (const row of rows) {
-    const group = groups.get(row.family.id) ?? { familyId: row.family.id, title: row.family.title, rows: [] };
+    const group = groups.get(row.family.id) ?? {
+      familyId: row.family.id,
+      title: row.family.title,
+      rows: [],
+    };
     group.rows.push(row);
     groups.set(row.family.id, group);
   }
@@ -100,7 +109,8 @@ export function ReleasableQueue() {
   const items = query.data?.items ?? [];
   const total = query.data?.total ?? 0;
   const lastValidPage = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  if (query.data && !query.isPlaceholderData && page > lastValidPage) setPage(lastValidPage);
+  if (query.data && !query.isPlaceholderData && page > lastValidPage)
+    setPage(lastValidPage);
 
   return (
     <div className="grid gap-3">
@@ -108,7 +118,10 @@ export function ReleasableQueue() {
 
       {query.isPending && <ListSkeleton />}
       {query.isError && (
-        <EmptyState title="Ошибка загрузки" description="Не удалось получить очередь «Можно отпустить»." />
+        <EmptyState
+          title="Ошибка загрузки"
+          description="Не удалось получить очередь «Можно отпустить»."
+        />
       )}
       {query.data && items.length === 0 && (
         <EmptyState
@@ -117,36 +130,48 @@ export function ReleasableQueue() {
         />
       )}
 
-      {groupByFamily(items).map((group) => (
-        <section
-          key={group.familyId}
-          data-testid="releasable-family"
-          aria-label={group.title}
-          className="overflow-hidden rounded-[10px] border border-border-subtle bg-surface"
-        >
-          <h4 className="bg-surface-hover px-4 py-2 text-sm font-medium text-fg">{group.title}</h4>
-          {group.rows.map((row) => (
-            <ParameterRow
-              key={row.parameter.id}
-              row={row}
-              busy={decide.isPending}
-              onDecide={(releasable) =>
-                decide.mutate({
-                  familyId: row.family.id,
-                  parameterId: row.parameter.id,
-                  releasable,
-                  requestHash: row.request_hash,
-                })
-              }
-            />
+      <RecalcOverlay active={decide.isPending} label={SAVING_LABEL}>
+        <div className="grid gap-3">
+          {groupByFamily(items).map((group) => (
+            <section
+              key={group.familyId}
+              data-testid="releasable-family"
+              aria-label={group.title}
+              className="overflow-hidden rounded-[10px] border border-border-subtle bg-surface"
+            >
+              <h4 className="bg-surface-hover px-4 py-2 text-sm font-medium text-fg">
+                {group.title}
+              </h4>
+              {group.rows.map((row) => (
+                <ParameterRow
+                  key={row.parameter.id}
+                  row={row}
+                  busy={decide.isPending}
+                  onDecide={(releasable) =>
+                    decide.mutate({
+                      familyId: row.family.id,
+                      parameterId: row.parameter.id,
+                      releasable,
+                      requestHash: row.request_hash,
+                    })
+                  }
+                />
+              ))}
+            </section>
           ))}
-        </section>
-      ))}
+        </div>
+      </RecalcOverlay>
 
-      <Pager page={page} total={total} pageSize={PAGE_SIZE} onPageChange={setPage} showPageNumbers />
+      <Pager
+        page={page}
+        total={total}
+        pageSize={PAGE_SIZE}
+        onPageChange={setPage}
+        showPageNumbers
+      />
       <p className="text-[13px] text-fg-tertiary">
-        Пока параметр не отмечен «можно отпустить», он обязателен: лучше «не с чем сравнить», чем
-        плита против стен.
+        Пока параметр не отмечен «можно отпустить», он обязателен: лучше «не с
+        чем сравнить», чем плита против стен.
       </p>
     </div>
   );

@@ -2959,6 +2959,49 @@ export function useDeleteRung(tenderId: number, roundId: number, offerId: number
   );
 }
 
+/** Текст тоста `422 analog_unavailable` (спека лестницы аналогов §2.20). */
+export const ANALOG_UNAVAILABLE_TOAST = "Аналог больше не в остатке — обновите панель.";
+
+export type PutTargetInput =
+  | { positionItemId: number; kind: "freshest" }
+  | { positionItemId: number; kind: "analog"; analogId: number };
+
+/**
+ * Выбор цели строки-работы. Передаёт ряд ИПЦ экрана: остаток аналогов зависит от ряда, и сервер
+ * проверяет запись тем же рядом, которым читалась панель. `422 analog_unavailable` - тост и
+ * перезапрос панелей: аналог уже выпал из остатка. Инвалидация и ключ мутации - как у решений 4б.
+ */
+export function usePutTarget(tenderId: number, roundId: number, offerId: number, seriesId: number | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationKey: kpDecisionMutationKey(tenderId, roundId, offerId),
+    mutationFn: (input: PutTargetInput) =>
+      tendersApi.putTarget(
+        tenderId,
+        roundId,
+        offerId,
+        input.positionItemId,
+        input.kind === "freshest" ? { kind: "freshest" } : { kind: "analog", analog_id: input.analogId },
+        seriesId
+      ),
+    onSuccess: () => invalidateAfterDecision(qc, tenderId, roundId, offerId),
+    onError: (error) => {
+      if (apiErrorCode(error) === "analog_unavailable") {
+        toast.error(ANALOG_UNAVAILABLE_TOAST);
+        void invalidateAfterDecision(qc, tenderId, roundId, offerId);
+        return;
+      }
+      toastApiError(error);
+    },
+  });
+}
+
+export function useDeleteTarget(tenderId: number, roundId: number, offerId: number) {
+  return useKpDecision(tenderId, roundId, offerId, ({ positionItemId }: { positionItemId: number }) =>
+    tendersApi.deleteTarget(tenderId, roundId, offerId, positionItemId)
+  );
+}
+
 /**
  * Выгрузка файла подрядчику. Ряд ИПЦ - тот же, что у показанного предпросмотра, а имя
  * файла берётся из шапки этого предпросмотра: заголовки ответа через CORS не читаются.

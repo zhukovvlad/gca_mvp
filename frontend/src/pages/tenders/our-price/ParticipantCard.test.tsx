@@ -41,9 +41,10 @@ describe("ParticipantCard", () => {
     expect(card).toHaveTextContent("Подрядчик А");
     expect(card).toHaveTextContent("110 000,00");
     expect(card).toHaveTextContent("+10,0 % к медиане наших");
-    expect(card).toHaveTextContent(/Можно выторговать\s*120 000,00/);
-    expect(card).toHaveTextContent(/Ниже всего, что платили\s*−30 000,00\s*₽\s*·\s*2 стр\./);
-    expect(card).toHaveTextContent(/Разные единицы учёта\s*1 стр\./);
+    expect(card).toHaveTextContent(/КП выше самых низких расценок\s*120 000,00/);
+    expect(card).toHaveTextContent(/КП выше самых свежих расценок\s*90 000,00/);
+    expect(card).toHaveTextContent(/Ниже самой низкой расценки\s*−30 000,00\s*₽\s*·\s*2 стр\./);
+    expect(card).toHaveTextContent(/Разные единицы\s*1 стр\./);
     expect(card).toHaveTextContent(/Не с чем сравнить\s*8 000,00/);
     expect(card).toHaveTextContent("без НДС");
   });
@@ -53,7 +54,8 @@ describe("ParticipantCard", () => {
     const card = screen.getByTestId("card-7001");
     expect(card).toHaveTextContent("134 200,00");
     expect(card).not.toHaveTextContent("110 000,00");
-    expect(card).toHaveTextContent(/Можно выторговать\s*146 400,00/);
+    expect(card).toHaveTextContent(/КП выше самых низких расценок\s*146 400,00/);
+    expect(card).toHaveTextContent(/КП выше самых свежих расценок\s*109 800,00/);
     expect(card).toHaveTextContent("с НДС 22 %");
   });
 
@@ -103,7 +105,7 @@ describe("ParticipantCard", () => {
     renderCard(NO_ESTIMATE, { href: null });
     const card = screen.getByTestId("card-7002");
     expect(card).toHaveTextContent("КП не загружено");
-    expect(card).not.toHaveTextContent("Можно выторговать");
+    expect(card).not.toHaveTextContent("КП выше самых низких расценок");
     expect(card).not.toHaveTextContent("₽/м²");
     expect(within(card).queryByRole("link")).not.toBeInTheDocument();
   });
@@ -113,7 +115,7 @@ describe("ParticipantCard", () => {
     const card = screen.getByTestId("card-7003");
     expect(card).toHaveAttribute("data-reason", "unknown_vat_base");
     expect(card).toHaveTextContent(PER_SQM_REASON_LABEL.unknown_vat_base);
-    expect(card).not.toHaveTextContent("Можно выторговать");
+    expect(card).not.toHaveTextContent("КП выше самых низких расценок");
     expect(within(card).getByRole("link")).toBeInTheDocument();
   });
 

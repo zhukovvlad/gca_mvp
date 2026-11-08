@@ -498,6 +498,25 @@ export const tendersApi = {
   ): Promise<void> => api.put(`${lineDecisionUrl(tenderId, roundId, offerId, positionItemId)}/rung`, body).then(() => undefined),
   deleteRung: (tenderId: number, roundId: number, offerId: number, positionItemId: number): Promise<void> =>
     api.delete(`${lineDecisionUrl(tenderId, roundId, offerId, positionItemId)}/rung`).then(() => undefined),
+  /**
+   * Выбор цели строки-работы (спека лестницы аналогов §2.17). `seriesId` - ряд ИПЦ экрана: остаток
+   * аналогов от него зависит, сервер проверяет строку с тем же рядом, с которым читалась панель.
+   */
+  putTarget: (
+    tenderId: number,
+    roundId: number,
+    offerId: number,
+    positionItemId: number,
+    body: { kind: "freshest" } | { kind: "analog"; analog_id: number },
+    seriesId: number | null
+  ): Promise<void> =>
+    api
+      .put(`${lineDecisionUrl(tenderId, roundId, offerId, positionItemId)}/target`, body, {
+        params: seriesId === null ? undefined : { inflation_series_id: seriesId },
+      })
+      .then(() => undefined),
+  deleteTarget: (tenderId: number, roundId: number, offerId: number, positionItemId: number): Promise<void> =>
+    api.delete(`${lineDecisionUrl(tenderId, roundId, offerId, positionItemId)}/target`).then(() => undefined),
   /** Предпросмотр файла подрядчику; `seriesId = null` - без приведения по ИПЦ. */
   kpFilePreview: (
     tenderId: number,

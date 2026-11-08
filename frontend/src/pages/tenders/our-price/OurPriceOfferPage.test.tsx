@@ -119,14 +119,14 @@ function filterLines(): OurPriceLine[] {
   // Сервер отдаёт «ниже» отрицательным (спека 4а §2.8): цена КП минус минимум ступени.
   const below = pair("-300.00", "-366.00");
   return [
-    line(1, 11, { state: "comparable", position: "below", to_ours: pair("-300.00", "-366.00"), bargain: pair("0.00", "0.00"), below }),
-    line(2, 11, { state: "comparable", position: "above", to_ours: pair("200.00", "244.00"), bargain: pair("200.00", "244.00"), below: null }),
-    line(3, 11, { state: "comparable", position: "below", to_ours: pair("-50.00", "-61.00"), bargain: pair("0.00", "0.00"), below }),
-    line(4, 11, { state: "unit_mismatch", position: null, to_ours: pair("900.00", "1098.00"), bargain: pair("900.00", "1098.00"), below }),
-    line(5, 11, { state: "unit_mismatch", position: null, to_ours: pair("-90.00", "-109.80"), bargain: pair("90.00", "109.80"), below }),
-    line(6, 11, { state: "no_history", position: null, to_ours: null, bargain: null, below: null, range: null, ours: null, rung: null }),
-    line(7, 11, { state: "no_variant", waiting_admin: true, position: null, to_ours: null, bargain: null, below: null, range: null, ours: null, rung: null }),
-    line(8, 11, { state: "comparable", position: "in", to_ours: pair("-10.00", "-12.20"), bargain: pair("0.00", "0.00"), below: null }),
+    line(1, 11, { state: "comparable", position: "below", to_lowest: pair("-300.00", "-366.00"), over_lowest: pair("0.00", "0.00"), below }),
+    line(2, 11, { state: "comparable", position: "above", to_lowest: pair("200.00", "244.00"), over_lowest: pair("200.00", "244.00"), below: null }),
+    line(3, 11, { state: "comparable", position: "below", to_lowest: pair("-50.00", "-61.00"), over_lowest: pair("0.00", "0.00"), below }),
+    line(4, 11, { state: "unit_mismatch", position: null, to_lowest: pair("900.00", "1098.00"), over_lowest: pair("900.00", "1098.00"), below }),
+    line(5, 11, { state: "unit_mismatch", position: null, to_lowest: pair("-90.00", "-109.80"), over_lowest: pair("90.00", "109.80"), below }),
+    line(6, 11, { state: "no_history", position: null, to_lowest: null, over_lowest: null, below: null, range: null, lowest: null, rung: null }),
+    line(7, 11, { state: "no_variant", waiting_admin: true, position: null, to_lowest: null, over_lowest: null, below: null, range: null, lowest: null, rung: null }),
+    line(8, 11, { state: "comparable", position: "in", to_lowest: pair("-10.00", "-12.20"), over_lowest: pair("0.00", "0.00"), below: null }),
   ];
 }
 
@@ -273,7 +273,7 @@ describe("плитки-фильтры", () => {
     const totals = offer.participants[0].totals!;
     const notComparable = Object.values(totals.not_comparable.by_state).reduce((sum, row) => sum + row.lines, 0);
 
-    const expected = { below_paid: totals.below_lines, unit_mismatch: totals.unit_mismatch_lines, not_comparable: notComparable, above_ours: 1 };
+    const expected = { below_lowest: totals.below_lines, unit_mismatch: totals.unit_mismatch_lines, not_comparable: notComparable, above_lowest: 1 };
     for (const [filter, count] of Object.entries(expected)) {
       const tile = screen.getByTestId(`tile-${filter}`);
       expect(tile).toHaveAttribute("data-count", String(count));
@@ -285,11 +285,11 @@ describe("плитки-фильтры", () => {
     expect(lineRows()).toHaveLength(8);
   });
 
-  it("«дороже»: только сопоставимая строка с bargain > 0; bargain «0.00» и строки разных единиц не входят", async () => {
+  it("«дороже»: только сопоставимая строка с over_lowest > 0; over_lowest «0.00» и строки разных единиц не входят", async () => {
     serve(filterOffer());
     renderPage("?article=11");
     await loaded();
-    fireEvent.click(screen.getByTestId("tile-above_ours"));
+    fireEvent.click(screen.getByTestId("tile-above_lowest"));
     expect(lineIds()).toEqual([2]);
   });
 
@@ -297,22 +297,22 @@ describe("плитки-фильтры", () => {
     serve(filterOffer());
     renderPage("?article=11");
     await loaded();
-    fireEvent.click(screen.getByTestId("tile-below_paid"));
+    fireEvent.click(screen.getByTestId("tile-below_lowest"));
     expect(lineIds()).toEqual([1, 3]);
   });
 
-  it("«разные единицы учёта»: обе строки с to_ours 900 и −90 — и ни в «дороже», ни в «ниже»", async () => {
+  it("«разные единицы учёта»: обе строки с to_lowest 900 и −90 — и ни в «дороже», ни в «ниже»", async () => {
     serve(filterOffer());
     renderPage("?article=11");
     await loaded();
     fireEvent.click(screen.getByTestId("tile-unit_mismatch"));
     expect(lineIds()).toEqual([4, 5]);
     fireEvent.click(screen.getByTestId("tile-unit_mismatch"));
-    fireEvent.click(screen.getByTestId("tile-above_ours"));
+    fireEvent.click(screen.getByTestId("tile-above_lowest"));
     expect(lineIds()).not.toContain(4);
     expect(lineIds()).not.toContain(5);
-    fireEvent.click(screen.getByTestId("tile-above_ours"));
-    fireEvent.click(screen.getByTestId("tile-below_paid"));
+    fireEvent.click(screen.getByTestId("tile-above_lowest"));
+    fireEvent.click(screen.getByTestId("tile-below_lowest"));
     expect(lineIds()).not.toContain(4);
     expect(lineIds()).not.toContain(5);
   });
@@ -329,7 +329,7 @@ describe("плитки-фильтры", () => {
     serve(filterOffer());
     renderPage("?article=11");
     await loaded();
-    const above = screen.getByTestId("tile-above_ours");
+    const above = screen.getByTestId("tile-above_lowest");
     const all = screen.getByTestId("tile-all");
     expect(all).toHaveAttribute("aria-pressed", "true");
     // Кнопка «Все строки» выбрана — залитая, не выбрана — контурная.
@@ -339,7 +339,7 @@ describe("плитки-фильтры", () => {
     expect(above).toHaveAttribute("aria-pressed", "true");
     expect(all).toHaveAttribute("aria-pressed", "false");
     expect(all).not.toHaveClass("bg-primary");
-    fireEvent.click(screen.getByTestId("tile-below_paid"));
+    fireEvent.click(screen.getByTestId("tile-below_lowest"));
     expect(above).toHaveAttribute("aria-pressed", "false");
     fireEvent.click(all);
     expect(lineRows()).toHaveLength(8);
@@ -350,14 +350,14 @@ describe("плитки-фильтры", () => {
     serve(filterOffer());
     renderPage("?vat=shown");
     await loaded();
-    expect(screen.getByTestId("tile-above_ours")).toHaveTextContent(FILTER_LABEL.above_ours);
-    expect(screen.getByTestId("tile-above_ours")).toHaveTextContent("+146 400,00");
-    expect(screen.getByTestId("tile-below_paid")).toHaveTextContent("−36 600,00");
-    expect(screen.getByTestId("tile-below_paid")).not.toHaveTextContent("+36 600,00");
+    expect(screen.getByTestId("tile-above_lowest")).toHaveTextContent(FILTER_LABEL.above_lowest);
+    expect(screen.getByTestId("tile-above_lowest")).toHaveTextContent("+146 400,00");
+    expect(screen.getByTestId("tile-below_lowest")).toHaveTextContent("−36 600,00");
+    expect(screen.getByTestId("tile-below_lowest")).not.toHaveTextContent("+36 600,00");
     expect(screen.getByTestId("tile-unit_mismatch")).toHaveTextContent("6 100,00");
     expect(screen.getByTestId("tile-not_comparable")).toHaveTextContent("9 760,00");
     fireEvent.click(screen.getByRole("switch", { name: /НДС/ }));
-    await waitFor(() => expect(screen.getByTestId("tile-above_ours")).toHaveTextContent("120 000,00"));
+    await waitFor(() => expect(screen.getByTestId("tile-above_lowest")).toHaveTextContent("120 000,00"));
   });
 
   it("плитка «КП на м²»: цена, отклонение от медианы; в виде «с НДС» — показанная цена", async () => {
@@ -415,9 +415,9 @@ describe("плитки-фильтры", () => {
     serve({ ...base, participants: [{ ...base.participants[0], totals: null }] });
     renderPage("?article=11");
     await loaded();
-    expect(screen.getByTestId("tile-above_ours")).toHaveTextContent("—");
-    expect(screen.getByTestId("tile-below_paid")).toHaveAttribute("data-count", "2");
-    fireEvent.click(screen.getByTestId("tile-below_paid"));
+    expect(screen.getByTestId("tile-above_lowest")).toHaveTextContent("—");
+    expect(screen.getByTestId("tile-below_lowest")).toHaveAttribute("data-count", "2");
+    fireEvent.click(screen.getByTestId("tile-below_lowest"));
     expect(lineIds()).toEqual([1, 3]);
   });
 });
@@ -550,7 +550,7 @@ describe("таблица статей", () => {
             work_category_id: 11,
             code: "01",
             title: "Статья 1",
-            lines_totals: { ...noTotals, bargain: pair("120000.00", "146400.00"), below: pair("-30000.00", "-36600.00") },
+            lines_totals: { ...noTotals, over_lowest: pair("120000.00", "146400.00"), below: pair("-30000.00", "-36600.00") },
           },
           {
             ...head,
@@ -560,14 +560,14 @@ describe("таблица статей", () => {
             per_sqm: null,
             whole: null,
             ours_class_per_sqm: null,
-            lines_totals: { ...noTotals, bargain: pair("60000.00", "73200.00"), below: pair("-90000.00", "-109800.00") },
+            lines_totals: { ...noTotals, over_lowest: pair("60000.00", "73200.00"), below: pair("-90000.00", "-109800.00") },
           },
           {
             ...head,
             work_category_id: null,
             code: null,
             title: "Нераспределённое",
-            lines_totals: { ...noTotals, bargain: null, below: null },
+            lines_totals: { ...noTotals, over_lowest: null, below: null },
           },
         ],
       }
@@ -682,12 +682,12 @@ describe("таблица статей", () => {
     const head = base.articles[0];
     const zero = pair("0.00", "0.00");
     const totals = { ...head.lines_totals! };
-    const inLine = { position: "in" as const, bargain: zero, below: null };
+    const inLine = { position: "in" as const, over_lowest: zero, below: null };
     serve(
-      offerWith([line(1, 11, inLine), line(2, 12, { ...inLine, bargain: pair("5.00", "6.10") })], {
+      offerWith([line(1, 11, inLine), line(2, 12, { ...inLine, over_lowest: pair("5.00", "6.10") })], {
         articles: [
-          { ...head, work_category_id: 11, title: "Статья 1", lines_totals: { ...totals, bargain: zero, below: zero, below_lines: 0 } },
-          { ...head, work_category_id: 12, title: "Статья 2", lines_totals: { ...totals, bargain: zero, below: zero, below_lines: 1 } },
+          { ...head, work_category_id: 11, title: "Статья 1", lines_totals: { ...totals, over_lowest: zero, below: zero, below_lines: 0 } },
+          { ...head, work_category_id: 12, title: "Статья 2", lines_totals: { ...totals, over_lowest: zero, below: zero, below_lines: 1 } },
         ],
       })
     );
@@ -815,7 +815,7 @@ describe("таблица статей", () => {
     const offer = threeArticles();
     const zero = (a: OurPriceOffer["articles"][number]) => ({
       ...a,
-      lines_totals: { ...a.lines_totals!, bargain: pair("0.00", "0.00"), below: pair("0.00", "0.00") },
+      lines_totals: { ...a.lines_totals!, over_lowest: pair("0.00", "0.00"), below: pair("0.00", "0.00") },
     });
     serve({ ...offer, articles: offer.articles.map(zero) });
     renderPage();
@@ -991,7 +991,7 @@ describe("плашка каталога и опрос", () => {
           offerWith(
             [
               line(5001, 11, parsing
-                ? { state: "in_progress", position: null, to_ours: null, bargain: null, below: null, range: null, ours: null, rung: null }
+                ? { state: "in_progress", position: null, to_lowest: null, over_lowest: null, below: null, range: null, lowest: null, rung: null }
                 : { state: "comparable" }),
             ],
             { progress: { lines_total: 10, in_progress: parsing ? 1 : 0, waiting_admin: 0 } }
@@ -1037,8 +1037,8 @@ describe("открытие строки и маршрут", () => {
   it("смена участника сбрасывает фильтр плиток и открытую строку: панель не открывается со строкой чужого КП", async () => {
     renderPage("?article=11");
     await loaded();
-    fireEvent.click(screen.getByTestId("tile-above_ours"));
-    expect(screen.getByTestId("tile-above_ours")).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByTestId("tile-above_lowest"));
+    expect(screen.getByTestId("tile-above_lowest")).toHaveAttribute("aria-pressed", "true");
     fireEvent.click(screen.getByTestId("line-5001"));
     expect(screen.getByTestId("offer-page")).toHaveAttribute("data-open-line", "5001");
 
@@ -1050,7 +1050,7 @@ describe("открытие строки и маршрут", () => {
 
     expect(screen.getByTestId("offer-page")).not.toHaveAttribute("data-open-line");
     expect(screen.getByTestId("tile-all")).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByTestId("tile-above_ours")).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByTestId("tile-above_lowest")).toHaveAttribute("aria-pressed", "false");
   });
 
   it("единица ₽/м² — одна, из ourPriceCopy: плитка и полоса её печатают", async () => {

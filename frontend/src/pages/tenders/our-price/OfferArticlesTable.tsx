@@ -50,7 +50,7 @@ function money(pair: MoneyPair | null, vat: VatView, format: (v: Decimal) => str
 /** Наибольшая из сумм «дороже» и модулей «ниже» по всем статьям; полос нет, пока она не больше нуля. */
 function barScale(articles: OurPriceOfferArticle[]): Decimal | null {
   const largest = articles
-    .flatMap((a) => [a.lines_totals?.bargain?.net ?? null, a.lines_totals?.below ? absDecimal(a.lines_totals.below.net) : null])
+    .flatMap((a) => [a.lines_totals?.over_lowest?.net ?? null, a.lines_totals?.below ? absDecimal(a.lines_totals.below.net) : null])
     .filter((v): v is Decimal => v !== null)
     .reduce<Decimal | null>((best, v) => (best === null || compareDecimalStrings(v, best) === 1 ? v : best), null);
   return largest !== null && compareDecimalStrings(largest, "0") === 1 ? largest : null;
@@ -137,12 +137,12 @@ export function OfferArticlesTable({
   function renderArticle(article: OurPriceOfferArticle) {
     const key = articleKey(article.work_category_id);
     const totals = article.lines_totals;
-    const above = totals?.bargain ?? null;
+    const above = totals?.over_lowest ?? null;
     const below = totals?.below ?? null;
     const belowValue = below === null ? null : absDecimal(below.net);
     const mismatch = totals?.unit_mismatch_lines ?? 0;
     // Нет строк в категории — прочерк: «0,00 ₽» читался бы как сумма, которой нет.
-    const aboveLines = (linesByArticle.get(key) ?? []).filter((line) => matchesFilter(line, "above_ours")).length;
+    const aboveLines = (linesByArticle.get(key) ?? []).filter((line) => matchesFilter(line, "above_lowest")).length;
     const belowLines = totals?.below_lines ?? 0;
     const expanded = open.has(key);
     return (

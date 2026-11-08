@@ -15,6 +15,7 @@ import {
   DETAIL_LINK_LABEL,
   EMPTY_REASON_LABEL,
   emptyReasonOf,
+  freshestCoverageNote,
   kpFileSentLink,
   linesCount,
   medianCaption,
@@ -40,7 +41,18 @@ function vatCaption(participant: OurPriceParticipant, view: VatView): string {
   return participant.vat_rate === null ? VAT_UNKNOWN_LABEL : vatShownLabel(participant.vat_rate);
 }
 
-function Row({ label, value, tone }: { label: string; value: string; tone?: "dear" | "cheap" }) {
+function Row({
+  label,
+  value,
+  tone,
+  note,
+}: {
+  label: string;
+  value: string;
+  tone?: "dear" | "cheap";
+  /** Подпись под строкой: покрытие самых свежих (спека лестницы аналогов §2.12). */
+  note?: string | null;
+}) {
   return (
     <>
       <dt className="text-fg-secondary">{label}</dt>
@@ -53,6 +65,11 @@ function Row({ label, value, tone }: { label: string; value: string; tone?: "dea
       >
         {value}
       </dd>
+      {note != null && (
+        <dd data-testid="freshest-coverage" className="col-span-2 -mt-0.5 text-[0.6875rem] text-fg-secondary">
+          {note}
+        </dd>
+      )}
     </>
   );
 }
@@ -113,7 +130,13 @@ export function ParticipantCard({ participant, view, cheapest, href, tenderId, r
             </p>
             {totals !== null && (
               <dl className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-1 text-xs">
-                <Row label={CARD_LABEL.bargain} value={money(totals.bargain)} tone="dear" />
+                <Row label={CARD_LABEL.overLowest} value={money(totals.over_lowest)} tone="dear" />
+                <Row
+                  label={CARD_LABEL.overFreshest}
+                  value={money(totals.over_freshest)}
+                  tone="dear"
+                  note={freshestCoverageNote(totals)}
+                />
                 <Row
                   label={CARD_LABEL.below}
                   value={`${money(totals.below, formatBelow)} · ${linesCount(totals.below_lines)}`}
