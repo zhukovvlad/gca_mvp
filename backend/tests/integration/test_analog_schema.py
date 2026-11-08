@@ -131,7 +131,7 @@ def _live_constraints(session, table: str) -> set[str]:
 
 _EXPECTED_CONSTRAINTS = {
     "section_chains": {
-        "pk_section_chains", "uq_section_chains_chain_key", "fk_section_chains_decided_by",
+        "pk_section_chains", "fk_section_chains_decided_by",
         "ck_section_chains_zone", "ck_section_chains_zone_source",
         "ck_section_chains_zone_pair", "ck_section_chains_proposed_zone",
         "ck_section_chains_proposal_only_undecided", "ck_section_chains_human_decided_by",
@@ -287,7 +287,7 @@ class TestSectionChain:
 
     def test_the_chain_key_is_unique(self, db_session):
         _section_chain(db_session, chain_key="same")
-        with rejected_by(db_session, "uq_section_chains_chain_key"):
+        with rejected_by(db_session, "uq_section_chains_chain_key_md5"):
             _section_chain(db_session, chain_key="same")
 
     def test_titles_round_trip_as_an_array(self, db_session):

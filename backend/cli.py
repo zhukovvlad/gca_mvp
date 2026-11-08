@@ -6,6 +6,7 @@
 import click
 
 from config import settings
+from crud.section_chains import backfill_chains
 from database import SessionLocal
 from db_guard import ensure_mutation_allowed
 from models import SemanticReconcileBatch, User, UserRole
@@ -195,6 +196,44 @@ def semantic_schemas_backfill() -> None:
         if report.held_batch_id is not None:
             click.echo(f"Удержана пачка №{report.held_batch_id}")
         click.echo(f"Заданий схем поставлено={report.created}, возвращено={report.revived}")
+    finally:
+        db.close()
+
+
+@cli.command("zones-backfill")
+@click.option(
+    "--enqueue", is_flag=True,
+    help="Поставить задания зоны цепочкам без зоны, без предложения и без задания",
+)
+@click.option(
+    "--reapply-rule", is_flag=True,
+    help="Пересчитать правилом цепочки с источником «правило»",
+)
+def zones_backfill(enqueue: bool, reapply_rule: bool) -> None:
+    """Цепочки разделов и зона для уже загруженных смет (`crud/section_chains.
+    backfill_chains`, спека лестницы аналогов §2.19): цепочки для строк без
+    `section_chain_id`, правило для цепочек без зоны и без предложения; с
+    `--reapply-rule` — пересчёт цепочек с источником `rule`; с `--enqueue` — задания
+    `section_zone`. Счёт и оценка резерва печатаются ДО постановки заданий.
+
+    Идемпотентна: повторный запуск на неизменных данных ничего не создаёт и не ставит."""
+    _guard("zones-backfill")
+    db = SessionLocal()
+    try:
+        def _announce(count, estimate) -> None:
+            click.echo(
+                f"К постановке заданий зоны: {count}, оценка резерва: ${estimate:.4f}"
+            )
+
+        report = backfill_chains(
+            db, enqueue=enqueue, reapply_rule=reapply_rule, before_enqueue=_announce
+        )
+        click.echo(
+            f"Цепочек создано={report.chains_created}, строк привязано={report.rows_assigned}, "
+            f"зон по правилу={report.rule_set}, зон пересчитано правилом={report.rule_changed}"
+        )
+        if enqueue:
+            click.echo(f"Заданий зоны поставлено={report.enqueued}")
     finally:
         db.close()
 

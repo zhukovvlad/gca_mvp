@@ -4,7 +4,7 @@
 Три новые таблицы, три новых столбца в существующих, два новых вида заданий очереди;
 таблица ручных ступеней работ `kp_line_rungs` уходит.
 
-**`section_chains`**: цепочка названий разделов (`chain_key` уникален), зона из четырёх
+**`section_chains`**: цепочка названий разделов (уникален `md5(chain_key)`), зона из четырёх
 кодов и её источник (правило, модель, человек), предложение модели (только у цепочки без
 зоны), автор решения человека. `zone` и `zone_source` задаются парой; источник `human`
 равносилен наличию автора.
@@ -126,6 +126,9 @@ def upgrade() -> None:
         raise RuntimeError(refusal)
 
     # --- 1. Цепочки разделов ------------------------------------------------------
+    # Ключ — полный нормализованный текст (на стенде до 8185 байт), а btree не
+    # индексирует значения длиннее ~2704 байт: уникальность — по md5(chain_key)
+    # (raw SQL, RAW_SQL_INDEXES в alembic/env.py).
     op.create_table(
         "section_chains",
         sa.Column("id", sa.BigInteger(), nullable=False),
@@ -143,7 +146,6 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
         ),
         sa.PrimaryKeyConstraint("id", name="pk_section_chains"),
-        sa.UniqueConstraint("chain_key", name="uq_section_chains_chain_key"),
         sa.ForeignKeyConstraint(
             ["decided_by"], ["users.id"], ondelete="RESTRICT", name="fk_section_chains_decided_by"
         ),
@@ -158,6 +160,9 @@ def upgrade() -> None:
         sa.CheckConstraint(
             CK_SECTION_CHAIN_HUMAN_DECIDED_BY, name="ck_section_chains_human_decided_by"
         ),
+    )
+    op.execute(
+        "CREATE UNIQUE INDEX uq_section_chains_chain_key_md5 ON section_chains (md5(chain_key))"
     )
 
     # --- 2. Позиция: цепочка ----------------------------------------------------------

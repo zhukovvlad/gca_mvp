@@ -64,9 +64,10 @@ def tariffs_from(
 ) -> Tariffs:
     """Собирает четыре тарифа вида задания из настроек: предложения семей —
     `SEMANTIC_PRICE_*`, схема семьи — `SEMANTIC_SCHEMA_PRICE_*`, значения
-    контекстов — `SEMANTIC_VALUES_PRICE_*`. Неизвестный вид — `ValueError`:
+    контекстов — `SEMANTIC_VALUES_PRICE_*`, зона цепочки разделов — те же
+    `SEMANTIC_PRICE_*`, что у предложений (одна модель). Вид без тарифа — `ValueError`:
     молчаливый тариф предложений занизил бы или завысил бы резерв."""
-    if kind == SemanticJobKind.family_suggestion:
+    if kind in (SemanticJobKind.family_suggestion, SemanticJobKind.section_zone):
         return Tariffs(
             input_per_m=settings.SEMANTIC_PRICE_INPUT_PER_M,
             cache_write_per_m=settings.SEMANTIC_PRICE_CACHE_WRITE_PER_M,

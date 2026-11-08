@@ -768,7 +768,7 @@ unit_mismatch_amount, not_comparable}` — `bargain` уходит; `over_freshes
 
 | Объект | Что |
 |---|---|
-| `section_chains` | `id` PK; `chain_key text` UNIQUE NOT NULL; `titles text[]` NOT NULL; `zone text` NULL CHECK в четырёх кодах; `zone_source text` NULL CHECK `rule\|model\|human`; CHECK `(zone IS NULL) = (zone_source IS NULL)`; `proposed_zone text` NULL (те же коды и `unknown`), `proposed_confidence numeric` NULL, `proposed_reason text` NULL; CHECK: предложение только при `zone IS NULL`; `decided_by` → `users` RESTRICT NULL, `decided_at` NULL, CHECK `(zone_source = 'human') = (decided_by IS NOT NULL)`; `created_at` |
+| `section_chains` | `id` PK; `chain_key text` NOT NULL, уникальность — индекс по `md5(chain_key)` (ключ стенда — до 8185 байт при пределе btree ≈ 2700); `titles text[]` NOT NULL; `zone text` NULL CHECK в четырёх кодах; `zone_source text` NULL CHECK `rule\|model\|human`; CHECK `(zone IS NULL) = (zone_source IS NULL)`; `proposed_zone text` NULL (те же коды и `unknown`), `proposed_confidence numeric` NULL, `proposed_reason text` NULL; CHECK: предложение только при `zone IS NULL`; `decided_by` → `users` RESTRICT NULL, `decided_at` NULL, CHECK `(zone_source = 'human') = (decided_by IS NOT NULL)`; `created_at` |
 | `position_items.section_chain_id` | `bigint` NULL → `section_chains` RESTRICT; индекс; у глав — `NULL` (CHECK `NOT is_chapter OR section_chain_id IS NULL`) |
 | `family_parameters.releasable` | `boolean` NULL; CHECK `releasable IS NULL OR role = 'main'` |
 | `releasable_proposals` | `parameter_id` PK → `family_parameters` CASCADE; `releasable boolean`, `confidence numeric` (CHECK 0..1), `reason text`, `request_hash text`, `created_at` — все NOT NULL |
@@ -786,7 +786,7 @@ unit_mismatch_amount, not_comparable}` — `bargain` уходит; `over_freshes
 **Импорт, сессия B** — новый шаг `assign_section_chains(db, estimate_ids)`
 между `match_positions` и `route_positions` (ему не нужно совпадение в
 каталоге, а `route_positions` строки без совпадения пропускает): для строк
-(не глав) смет — цепочки `chapter_paths`, `INSERT … ON CONFLICT (chain_key) DO
+(не глав) смет — цепочки `chapter_paths`, `INSERT … ON CONFLICT по md5(chain_key) DO
 NOTHING`, `section_chain_id` у строк; правило — для **созданных этим шагом**
 цепочек; задания `section_zone` — для созданных цепочек без зоны. Одна
 транзакция с доменом; пять счётчиков `import_jobs` не расширяются (как у

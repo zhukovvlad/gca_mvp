@@ -132,6 +132,13 @@ class Settings(BaseSettings):
     # нет, в том числе строки «та же семья». Пустая строка в окружении - тоже None.
     SEMANTIC_SYSTEM_AUTO_ACCEPT_THRESHOLD: Decimal | None = Field(None, gt=0, le=1)
 
+    # Лестница аналогов (спека §2.5): задание «зона цепочки разделов» идёт на модели
+    # предложений (`SEMANTIC_MODEL`, без рассуждения) и тарифах `SEMANTIC_PRICE_*`.
+    # Уверенность не ниже порога ставит зону цепочки (источник `model`); иначе ответ -
+    # предложение на разбор администратору. Порога «нет автопринятия» у зоны нет.
+    SEMANTIC_ZONE_AUTO_ACCEPT_THRESHOLD: Decimal = Field(Decimal("0.95"), gt=0, le=1)
+    SEMANTIC_ZONE_MAX_TOKENS: int = Field(300, ge=1)
+
     @field_validator(
         "SEMANTIC_AUTO_ACCEPT_THRESHOLD", "SEMANTIC_SYSTEM_AUTO_ACCEPT_THRESHOLD", mode="before"
     )

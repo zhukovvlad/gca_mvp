@@ -35,6 +35,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
 from config import settings
+from crud.section_chains import assign_section_chains
 from models import (
     Contract,
     Contractor,
@@ -371,6 +372,12 @@ def run_import_job(
             match = match_positions(db, positions_to_match)
             deadline.check("матчинг")
 
+            # Цепочки разделов и зона (спека лестницы аналогов §2.19) — между
+            # матчингом и маршрутизацией, в той же транзакции сессии B: шагу не нужно
+            # совпадение в каталоге. Отказ (`RoutingError` — цикл в разделах) откатывает
+            # импорт целиком. Пять счётчиков `import_jobs` не расширяются.
+            chains_outcome = assign_section_chains(db, estimate_ids, settings=settings)
+
             # Членства строятся МЕЖДУ матчингом и финалом, в той же транзакции
             # сессии B (§5, план задачи 5): позиции уже сопоставлены с
             # каталогом (`catalog_position_id` заполнен), а `done` со
@@ -402,11 +409,12 @@ def run_import_job(
             )
 
         log.info(
-            "Импорт задания %d завершён: estimate_ids=%s, счётчики=%s, маршрутизация=%s, "
-            "сверка очереди=%s",
+            "Импорт задания %d завершён: estimate_ids=%s, счётчики=%s, цепочки=%s, "
+            "маршрутизация=%s, сверка очереди=%s",
             job_id,
             estimate_ids,
             match.counters.as_dict(),
+            chains_outcome,
             routing_outcome,
             reconcile_report,
         )

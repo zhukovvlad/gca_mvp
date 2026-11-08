@@ -1330,6 +1330,7 @@ class TestStatus:
             "contexts_with_variant": 0,
             "contexts_pending": 0,
             "families_without_schema": 0,
+            "zones_disputed": 0,
         }
 
     def test_exponent_budget_is_served_in_fixed_notation(self, admin_client, monkeypatch):

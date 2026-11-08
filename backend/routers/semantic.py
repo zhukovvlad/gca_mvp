@@ -59,6 +59,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy.orm import Session
 
 import crud.discovery as crud_discovery
+import crud.section_chains as crud_section_chains
 import crud.semantic as crud_semantic
 import crud.semantic_queue as crud_semantic_queue
 import crud.work_variants as crud_work_variants
@@ -1294,6 +1295,50 @@ def queue_status_route(
     db: Session = Depends(get_db),
 ):
     return crud_semantic_queue.queue_status(db)
+
+
+# ---------------------------------------------------------------------------
+#  Очередь «Зоны» (лестница аналогов, спека §2.17)
+# ---------------------------------------------------------------------------
+
+class SectionChainZoneRequest(BaseModel):
+    """Решение администратора. `zone` — строка, а не закрытый `Literal`: неверная зона
+    отвечает кодированным `422 invalid_zone`, а не безымянной ошибкой схемы."""
+
+    zone: str
+
+
+@router.get("/section-chains")
+def list_section_chains_route(
+    filter_: Literal["disputed", "undetermined", "rule", "model", "human", "all"] = Query(
+        default="disputed", alias="filter"
+    ),
+    q: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return crud_section_chains.list_chains(db, filter=filter_, q=q, page=page)
+
+
+@router.put("/section-chains/{chain_id}/zone", status_code=status.HTTP_204_NO_CONTENT)
+def decide_section_chain_zone_route(
+    chain_id: int,
+    body: SectionChainZoneRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Решение человека: зона с источником `human`, предложение снято. Транзакция на
+    роутере: коммит на успехе, откат на отказе."""
+    try:
+        crud_section_chains.decide_zone(db, chain_id, body.zone, actor_id=admin.id)
+        db.commit()
+    except DomainError as exc:
+        db.rollback()
+        raise_domain_error(exc)
+    except Exception:
+        db.rollback()
+        raise
 
 
 # ---------------------------------------------------------------------------

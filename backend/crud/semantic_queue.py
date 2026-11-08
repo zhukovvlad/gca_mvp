@@ -40,6 +40,7 @@ from models import (
     Proposal,
     ReconcileBatchStatus,
     SchemaStatus,
+    SectionChain,
     SemanticCancelReason,
     SemanticJob,
     SemanticJobAttempt,
@@ -191,6 +192,7 @@ class QueueStatus(TypedDict):
     contexts_with_variant: int
     contexts_pending: int
     families_without_schema: int
+    zones_disputed: int
 
 
 class JobRow(TypedDict):
@@ -875,6 +877,21 @@ def _unit_hold_groups(
     return groups
 
 
+def _zone_job_titles(db: Session, jobs: list) -> dict[int, str]:
+    """Заголовок строки очереди ошибок у заданий `section_zone` — названия цепочки
+    разделов сверху вниз через « / » (предмета-контекста у них нет)."""
+    if not jobs:
+        return {}
+    titles = dict(
+        db.execute(
+            sa.select(SectionChain.id, SectionChain.titles).where(
+                SectionChain.id.in_([job.section_chain_id for job in jobs])
+            )
+        ).all()
+    )
+    return {job.id: " / ".join(titles[job.section_chain_id]) for job in jobs}
+
+
 def _schema_job_rows(db: Session, jobs: list) -> dict[int, dict]:
     """Строки заданий `family_schema` — по семье: имя, номер версии и число
     наименований в запросе. Число наименований считается по заданию отдельным
@@ -969,12 +986,17 @@ def list_jobs(db: Session, *, status: Literal["error", "privacy_hold"]) -> JobsR
     discovery_rows = _discovery_job_rows(
         db, [job for job, _ in jobs if job.kind == SemanticJobKind.family_discovery.value]
     )
+    zone_titles = _zone_job_titles(
+        db, [job for job, _ in jobs if job.kind == SemanticJobKind.section_zone.value]
+    )
     items: list[JobRow] = []
     for job, error_text in jobs:
         family = schema_rows.get(job.id)
         discovery = discovery_rows.get(job.id)
         material = (
-            None if family is not None or discovery is not None else materials[job.context_id]
+            None
+            if family is not None or discovery is not None or job.id in zone_titles
+            else materials[job.context_id]
         )
         items.append(
             JobRow(
@@ -992,7 +1014,8 @@ def list_jobs(db: Session, *, status: Literal["error", "privacy_hold"]) -> JobsR
                 title=(
                     family["title"]
                     if family is not None
-                    else discovery["title"] if discovery is not None else material.title
+                    else discovery["title"] if discovery is not None
+                    else zone_titles.get(job.id, material.title if material else None)
                 ),
                 unit_id=job.unit_id,
                 unit_code=unit_codes.get(job.unit_id),
@@ -1154,6 +1177,11 @@ def queue_status(db: Session) -> QueueStatus:
         held_batches=held,
         stale_units=stale_units,
         config_stale=config_stale,
+        zones_disputed=db.execute(
+            sa.select(sa.func.count(SectionChain.id)).where(
+                SectionChain.zone.is_(None), SectionChain.proposed_zone.is_not(None)
+            )
+        ).scalar_one(),
         **promotion,
     )
 

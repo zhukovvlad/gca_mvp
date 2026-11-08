@@ -3354,7 +3354,8 @@ class SectionChain(Base):
 
     __table_args__ = (
         PrimaryKeyConstraint("id", name="pk_section_chains"),
-        UniqueConstraint("chain_key", name="uq_section_chains_chain_key"),
+        # UNIQUE (md5(chain_key)) — raw SQL в миграции 0024 (RAW_SQL_INDEXES:
+        # uq_section_chains_chain_key_md5): ключ длиннее предела btree (~2704 байт).
         ForeignKeyConstraint(
             ["decided_by"], ["users.id"], ondelete="RESTRICT", name="fk_section_chains_decided_by"
         ),
