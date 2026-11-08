@@ -207,6 +207,21 @@ def evaluate_work_ladder(
             return variant_match(line)
         return family_match(line)
 
+    def dropped_on(rung_no: RungNo, picked_ids: set[int]) -> set[int]:
+        return {
+            contract.contract_id
+            for line, contract in unknown_base
+            if in_rung(rung_no, line, contract) and contract.contract_id not in picked_ids
+        }
+
+    def _dropped_on_first_rung() -> tuple[int, ...]:
+        """Без ступени — выпавшие на первой ступени, где они нашлись бы (как в 4а)."""
+        for rung_no in _RUNGS:
+            found = dropped_on(rung_no, set())
+            if found:
+                return tuple(sorted(found))
+        return ()
+
     chosen: RungNo | None = None
     picked: list[_Candidate] = []
     for rung_no in _RUNGS:
@@ -228,7 +243,7 @@ def evaluate_work_ladder(
             all_outliers=False,
             kp_ratio=None,
             no_history_reason=_no_history_reason(candidates, lambda ln: variant_match(ln) or family_match(ln)),
-            vat_dropped=(),
+            vat_dropped=_dropped_on_first_rung(),
         )
 
     with localcontext(_CONTEXT):
@@ -291,12 +306,7 @@ def evaluate_work_ladder(
         for c in reference
     )
 
-    with_analog = {c.contract.contract_id for c in picked}
-    dropped = {
-        contract.contract_id
-        for line, contract in unknown_base
-        if in_rung(chosen, line, contract) and contract.contract_id not in with_analog
-    }
+    dropped = dropped_on(chosen, {c.contract.contract_id for c in picked})
 
     return WorkLadder(
         rung_no=chosen,

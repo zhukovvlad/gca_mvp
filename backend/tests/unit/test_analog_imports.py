@@ -25,6 +25,10 @@ def _imported_modules(module: ModuleType) -> list[str]:
             found.extend(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
             base = node.module or ""
+            if node.level:
+                # относительный импорт (`from .our_price import x`, `from . import our_price`)
+                package = module.__name__.split(".")[: -node.level]
+                base = ".".join([*package, *([base] if base else [])])
             found.append(base)
             # `from services import our_price` тоже тянет модуль
             found.extend(f"{base}.{alias.name}" for alias in node.names)

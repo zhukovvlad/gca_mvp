@@ -161,26 +161,30 @@ def test_candidate_baseline_is_an_analog() -> None:
 
 
 @pytest.mark.parametrize(
-    ("bad_line", "known_contracts"),
+    ("bad_line", "known_contracts", "reason"),
     [
-        pytest.param(line(1, 1, "100"), [], id="1-contract-not-in-history"),
-        pytest.param(line(1, 1, "0"), [1], id="3-zero-price"),
-        pytest.param(line(1, 1, "NaN"), [1], id="3-nan-price"),
-        pytest.param(line(1, 1, "100", weight="0"), [1], id="3-zero-weight"),
-        pytest.param(line(1, 1, "100", weight=None), [1], id="3-no-weight"),
-        pytest.param(line(1, 1, "0.99"), [1], id="4-below-one-ruble"),
-        pytest.param(line(1, 1, "100", zone=None), [1], id="5-zone-undefined"),
-        pytest.param(line(1, 1, "100", zone="aboveground"), [1], id="zone-differs"),
-        pytest.param(line(1, 1, "100", vat=None), [1], id="vat-base-unknown"),
-        pytest.param(line(1, 1, "100", family=2), [1], id="other-family"),
+        pytest.param(line(1, 1, "100"), [], "no_family", id="1-contract-not-in-history"),
+        pytest.param(line(1, 1, "0"), [1], "no_family", id="3-zero-price"),
+        pytest.param(line(1, 1, "NaN"), [1], "no_family", id="3-nan-price"),
+        pytest.param(line(1, 1, "100", weight="0"), [1], "no_family", id="3-zero-weight"),
+        pytest.param(line(1, 1, "100", weight=None), [1], "no_family", id="3-no-weight"),
+        pytest.param(line(1, 1, "0.99"), [1], "no_family", id="4-below-one-ruble"),
+        pytest.param(line(1, 1, "100", zone=None), [1], "no_family", id="5-zone-undefined"),
+        pytest.param(line(1, 1, "100", zone="aboveground"), [1], "no_zone_match", id="zone-differs"),
+        pytest.param(line(1, 1, "100", vat=None), [1], "no_family", id="vat-base-unknown"),
+        pytest.param(line(1, 1, "100", family=2), [1], "no_family", id="other-family"),
     ],
 )
 def test_candidate_each_condition_alone_excludes_the_line(
-    bad_line: WorkHistoryLine, known_contracts: list[int]
+    bad_line: WorkHistoryLine, known_contracts: list[int], reason: str
 ) -> None:
+    """Причина «нет истории» отличает «не кандидат» от «кандидат, но не та зона»:
+    строка с неопределённой зоной у КП с зоной не попала бы в ступень и будучи
+    кандидатом, поэтому одного `rung_no is None` для условия 5 мало."""
     ladder = run(kp(), [bad_line], [contract(c) for c in known_contracts])
     assert ladder.rung_no is None
     assert ladder.analogs == ()
+    assert ladder.no_history_reason == reason
 
 
 def test_k4_only_symbolic_analog_on_rung_one_normal_on_rung_two() -> None:
@@ -324,18 +328,25 @@ def test_rungs_two_and_four_absent_when_nothing_is_releasable() -> None:
 
 
 def test_rungs_two_and_four_absent_for_variant_on_old_schema() -> None:
-    work = kp(schema=OLD_SCHEMA, values={})
-    lines = [line(1, 1, "80", variant=W8)]
+    # Значения у КП совпадают с кандидатом нарочно: отказ держит сверка версии,
+    # а не несовпадение значений (загрузчик значений старой версии не отдаёт).
+    work = kp(schema=OLD_SCHEMA, values={RELEASED: 1, REQUIRED: 5})
+    lines = [line(1, 1, "80", variant=W8, values=OTHER_VARIANT)]
     assert run(work, lines, [contract(1)]).rung_no is None
     assert run(work, lines, [contract(1, cls=CLASS_B)]).rung_no is None
+    assert run(kp(values={RELEASED: 1, REQUIRED: 5}), lines, [contract(1)]).rung_no == 2
     # ступени 1 и 3 у варианта на старой версии остаются
     assert run(work, [line(2, 2, "80", variant=W6)], [contract(2)]).rung_no == 1
     assert run(work, [line(2, 2, "80", variant=W6)], [contract(2, cls=CLASS_B)]).rung_no == 3
 
 
 def test_rungs_two_and_four_candidates_must_be_on_current_schema() -> None:
-    lines = [line(1, 1, "80", variant=W8, schema=OLD_SCHEMA, values={})]
+    # Те же обязательные значения, другая версия: id значений разных версий несопоставимы.
+    lines = [line(1, 1, "80", variant=W8, schema=OLD_SCHEMA, values=OTHER_VARIANT)]
     assert run(kp(), lines, [contract(1)]).rung_no is None
+    assert run(kp(), lines, [contract(1, cls=CLASS_B)]).rung_no is None
+    current = [line(1, 1, "80", variant=W8, values=OTHER_VARIANT)]
+    assert run(kp(), current, [contract(1)]).rung_no == 2
 
 
 def test_rungs_two_and_four_absent_without_family_info() -> None:
@@ -502,6 +513,13 @@ def test_lowest_tie_without_target_prefers_later_period() -> None:
     assert run(kp(), lines, contracts, target=None).lowest.analog_id == 2  # type: ignore[union-attr]
 
 
+def test_lowest_tie_with_target_is_by_distance_not_by_lateness() -> None:
+    # Цель 2026-01: 2025-12 ближе (1 мес.), чем более поздний 2026-06 (5 мес.).
+    lines = [line(1, 1, "100"), line(2, 2, "100")]
+    contracts = [contract(1, period=YearMonth(2026, 6)), contract(2, period=YearMonth(2025, 12))]
+    assert run(kp(), lines, contracts).lowest.analog_id == 2  # type: ignore[union-attr]
+
+
 def test_freshest_is_nearest_month_to_target() -> None:
     lines = [line(1, 1, "100"), line(2, 2, "100"), line(3, 3, "100")]
     contracts = [
@@ -620,6 +638,14 @@ def test_reference_order_place_then_date_then_price_then_id() -> None:
     assert [a.place_match for a in ladder.analogs] == [2, 1, 1, 1, 1, 0]
 
 
+def test_reference_date_order_is_distance_to_target_not_lateness() -> None:
+    lines = [line(1, 1, "100"), line(2, 2, "100")]
+    contracts = [contract(1, period=YearMonth(2026, 6)), contract(2, period=YearMonth(2025, 12))]
+    assert ids(run(kp(), lines, contracts)) == [2, 1]
+    # без цели — позднее раньше
+    assert ids(run(kp(), lines, contracts, target=None)) == [1, 2]
+
+
 def test_reference_undated_goes_after_dated_at_same_place() -> None:
     lines = [line(1, 1, "100"), line(2, 2, "100")]
     contracts = [contract(1, period=None), contract(2, period=YearMonth(2020, 1))]
@@ -718,6 +744,13 @@ def test_vat_dropped_excludes_contract_with_a_valid_line() -> None:
     assert run(kp(), lines, [contract(1)]).vat_dropped == ()
 
 
+def test_vat_dropped_contract_whose_known_base_line_is_symbolic() -> None:
+    # «Годная» строка — аналог ступени: символическая (< 1 ₽) аналогом не стала,
+    # договор без аналогов на ступени с неизвестной базой — выпавший (толкование Task 4).
+    lines = [line(1, 1, "100"), line(2, 2, "0.5"), line(3, 2, "100", vat=None)]
+    assert run(kp(), lines, [contract(1), contract(2)]).vat_dropped == (2,)
+
+
 def test_vat_dropped_is_by_key_of_selected_rung() -> None:
     lines = [line(1, 1, "100"), line(2, 2, "100", variant=W8, vat=None)]
     assert run(kp(), lines, [contract(1), contract(2)]).vat_dropped == ()
@@ -752,8 +785,27 @@ def test_vat_dropped_on_rung_two_uses_family_key() -> None:
     assert run(kp(), lines, [contract(1), contract(2)]).vat_dropped == (2,)
 
 
-def test_vat_dropped_empty_without_rung() -> None:
-    assert run(kp(), [line(1, 1, "100", vat=None)], [contract(1)]).vat_dropped == ()
+def test_vat_dropped_without_rung_names_the_only_unknown_base_contract() -> None:
+    ladder = run(kp(), [line(1, 1, "100", vat=None)], [contract(1)])
+    assert (ladder.rung_no, ladder.vat_dropped) == (None, (1,))
+
+
+def test_vat_dropped_without_rung_uses_first_rung_where_found() -> None:
+    # ступени 1-2 пусты; выпавший договор подходит только ступени 3 (другой класс)
+    lines = [
+        line(1, 1, "100", vat=None),
+        line(2, 2, "100", vat=None, zone="aboveground"),  # не пройдёт ни одной ступени
+    ]
+    contracts = [contract(1, cls=CLASS_B), contract(2, cls=CLASS_B)]
+    ladder = run(kp(), lines, contracts)
+    assert (ladder.rung_no, ladder.vat_dropped) == (None, (1,))
+
+
+def test_vat_dropped_without_rung_does_not_mix_rungs() -> None:
+    # на ступени 1 выпал договор 1, на ступени 3 — договор 2: берётся первая ступень
+    lines = [line(1, 1, "100", vat=None), line(2, 2, "100", vat=None)]
+    contracts = [contract(1), contract(2, cls=CLASS_B)]
+    assert run(kp(), lines, contracts).vat_dropped == (1,)
 
 
 # ---------------------------------------------------------------------------
