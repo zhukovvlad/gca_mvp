@@ -55,7 +55,7 @@ from models import (
 )
 from money.inflation import YearMonth, adjust_amount
 from money.price import is_price
-from services.analog_ladder import FamilyLadderInfo, Figure, WorkHistoryLine
+from services.analog_ladder import FamilyLadderInfo, Figure, WorkHistory
 from services.excel import iso_date_to_ru
 from services.kp_comment import CommentInputs, InflationLabel, target_net, template_text
 from services.kp_file import FileContext, KpSourceLine, line_comment_inputs
@@ -149,8 +149,9 @@ class _Scene:
     contracts: list[HistoryContract]
     plan: InflationPlan | None
     index: HistoryIndex
-    #: Строки истории по работам и сведения семей — вход лестницы аналогов.
-    work_history: list[WorkHistoryLine]
+    #: Строки истории по работам, разложенные по семьям, и сведения семей — вход лестницы аналогов.
+    #: Кандидаты семьи считаются один раз на сцену, а не на каждую строку КП.
+    work_history: WorkHistory
     families: dict[int, FamilyLadderInfo]
     #: Дата КП: месяц этапа. Нужна и без ряда ИПЦ — самая свежая считается всегда.
     target_month: YearMonth | None
@@ -377,6 +378,7 @@ def _build_scene(
         )
     factors = plan.factor_by_estimate if plan is not None else None
     index = HistoryIndex(contracts, history_lines, factor_by_estimate=factors)
+    ladder_history = WorkHistory(work_history, families, index.contracts, factors=factors)
 
     root_of, root_meta = category_roots(db)
     roots_by_estimate = net_by_root(
@@ -391,7 +393,7 @@ def _build_scene(
         contracts=contracts,
         plan=plan,
         index=index,
-        work_history=work_history,
+        work_history=ladder_history,
         families=families,
         target_month=target_month,
         kp_lines=kp_lines,

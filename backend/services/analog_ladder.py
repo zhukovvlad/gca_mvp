@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, localcontext
 from typing import Literal
@@ -139,6 +139,134 @@ def date_rank(period: YearMonth | None, target: YearMonth | None) -> tuple[int, 
     return (0, abs(_months(period) - _months(target)))
 
 
+def _required_ids(info: FamilyLadderInfo | None) -> tuple[int, ...]:
+    """Главные параметры, которые ступени 2 и 4 не отпускают, по порядку `ordinal`."""
+    if info is None:
+        return ()
+    return tuple(p for p in info.main_parameter_ids if p not in info.releasable_ids)
+
+
+def _values_key(main_values: Mapping[int, int | None], required: Sequence[int]) -> tuple[int | None, ...]:
+    """Значения неотпускаемых главных параметров: равенство ключей — совпадение по всем им."""
+    return tuple(main_values.get(p) for p in required)
+
+
+_ValuesKey = tuple[int | None, ...]
+_Unknown = tuple[WorkHistoryLine, HistoryContract]
+
+
+@dataclass(frozen=True)
+class _FamilyPool:
+    """Кандидаты одной семьи, не зависящие от строки КП, разложенные под ступени.
+
+    Ступени 1 и 3 берут кандидатов зоны строки КП с её вариантом (`by_variant`), ступени 2 и 4 —
+    кандидатов зоны на действующей версии схемы семьи с теми же значениями неотпускаемых главных
+    параметров (`by_values`); класс договора ступень отбирает сама. Внутри каждого списка — порядок
+    строк истории, как при сплошном переборе.
+    """
+
+    #: Все кандидаты семьи любого класса и любой зоны (для причины «нет истории»).
+    candidates: tuple[_Candidate, ...]
+    #: (зона, вариант) -> кандидаты.
+    by_variant: Mapping[tuple[Zone, int], tuple[_Candidate, ...]]
+    #: (зона, ключ значений) -> кандидаты на действующей версии схемы семьи.
+    by_values: Mapping[tuple[Zone, _ValuesKey], tuple[_Candidate, ...]]
+    #: Строки с неизвестной базой НДС, разложенные так же.
+    unknown_by_variant: Mapping[tuple[Zone, int], tuple[_Unknown, ...]]
+    unknown_by_values: Mapping[tuple[Zone, _ValuesKey], tuple[_Unknown, ...]]
+    #: Варианты кандидатов.
+    variant_ids: frozenset[int]
+    #: Ключи значений у кандидатов на действующей версии схемы семьи.
+    values_keys: frozenset[_ValuesKey]
+
+
+class WorkHistory:
+    """Строки истории по работам, разложенные по семье, с кандидатами, посчитанными один раз.
+
+    Кандидат строки КП (§2.8: договор в истории, цена и вес пригодны, зона определена, номинал не
+    символический) зависит только от семьи строки, договоров и множителей ИПЦ, поэтому считается
+    на семью при первом обращении и переиспользуется всеми строками КП сцены. Живёт один запрос:
+    состояния между запросами не держит.
+    """
+
+    def __init__(
+        self,
+        lines: Sequence[WorkHistoryLine],
+        families: Mapping[int, FamilyLadderInfo],
+        contracts: Mapping[int, HistoryContract],
+        *,
+        factors: Mapping[int, Decimal] | None,
+    ) -> None:
+        self.families = families
+        self.contracts = contracts
+        self.factors = factors
+        self._lines_by_family: dict[int, list[WorkHistoryLine]] = {}
+        for line in lines:
+            self._lines_by_family.setdefault(line.family_id, []).append(line)
+        self._pools: dict[int, _FamilyPool] = {}
+
+    def pool(self, family_id: int) -> _FamilyPool:
+        found = self._pools.get(family_id)
+        if found is None:
+            found = self._pools[family_id] = self._build_pool(family_id)
+        return found
+
+    def _build_pool(self, family_id: int) -> _FamilyPool:
+        candidates: list[_Candidate] = []
+        unknown_base: list[tuple[WorkHistoryLine, HistoryContract]] = []
+        for line in self._lines_by_family.get(family_id, ()):
+            contract = self.contracts.get(line.contract_id)
+            if contract is None:
+                continue
+            if not is_price(line.unit_price) or not is_weight(line.weight) or line.zone is None:
+                continue
+            assert line.unit_price is not None
+            if line.vat_base is None:
+                unknown_base.append((line, contract))
+                continue
+            nominal = gross_to_net(line.unit_price, line.vat_base)
+            if nominal < MIN_NOMINAL:
+                continue
+            net = nominal if self.factors is None else adjust_amount(nominal, self.factors[contract.estimate_id])
+            candidates.append(_Candidate(line, contract, nominal, net))
+
+        info = self.families.get(family_id)
+        required = _required_ids(info)
+
+        def values_key(line: WorkHistoryLine) -> _ValuesKey | None:
+            """Ключ значений строки на действующей версии схемы семьи; иначе `None`."""
+            if info is None or line.schema_id != info.schema_id:
+                return None
+            return _values_key(line.main_values, required)
+
+        by_variant: dict[tuple[Zone, int], list[_Candidate]] = {}
+        by_values: dict[tuple[Zone, _ValuesKey], list[_Candidate]] = {}
+        for cand in candidates:
+            zone = cand.line.zone
+            assert zone is not None
+            by_variant.setdefault((zone, cand.line.variant_id), []).append(cand)
+            key = values_key(cand.line)
+            if key is not None:
+                by_values.setdefault((zone, key), []).append(cand)
+        unknown_by_variant: dict[tuple[Zone, int], list[_Unknown]] = {}
+        unknown_by_values: dict[tuple[Zone, _ValuesKey], list[_Unknown]] = {}
+        for line, contract in unknown_base:
+            assert line.zone is not None
+            unknown_by_variant.setdefault((line.zone, line.variant_id), []).append((line, contract))
+            key = values_key(line)
+            if key is not None:
+                unknown_by_values.setdefault((line.zone, key), []).append((line, contract))
+        return _FamilyPool(
+            candidates=tuple(candidates),
+            by_variant={k: tuple(v) for k, v in by_variant.items()},
+            by_values={k: tuple(v) for k, v in by_values.items()},
+            unknown_by_variant={k: tuple(v) for k, v in unknown_by_variant.items()},
+            unknown_by_values={k: tuple(v) for k, v in unknown_by_values.items()},
+            variant_ids=frozenset(c.line.variant_id for c in candidates),
+            values_keys=frozenset(key for _, key in by_values),
+        )
+
+
 def evaluate_work_ladder(
     kp: KpWork,
     lines: Sequence[WorkHistoryLine],
@@ -155,63 +283,55 @@ def evaluate_work_ladder(
     `lines` — строки последних смет договоров истории (договоры объекта тендера
     и сметы КП загрузчик не отдаёт; договор вне `contracts` пропускается).
     `factors` — множитель ИПЦ по `estimate_id` сметы аналога; `None` — без приведения.
+    Для многих строк одной сцены — `ladder_for` с одной `WorkHistory`.
     """
-    info = families.get(kp.family_id)
+    return ladder_for(
+        kp,
+        WorkHistory(lines, families, contracts, factors=factors),
+        tender_class_id=tender_class_id,
+        tender_contractor_id=tender_contractor_id,
+        target_month=target_month,
+    )
+
+
+def ladder_for(
+    kp: KpWork,
+    history: WorkHistory,
+    *,
+    tender_class_id: int,
+    tender_contractor_id: int,
+    target_month: YearMonth | None,
+) -> WorkLadder:
+    """`evaluate_work_ladder` на разложенной истории: тот же расчёт, кандидаты — из пула семьи."""
+    info = history.families.get(kp.family_id)
     releasable_ladder = (
         info is not None
         and kp.schema_id == info.schema_id
         and any(p in info.releasable_ids for p in info.main_parameter_ids)
     )
-    required = (
-        tuple(p for p in info.main_parameter_ids if p not in info.releasable_ids)
-        if info is not None
-        else ()
-    )
+    kp_values = _values_key(kp.main_values, _required_ids(info))
+    pool = history.pool(kp.family_id)
 
-    def variant_match(line: WorkHistoryLine) -> bool:
-        return line.variant_id == kp.variant_id
-
-    def family_match(line: WorkHistoryLine) -> bool:
-        if not releasable_ladder or info is None or line.schema_id != info.schema_id:
-            return False
-        return all(line.main_values.get(p) == kp.main_values.get(p) for p in required)
-
-    def zone_match(line: WorkHistoryLine) -> bool:
-        return kp.zone is not None and line.zone == kp.zone
-
-    candidates: list[_Candidate] = []
-    unknown_base: list[tuple[WorkHistoryLine, HistoryContract]] = []
-    for line in lines:
-        contract = contracts.get(line.contract_id)
-        if contract is None or line.family_id != kp.family_id:
-            continue
-        if not is_price(line.unit_price) or not is_weight(line.weight) or line.zone is None:
-            continue
-        assert line.unit_price is not None
-        if line.vat_base is None:
-            unknown_base.append((line, contract))
-            continue
-        nominal = gross_to_net(line.unit_price, line.vat_base)
-        if nominal < MIN_NOMINAL:
-            continue
-        net = nominal if factors is None else adjust_amount(nominal, factors[contract.estimate_id])
-        candidates.append(_Candidate(line, contract, nominal, net))
-
-    def in_rung(rung_no: RungNo, line: WorkHistoryLine, contract: HistoryContract) -> bool:
-        if not zone_match(line):
-            return False
-        own_class = contract.rate_class_id == tender_class_id
-        if own_class != (rung_no in (1, 2)):
-            return False
+    # Ступень берёт строки зоны строки КП (вне её — ни одна, §2.8): ступени 1 и 3 — с вариантом
+    # строки КП, ступени 2 и 4 — с её значениями неотпускаемых параметров на действующей версии
+    # схемы, и только если у строки КП доступна лестница отпускаемых. Класс: 1 и 2 — класс тендера.
+    def rung_slice(rung_no: RungNo, by_variant: Mapping, by_values: Mapping) -> tuple:
+        if kp.zone is None:
+            return ()
         if rung_no in (1, 3):
-            return variant_match(line)
-        return family_match(line)
+            return by_variant.get((kp.zone, kp.variant_id), ())
+        if not releasable_ladder:
+            return ()
+        return by_values.get((kp.zone, kp_values), ())
+
+    def class_fits(rung_no: RungNo, contract: HistoryContract) -> bool:
+        return (contract.rate_class_id == tender_class_id) == (rung_no in (1, 2))
 
     def dropped_on(rung_no: RungNo, picked_ids: set[int]) -> set[int]:
         return {
             contract.contract_id
-            for line, contract in unknown_base
-            if in_rung(rung_no, line, contract) and contract.contract_id not in picked_ids
+            for _line, contract in rung_slice(rung_no, pool.unknown_by_variant, pool.unknown_by_values)
+            if class_fits(rung_no, contract) and contract.contract_id not in picked_ids
         }
 
     def _dropped_on_first_rung() -> tuple[int, ...]:
@@ -225,7 +345,7 @@ def evaluate_work_ladder(
     chosen: RungNo | None = None
     picked: list[_Candidate] = []
     for rung_no in _RUNGS:
-        picked = [c for c in candidates if in_rung(rung_no, c.line, c.contract)]
+        picked = [c for c in rung_slice(rung_no, pool.by_variant, pool.by_values) if class_fits(rung_no, c.contract)]
         if picked:
             chosen = rung_no
             break
@@ -242,7 +362,7 @@ def evaluate_work_ladder(
             freshest=None,
             all_outliers=False,
             kp_ratio=None,
-            no_history_reason=_no_history_reason(candidates, lambda ln: variant_match(ln) or family_match(ln)),
+            no_history_reason=_no_history_reason(pool, kp.variant_id, kp_values if releasable_ladder else None),
             vat_dropped=_dropped_on_first_rung(),
         )
 
@@ -331,12 +451,15 @@ def _released_names(rung_no: RungNo, info: FamilyLadderInfo | None) -> tuple[str
 
 
 def _no_history_reason(
-    candidates: Sequence[_Candidate],
-    matches_params: Callable[[WorkHistoryLine], bool],
+    pool: _FamilyPool,
+    variant_id: int,
+    values_key: tuple[int | None, ...] | None,
 ) -> NoHistoryReason:
-    """Первая причина по кандидатам семьи любого класса (§2.10)."""
-    if not candidates:
+    """Первая причина по кандидатам семьи любого класса и любой зоны (§2.10). Параметры совпали —
+    у кандидата тот же вариант либо (ступени 2 и 4 доступны, `values_key` задан) те же значения
+    неотпускаемых главных параметров на действующей версии схемы."""
+    if not pool.candidates:
         return "no_family"
-    if not any(matches_params(c.line) for c in candidates):
+    if variant_id not in pool.variant_ids and (values_key is None or values_key not in pool.values_keys):
         return "no_params"
     return "no_zone_match"

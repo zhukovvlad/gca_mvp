@@ -29,10 +29,11 @@ from services.analog_ladder import (
     FamilyLadderInfo,
     Figure,
     KpWork,
+    WorkHistory,
     WorkHistoryLine,
     WorkLadder,
     date_rank,
-    evaluate_work_ladder,
+    ladder_for,
 )
 from services.price_basis import (  # noqa: F401  (потребители ядра 4а импортируют эти имена отсюда)
     _CONTEXT,
@@ -653,21 +654,18 @@ def _compare(
 
 def _evaluate_work(
     line: KpLine,
-    history: HistoryIndex,
     *,
     kp_unit_net: Decimal,
     kp_total_net: Decimal | None,
-    work_history: Sequence[WorkHistoryLine],
-    families: Mapping[int, FamilyLadderInfo],
+    work_history: WorkHistory,
     tender_class_id: int,
     tender_contractor_id: int,
     target_month: YearMonth | None,
-    factors: Mapping[int, Decimal] | None,
 ) -> LineResult:
     """Работа через лестницу аналогов (спека §2.8, §2.9). Ступеней 4а у неё нет."""
     key = line.key
     assert key is not None and line.weight is not None
-    ladder = evaluate_work_ladder(
+    ladder = ladder_for(
         KpWork(
             position_item_id=line.position_item_id,
             family_id=key.family_id,
@@ -679,12 +677,9 @@ def _evaluate_work(
             net=kp_unit_net,
         ),
         work_history,
-        families,
-        history.contracts,
         tender_class_id=tender_class_id,
         tender_contractor_id=tender_contractor_id,
         target_month=target_month,
-        factors=factors,
     )
     if ladder.rung_no is None:
         return _result(line, LineState.no_history, kp_unit_net, kp_total_net, ladder=ladder)
@@ -915,7 +910,7 @@ def evaluate_offer(
     lines: Sequence[KpLine],
     history: HistoryIndex,
     *,
-    work_history: Sequence[WorkHistoryLine],
+    work_history: Sequence[WorkHistoryLine] | WorkHistory,
     families: Mapping[int, FamilyLadderInfo],
     kp_vat_base: Decimal | None,
     tender_area: Decimal | None,
@@ -932,7 +927,19 @@ def evaluate_offer(
     (`history`). `target_month` — месяц этапа: к нему ближе всего самая свежая расценка. `factors`
     — множитель ИПЦ по смете аналога; `None` — без приведения. `choice` — ступень системы из
     предпросмотра, она побеждает сохранённую `saved` на своей семье; у работы ступеней нет.
+    `work_history` — строки истории либо уже разложенная по семьям `WorkHistory` сцены (тогда она
+    обязана быть собрана из тех же `families`, договоров `history` и `factors`).
     """
+    if isinstance(work_history, WorkHistory):
+        if (
+            work_history.families is not families
+            or work_history.contracts is not history.contracts
+            or work_history.factors is not factors
+        ):
+            raise ValueError("WorkHistory собрана не из тех семей, договоров или множителей, что у оценки")
+        ladder_history = work_history
+    else:
+        ladder_history = WorkHistory(work_history, families, history.contracts, factors=factors)
     results: dict[int, LineResult] = {}
     family_entries: dict[int, list[_SystemEntry]] = {}
     for line in lines:
@@ -969,15 +976,12 @@ def evaluate_offer(
             assert kp_unit_net is not None
             results[line.position_item_id] = _evaluate_work(
                 line,
-                history,
                 kp_unit_net=kp_unit_net,
                 kp_total_net=kp_total_net,
-                work_history=work_history,
-                families=families,
+                work_history=ladder_history,
                 tender_class_id=tender_class_id,
                 tender_contractor_id=tender_contractor_id,
                 target_month=target_month,
-                factors=factors,
             )
 
     groups: list[GroupResult] = []
