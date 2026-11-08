@@ -4,7 +4,7 @@
 **Дизайн:** `docs/superpowers/design/2026-11-01-analog-ladder.md` (редакция 3), макет — `.../2026-11-01-analog-ladder/mockup.html`
 **Стоит на:** спека 4а `2026-10-23-our-price-design.md`, спека 4б `2026-10-27-contractor-file-design.md`, обе в `main` (`04b5d3e`)
 **Ветка:** `feat/analog-ladder`, черновой PR #74
-**Статус:** редакция 1, 07.11.2026 — на ревью гейта 3.
+**Статус:** редакция 2, 08.11.2026 — на ревью гейта 3 (круг 1 Codex на `e9a9b91`: ацикличный модуль `price_basis`, вход теста ступеней 3/4, протокол К3 с заведомо живым устаревшим входом).
 
 > Исполнителю: задачи идут по порядку; каждая — цикл TDD
 > (`superpowers:test-driven-development`: тесты первыми, красный прогон
@@ -83,13 +83,14 @@
 |---|---|---|---|
 | К1 | upgrade `0024` отказывает при строках `kp_line_rungs`, ничего не удалив; downgrade отказывает при решениях людей | 1 | убрать проверку → тест «строка в `kp_line_rungs` → `RuntimeError`, таблица цела» |
 | К2 | решение человека о зоне не перекрашивается правилом, `--reapply-rule` и ответом модели | 2 | снять условие `zone_source <> 'human'` в записи ответа → тест «ответ модели после решения человека» |
-| К3 | ответ `releasable_params` и принятие предложения — только при совпадении повторного рендера (вкл. правку семьи вне `schema_edit`) | 3 | снять повторный рендер в `record_result` / в `PUT …/releasable` → два теста `input_changed` / `proposal_stale` |
+| К3 | ответ `releasable_params` и принятие предложения — только при совпадении повторного рендера (вкл. правку семьи вне `schema_edit`) | 3 | на входе, где устаревшее **заведомо живо** (задание `running`, строка предложения со старым хэшем есть — предусловие проверено в тесте, см. Task 3), снять только сравнение с текущим рендером в `record_result` / в `PUT …/releasable` → два теста `input_changed` / `proposal_stale`; уборка и отмена заданий снимаются отдельно и краснят свои тесты, а не эти |
 | К4 | порог 1 ₽ — до выбора ступени, по номиналу (работы) и до сложения (системы) | 4, 5 | снять фильтр → тест «символический на ступени 1, нормальный на 2 — выбрана 2»; тест системы «0,50 ₽ за ед. не входит» |
 | К5 | выбросы — один проход, пустой остаток — `unit_mismatch` без спуска | 4 | заменить на итеративное исключение → тест `1, 1, 100, 100` |
 | К6 | `over_freshest = null` при пустом покрытии, а не 0 | 5 | вернуть `Σ` пустого набора → тест «ни у одной сравнимой нет самой свежей» |
 | К7 | выбор цели не меняет суммы и плитки | 5, 6 | подставить цель в `to_lowest` → тест «суммы до и после `PUT …/target` равны» |
 | К8 | `PUT …/target` проверяется с рядом ИПЦ запроса | 6 | снять ряд из проверки → тест на номиналах `10, 100, 110` |
 | К9 | чтение не пишет | 5 | — (тест счётчиков транзакции, как в 4а; снятие не нужно — тест сам ловит запись) |
+| К10 | точный вариант другого класса (ступень 3) раньше отпущенных параметров (ступень 4) | 4 | объединить ступени 3 и 4 в одну → тест «W6 за 100, W8 за 70 в другом классе, **W отпускается**» (верно 100, объединённая даёт 70) |
 
 ## Review Focus
 
@@ -132,9 +133,12 @@ backend/
   services/schema_edit.py         правка: поле releasable, уборка и постановка (Task 3)
   services/work_variants.py       правка: перенос releasable, уборка при supersede, постановка при заморозке (Task 3)
   services/work_families.py       правка: уборка и постановка после update_family/set_unit/merge (Task 3)
+  services/price_basis.py         создаётся: общее обоих ядер — HistoryContract, MISMATCH_*, контекст,
+                                  median, outside; без импортов из services/ (Task 4)
   services/analog_ladder.py       создаётся: чистое ядро лестницы работ (Task 4)
-  services/our_price.py           правка: работы через analog_ladder, системы — порог 1 ₽ и самая свежая,
-                                  итоги с покрытием; ручная ступень работы уходит (Task 5)
+  services/our_price.py           правка: общее берёт из price_basis (Task 4); работы через analog_ladder,
+                                  системы — порог 1 ₽ и самая свежая, итоги с покрытием; ручная ступень
+                                  работы уходит (Task 5)
   crud/our_price_load.py          правка: история с id строки, цепочкой, зоной, периодом, значениями (Task 5)
   crud/our_price.py               правка: сцена, ответы строки/панели/итогов (Task 5); цель (Task 6)
   crud/kp_decisions.py            правка: ступень работы уходит (Task 1); цель, счёт targets (Task 6)
@@ -179,6 +183,16 @@ docs/devlog/2026-11-07-analog-ladder.md создаётся (Task 10); docs/produ
    `services/releasable.py` (рендер и запись ответа, по образцу
    `services/variant_request.py` и `services/discovery_result.py`). Цель — в
    `crud/kp_decisions.py` рядом с прочими решениями 4б.
+   **Направление зависимостей ацикличное:** `price_basis ← analog_ladder ←
+   our_price`, и `price_basis ← our_price`. Общее обоих ядер
+   (`HistoryContract`, `MISMATCH_HIGH`/`MISMATCH_LOW`, контекст `_CONTEXT`,
+   `median`, `outside`) переезжает из `services/our_price.py` в
+   `services/price_basis.py` в Task 4 без изменения поведения;
+   `services/our_price.py` импортирует их обратно под прежними именами
+   (`_median`, `_outside`, `_CONTEXT`, `HistoryContract`, `MISMATCH_*`),
+   поэтому `our_price_money.py`, `crud/*` и тесты 4а/4б не правятся.
+   `analog_ladder` не импортирует `services.our_price` ни на уровне модуля,
+   ни внутри функций; `Zone` берёт из `services/zone_rules.py` (чистый, Task 2).
 4. **Имена ядра 4а остаются внутри:** поля `LineResult.ours`, `to_ours`,
    `bargain`, `GroupResult.bargain`, `OfferTotals.bargain` значат теперь
    «самая низкая» и «КП выше самых низких»; переименование — **только на
@@ -190,11 +204,16 @@ docs/devlog/2026-11-07-analog-ladder.md создаётся (Task 10); docs/produ
    `LineResult.freshest: Figure | None`, `LineResult.to_freshest`. У работы
    `rung = None`, `rungs = ()`, `contracts = ()`, `ours = ladder.lowest.value`
    — поэтому суммы `_totals` и комментарий 4б читают `ours` без ветки по виду.
-6. **Аналог в ядре** — `HistoryLine` получает `position_item_id`, `chain_id`,
+6. **Аналог в ядре** — строка истории работ — новый тип `WorkHistoryLine`
+   (Task 4; прежний `HistoryLine` остаётся для систем без изменений):
+   `position_item_id`, `contract_id`, `chain_id`,
    `zone`, `chain_titles` (множество нормализованных названий), `variant_id`,
    `schema_id`, `main_values` (`Mapping[parameter_id, value_id | None]`, только
-   если вариант на действующей версии); `HistoryContract` — `period:
-   YearMonth | None` (`_estimate_period`, без ряда ИПЦ). Цена аналога
+   если вариант на действующей версии), `unit_price`, `vat_base`;
+   `HistoryContract` — `period: YearMonth | None = None` (поле заводится в
+   Task 4 при переезде в `price_basis`, последним и со значением по
+   умолчанию, чтобы прежние конструкторы в тестах 4а/4б не правились;
+   заполняет загрузчик в Task 5 — `_estimate_period`, без ряда ИПЦ). Цена аналога
    считается в ядре: `gross_to_net(unit_price, vat_base)`, с множителем — как
    ставка 4а. Ядро работ получает отдельный список строк истории
    (`work_lines`), индекс систем — прежний `HistoryIndex`.
@@ -399,19 +418,33 @@ def enqueue_releasable(db: Session, schema_id: int, *, settings: Settings) -> bo
   ошибка попытки); ≥ 0,95 — пишется `true`/`false`, `origin` и `revision`
   не меняются; ниже — предложение с `request_hash`; размеченный параметр
   ответом не трогается;
-- **К3, ответ:** задание поставлено → параметр переименован (отдельно —
-  сменены значения; отдельно — определение семьи через `update_family`) →
+- **К3 — протокол входа.** Обычные пути правки (`schema_edit`,
+  `update_family`, `set_unit`) сами убирают устаревшие предложения и отменяют
+  незавершённое задание (`input_changed`); тогда 409 и отмена получаются из-за
+  отсутствия строки или из-за статуса задания, даже без сравнения с текущим
+  рендером, и тест К3 ничего не доказывает. Поэтому вход К3 меняет входы
+  запроса **в обход гигиены** — прямым `UPDATE` в тесте (имя или определение
+  семьи, имя параметра, подпись значения, единица семьи), как сделал бы
+  будущий путь, забывший уборку, — и **проверяет предусловие** перед
+  действием: задание в `running` с прежним `request_hash`, строка
+  предложения со старым хэшем существует;
+- **К3, ответ:** по протоколу — параметр переименован (отдельно — сменены
+  значения; отдельно — определение и имя семьи; отдельно — единица) →
   уверенный ответ: `cancelled` / `input_changed`, признак `NULL`, предложений
   нет; версия ушла из `frozen` (пересборка, `merge_families` — Review Focus
   5) — `not_applicable`;
-- **К3, предложение:** отложенное предложение → `update_family` меняет
-  определение → `PUT …/releasable` со старым `request_hash` — 409
-  `proposal_stale`, признак `NULL`; то же с именем семьи и с `set_unit`;
-  такое предложение не видно в очереди, в схеме и в `releasable_open`;
-- уборка: после `schema_edit`, `update_family`, `set_unit`, перевода версии
-  из `frozen` недействующие предложения удалены; **снятие уборки в
-  `update_family` оставляет тест К3 зелёным** (защиту держит рендер) — это
-  проверка оркестратора, а не исполнителя;
+- **К3, предложение:** по протоколу — отложенное предложение с H(A) живо,
+  определение семьи сменено на B → `PUT …/releasable` с H(A) — 409
+  `proposal_stale`, признак `NULL`; то же с именем семьи и с единицей;
+  такое предложение не видно в очереди, в схеме и в `releasable_open`
+  (фильтр — тоже по повторному рендеру, не по наличию строки);
+- **уборка и отмена — отдельными тестами:** после `schema_edit`,
+  `update_family`, `set_unit`, перевода версии из `frozen` недействующие
+  предложения удалены, незавершённое задание — `input_changed`, новое
+  поставлено. Снятия оркестратора: (а) снять в `record_result` /
+  `decide_releasable` **только** сравнение с текущим рендером при том же
+  входе К3 → тесты К3 красные; (б) снять уборку в `update_family` → красный
+  тест уборки, тесты К3 зелёные (защиту держит рендер);
 - замки: тест SQL `lock_inputs` — семья `FOR SHARE` раньше версии, версия
   раньше параметров (компиляция запроса, образец `_lock_families_statement`);
 - постановка: при заморозке версии с активными главными; после правки входов
@@ -435,11 +468,13 @@ def enqueue_releasable(db: Session, schema_id: int, *, settings: Settings) -> bo
 ### Task 4: чистое ядро лестницы работ — **ревью**
 
 **Files**
-- Create: `backend/services/analog_ladder.py`
-- Test: `tests/unit/test_analog_ladder.py`
+- Create: `backend/services/price_basis.py`, `backend/services/analog_ladder.py`
+- Edit: `backend/services/our_price.py` (только перенос общего, решение 3)
+- Test: `tests/unit/test_analog_ladder.py`, `tests/unit/test_analog_imports.py`
 
 **Interfaces**
-- Потребляет: `_outside`, `_median`, `gross_to_net`, `adjust_amount`, `is_price` (существуют).
+- Переносится в `services/price_basis.py` (решение 3): `HistoryContract` (+ `period: YearMonth | None = None`), `MISMATCH_HIGH`, `MISMATCH_LOW`, `_CONTEXT`, `median` (бывш. `_median`), `outside` (бывш. `_outside`); `services/our_price.py` импортирует их под прежними именами.
+- Потребляет: `median`, `outside`, `HistoryContract` (`price_basis`), `Zone` (`zone_rules`, Task 2), `gross_to_net`, `adjust_amount`, `is_price`, `YearMonth` (`money/*`).
 - Производит:
 
 ```python
@@ -478,9 +513,11 @@ def evaluate_work_ladder(kp: KpWork, lines: Sequence[WorkHistoryLine], families:
 - кандидат — табличный тест по пяти условиям §2.8 (каждое по отдельности
   выключает строку); **К4:** «только символический аналог на ступени 1,
   нормальный на 2» — выбрана 2; цена ровно 1 ₽ — аналог; 0,99 — нет;
-- ступени 1–4: первая непустая; тест из §2.24 — строка КП W6, в своём
-  классе аналогов нет, в другом классе W6 за 100 и W8 за 70 (W не
-  отпускается): ступень 3, самая низкая 100, W8 в справке нет; ступени 2/4 только при `releasable` на
+- ступени 1–4: первая непустая; **К10**, тест из §2.24 — строка КП W6, в
+  своём классе аналогов нет, в другом классе W6 за 100 и W8 за 70, **W
+  отпускается** (иначе ступени 4 нет и объединение 3/4 тоже даёт 100):
+  ступень 3, самая низкая 100, W8 в справке нет; отдельный случай — тот же
+  вход при обязательном W: ступень 3, 100; ступени 2/4 только при `releasable` на
   действующей версии; вариант на старой версии — ступеней 2/4 нет (Review
   Focus 1); «не уточнено» совпадает только с «не уточнено»;
 - **К5:** `1, 100, 10 000` и `1, 1, 100, 100` — все выбросы,
@@ -501,14 +538,23 @@ def evaluate_work_ladder(kp: KpWork, lines: Sequence[WorkHistoryLine], families:
   базы и одной годной не попадает;
 - с множителем ИПЦ: `net = nominal × k`; порог 1 ₽ — по `nominal` (вход
   «номинал 0,9, с рядом 1,8» — не аналог);
-- ни одного `float` в модуле (`grep` в отчёте) и в результатах (тест типов).
+- ни одного `float` в модуле (`grep` в отчёте) и в результатах (тест типов);
+- **импорты ацикличны** (`test_analog_imports.py`): два свежих интерпретатора
+  (`subprocess`, `sys.executable -c`) импортируют `services.analog_ladder`
+  затем `services.our_price` и в обратном порядке — оба без ошибки; разбор
+  AST `analog_ladder.py` и `price_basis.py` — ни одного импорта
+  `services.our_price` (в том числе внутри функций), у `price_basis` — ни
+  одного импорта из `services`;
+- перенос без изменения поведения: `services.our_price._median is
+  services.price_basis.median` и так же для `_outside`, `HistoryContract`.
 
 **Имена**
-- Заводятся: `Analog`, `Figure`, `WorkLadder`, `KpWork`, `WorkHistoryLine`, `FamilyLadderInfo`, `evaluate_work_ladder`.
-- Существуют: `_outside`, `_median` (`services/our_price.py:400`, `:417`), `YearMonth`.
+- Заводятся: `price_basis`, `median`, `outside`, `HistoryContract.period`, `Analog`, `Figure`, `WorkLadder`, `KpWork`, `WorkHistoryLine`, `FamilyLadderInfo`, `evaluate_work_ladder`.
+- Существуют (до переноса): `_median` (`services/our_price.py:400`), `_outside` (`:417`), `HistoryContract` (`:97`), `MISMATCH_HIGH`/`MISMATCH_LOW` (`:34`), `_CONTEXT` (`:42`); `YearMonth` (`money/inflation.py:82`); вызывающие `_median` вне ядра — `services/our_price_money.py:22`.
 
 **Проверка**
-- `uv run pytest tests/unit -q -k test_analog_ladder` — ДО 0, ПОСЛЕ ≥ 45.
+- `uv run pytest tests/unit -q -k test_analog_ladder` — ДО 0, ПОСЛЕ ≥ 45; `-k test_analog_imports` — ≥ 3.
+- `just test-unit-k test_our_price` (225), `just test-unit-k test_kp_file` (438) — зелёные без правки (перенос прозрачен).
 
 ### Task 5: загрузка, сцена, ответы чтения, системы, итоги — **ревью**
 
@@ -522,7 +568,7 @@ def evaluate_work_ladder(kp: KpWork, lines: Sequence[WorkHistoryLine], families:
 
 ```python
 def load_work_history(db: Session, *, exclude_object_id: int) -> tuple[list[WorkHistoryLine], dict[int, FamilyLadderInfo]]
-# HistoryContract.period: YearMonth | None
+# HistoryContract.period (поле из Task 4) — заполняет load_history
 # KpLineRow / KpLine: + section_chain_id, zone, chain_titles, schema_id, main_values
 # LineState.no_zone
 # LineResult: + ladder: WorkLadder | None, freshest: Figure | None, to_freshest: Decimal | None
