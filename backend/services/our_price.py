@@ -16,33 +16,33 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from decimal import Context, Decimal, DivisionByZero, InvalidOperation, Overflow, localcontext
+from decimal import Decimal, localcontext
 from enum import Enum
 from typing import Literal
 
 from money.inflation import adjust_amount
 from money.price import is_price, is_weight
 from money.vat import gross_to_net
-from parser.summary_block import ARITHMETIC_PRECISION
+from services.price_basis import (  # noqa: F401  (потребители ядра 4а импортируют эти имена отсюда)
+    _CONTEXT,
+    MISMATCH_HIGH,
+    MISMATCH_LOW,
+    HistoryContract,
+)
+from services.price_basis import (
+    median as _median,
+)
+from services.price_basis import (
+    outside as _outside,
+)
 
 Level = Literal["v", "p", "f"]
 Scope = Literal["cls", "all"]
 
 #: Минимум договоров на ступени, чтобы считать её опорной (спека 4а §2.5).
 RUNG_THRESHOLD: int = 2
-#: Границы отношения цены к медиане, за которыми единицы учёта считаются разными.
-MISMATCH_HIGH: Decimal = Decimal(5)
-MISMATCH_LOW: Decimal = Decimal("0.2")
 
 _ZERO = Decimal(0)
-_TWO = Decimal(2)
-
-#: Контекст явный и не наследует глобальный: промежуточных округлений в
-#: расчёте нет, а ловушки включены, чтобы деление на ноль не прошло молча.
-_CONTEXT = Context(
-    prec=ARITHMETIC_PRECISION,
-    traps=[Overflow, DivisionByZero, InvalidOperation],
-)
 
 
 class LineState(str, Enum):
@@ -91,20 +91,6 @@ class LineKey:
                 return None
             return (self.family_id, self.first_main)
         return self.family_id
-
-
-@dataclass(frozen=True)
-class HistoryContract:
-    contract_id: int
-    estimate_id: int
-    number: str
-    object_title: str
-    year: int
-    rate_class_id: int
-    rate_class_title: str
-    contractor_id: int
-    contractor_title: str
-    area: Decimal | None
 
 
 @dataclass(frozen=True)
@@ -397,25 +383,12 @@ def auto_rung(counts: Sequence[RungCount]) -> Rung | None:
     return None
 
 
-def _median(values: Sequence[Decimal]) -> Decimal:
-    ordered = sorted(values)
-    middle = len(ordered) // 2
-    if len(ordered) % 2:
-        return ordered[middle]
-    with localcontext(_CONTEXT):
-        return (ordered[middle - 1] + ordered[middle]) / _TWO
-
-
 def rate_range(rates: Sequence[ContractRate]) -> RateRange:
     """Минимум, максимум и медиана ставок ступени; при чётном числе — среднее двух средних."""
     if not rates:
         raise ValueError("rate_range: на ступени нет ставок")
     values = [r.net for r in rates]
     return RateRange(min=min(values), max=max(values), median=_median(values))
-
-
-def _outside(ratio: Decimal) -> bool:
-    return ratio > MISMATCH_HIGH or ratio < MISMATCH_LOW
 
 
 def unit_mismatch(kp_net: Decimal, rates: Sequence[ContractRate]) -> Mismatch | None:
