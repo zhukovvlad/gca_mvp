@@ -157,6 +157,8 @@ class TestSchemaForm:
         assert set(body["parameters"][0]) == {
             "id", "ordinal", "name", "values", "role", "value_kind", "closed", "range",
             "origin", "off_list", "refreshing",
+            # Лестница аналогов (спека §2.7): признак и действующее предложение модели.
+            "releasable", "releasable_proposal",
         }
         assert set(body["parameters"][0]["values"][0]) == {
             "id", "value", "origin", "merged_into_id", "range_lo", "range_hi", "retired",

@@ -90,6 +90,13 @@ _VARIANT_RECEIVER = re.compile(r"variant|schema", re.IGNORECASE)
 _CATALOG_KIND_RECEIVER = re.compile(r"catalog|row", re.IGNORECASE)
 #: Модуль самой сверки: единственная запись — версия схемы `building` с заданием.
 RECONCILER_MODULE = "services.semantic_reconcile"
+#: Модули лестницы аналогов, чьи записи задели регэксп, но входа заданий очереди не меняют
+#: (спека `2026-11-07-analog-ladder-design.md` §2.7, §2.17): `crud.section_chains` присваивает
+#: `position_items.section_chain_id` — вход только задания `section_zone`, у которого своя
+#: постановка; `services.releasable` пишет `family_parameters.releasable` — признак в тело
+#: запросов не входит, актуальность решает повторный рендер (докстрока модуля). Исключение
+#: поимённое и узкое: новый модуль с такой записью по-прежнему попадёт в список нарушений.
+LADDER_NON_INPUT_WRITERS = frozenset({"crud.section_chains", "services.releasable"})
 _MEMBER_MOVE_FIELDS = frozenset({"context_id", "bucket_id"})
 _MEMBER_RECEIVER = re.compile(r"member", re.IGNORECASE)
 _SESSION_NAMES = frozenset({"db", "session", "self.db", "self.session"})
@@ -397,7 +404,9 @@ def _hooks_texts() -> list[str]:
 
 class TestProtectedWritesLiveOnlyInTheAllowlist:
     def test_no_module_outside_the_allowlist_writes_protected_data(self):
-        problems = violations(scan_tree(), RECONCILE_ALLOWLIST | {RECONCILER_MODULE})
+        problems = violations(
+            scan_tree(), RECONCILE_ALLOWLIST | {RECONCILER_MODULE} | LADDER_NON_INPUT_WRITERS
+        )
 
         assert problems == [], (
             "запись в защищённые данные контекстов вне RECONCILE_ALLOWLIST — вызовите "

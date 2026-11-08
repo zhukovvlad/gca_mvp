@@ -470,6 +470,19 @@ DISCOVERY_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
 )
 assert len(DISCOVERY_ROUTE_TEMPLATES) == 11
 
+#: Маршруты лестницы аналогов (спека `2026-11-07-analog-ladder-design.md` §2.18): очередь
+#: «Зоны» и решение по зоне цепочки, очередь «Можно отпустить» и решение по параметру —
+#: ШАБЛОНАМИ пути, независимо от `app.routes`.
+LADDER_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("GET", f"{BASE}/section-chains"),
+        ("PUT", f"{BASE}/section-chains/{{chain_id}}/zone"),
+        ("GET", f"{BASE}/releasable-proposals"),
+        ("PUT", f"{BASE}/families/{{family_id}}/parameters/{{parameter_id}}/releasable"),
+    }
+)
+assert len(LADDER_ROUTE_TEMPLATES) == 4
+
 
 def test_route_set_under_prefix_equals_twenty_one_literal():
     """Множество путей под `/api/v1/semantic`, собранное из `app.routes`,
@@ -480,7 +493,7 @@ def test_route_set_under_prefix_equals_twenty_one_literal():
     добавленные им маршруты не должны красить проверку прежнего набора. Литералы
     не пересекаются; маршрута восстановления архивного контекста (`…/restore`)
     в наборе нет. Третий литерал — маршруты вариантов и промоушена, четвёртый —
-    справочник категорий семей."""
+    справочник категорий семей; пятый — открытие семей, шестой — лестница аналогов."""
     assert not TWENTY_ONE_ROUTE_TEMPLATES & SEMANTIC_QUEUE_ROUTE_TEMPLATES
     assert not WORK_VARIANT_ROUTE_TEMPLATES & (
         TWENTY_ONE_ROUTE_TEMPLATES | SEMANTIC_QUEUE_ROUTE_TEMPLATES
@@ -495,6 +508,7 @@ def test_route_set_under_prefix_equals_twenty_one_literal():
         | WORK_VARIANT_ROUTE_TEMPLATES
         | FAMILY_CATEGORY_ROUTE_TEMPLATES
         | DISCOVERY_ROUTE_TEMPLATES
+        | LADDER_ROUTE_TEMPLATES
     )
     # Возврата семьи из архива нет; «Вернуть» бывает только у черновиков открытия.
     assert not any(
