@@ -109,6 +109,50 @@ describe("ZonesQueue", () => {
     expect(within(row).getByText(/правило/)).toBeInTheDocument();
   });
 
+  // Стенд 09.11.2026: нажатая зона в тёмной теме не была видна, а нажатие на неё отжимало
+  // переключатель, и экран молча ничего не делал.
+  it("нажатая зона выделена основным цветом", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ZonesQueue />);
+    await screen.findAllByTestId("zone-row");
+    await user.click(screen.getByRole("combobox", { name: "Показать" }));
+    await user.click(await screen.findByRole("option", { name: "Все" }));
+    await waitFor(() => expect(screen.getAllByTestId("zone-row")).toHaveLength(6), LATER);
+
+    const pressed = within(rowOf(/Фундаменты/)).getByRole("button", { name: "Подземная" });
+    expect(pressed.className).toContain("aria-pressed:bg-primary");
+  });
+
+  it("нажатие на стоящую зону от правила закрепляет её решением человека", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ZonesQueue />);
+    await screen.findAllByTestId("zone-row");
+    await user.click(screen.getByRole("combobox", { name: "Показать" }));
+    await user.click(await screen.findByRole("option", { name: "Все" }));
+    await waitFor(() => expect(screen.getAllByTestId("zone-row")).toHaveLength(6), LATER);
+
+    await user.click(within(rowOf(/Фундаменты/)).getByRole("button", { name: "Подземная" }));
+
+    await waitFor(() => expect(ladderQueues.zoneDecisions).toEqual([{ chainId: 4, zone: "underground" }]), LATER);
+  });
+
+  it("нажатие на стоящую зону человека ничего не шлёт", async () => {
+    const user = userEvent.setup();
+    const human = ladderQueues.chains.find((c) => c.id === 4);
+    if (!human) throw new Error("нет цепочки 4");
+    human.zone_source = "human";
+    renderWithProviders(<ZonesQueue />);
+    await screen.findAllByTestId("zone-row");
+    await user.click(screen.getByRole("combobox", { name: "Показать" }));
+    await user.click(await screen.findByRole("option", { name: "Все" }));
+    await waitFor(() => expect(screen.getAllByTestId("zone-row")).toHaveLength(6), LATER);
+
+    await user.click(within(rowOf(/Фундаменты/)).getByRole("button", { name: "Подземная" }));
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(ladderQueues.zoneDecisions).toEqual([]);
+  });
+
   it("поиск уходит в q и сбрасывает страницу", async () => {
     const user = userEvent.setup();
     renderWithProviders(<ZonesQueue />);

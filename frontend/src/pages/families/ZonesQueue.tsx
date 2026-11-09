@@ -109,11 +109,22 @@ function ZoneRow({
         value={chain.zone === null ? [] : [chain.zone]}
         onValueChange={(value) => {
           const next = value[0];
-          if (next !== undefined) onDecide(next as SectionZone);
+          if (next !== undefined) {
+            onDecide(next as SectionZone);
+            return;
+          }
+          // Нажали уже стоящую зону: переключатель её отжимает (пустой выбор). Зону от правила
+          // или модели это закрепляет решением человека; решение человека не трогается.
+          if (chain.zone !== null && chain.zone_source !== "human") onDecide(chain.zone);
         }}
       >
         {SECTION_ZONES.map((zone) => (
-          <ToggleGroupItem key={zone} value={zone}>
+          <ToggleGroupItem
+            key={zone}
+            value={zone}
+            // Нажатая зона заметна, как основная кнопка: штатный `bg-muted` в тёмной теме не виден.
+            className="aria-pressed:bg-primary aria-pressed:text-primary-foreground"
+          >
             {ZONE_LABEL[zone]}
           </ToggleGroupItem>
         ))}
