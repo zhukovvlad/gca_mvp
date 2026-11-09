@@ -12,8 +12,9 @@ import { ZonesQueue } from "./ZonesQueue";
 /**
  * Очередь «Зоны» (лестница аналогов §2.17, §2.20): по умолчанию спорные, поиск, страницы,
  * строка с названиями цепочки, примерами, предложением модели и четырьмя зонами. Фикстура
- * `handlers.ts`: цепочки 1–2 спорные (предложение есть, зоны нет), 3 — без зоны и без
- * предложения (модель «не знаю»), 4 — зона от правила, 5 — зона от модели.
+ * `handlers.ts`: цепочки 1–2 спорные (предложение есть, зоны нет), 3 — спорная с ответом
+ * модели «не знаю» (`unknown`), 4 — зона от правила, 5 — зона от модели, 6 — без зоны и без
+ * ответа (задание с ошибкой).
  */
 
 const LATER = { timeout: 8000 };
@@ -25,14 +26,14 @@ function rowOf(text: RegExp) {
 }
 
 describe("ZonesQueue", () => {
-  it("по умолчанию — спорные: запрос filter=disputed, две строки, решённые и «не знаю» не показаны", async () => {
+  it("по умолчанию — спорные: запрос filter=disputed, три строки вместе с «не знаю», решённые и без ответа не показаны", async () => {
     renderWithProviders(<ZonesQueue />);
 
     await screen.findAllByTestId("zone-row");
-    expect(screen.getAllByTestId("zone-row")).toHaveLength(2);
+    expect(screen.getAllByTestId("zone-row")).toHaveLength(3);
     expect(ladderQueues.chainRequests[0]).toContain("filter=disputed");
     expect(screen.queryByText(/Фундаменты/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Секция 3/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Прочие затраты/)).not.toBeInTheDocument();
   });
 
   it("строка: цепочка, число строк КП и договоров, примеры, предложение с уверенностью и причиной", async () => {
@@ -49,16 +50,23 @@ describe("ZonesQueue", () => {
     expect(within(row).getByText(/раздел смешанный/)).toBeInTheDocument();
   });
 
-  it("модель не знает: цепочка в фильтре «Без зоны», подпись «не знаю» с причиной", async () => {
+  it("модель не знает (`unknown`): спорная строка, подпись «не знаю» с уверенностью и причиной", async () => {
+    renderWithProviders(<ZonesQueue />);
+    await screen.findAllByTestId("zone-row");
+
+    const row = rowOf(/Секция 3/);
+    expect(within(row).getByText(/Модель: не знаю · уверенность 0,35 — «этажи под и над землёй»/)).toBeInTheDocument();
+  });
+
+  it("без ответа модели: цепочка в фильтре «Без зоны», подпись «ответа нет»", async () => {
     const user = userEvent.setup();
     renderWithProviders(<ZonesQueue />);
     await screen.findAllByTestId("zone-row");
     await user.click(screen.getByRole("combobox", { name: "Показать" }));
     await user.click(await screen.findByRole("option", { name: "Без зоны" }));
-    await waitFor(() => expect(screen.getAllByTestId("zone-row")).toHaveLength(3), LATER);
+    await waitFor(() => expect(screen.getAllByTestId("zone-row")).toHaveLength(1), LATER);
 
-    const row = rowOf(/Секция 3/);
-    expect(within(row).getByText(/не знаю/)).toBeInTheDocument();
+    expect(within(rowOf(/Прочие затраты/)).getByText("Модель: ответа нет")).toBeInTheDocument();
   });
 
   it("четыре зоны переключателем; ни одна не нажата, пока зоны нет", async () => {
@@ -79,7 +87,7 @@ describe("ZonesQueue", () => {
     await user.click(within(rowOf(/Корпус 2/)).getByRole("button", { name: "Весь объект" }));
 
     await waitFor(() => expect(ladderQueues.zoneDecisions).toEqual([{ chainId: 1, zone: "whole" }]), LATER);
-    await waitFor(() => expect(screen.getAllByTestId("zone-row")).toHaveLength(1), LATER);
+    await waitFor(() => expect(screen.getAllByTestId("zone-row")).toHaveLength(2), LATER);
     expect(screen.queryByText(/Корпус 2 \/ Раздел 7/)).not.toBeInTheDocument();
   });
 
@@ -91,7 +99,7 @@ describe("ZonesQueue", () => {
     await user.click(screen.getByRole("combobox", { name: "Показать" }));
     await user.click(await screen.findByRole("option", { name: "Все" }));
 
-    await waitFor(() => expect(screen.getAllByTestId("zone-row")).toHaveLength(5), LATER);
+    await waitFor(() => expect(screen.getAllByTestId("zone-row")).toHaveLength(6), LATER);
     expect(ladderQueues.chainRequests.at(-1)).toContain("filter=all");
     const row = rowOf(/Фундаменты/);
     expect(within(row).getByRole("button", { name: "Подземная" })).toHaveAttribute("aria-pressed", "true");

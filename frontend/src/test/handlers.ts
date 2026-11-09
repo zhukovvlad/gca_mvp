@@ -3307,9 +3307,10 @@ function initialChains(): SectionChainRow[] {
       rows_kp: 96,
       rows_contracts: 14,
     }),
-    chainRow(3, { titles: ["Секция 3", "Этаж -1 и кровля"], proposed_zone: null, proposed_confidence: null, proposed_reason: "не знаю" }),
+    chainRow(3, { titles: ["Секция 3", "Этаж -1 и кровля"], proposed_zone: "unknown", proposed_confidence: "0.35", proposed_reason: "этажи под и над землёй" }),
     chainRow(4, { titles: ["Фундаменты"], zone: "underground", zone_source: "rule", proposed_zone: null, proposed_confidence: null, proposed_reason: null }),
     chainRow(5, { titles: ["Благоустройство"], zone: "territory", zone_source: "model", proposed_zone: null, proposed_confidence: null, proposed_reason: null }),
+    chainRow(6, { titles: ["Прочие затраты"], proposed_zone: null, proposed_confidence: null, proposed_reason: null, job_status: "error" }),
   ];
 }
 
@@ -3337,7 +3338,7 @@ function chainMatchesFilter(chain: SectionChainRow, filter: string): boolean {
     case "disputed":
       return chain.zone === null && chain.proposed_zone !== null;
     case "undetermined":
-      return chain.zone === null;
+      return chain.zone === null && chain.proposed_zone === null;
     case "rule":
     case "model":
     case "human":

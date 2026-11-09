@@ -43,16 +43,20 @@ const FILTERS: SectionChainFilter[] = [
 const GRID = "grid grid-cols-[minmax(0,1fr)_auto] items-start gap-4 px-4 py-3";
 const LIVE_JOB = new Set(["pending", "running"]);
 
-/** Что модель ответила по цепочке: зона с уверенностью и причиной либо «не знаю». */
+/**
+ * Что модель ответила по цепочке: зона с уверенностью и причиной, «не знаю» (`unknown` — ответ
+ * есть, цепочка спорная) либо ответа нет (задание ждёт или не удалось).
+ */
 function modelLine(chain: SectionChainRow): string {
   const reason = chain.proposed_reason ? ` — «${chain.proposed_reason}»` : "";
   if (chain.proposed_zone === null) {
     if (chain.job_status !== null && LIVE_JOB.has(chain.job_status))
       return "Модель: ждёт ответа";
-    return `Модель: не знаю${reason}`;
+    return "Модель: ответа нет";
   }
-  const zone = ZONE_LABEL[chain.proposed_zone].toLowerCase();
-  return `Модель: ${zone} · уверенность ${formatConfidence(chain.proposed_confidence)}${reason}`;
+  const confidence = ` · уверенность ${formatConfidence(chain.proposed_confidence)}`;
+  if (chain.proposed_zone === "unknown") return `Модель: не знаю${confidence}${reason}`;
+  return `Модель: ${ZONE_LABEL[chain.proposed_zone].toLowerCase()}${confidence}${reason}`;
 }
 
 function ZoneRow({

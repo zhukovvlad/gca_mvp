@@ -3775,7 +3775,8 @@ export interface SectionChainRow {
   titles: string[];
   zone: SectionZone | null;
   zone_source: "rule" | "model" | "human" | null;
-  proposed_zone: SectionZone | null;
+  /** `unknown` — модель ответила «не знаю» (цепочка спорная, спека §2.18); `null` — ответа нет. */
+  proposed_zone: SectionZone | "unknown" | null;
   /** Строка Decimal; `null` — предложения нет. */
   proposed_confidence: string | null;
   proposed_reason: string | null;

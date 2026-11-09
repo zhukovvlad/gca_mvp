@@ -45,7 +45,7 @@ describe("SuggestionsTab: очереди лестницы аналогов", () 
 
     await user.click(screen.getByRole("tab", { name: /^Зоны/ }));
 
-    expect(await screen.findAllByTestId("zone-row")).toHaveLength(2);
+    expect(await screen.findAllByTestId("zone-row")).toHaveLength(3);
     expect(screen.queryByLabelText("Единица")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Уверенность")).not.toBeInTheDocument();
   });
