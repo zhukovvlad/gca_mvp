@@ -105,6 +105,15 @@ td.work { min-width:360px; width:36%; }
 .cap { display:block; font-size:11px; color:var(--fg3); font-family:var(--font-sans); white-space:normal; }
 .dear-t { color:var(--dear); } .cheap-t { color:var(--cheap); }
 tr.ln.hl td { background:var(--accent-soft); }
+tr.ln.np td { background:var(--dear-soft); }
+tr.ln.np td:first-child { box-shadow:inset 3px 0 0 var(--dear); }
+tr.ln.np .num { color:var(--dear-text); }
+.badge.npb { background:var(--dear); color:#fff; border-color:transparent; }
+.npc { color:var(--dear); font-weight:500; }
+.fbar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; font-size:13px; color:var(--fg2); }
+.seg { display:inline-flex; background:var(--neutral-soft); border-radius:8px; padding:3px; gap:2px; }
+.seg button { border:0; background:transparent; font:inherit; font-size:12.5px; color:var(--fg2); padding:5px 10px; border-radius:6px; cursor:pointer; }
+.seg button[aria-pressed="true"] { background:var(--surface); color:var(--fg); box-shadow:0 1px 2px rgba(0,0,0,.08); }
 .grid2 { display:grid; grid-template-columns:minmax(0,1fr) 680px; gap:16px; align-items:start; }
 @media (max-width:1200px){ .grid2{ grid-template-columns:1fr; } }
 .sheet { background:var(--surface); border:1px solid var(--border2); border-radius:12px; padding:18px; display:grid; gap:14px; box-shadow:var(--shadow); }
@@ -125,7 +134,7 @@ tr.ln.hl td { background:var(--accent-soft); }
 <body>
 <div class="wrap">
 <div class="intro">
-  <div class="eyebrow">GCA · макет к дизайну «Упрощение управления каталогом» · ред. 3</div>
+  <div class="eyebrow">GCA · макет к дизайну «Упрощение управления каталогом» · ред. 4</div>
   <h1 class="serif">Строки КП по статьям и разделам сметы</h1>
   <p class="lead">Скелет — наш классификатор во всю глубину: <b>4 Конструктивные решения → 4.2 Надземная часть → 4.2.4 …</b>
   Суммы, ₽/м², вилки и выгрузки остаются по статьям, как сейчас. Внутри конечной статьи строки разложены по разделам
@@ -143,11 +152,19 @@ tr.ln.hl td { background:var(--accent-soft); }
   <ul class="chg">
     <li>Серые строки — <b>статьи классификатора</b> (корень, промежуточные, конечная). Сворачиваются нажатием; открыты две ветки, остальные свёрнуты.</li>
     <li>Строки с меткой <span class="eb">в смете</span> — <b>раздел сметы участника</b> внутри статьи, только словами: этап, уровень выше и сам раздел; то, что повторяет статью, не пишется. <b>Номеров сметы в таблице нет</b> — все номера здесь наши, классификатора; номер из сметы участника («п. 4.1.2.4.1») — в панели строки.</li>
+    <li>Строки без цены в КП (0 или пусто) — <b>красные</b>, у статей и разделов — счётчик «N без цены»; над таблицей переключатель: показывать / скрыть / только они («только они» раскрывает все статьи). Подпись нейтральная — «в КП нет цены», причину не называем.</li>
     <li>В тендере все участники заполняют одну ведомость заказчика, поэтому разделы у них совпадают. Подсвечена строка со скриншота.</li>
   </ul>
   <div class="app">
     <div class="appbar"><span class="logo">База расценок ГП</span><nav><span>Главная</span><span>Договоры</span><span class="on">Тендеры</span><span>Семьи</span></nav></div>
     <div class="page">
+      <div class="fbar"><span>Строки без цены в КП · <b class="npc">87</b>:</span>
+        <span class="seg" role="group" aria-label="Строки без цены">
+          <button type="button" aria-pressed="true" data-np="show">показывать</button>
+          <button type="button" aria-pressed="false" data-np="hide">скрыть</button>
+          <button type="button" aria-pressed="false" data-np="only">только они</button>
+        </span>
+        <span class="t3 small">цена 0 или пусто — «цены нет», причину не называем</span></div>
       <div class="card scroller">
         <table class="tbl">
           <thead><tr><th>Работа в КП · вариант</th><th>Ед.</th><th class="r">Объём</th><th class="r">Цена КП</th><th class="r">Наши договоры: вилка, ₽</th><th class="r">Самая низкая</th><th class="r">К самой низкой</th></tr></thead>
@@ -155,25 +172,25 @@ tr.ln.hl td { background:var(--accent-soft); }
 <tr class="ch art root" data-depth="0" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:14px">
     <span class="tw" aria-hidden="true">▾</span><span class="num chn">4</span> <span class="cht">Конструктивные решения</span>
-    <span class="chm">158 строк · КП 4 667 321 049 ₽<span class="t3"> · ₽/м², вилка и доля — как сейчас</span></span>
+    <span class="chm"><span class="npc">87 без цены</span> · 158 строк · КП 4 667 321 049 ₽<span class="t3"> · ₽/м², вилка и доля — как сейчас</span></span>
   </td>
 </tr>
 <tr class="ch art mid" data-depth="1" tabindex="0" aria-expanded="false">
   <td colspan="7" style="padding-left:32px">
     <span class="tw" aria-hidden="true">▾</span><span class="num chn">4.1</span> <span class="cht">Подземная часть. Конструктивные решения</span>
-    <span class="chm">46 строк · КП 1 684 971 884 ₽<span class="t3"> · ₽/м², вилка и доля — как сейчас</span></span>
+    <span class="chm"><span class="npc">23 без цены</span> · 46 строк · КП 1 684 971 884 ₽<span class="t3"> · ₽/м², вилка и доля — как сейчас</span></span>
   </td>
 </tr>
 <tr class="ch art leaf" data-depth="2" tabindex="0" aria-expanded="false">
   <td colspan="7" style="padding-left:50px">
     <span class="tw" aria-hidden="true">▾</span><span class="num chn">4.1.1</span> <span class="cht">Устройство фундаментной плиты</span>
-    <span class="chm">6 строк · КП 858 354 549 ₽<span class="t3"> · ₽/м², вилка и доля — как сейчас</span></span>
+    <span class="chm"><span class="npc">3 без цены</span> · 6 строк · КП 858 354 549 ₽<span class="t3"> · ₽/м², вилка и доля — как сейчас</span></span>
   </td>
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">1 Этап ЖК · </span><span class="cht">Ж/Б конструкции подземной части</span>
-    <span class="chm">3 строки · КП 626 723 621 ₽</span>
+    <span class="chm"><span class="npc">1 без цены</span> · 3 строки · КП 626 723 621 ₽</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -196,7 +213,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">25 035,83</td>
   <td class="r"><span class="num dear-t">+190 261 432,15 ₽</span><div><span class="badge dear">выше всего, что платили</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Устройство фундаментной плиты корпуса 8  В40, W12, F150 арматурой класса А500С,  А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W12 · фундаментная плита</span></td>
   <td class="t2">м³</td>
@@ -204,15 +221,15 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">2 Этап БЦ · </span><span class="cht">Ж/Б конструкции подземной части</span>
-    <span class="chm">3 строки · КП 231 630 928 ₽</span>
+    <span class="chm"><span class="npc">2 без цены</span> · 3 строки · КП 231 630 928 ₽</span>
   </td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Устройство фундаментной плиты корпусов 1,6  В40, W12, F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W12 · фундаментная плита</span></td>
   <td class="t2">м³</td>
@@ -220,9 +237,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Устройство фундаментной плиты корпусов 2,3,4,5,7,9 парковка   В40, W12, F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W12 · фундаментная плита</span></td>
   <td class="t2">м³</td>
@@ -230,7 +247,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Устройство фундаментной плиты корпуса 8  В40, W12, F150 арматурой класса А500С,  А240</button>
@@ -245,13 +262,13 @@ tr.ln.hl td { background:var(--accent-soft); }
 <tr class="ch art leaf" data-depth="2" tabindex="0" aria-expanded="false">
   <td colspan="7" style="padding-left:50px">
     <span class="tw" aria-hidden="true">▾</span><span class="num chn">4.1.2</span> <span class="cht">Устройство горизонтальных монолитных ж/б конструкций подземной части</span>
-    <span class="chm">18 строк · КП 532 276 916 ₽<span class="t3"> · ₽/м², вилка и доля — как сейчас</span></span>
+    <span class="chm"><span class="npc">8 без цены</span> · 18 строк · КП 532 276 916 ₽<span class="t3"> · ₽/м², вилка и доля — как сейчас</span></span>
   </td>
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">1 Этап ЖК · Ж/Б конструкции подземной части · </span><span class="cht">Плита перекрытия/покрытия 200/250/300мм</span>
-    <span class="chm">5 строк · КП 357 655 075 ₽</span>
+    <span class="chm"><span class="npc">1 без цены</span> · 5 строк · КП 357 655 075 ₽</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -264,7 +281,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">36 271,57</td>
   <td class="r"><span class="num dear-t">+60 046,67 ₽</span><div><span class="badge dear">выше всего, что платили</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Плиты перекрытий подземной части под Корпус  8 В50 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · W6 · перекрытия</span></td>
   <td class="t2">м³</td>
@@ -272,7 +289,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Плиты перекрытий подземной части под Корпуса 1,2,3,4,5,7,9 В40 W6 F150 арматурой класса А500С, А240</button>
@@ -307,10 +324,10 @@ tr.ln.hl td { background:var(--accent-soft); }
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">1 Этап ЖК · Ж/Б конструкции подземной части · </span><span class="cht">Балки, капители, трансферные конструкции, лестницы</span>
-    <span class="chm">4 строки · КП 106 722 281 ₽</span>
+    <span class="chm"><span class="npc">2 без цены</span> · 4 строки · КП 106 722 281 ₽</span>
   </td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 6 В50 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · W6 · балки, капители, трансферные конструкции, лестницы</span></td>
   <td class="t2">м³</td>
@@ -318,9 +335,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 8 В50 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · W6 · не уточнено</span></td>
   <td class="t2">м³</td>
@@ -328,7 +345,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 1,2,3,4,5,7,9 В40 W6 F150 арматурой класса А500С, А240</button>
@@ -353,10 +370,10 @@ tr.ln.hl td { background:var(--accent-soft); }
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">2 Этап БЦ · Ж/Б конструкции подземной части · </span><span class="cht">Плита перекрытия/покрытия 200/250/300мм</span>
-    <span class="chm">5 строк · КП 48 614 483 ₽</span>
+    <span class="chm"><span class="npc">3 без цены</span> · 5 строк · КП 48 614 483 ₽</span>
   </td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Плиты перекрытий подземной части под Корпус 6 В50 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · W6 · перекрытия</span></td>
   <td class="t2">м³</td>
@@ -364,7 +381,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Плиты перекрытий подземной части под Корпус  8 В50 W6 F150 арматурой класса А500С, А240</button>
@@ -376,7 +393,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">36 271,57</td>
   <td class="r"><span class="num dear-t">+17 552 135,81 ₽</span><div><span class="badge dear">выше всего, что платили</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Плиты перекрытий подземной части под Корпуса 1,2,3,4,5,7,9 В40 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W6 · перекрытия</span></td>
   <td class="t2">м³</td>
@@ -384,7 +401,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Плиты пандусов В30 W6 F150 арматурой класса А500С, А240</button>
@@ -396,7 +413,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">36 850,03</td>
   <td class="r"><span class="num dear-t">+2 404 869,86 ₽</span><div><span class="badge dear">выше всего, что платили</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Плиты перекрытий подземной части парковки  В40 W12F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W12 · перекрытия</span></td>
   <td class="t2">м³</td>
@@ -404,15 +421,15 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">2 Этап БЦ · Ж/Б конструкции подземной части · </span><span class="cht">Балки, капители, трансферные конструкции, лестницы</span>
-    <span class="chm">4 строки · КП 19 285 077 ₽</span>
+    <span class="chm"><span class="npc">2 без цены</span> · 4 строки · КП 19 285 077 ₽</span>
   </td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 6 В50 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · W6 · балки, капители, трансферные конструкции, лестницы</span></td>
   <td class="t2">м³</td>
@@ -420,7 +437,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 8 В50 W6 F150 арматурой класса А500С, А240</button>
@@ -432,7 +449,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">45 370,03</td>
   <td class="r"><span class="num dear-t">+1 895 613,10 ₽</span><div><span class="badge dear">выше всего, что платили</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 1,2,3,4,5,7,9 В40 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W6 · балки, капители, трансферные конструкции</span></td>
   <td class="t2">м³</td>
@@ -440,7 +457,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Лестницы В30 W6 F150 арматурой класса А500С, А240</button>
@@ -455,13 +472,13 @@ tr.ln.hl td { background:var(--accent-soft); }
 <tr class="ch art leaf" data-depth="2" tabindex="0" aria-expanded="false">
   <td colspan="7" style="padding-left:50px">
     <span class="tw" aria-hidden="true">▾</span><span class="num chn">4.1.3</span> <span class="cht">Устройство вертикальных монолитных ж/б конструкций подземной части</span>
-    <span class="chm">22 строки · КП 294 340 419 ₽<span class="t3"> · ₽/м², вилка и доля — как сейчас</span></span>
+    <span class="chm"><span class="npc">12 без цены</span> · 22 строки · КП 294 340 419 ₽<span class="t3"> · ₽/м², вилка и доля — как сейчас</span></span>
   </td>
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">1 Этап ЖК · Ж/Б конструкции подземной части · </span><span class="cht">Стены 370мм</span>
-    <span class="chm">5 строк · КП 178 739 036 ₽</span>
+    <span class="chm"><span class="npc">1 без цены</span> · 5 строк · КП 178 739 036 ₽</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -494,7 +511,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">62 285,59</td>
   <td class="r"><span class="num dear-t">+3 565 780,41 ₽</span><div><span class="badge dear">выше всего, что платили</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Стены подземной части под Корп. 8 В50 W12F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · W12 · стены</span></td>
   <td class="t2">м³</td>
@@ -502,7 +519,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Стены подземной части под Корпусами 2,3,5,7,9 В40 W12F150 арматурой класса А500С, А240</button>
@@ -517,7 +534,7 @@ tr.ln.hl td { background:var(--accent-soft); }
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">1 Этап ЖК · Ж/Б конструкции подземной части · </span><span class="cht">Колонны, пилоны, трансферные конструкции</span>
-    <span class="chm">6 строк · КП 66 980 400 ₽</span>
+    <span class="chm"><span class="npc">2 без цены</span> · 6 строк · КП 66 980 400 ₽</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -550,7 +567,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">—</td>
   <td class="r"><div><span class="badge">нет аналога в зоне строки</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Колонны подземной части под Корп. 8 В70 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B70 · W6 · колонны</span></td>
   <td class="t2">м³</td>
@@ -558,7 +575,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Колонны подземной части под Корпусами 2,3,5,7,9 В40 W6 F150 арматурой класса А500С, А240</button>
@@ -570,7 +587,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">73 063,14</td>
   <td class="r"><span class="num dear-t">+4 848 576,72 ₽</span><div><span class="badge dear">выше всего, что платили</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Колонны подземной части парковки В40 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W6 · колонны</span></td>
   <td class="t2">м³</td>
@@ -578,15 +595,15 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">2 Этап БЦ · Ж/Б конструкции подземной части · </span><span class="cht">Стены 370мм</span>
-    <span class="chm">5 строк · КП 36 387 929 ₽</span>
+    <span class="chm"><span class="npc">4 без цены</span> · 5 строк · КП 36 387 929 ₽</span>
   </td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Стены подземной части под Корп. 1 (до отм. 0.000) В60 W12F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B60 · W12 · стены</span></td>
   <td class="t2">м³</td>
@@ -594,9 +611,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Стены подземной части под Корп. 4 В50 W12F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · W12 · стены</span></td>
   <td class="t2">м³</td>
@@ -604,9 +621,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Стены подземной части под Корп. 6 В70 W12F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B70 · W12 · стены</span></td>
   <td class="t2">м³</td>
@@ -614,7 +631,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Стены подземной части под Корп. 8 В50 W12F150 арматурой класса А500С, А240</button>
@@ -626,7 +643,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">58 714,62</td>
   <td class="r"><span class="num dear-t">+7 270 763,19 ₽</span><div><span class="badge dear">выше всего, что платили</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Стены подземной части под Корпусами 2,3,5,7,9 В40 W12F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W12 · стены</span></td>
   <td class="t2">м³</td>
@@ -634,15 +651,15 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">2 Этап БЦ · Ж/Б конструкции подземной части · </span><span class="cht">Колонны, пилоны, трансферные конструкции</span>
-    <span class="chm">6 строк · КП 12 233 054 ₽</span>
+    <span class="chm"><span class="npc">5 без цены</span> · 6 строк · КП 12 233 054 ₽</span>
   </td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Колонны подземной части под Корп. 1 (до отм. 0.000) В60 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B60 · W6 · колонны</span></td>
   <td class="t2">м³</td>
@@ -650,9 +667,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Колонны подземной части под Корп. 4 В60 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B60 · W6 · колонны</span></td>
   <td class="t2">м³</td>
@@ -660,9 +677,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Колонны подземной части под Корп. 6 В70  W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B70 · W6 · колонны</span></td>
   <td class="t2">м³</td>
@@ -670,7 +687,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Колонны подземной части под Корп. 8 В70 W6 F150 арматурой класса А500С, А240</button>
@@ -682,7 +699,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">—</td>
   <td class="r"><div><span class="badge">нет аналога в зоне строки</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Колонны подземной части под Корпусами 2,3,5,7,9 В40 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W6 · колонны</span></td>
   <td class="t2">м³</td>
@@ -690,9 +707,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Колонны подземной части парковки В40 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W6 · колонны</span></td>
   <td class="t2">м³</td>
@@ -700,24 +717,24 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ch art mid" data-depth="1" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:32px">
     <span class="tw" aria-hidden="true">▾</span><span class="num chn">4.2</span> <span class="cht">Надземная часть. Конструктивные решения</span>
-    <span class="chm">102 строки · КП 2 886 266 165 ₽<span class="t3"> · ₽/м², вилка и доля — как сейчас</span></span>
+    <span class="chm"><span class="npc">56 без цены</span> · 102 строки · КП 2 886 266 165 ₽<span class="t3"> · ₽/м², вилка и доля — как сейчас</span></span>
   </td>
 </tr>
 <tr class="ch art leaf" data-depth="2" tabindex="0" aria-expanded="false">
   <td colspan="7" style="padding-left:50px">
     <span class="tw" aria-hidden="true">▾</span><span class="num chn">4.2.1</span> <span class="cht">Устройство горизонтальных монолитных конструкций 1-го этажа</span>
-    <span class="chm">16 строк · КП 229 331 267 ₽<span class="t3"> · ₽/м², вилка и доля — как сейчас</span></span>
+    <span class="chm"><span class="npc">10 без цены</span> · 16 строк · КП 229 331 267 ₽<span class="t3"> · ₽/м², вилка и доля — как сейчас</span></span>
   </td>
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">1 Этап ЖК · Ж/Б конструкции надземной части · </span><span class="cht">Плита перекрытия/покрытия 200/250/300мм</span>
-    <span class="chm">5 строк · КП 161 658 733 ₽</span>
+    <span class="chm"><span class="npc">3 без цены</span> · 5 строк · КП 161 658 733 ₽</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -730,7 +747,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">—</td>
   <td class="r"><div><span class="badge">нет аналога: параметры расходятся по разделам сметы</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 6 B60 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B60 · W6 · перекрытия</span></td>
   <td class="t2">м³</td>
@@ -738,9 +755,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 8 В50 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · W6 · не уточнено</span></td>
   <td class="t2">м³</td>
@@ -748,7 +765,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 1, 2, 3, 4, 5, 7, 9 В40 W6 F150 арматурой класса А500С, А240</button>
@@ -760,7 +777,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">—</td>
   <td class="r"><div><span class="badge">нет аналога: параметры расходятся по разделам сметы</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Плиты пандусов В30 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B30 · W6 · рампы</span></td>
   <td class="t2">м³</td>
@@ -768,12 +785,12 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">1 Этап ЖК · Ж/Б конструкции надземной части · </span><span class="cht">Балки, капители, трансферные конструкции</span>
-    <span class="chm">4 строки · КП 15 675 814 ₽</span>
+    <span class="chm"><span class="npc">2 без цены</span> · 4 строки · КП 15 675 814 ₽</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -786,7 +803,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">—</td>
   <td class="r"><div><span class="badge">нет аналога: параметры расходятся по разделам сметы</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 8 В50 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · W6 · не уточнено</span></td>
   <td class="t2">м³</td>
@@ -794,7 +811,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 1, 2, 3, 4, 5, 7, 9 В40 W6 F150 арматурой класса А500С, А240</button>
@@ -806,7 +823,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">—</td>
   <td class="r"><div><span class="badge">нет аналога: параметры расходятся по разделам сметы</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Лестницы В30 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B30 · W6 · лестницы</span></td>
   <td class="t2">м³</td>
@@ -814,15 +831,15 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">2 Этап БЦ · Ж/Б конструкции надземной части · </span><span class="cht">Плита перекрытия/покрытия 200/250/300мм</span>
-    <span class="chm">3 строки · КП 34 340 759 ₽</span>
+    <span class="chm"><span class="npc">2 без цены</span> · 3 строки · КП 34 340 759 ₽</span>
   </td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 6 В50 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · W6 · не уточнено</span></td>
   <td class="t2">м³</td>
@@ -830,7 +847,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 8 В50 W6 F150 арматурой класса А500С, А240</button>
@@ -842,7 +859,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">—</td>
   <td class="r"><div><span class="badge">нет аналога: параметры расходятся по разделам сметы</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 1, 2, 3, 4, 5, 7, 9 В40 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W6 · не уточнено</span></td>
   <td class="t2">м³</td>
@@ -850,15 +867,15 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">2 Этап БЦ · Ж/Б конструкции надземной части · </span><span class="cht">Балки, капители, трансферные конструкции</span>
-    <span class="chm">4 строки · КП 17 655 961 ₽</span>
+    <span class="chm"><span class="npc">3 без цены</span> · 4 строки · КП 17 655 961 ₽</span>
   </td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 6 В50 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · W6 · не уточнено</span></td>
   <td class="t2">м³</td>
@@ -866,7 +883,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 8 В50 W6 F150 арматурой класса А500С, А240</button>
@@ -878,7 +895,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">—</td>
   <td class="r"><div><span class="badge">нет аналога: параметры расходятся по разделам сметы</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 1, 2, 3, 4, 5, 7, 9 В40 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W6 · не уточнено</span></td>
   <td class="t2">м³</td>
@@ -886,9 +903,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Лестницы В30 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B30 · W6 · лестницы</span></td>
   <td class="t2">м³</td>
@@ -896,18 +913,18 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ch art leaf" data-depth="2" tabindex="0" aria-expanded="false">
   <td colspan="7" style="padding-left:50px">
     <span class="tw" aria-hidden="true">▾</span><span class="num chn">4.2.2</span> <span class="cht">Устройство вертикальных монолитных конструкций 1-го этажа</span>
-    <span class="chm">20 строк · КП 130 290 447 ₽<span class="t3"> · ₽/м², вилка и доля — как сейчас</span></span>
+    <span class="chm"><span class="npc">10 без цены</span> · 20 строк · КП 130 290 447 ₽<span class="t3"> · ₽/м², вилка и доля — как сейчас</span></span>
   </td>
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">1 Этап ЖК · Ж/Б конструкции надземной части · </span><span class="cht">Стены 200/250мм</span>
-    <span class="chm">5 строк · КП 68 131 763 ₽</span>
+    <span class="chm"><span class="npc">1 без цены</span> · 5 строк · КП 68 131 763 ₽</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -940,7 +957,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">62 525,05</td>
   <td class="r"><span class="num dear-t">+1 843 725,27 ₽</span><div><span class="badge dear">выше всего, что платили</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 8 B50 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · W6 · стены</span></td>
   <td class="t2">м³</td>
@@ -948,7 +965,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 2, 3, 5, 7, 9 В40 W6 F150 арматурой класса А500С, А240</button>
@@ -963,7 +980,7 @@ tr.ln.hl td { background:var(--accent-soft); }
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">1 Этап ЖК · Ж/Б конструкции надземной части · </span><span class="cht">Колонны, пилоны, трансферные конструкции</span>
-    <span class="chm">5 строк · КП 24 003 823 ₽</span>
+    <span class="chm"><span class="npc">1 без цены</span> · 5 строк · КП 24 003 823 ₽</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -996,7 +1013,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">—</td>
   <td class="r"><div><span class="badge">нет аналога с этими параметрами</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 8  B70 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B70 · W6 · колонны, пилоны, трансферные конструкции</span></td>
   <td class="t2">м³</td>
@@ -1004,7 +1021,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 2, 3, 5, 7, 9 В40 W6 F150 арматурой класса А500С, А240</button>
@@ -1019,10 +1036,10 @@ tr.ln.hl td { background:var(--accent-soft); }
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">2 Этап БЦ · Ж/Б конструкции надземной части · </span><span class="cht">Стены 200/250мм</span>
-    <span class="chm">5 строк · КП 31 701 693 ₽</span>
+    <span class="chm"><span class="npc">4 без цены</span> · 5 строк · КП 31 701 693 ₽</span>
   </td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 1  B60 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B60 · W6 · не уточнено</span></td>
   <td class="t2">м³</td>
@@ -1030,9 +1047,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 4 B50 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · W6 · стены</span></td>
   <td class="t2">м³</td>
@@ -1040,9 +1057,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 6  B70  W12 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B70 · W12 · стены</span></td>
   <td class="t2">м³</td>
@@ -1050,7 +1067,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 8 B50 W6 F150 арматурой класса А500С, А240</button>
@@ -1062,7 +1079,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">56 500,02</td>
   <td class="r"><span class="num dear-t">+6 015 088,64 ₽</span><div><span class="badge accent">в нашей вилке</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 2, 3, 5, 7, 9 В40 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W6 · не уточнено</span></td>
   <td class="t2">м³</td>
@@ -1070,15 +1087,15 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">2 Этап БЦ · Ж/Б конструкции надземной части · </span><span class="cht">Колонны, пилоны, трансферные конструкции</span>
-    <span class="chm">5 строк · КП 6 453 168 ₽</span>
+    <span class="chm"><span class="npc">4 без цены</span> · 5 строк · КП 6 453 168 ₽</span>
   </td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 1 B60 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B60 · W6 · не уточнено</span></td>
   <td class="t2">м³</td>
@@ -1086,9 +1103,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 4  B60 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B60 · W6 · колонны, пилоны, трансферные конструкции</span></td>
   <td class="t2">м³</td>
@@ -1096,9 +1113,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 6 B70 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B70 · W6 · колонны, пилоны, трансферные конструкции</span></td>
   <td class="t2">м³</td>
@@ -1106,7 +1123,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 8  B70 W6 F150 арматурой класса А500С, А240</button>
@@ -1118,7 +1135,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">—</td>
   <td class="r"><div><span class="badge">нет аналога с этими параметрами</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 2, 3, 5, 7, 9 В40 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W6 · не уточнено</span></td>
   <td class="t2">м³</td>
@@ -1126,18 +1143,18 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ch art leaf" data-depth="2" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:50px">
     <span class="tw" aria-hidden="true">▾</span><span class="num chn">4.2.3</span> <span class="cht">Устройство горизонтальных монолитных конструкций надземных этажей (кроме 1-го)</span>
-    <span class="chm">24 строки · КП 1 486 141 157 ₽<span class="t3"> · ₽/м², вилка и доля — как сейчас</span></span>
+    <span class="chm"><span class="npc">15 без цены</span> · 24 строки · КП 1 486 141 157 ₽<span class="t3"> · ₽/м², вилка и доля — как сейчас</span></span>
   </td>
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">1 Этап ЖК · Ж/Б конструкции надземной части · </span><span class="cht">Плита перекрытия/покрытия 200мм</span>
-    <span class="chm">4 строки · КП 532 647 755 ₽</span>
+    <span class="chm"><span class="npc">2 без цены</span> · 4 строки · КП 532 647 755 ₽</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -1150,7 +1167,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">—</td>
   <td class="r"><div><span class="badge">нет аналога: параметры расходятся по разделам сметы</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 8 В50 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · W6 · не уточнено</span></td>
   <td class="t2">м³</td>
@@ -1158,7 +1175,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 1,2,3,4,5,7,9 В50 арматурой класса А500С, А240</button>
@@ -1170,7 +1187,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">36 271,57</td>
   <td class="r"><span class="num dear-t">+178 429 115,55 ₽</span><div><span class="badge dear">выше всего, что платили</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 6 В40 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W6 · не уточнено</span></td>
   <td class="t2">м³</td>
@@ -1178,12 +1195,12 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">1 Этап ЖК · Ж/Б конструкции надземной части · </span><span class="cht">Плита перекрытия/покрытия кровля 250мм</span>
-    <span class="chm">4 строки · КП 370 082 409 ₽</span>
+    <span class="chm"><span class="npc">3 без цены</span> · 4 строки · КП 370 082 409 ₽</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -1196,7 +1213,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">—</td>
   <td class="r"><div><span class="badge">нет аналога: параметры расходятся по разделам сметы</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 8 В50 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · W6 · не уточнено</span></td>
   <td class="t2">м³</td>
@@ -1204,9 +1221,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 1,2,3,4,5,7,9 В50 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · не уточнено · перекрытия</span></td>
   <td class="t2">м³</td>
@@ -1214,9 +1231,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 6 В40 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W6 · не уточнено</span></td>
   <td class="t2">м³</td>
@@ -1224,12 +1241,12 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">1 Этап ЖК · Ж/Б конструкции надземной части · </span><span class="cht">Балки, капители, трансферные конструкции</span>
-    <span class="chm">5 строк · КП 62 172 323 ₽</span>
+    <span class="chm"><span class="npc">3 без цены</span> · 5 строк · КП 62 172 323 ₽</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -1242,7 +1259,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">—</td>
   <td class="r"><div><span class="badge">нет аналога: параметры расходятся по разделам сметы</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 8 В50 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · W6 · не уточнено</span></td>
   <td class="t2">м³</td>
@@ -1250,7 +1267,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 1,2,3,4,5,7,9 В50 арматурой класса А500С, А240</button>
@@ -1262,7 +1279,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">—</td>
   <td class="r"><div><span class="badge">нет аналога с этими параметрами</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 6 В40 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W6 · не уточнено</span></td>
   <td class="t2">м³</td>
@@ -1270,9 +1287,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Лестницы В30 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B30 · W6 · лестницы</span></td>
   <td class="t2">м³</td>
@@ -1280,15 +1297,15 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">2 Этап БЦ · Ж/Б конструкции надземной части · </span><span class="cht">Плита перекрытия/покрытия 200мм</span>
-    <span class="chm">7 строк · КП 443 906 397 ₽</span>
+    <span class="chm"><span class="npc">4 без цены</span> · 7 строк · КП 443 906 397 ₽</span>
   </td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус  6 В50 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · W6 · не уточнено</span></td>
   <td class="t2">м³</td>
@@ -1296,7 +1313,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 8 В50 W6 F150 арматурой класса А500С, А240</button>
@@ -1308,7 +1325,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">—</td>
   <td class="r"><div><span class="badge">нет аналога: параметры расходятся по разделам сметы</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 1,2,3,4,5,7,9 В50 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · не уточнено · перекрытия</span></td>
   <td class="t2">м³</td>
@@ -1316,7 +1333,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Плита перекрытия/покрытия кровля 250мм</button>
@@ -1328,7 +1345,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">—</td>
   <td class="r"><div><span class="badge">нет аналога с этими параметрами</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус  6 В50 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · W6 · не уточнено</span></td>
   <td class="t2">м³</td>
@@ -1336,7 +1353,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 8 В50 W6 F150 арматурой класса А500С, А240</button>
@@ -1348,7 +1365,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">—</td>
   <td class="r"><div><span class="badge">нет аналога: параметры расходятся по разделам сметы</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 1,2,3,4,5,7,9 В50 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · не уточнено · перекрытия</span></td>
   <td class="t2">м³</td>
@@ -1356,15 +1373,15 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">2 Этап БЦ · Ж/Б конструкции надземной части · </span><span class="cht">Балки, капители, трансферные конструкции</span>
-    <span class="chm">4 строки · КП 77 332 274 ₽</span>
+    <span class="chm"><span class="npc">3 без цены</span> · 4 строки · КП 77 332 274 ₽</span>
   </td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус  6 В50 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · W6 · не уточнено</span></td>
   <td class="t2">м³</td>
@@ -1372,7 +1389,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 8 В50 W6 F150 арматурой класса А500С, А240</button>
@@ -1384,7 +1401,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">—</td>
   <td class="r"><div><span class="badge">нет аналога: параметры расходятся по разделам сметы</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 1,2,3,4,5,7,9 В50 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · не уточнено · балки, капители, трансферные конструкции</span></td>
   <td class="t2">м³</td>
@@ -1392,9 +1409,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Лестницы В30 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B30 · W6 · лестницы</span></td>
   <td class="t2">м³</td>
@@ -1402,18 +1419,18 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ch art leaf" data-depth="2" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:50px">
     <span class="tw" aria-hidden="true">▾</span><span class="num chn">4.2.4</span> <span class="cht">Устройство вертикальных монолитных конструкций надземных этажей (кроме 1-го)</span>
-    <span class="chm">42 строки · КП 1 040 503 294 ₽<span class="t3"> · ₽/м², вилка и доля — как сейчас</span></span>
+    <span class="chm"><span class="npc">21 без цены</span> · 42 строки · КП 1 040 503 294 ₽<span class="t3"> · ₽/м², вилка и доля — как сейчас</span></span>
   </td>
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">1 Этап ЖК · Ж/Б конструкции надземной части · </span><span class="cht">Стены 200/250мм</span>
-    <span class="chm">9 строк · КП 672 989 459 ₽</span>
+    <span class="chm"><span class="npc">1 без цены</span> · 9 строк · КП 672 989 459 ₽</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -1486,7 +1503,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">55 540,85</td>
   <td class="r"><span class="num dear-t">+32 529 226,26 ₽</span><div><span class="badge accent">в нашей вилке</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 8 с 2-го этажа до кровли В40 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W6 · стены</span></td>
   <td class="t2">м³</td>
@@ -1494,7 +1511,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 2, 3, 5, 7, 9 с 1-го этажа до кровли В40 W6 F150 арматурой класса А500С, А240</button>
@@ -1509,7 +1526,7 @@ tr.ln.hl td { background:var(--accent-soft); }
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">1 Этап ЖК · Ж/Б конструкции надземной части · </span><span class="cht">Колонны, пилоны , трансферные конструкции</span>
-    <span class="chm">12 строк · КП 157 343 824 ₽</span>
+    <span class="chm"><span class="npc">2 без цены</span> · 12 строк · КП 157 343 824 ₽</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -1602,7 +1619,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">—</td>
   <td class="r"><div><span class="badge">нет аналога с этими параметрами</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 8 с 2-го по 3 этаж B70 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B70 · W6 · колонны, пилоны, трансферные конструкции</span></td>
   <td class="t2">м³</td>
@@ -1610,9 +1627,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 8 с 4-го до кровли В60 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B60 · W6 · колонны, пилоны, трансферные конструкции</span></td>
   <td class="t2">м³</td>
@@ -1620,7 +1637,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 2, 3, 5, 7, 9 с 2-го этажа до кровли В40 W6 F150 арматурой класса А500С, А240</button>
@@ -1635,10 +1652,10 @@ tr.ln.hl td { background:var(--accent-soft); }
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">2 Этап БЦ · Ж/Б конструкции надземной части · </span><span class="cht">Стены 200/250мм</span>
-    <span class="chm">9 строк · КП 174 370 522 ₽</span>
+    <span class="chm"><span class="npc">8 без цены</span> · 9 строк · КП 174 370 522 ₽</span>
   </td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 1 с  2-го этаж B60 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B60 · W6 · стены</span></td>
   <td class="t2">м³</td>
@@ -1646,9 +1663,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 1  с +3-го по 9 этаж B50 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · W6 · стены</span></td>
   <td class="t2">м³</td>
@@ -1656,9 +1673,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 1  с +10-го этажа до кровли B40 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W6 · стены</span></td>
   <td class="t2">м³</td>
@@ -1666,9 +1683,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 4 с +2-го этажа  до кровли B40 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W6 · стены</span></td>
   <td class="t2">м³</td>
@@ -1676,9 +1693,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 6  с 2-го (отм. 4,850) по 9 этаж (отм. 29,000) B60 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B60 · W6 · стены</span></td>
   <td class="t2">м³</td>
@@ -1686,9 +1703,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 6 с 10-го (отм. 32,450) по 24 этаж (отм. 81,950) B50 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · W6 · стены</span></td>
   <td class="t2">м³</td>
@@ -1696,9 +1713,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 6 с 25-го (отм. 85,550) до кровли (отм. 173,000) В40 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W6 · стены</span></td>
   <td class="t2">м³</td>
@@ -1706,7 +1723,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 8 с 2-го этажа до кровли В40 W6 F150 арматурой класса А500С, А240</button>
@@ -1718,7 +1735,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">55 540,85</td>
   <td class="r"><span class="num dear-t">+33 326 199,59 ₽</span><div><span class="badge accent">в нашей вилке</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 2, 3, 5, 7, 9 с 1-го этажа до кровли В40 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W6 · стены</span></td>
   <td class="t2">м³</td>
@@ -1726,15 +1743,15 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">2 Этап БЦ · Ж/Б конструкции надземной части · </span><span class="cht">Колонны, пилоны , трансферные конструкции</span>
-    <span class="chm">12 строк · КП 35 799 489 ₽</span>
+    <span class="chm"><span class="npc">10 без цены</span> · 12 строк · КП 35 799 489 ₽</span>
   </td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 1  с 2-го по 4 этаж B60 W6 F150 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B60 · W6 · не уточнено</span></td>
   <td class="t2">м³</td>
@@ -1742,9 +1759,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 1 с 5-го по 24 этаж B50 W6 F150 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · W6 · не уточнено</span></td>
   <td class="t2">м³</td>
@@ -1752,9 +1769,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 1 с 25-го до кровли В40 W6 F150 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W6 · колонны, пилоны, трансферные конструкции</span></td>
   <td class="t2">м³</td>
@@ -1762,9 +1779,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 4 с 2-го по 14 этаж B50 W6 F150 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · W6 · колонны, пилоны, трансферные конструкции</span></td>
   <td class="t2">м³</td>
@@ -1772,9 +1789,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпус 4 с 15-го до кровли В40 W6 F150 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W6 · колонны, пилоны, трансферные конструкции</span></td>
   <td class="t2">м³</td>
@@ -1782,9 +1799,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 6 с 2-го по 9 этаж (отм. 29,000) B70 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B70 · W6 · колонны, пилоны, трансферные конструкции</span></td>
   <td class="t2">м³</td>
@@ -1792,9 +1809,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 6 с 10-го (отм. 32,450) по 19 этаж (отм. 63,950) B60 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B60 · W6 · колонны, пилоны, трансферные конструкции</span></td>
   <td class="t2">м³</td>
@@ -1802,9 +1819,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 6 с 20-го (отм. 67,550) по 39 этаж (отм. 135,950) B50 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · W6 · колонны, пилоны, трансферные конструкции</span></td>
   <td class="t2">м³</td>
@@ -1812,9 +1829,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 6  с 40-го (отм. 139,550) до кровли (отм. 173,000) В40 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W6 · колонны, пилоны, трансферные конструкции</span></td>
   <td class="t2">м³</td>
@@ -1822,7 +1839,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 8 с 2-го по 3 этаж B70 W6 F150 арматурой класса А500С, А240</button>
@@ -1844,7 +1861,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">—</td>
   <td class="r"><div><span class="badge">нет аналога с этими параметрами</span></div></td>
 </tr>
-<tr class="ln" data-depth="4">
+<tr class="ln np" data-depth="4">
   <td class="work" style="padding-left:86px"><button class="lnk" type="button">Корпуса 2, 3, 5, 7, 9 с 2-го этажа до кровли В40 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W6 · колонны, пилоны, трансферные конструкции</span></td>
   <td class="t2">м³</td>
@@ -1852,18 +1869,18 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ch art leaf" data-depth="1" tabindex="0" aria-expanded="false">
   <td colspan="7" style="padding-left:32px">
     <span class="tw" aria-hidden="true">▾</span><span class="num chn">4.3</span> <span class="cht">Металлоконструкции</span>
-    <span class="chm">8 строк · КП 96 083 000 ₽<span class="t3"> · ₽/м², вилка и доля — как сейчас</span></span>
+    <span class="chm"><span class="npc">6 без цены</span> · 8 строк · КП 96 083 000 ₽<span class="t3"> · ₽/м², вилка и доля — как сейчас</span></span>
   </td>
 </tr>
 <tr class="ch sec" data-depth="2" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:50px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="cht">1 Этап ЖК</span>
-    <span class="chm">4 строки · КП 77 529 656 ₽</span>
+    <span class="chm"><span class="npc">3 без цены</span> · 4 строки · КП 77 529 656 ₽</span>
   </td>
 </tr>
 <tr class="ln" data-depth="3">
@@ -1876,7 +1893,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">—</td>
   <td class="r"><div><span class="badge">зона раздела не определена</span></div></td>
 </tr>
-<tr class="ln" data-depth="3">
+<tr class="ln np" data-depth="3">
   <td class="work" style="padding-left:68px"><button class="lnk" type="button">Металлоконструкции парапетов кровли</button>
     <span class="cap">Устройство ограждений · не уточнено · не уточнено · не уточнено</span></td>
   <td class="t2">т</td>
@@ -1884,9 +1901,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/т</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="3">
+<tr class="ln np" data-depth="3">
   <td class="work" style="padding-left:68px"><button class="lnk" type="button">Металлоконструкции переходной балкон</button>
     <span class="cap">Монтаж металлоконструкций · не уточнено · не уточнено · не уточнено</span></td>
   <td class="t2">т</td>
@@ -1894,9 +1911,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/т</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="3">
+<tr class="ln np" data-depth="3">
   <td class="work" style="padding-left:68px"><button class="lnk" type="button">Металлоконструкции прочее</button>
     <span class="cap">Монтаж металлоконструкций · прочие · не уточнено · не уточнено</span></td>
   <td class="t2">т</td>
@@ -1904,12 +1921,12 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/т</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ch sec" data-depth="2" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:50px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="cht">2 Этап БЦ</span>
-    <span class="chm">4 строки · КП 18 553 344 ₽</span>
+    <span class="chm"><span class="npc">3 без цены</span> · 4 строки · КП 18 553 344 ₽</span>
   </td>
 </tr>
 <tr class="ln" data-depth="3">
@@ -1922,7 +1939,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">—</td>
   <td class="r"><div><span class="badge">зона раздела не определена</span></div></td>
 </tr>
-<tr class="ln" data-depth="3">
+<tr class="ln np" data-depth="3">
   <td class="work" style="padding-left:68px"><button class="lnk" type="button">Металлоконструкции парапетов кровли</button>
     <span class="cap">Устройство ограждений · не уточнено · не уточнено · не уточнено</span></td>
   <td class="t2">т</td>
@@ -1930,9 +1947,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/т</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="3">
+<tr class="ln np" data-depth="3">
   <td class="work" style="padding-left:68px"><button class="lnk" type="button">Металлоконструкции переходной балкон</button>
     <span class="cap">Монтаж металлоконструкций · не уточнено · не уточнено · не уточнено</span></td>
   <td class="t2">т</td>
@@ -1940,9 +1957,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/т</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="3">
+<tr class="ln np" data-depth="3">
   <td class="work" style="padding-left:68px"><button class="lnk" type="button">Металлоконструкции прочее</button>
     <span class="cap">Монтаж металлоконструкций · прочие · не уточнено · не уточнено</span></td>
   <td class="t2">т</td>
@@ -1950,21 +1967,21 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/т</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ch art leaf" data-depth="1" tabindex="0" aria-expanded="false">
   <td colspan="7" style="padding-left:32px">
     <span class="tw" aria-hidden="true">▾</span><span class="num chn">4.99</span> <span class="cht">Прочее (конструктивные решения)</span>
-    <span class="chm">2 строки · КП 0 ₽<span class="t3"> · ₽/м², вилка и доля — как сейчас</span></span>
+    <span class="chm"><span class="npc">2 без цены</span> · 2 строки · КП 0 ₽<span class="t3"> · ₽/м², вилка и доля — как сейчас</span></span>
   </td>
 </tr>
 <tr class="ch sec" data-depth="2" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:50px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="cht">1 Этап ЖК</span>
-    <span class="chm">1 строка · КП 0 ₽</span>
+    <span class="chm"><span class="npc">1 без цены</span> · 1 строка · КП 0 ₽</span>
   </td>
 </tr>
-<tr class="ln" data-depth="3">
+<tr class="ln np" data-depth="3">
   <td class="work" style="padding-left:68px"><button class="lnk" type="button">Прочее (конструктивные решения)</button>
     <span class="cap"></span></td>
   <td class="t2">компл</td>
@@ -1972,15 +1989,15 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/компл</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ch sec" data-depth="2" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:50px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="cht">2 Этап БЦ</span>
-    <span class="chm">1 строка · КП 0 ₽</span>
+    <span class="chm"><span class="npc">1 без цены</span> · 1 строка · КП 0 ₽</span>
   </td>
 </tr>
-<tr class="ln" data-depth="3">
+<tr class="ln np" data-depth="3">
   <td class="work" style="padding-left:68px"><button class="lnk" type="button">Прочее (конструктивные решения)</button>
     <span class="cap"></span></td>
   <td class="t2">компл</td>
@@ -1988,7 +2005,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/компл</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr></tbody>
         </table>
       </div>
@@ -2007,13 +2024,13 @@ tr.ln.hl td { background:var(--accent-soft); }
 <tr class="ch art root" data-depth="0" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:14px">
     <span class="tw" aria-hidden="true">▾</span><span class="num chn">4.2.4</span> <span class="cht">Устройство вертикальных монолитных конструкций надземных этажей (кроме 1-го)</span>
-    <span class="chm">42 строки · КП 1 040 503 294 ₽<span class="t3"> · ₽/м², вилка и доля — как сейчас</span></span>
+    <span class="chm"><span class="npc">21 без цены</span> · 42 строки · КП 1 040 503 294 ₽<span class="t3"> · ₽/м², вилка и доля — как сейчас</span></span>
   </td>
 </tr>
 <tr class="ch sec" data-depth="1" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:32px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">1 Этап ЖК · Ж/Б конструкции надземной части · </span><span class="cht">Стены 200/250мм</span>
-    <span class="chm">9 строк · КП 672 989 459 ₽</span>
+    <span class="chm"><span class="npc">1 без цены</span> · 9 строк · КП 672 989 459 ₽</span>
   </td>
 </tr>
 <tr class="ln" data-depth="2">
@@ -2086,7 +2103,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">55 540,85</td>
   <td class="r"><span class="num dear-t">+32 529 226,26 ₽</span><div><span class="badge accent">в нашей вилке</span></div></td>
 </tr>
-<tr class="ln" data-depth="2">
+<tr class="ln np" data-depth="2">
   <td class="work" style="padding-left:50px"><button class="lnk" type="button">Корпус 8 с 2-го этажа до кровли В40 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W6 · стены</span></td>
   <td class="t2">м³</td>
@@ -2094,7 +2111,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="2">
   <td class="work" style="padding-left:50px"><button class="lnk" type="button">Корпуса 2, 3, 5, 7, 9 с 1-го этажа до кровли В40 W6 F150 арматурой класса А500С, А240</button>
@@ -2109,7 +2126,7 @@ tr.ln.hl td { background:var(--accent-soft); }
 <tr class="ch sec" data-depth="1" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:32px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">1 Этап ЖК · Ж/Б конструкции надземной части · </span><span class="cht">Колонны, пилоны , трансферные конструкции</span>
-    <span class="chm">12 строк · КП 157 343 824 ₽</span>
+    <span class="chm"><span class="npc">2 без цены</span> · 12 строк · КП 157 343 824 ₽</span>
   </td>
 </tr>
 <tr class="ln" data-depth="2">
@@ -2202,7 +2219,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">—</td>
   <td class="r"><div><span class="badge">нет аналога с этими параметрами</span></div></td>
 </tr>
-<tr class="ln" data-depth="2">
+<tr class="ln np" data-depth="2">
   <td class="work" style="padding-left:50px"><button class="lnk" type="button">Корпуса 8 с 2-го по 3 этаж B70 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B70 · W6 · колонны, пилоны, трансферные конструкции</span></td>
   <td class="t2">м³</td>
@@ -2210,9 +2227,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="2">
+<tr class="ln np" data-depth="2">
   <td class="work" style="padding-left:50px"><button class="lnk" type="button">Корпуса 8 с 4-го до кровли В60 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B60 · W6 · колонны, пилоны, трансферные конструкции</span></td>
   <td class="t2">м³</td>
@@ -2220,7 +2237,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="2">
   <td class="work" style="padding-left:50px"><button class="lnk" type="button">Корпуса 2, 3, 5, 7, 9 с 2-го этажа до кровли В40 W6 F150 арматурой класса А500С, А240</button>
@@ -2235,10 +2252,10 @@ tr.ln.hl td { background:var(--accent-soft); }
 <tr class="ch sec" data-depth="1" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:32px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">2 Этап БЦ · Ж/Б конструкции надземной части · </span><span class="cht">Стены 200/250мм</span>
-    <span class="chm">9 строк · КП 174 370 522 ₽</span>
+    <span class="chm"><span class="npc">8 без цены</span> · 9 строк · КП 174 370 522 ₽</span>
   </td>
 </tr>
-<tr class="ln" data-depth="2">
+<tr class="ln np" data-depth="2">
   <td class="work" style="padding-left:50px"><button class="lnk" type="button">Корпуса 1 с  2-го этаж B60 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B60 · W6 · стены</span></td>
   <td class="t2">м³</td>
@@ -2246,9 +2263,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="2">
+<tr class="ln np" data-depth="2">
   <td class="work" style="padding-left:50px"><button class="lnk" type="button">Корпуса 1  с +3-го по 9 этаж B50 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · W6 · стены</span></td>
   <td class="t2">м³</td>
@@ -2256,9 +2273,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="2">
+<tr class="ln np" data-depth="2">
   <td class="work" style="padding-left:50px"><button class="lnk" type="button">Корпуса 1  с +10-го этажа до кровли B40 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W6 · стены</span></td>
   <td class="t2">м³</td>
@@ -2266,9 +2283,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="2">
+<tr class="ln np" data-depth="2">
   <td class="work" style="padding-left:50px"><button class="lnk" type="button">Корпуса 4 с +2-го этажа  до кровли B40 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W6 · стены</span></td>
   <td class="t2">м³</td>
@@ -2276,9 +2293,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="2">
+<tr class="ln np" data-depth="2">
   <td class="work" style="padding-left:50px"><button class="lnk" type="button">Корпуса 6  с 2-го (отм. 4,850) по 9 этаж (отм. 29,000) B60 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B60 · W6 · стены</span></td>
   <td class="t2">м³</td>
@@ -2286,9 +2303,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="2">
+<tr class="ln np" data-depth="2">
   <td class="work" style="padding-left:50px"><button class="lnk" type="button">Корпуса 6 с 10-го (отм. 32,450) по 24 этаж (отм. 81,950) B50 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · W6 · стены</span></td>
   <td class="t2">м³</td>
@@ -2296,9 +2313,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="2">
+<tr class="ln np" data-depth="2">
   <td class="work" style="padding-left:50px"><button class="lnk" type="button">Корпуса 6 с 25-го (отм. 85,550) до кровли (отм. 173,000) В40 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W6 · стены</span></td>
   <td class="t2">м³</td>
@@ -2306,7 +2323,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="2">
   <td class="work" style="padding-left:50px"><button class="lnk" type="button">Корпус 8 с 2-го этажа до кровли В40 W6 F150 арматурой класса А500С, А240</button>
@@ -2318,7 +2335,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">55 540,85</td>
   <td class="r"><span class="num dear-t">+33 326 199,59 ₽</span><div><span class="badge accent">в нашей вилке</span></div></td>
 </tr>
-<tr class="ln" data-depth="2">
+<tr class="ln np" data-depth="2">
   <td class="work" style="padding-left:50px"><button class="lnk" type="button">Корпуса 2, 3, 5, 7, 9 с 1-го этажа до кровли В40 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W6 · стены</span></td>
   <td class="t2">м³</td>
@@ -2326,15 +2343,15 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ch sec" data-depth="1" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:32px">
     <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">2 Этап БЦ · Ж/Б конструкции надземной части · </span><span class="cht">Колонны, пилоны , трансферные конструкции</span>
-    <span class="chm">12 строк · КП 35 799 489 ₽</span>
+    <span class="chm"><span class="npc">10 без цены</span> · 12 строк · КП 35 799 489 ₽</span>
   </td>
 </tr>
-<tr class="ln" data-depth="2">
+<tr class="ln np" data-depth="2">
   <td class="work" style="padding-left:50px"><button class="lnk" type="button">Корпус 1  с 2-го по 4 этаж B60 W6 F150 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B60 · W6 · не уточнено</span></td>
   <td class="t2">м³</td>
@@ -2342,9 +2359,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="2">
+<tr class="ln np" data-depth="2">
   <td class="work" style="padding-left:50px"><button class="lnk" type="button">Корпус 1 с 5-го по 24 этаж B50 W6 F150 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · W6 · не уточнено</span></td>
   <td class="t2">м³</td>
@@ -2352,9 +2369,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="2">
+<tr class="ln np" data-depth="2">
   <td class="work" style="padding-left:50px"><button class="lnk" type="button">Корпус 1 с 25-го до кровли В40 W6 F150 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W6 · колонны, пилоны, трансферные конструкции</span></td>
   <td class="t2">м³</td>
@@ -2362,9 +2379,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="2">
+<tr class="ln np" data-depth="2">
   <td class="work" style="padding-left:50px"><button class="lnk" type="button">Корпус 4 с 2-го по 14 этаж B50 W6 F150 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · W6 · колонны, пилоны, трансферные конструкции</span></td>
   <td class="t2">м³</td>
@@ -2372,9 +2389,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="2">
+<tr class="ln np" data-depth="2">
   <td class="work" style="padding-left:50px"><button class="lnk" type="button">Корпус 4 с 15-го до кровли В40 W6 F150 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W6 · колонны, пилоны, трансферные конструкции</span></td>
   <td class="t2">м³</td>
@@ -2382,9 +2399,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="2">
+<tr class="ln np" data-depth="2">
   <td class="work" style="padding-left:50px"><button class="lnk" type="button">Корпуса 6 с 2-го по 9 этаж (отм. 29,000) B70 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B70 · W6 · колонны, пилоны, трансферные конструкции</span></td>
   <td class="t2">м³</td>
@@ -2392,9 +2409,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="2">
+<tr class="ln np" data-depth="2">
   <td class="work" style="padding-left:50px"><button class="lnk" type="button">Корпуса 6 с 10-го (отм. 32,450) по 19 этаж (отм. 63,950) B60 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B60 · W6 · колонны, пилоны, трансферные конструкции</span></td>
   <td class="t2">м³</td>
@@ -2402,9 +2419,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="2">
+<tr class="ln np" data-depth="2">
   <td class="work" style="padding-left:50px"><button class="lnk" type="button">Корпуса 6 с 20-го (отм. 67,550) по 39 этаж (отм. 135,950) B50 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B50 · W6 · колонны, пилоны, трансферные конструкции</span></td>
   <td class="t2">м³</td>
@@ -2412,9 +2429,9 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
-<tr class="ln" data-depth="2">
+<tr class="ln np" data-depth="2">
   <td class="work" style="padding-left:50px"><button class="lnk" type="button">Корпуса 6  с 40-го (отм. 139,550) до кровли (отм. 173,000) В40 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W6 · колонны, пилоны, трансферные конструкции</span></td>
   <td class="t2">м³</td>
@@ -2422,7 +2439,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr>
 <tr class="ln" data-depth="2">
   <td class="work" style="padding-left:50px"><button class="lnk" type="button">Корпуса 8 с 2-го по 3 этаж B70 W6 F150 арматурой класса А500С, А240</button>
@@ -2444,7 +2461,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">—</td>
   <td class="r"><div><span class="badge">нет аналога с этими параметрами</span></div></td>
 </tr>
-<tr class="ln" data-depth="2">
+<tr class="ln np" data-depth="2">
   <td class="work" style="padding-left:50px"><button class="lnk" type="button">Корпуса 2, 3, 5, 7, 9 с 2-го этажа до кровли В40 W6 F150 арматурой класса А500С, А240</button>
     <span class="cap">Устройство жб конструкций · B40 · W6 · колонны, пилоны, трансферные конструкции</span></td>
   <td class="t2">м³</td>
@@ -2452,7 +2469,7 @@ tr.ln.hl td { background:var(--accent-soft); }
   <td class="num r">0,00<span class="cap">₽/м³</span></td>
   <td class="num r">—<span class="cap"></span></td>
   <td class="num r">—</td>
-  <td class="r"><div><span class="badge">в КП нет цены</span></div></td>
+  <td class="r"><div><span class="badge npb">в КП нет цены</span></div></td>
 </tr></tbody></table></div>
     <aside class="sheet">
       <div><h3>Корпуса 1  с +10-го этажа до кровли B40 W6 F150 арматурой класса А500С, А240</h3><p class="small t3">Устройство жб конструкций · B40 · W6 · стены</p></div>
@@ -2525,16 +2542,33 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
   document.querySelectorAll('.tab').forEach(x => x.setAttribute('aria-selected', x === t));
   document.querySelectorAll('.view').forEach(v => v.hidden = v.id !== t.dataset.v);
 }));
+let npMode = 'show';
+const fits = r => npMode === 'show' || (npMode === 'hide' ? !r.classList.contains('np') : r.classList.contains('np'));
 function apply(tbody) {
-  // строка видна, если все её предки-разделы раскрыты
+  const rows = [...tbody.rows];
+  // у группы есть строка под фильтр?
+  const has = new Map();
+  rows.forEach((r, i) => {
+    if (!r.classList.contains('ch')) return;
+    const d = +r.dataset.depth; let ok = false;
+    for (let j = i + 1; j < rows.length && +rows[j].dataset.depth > d; j++) if (!rows[j].classList.contains('ch') && fits(rows[j])) { ok = true; break; }
+    has.set(r, ok);
+  });
   const stack = [];
-  for (const r of tbody.rows) {
+  for (const r of rows) {
     const d = +r.dataset.depth;
     while (stack.length && stack[stack.length - 1].d >= d) stack.pop();
-    r.hidden = stack.some(s => !s.open);
-    if (r.classList.contains('ch')) stack.push({ d, open: r.getAttribute('aria-expanded') === 'true' });
+    const isCh = r.classList.contains('ch');
+    r.hidden = stack.some(s => !s.open) || (isCh ? !has.get(r) : !fits(r));
+    if (isCh) stack.push({ d, open: r.getAttribute('aria-expanded') === 'true' });
   }
 }
+document.querySelectorAll('[data-np]').forEach(b => b.addEventListener('click', () => {
+  npMode = b.dataset.np;
+  document.querySelectorAll('[data-np]').forEach(x => x.setAttribute('aria-pressed', x === b));
+  if (npMode === 'only') document.querySelectorAll('#v1 tr.ch').forEach(r => r.setAttribute('aria-expanded', 'true'));
+  document.querySelectorAll('tbody').forEach(apply);
+}));
 document.querySelectorAll('tbody').forEach(tb => {
   tb.querySelectorAll('tr.ch').forEach(r => {
     const go = () => { r.setAttribute('aria-expanded', r.getAttribute('aria-expanded') !== 'true'); apply(tb); };
