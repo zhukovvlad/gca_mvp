@@ -49,6 +49,22 @@ describe("ReleasableQueue", () => {
     expect(within(paramRow("Тип материала")).getByText(/Модель: обязателен/)).toBeInTheDocument();
   });
 
+  it("выделена кнопка ответа модели, а не альтернатива (стенд 09.11.2026: подсветка была перевёрнута)", async () => {
+    renderWithProviders(<ReleasableQueue />);
+    await screen.findAllByTestId("releasable-row");
+
+    const releasable = paramRow("Толщина");
+    expect(within(releasable).getByRole("button", { name: "Можно отпустить" })).toHaveAttribute("data-suggested", "true");
+    expect(within(releasable).getByRole("button", { name: "Обязателен" })).not.toHaveAttribute("data-suggested");
+    expect(within(releasable).getByRole("button", { name: "Можно отпустить" })).toHaveClass("bg-primary");
+    expect(within(releasable).getByRole("button", { name: "Обязателен" })).not.toHaveClass("bg-primary");
+
+    const required = paramRow("Тип материала");
+    expect(within(required).getByRole("button", { name: "Обязателен" })).toHaveAttribute("data-suggested", "true");
+    expect(within(required).getByRole("button", { name: "Обязателен" })).toHaveClass("bg-primary");
+    expect(within(required).getByRole("button", { name: "Можно отпустить" })).not.toHaveClass("bg-primary");
+  });
+
   it("«Можно отпустить»: PUT с releasable true и request_hash предложения, строка уходит", async () => {
     const user = userEvent.setup();
     renderWithProviders(<ReleasableQueue />);

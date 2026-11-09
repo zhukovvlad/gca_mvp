@@ -72,10 +72,13 @@ function ParameterRow({
         </div>
       </div>
       <div className="flex gap-1.5">
+        {/* Ответ модели — основная кнопка: согласие одним нажатием на выделенное. `secondary`
+            в тёмной теме читался как текст, и выделенной казалась альтернатива. */}
         <Button
           type="button"
           size="sm"
-          variant={row.releasable ? "secondary" : "outline"}
+          variant={row.releasable ? "default" : "outline"}
+          data-suggested={row.releasable ? "true" : undefined}
           disabled={busy}
           onClick={() => onDecide(true)}
         >
@@ -84,7 +87,8 @@ function ParameterRow({
         <Button
           type="button"
           size="sm"
-          variant={row.releasable ? "outline" : "secondary"}
+          variant={row.releasable ? "outline" : "default"}
+          data-suggested={row.releasable ? undefined : "true"}
           disabled={busy}
           onClick={() => onDecide(false)}
         >
