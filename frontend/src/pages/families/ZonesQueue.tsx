@@ -15,13 +15,18 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { formatConfidence } from "@/lib/format";
 import { RecalcOverlay } from "@/pages/tenders/our-price/RecalcOverlay";
 import { SAVING_LABEL } from "@/pages/tenders/our-price/ourPriceCopy";
-import { useDecideChainZone, useSectionChains } from "@/services/queries";
+import {
+  useAcceptAllZones,
+  useDecideChainZone,
+  useSectionChains,
+} from "@/services/queries";
 import type {
   SectionChainFilter,
   SectionChainRow,
   SectionZone,
 } from "@/types/domain";
 
+import { AcceptAllDialog } from "./AcceptAllDialog";
 import {
   SECTION_ZONES,
   ZONE_FILTER_LABEL,
@@ -135,9 +140,12 @@ export function ZonesQueue({ highlightChainId = null }: ZonesQueueProps) {
   const [page, setPage] = useState(1);
   const query = useSectionChains({ filter, q: search, page });
   const decide = useDecideChainZone();
+  const acceptAll = useAcceptAllZones();
+  const busy = decide.isPending || acceptAll.isPending;
 
   const items = query.data?.items ?? [];
   const total = query.data?.total ?? 0;
+  const acceptable = query.data?.acceptable_total ?? 0;
   const lastValidPage = Math.max(1, Math.ceil(total / PAGE_SIZE));
   // Очередь сузилась решением, и текущей страницы больше нет.
   if (query.data && !query.isPlaceholderData && page > lastValidPage)
@@ -197,6 +205,15 @@ export function ZonesQueue({ highlightChainId = null }: ZonesQueueProps) {
 
       <FetchingBar active={query.isFetching && !query.isPending} />
 
+      {acceptable > 0 && (
+        <AcceptAllDialog
+          count={acceptable}
+          disabled={busy}
+          description={`Будут приняты ${acceptable} зон, предложенных моделью. Ответы «не знаю» останутся в очереди. Исправить потом можно в фильтре «Все» этой очереди.`}
+          onConfirm={() => acceptAll.mutate()}
+        />
+      )}
+
       {query.isPending && <ListSkeleton />}
       {query.isError && (
         <EmptyState
@@ -223,7 +240,7 @@ export function ZonesQueue({ highlightChainId = null }: ZonesQueueProps) {
       )}
 
       {items.length > 0 && (
-        <RecalcOverlay active={decide.isPending} label={SAVING_LABEL}>
+        <RecalcOverlay active={busy} label={SAVING_LABEL}>
           <div
             data-testid="zones-queue"
             className="overflow-hidden rounded-[10px] border border-border-subtle bg-surface"
@@ -233,7 +250,7 @@ export function ZonesQueue({ highlightChainId = null }: ZonesQueueProps) {
                 key={chain.id}
                 chain={chain}
                 highlighted={chain.id === highlightChainId}
-                busy={decide.isPending}
+                busy={busy}
                 onDecide={(zone) => decide.mutate({ chainId: chain.id, zone })}
               />
             ))}

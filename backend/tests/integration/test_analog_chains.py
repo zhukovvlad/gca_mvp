@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import dataclasses
+import datetime as dt
 import random
 from decimal import Decimal
 
@@ -826,3 +827,99 @@ class TestDecideZone:
             decide_zone(db_session, 987654321, "whole", actor_id=user.id)
 
         assert caught.value.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+#  Массовое принятие зон
+# ---------------------------------------------------------------------------
+
+ACCEPT_ALL_URL = "/api/v1/semantic/section-chains/accept-all"
+
+
+class TestAcceptAllZones:
+    def _seed(self, db, factories):
+        user = factories.UserFactory.create()
+        return dict(
+            concrete=_chain(db, "а", proposed_zone="underground", proposed_confidence=Decimal("0.6")),
+            other=_chain(db, "б", proposed_zone="whole", proposed_confidence=Decimal("0.7")),
+            unknown=_chain(db, "в", proposed_zone="unknown", proposed_confidence=Decimal("0.5")),
+            human=_chain(
+                db, "г", zone="territory", zone_source="human", decided_by=user.id,
+                decided_at=dt.datetime.now(dt.UTC),
+            ),
+            model=_chain(db, "д", zone="whole", zone_source="model"),
+            rule=_chain(db, "е", zone="aboveground", zone_source="rule"),
+            empty=_chain(db, "ж"),
+        )
+
+    def test_accepts_only_concrete_proposals_as_human_decisions(self, admin_client, db_session, factories):
+        chains = self._seed(db_session, factories)
+        db_session.commit()
+
+        response = admin_client.post(ACCEPT_ALL_URL)
+
+        assert response.status_code == 200
+        assert response.json() == {"accepted": 2, "skipped": 0}
+        db_session.expire_all()
+        for key, zone in (("concrete", "underground"), ("other", "whole")):
+            chain = db_session.get(SectionChain, chains[key].id)
+            assert (chain.zone, chain.zone_source) == (zone, "human")
+            assert chain.decided_by is not None and chain.decided_at is not None
+            assert chain.proposed_zone is None and chain.proposed_confidence is None
+        unknown = db_session.get(SectionChain, chains["unknown"].id)
+        assert (unknown.zone, unknown.proposed_zone) == (None, "unknown")
+        for key, zone, source in (
+            ("human", "territory", "human"), ("model", "whole", "model"),
+            ("rule", "aboveground", "rule"), ("empty", None, None),
+        ):
+            chain = db_session.get(SectionChain, chains[key].id)
+            assert (chain.zone, chain.zone_source) == (zone, source)
+
+    def test_list_reports_acceptable_total_without_unknown(self, admin_client, db_session, factories):
+        self._seed(db_session, factories)
+        db_session.commit()
+
+        body = admin_client.get("/api/v1/semantic/section-chains").json()
+
+        assert body["acceptable_total"] == 2
+        assert body["total"] == 3  # спорные: две конкретные и «не знаю»
+
+    def test_a_chain_decided_in_parallel_is_skipped(self, db_session, factories, monkeypatch):
+        chains = self._seed(db_session, factories)
+        db_session.commit()
+        user = factories.UserFactory.create()
+        monkeypatch.setattr(chains_crud, "ACCEPT_ALL_BATCH", 1)
+        real = chains_crud.decide_zone
+        calls = []
+
+        def decide_and_race(db, chain_id, zone, *, actor_id):
+            real(db, chain_id, zone, actor_id=actor_id)
+            if not calls:  # параллельный человек решил вторую цепочку после выборки id
+                db.execute(
+                    sa.update(SectionChain).where(SectionChain.id == chains["other"].id)
+                    .values(
+                        zone="territory", zone_source="human", proposed_zone=None,
+                        proposed_confidence=None,
+                        decided_by=user.id, decided_at=dt.datetime.now(dt.UTC),
+                    )
+                )
+            calls.append(chain_id)
+
+        monkeypatch.setattr(chains_crud, "decide_zone", decide_and_race)
+
+        report = chains_crud.accept_all_zones(db_session, actor_id=user.id)
+
+        assert report == {"accepted": 1, "skipped": 1}
+        db_session.expire_all()
+        assert db_session.get(SectionChain, chains["other"].id).zone == "territory"
+
+    def test_member_is_refused(self, member_client, db_session, factories):
+        chains = self._seed(db_session, factories)
+        db_session.commit()
+
+        assert member_client.post(ACCEPT_ALL_URL).status_code == 403
+        db_session.expire_all()
+        assert db_session.get(SectionChain, chains["concrete"].id).zone is None
+
+    def test_empty_queue(self, admin_client):
+        assert admin_client.post(ACCEPT_ALL_URL).json() == {"accepted": 0, "skipped": 0}

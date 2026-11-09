@@ -1324,6 +1324,16 @@ def list_section_chains_route(
     return crud_section_chains.list_chains(db, filter=filter_, q=q, page=page)
 
 
+@router.post("/section-chains/accept-all")
+def accept_all_section_chains_route(
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Принять все конкретные предложения модели по зонам; «не знаю» остаётся в очереди.
+    Коммиты — в `crud` (пачками)."""
+    return crud_section_chains.accept_all_zones(db, actor_id=admin.id)
+
+
 @router.put("/section-chains/{chain_id}/zone", status_code=status.HTTP_204_NO_CONTENT)
 def decide_section_chain_zone_route(
     chain_id: int,
@@ -1381,6 +1391,16 @@ def list_releasable_proposals_route(
         ],
         "total": len(everything),
     }
+
+
+@router.post("/releasable-proposals/accept-all")
+def accept_all_releasable_route(
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Принять все действующие предложения как решения человека; устаревшие
+    пропускаются. Коммиты — в сервисе (по семье)."""
+    return releasable_module.accept_all_proposals(db, actor_id=admin.id)
 
 
 @router.put(

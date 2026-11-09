@@ -48,6 +48,8 @@ import type {
   PrivacyMatch,
   QueueStatus,
   ReleasableProposalList,
+  AcceptAllReleasableResult,
+  AcceptAllZonesResult,
   SectionChainList,
   SectionChainsParams,
   SectionZone,
@@ -771,6 +773,14 @@ export const semanticApi = {
 
   decideChainZone: (chainId: number, zone: SectionZone): Promise<void> =>
     api.put(`/v1/semantic/section-chains/${chainId}/zone`, { zone }).then(() => undefined),
+
+  acceptAllChainZones: (): Promise<AcceptAllZonesResult> =>
+    api.post<AcceptAllZonesResult>("/v1/semantic/section-chains/accept-all").then((r) => r.data),
+
+  acceptAllReleasable: (): Promise<AcceptAllReleasableResult> =>
+    api
+      .post<AcceptAllReleasableResult>("/v1/semantic/releasable-proposals/accept-all")
+      .then((r) => r.data),
 
   listReleasableProposals: (page: number): Promise<ReleasableProposalList> =>
     api

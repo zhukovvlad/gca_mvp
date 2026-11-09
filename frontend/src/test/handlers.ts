@@ -3248,6 +3248,8 @@ export interface LadderQueuesState {
   zoneDecisions: Array<{ chainId: number; zone: string }>;
   /** Решения признака: `PUT …/releasable`. */
   releasableDecisions: Array<{ familyId: number; parameterId: number; body: Record<string, unknown> }>;
+  /** Сколько раз вызваны `POST …/accept-all` очередей. */
+  acceptAllCalls: { zones: number; releasable: number };
   /** Отпечаток, который сервер считает действующим по параметру; нет записи — отпечаток строки очереди. */
   currentHash: Record<number, string>;
 }
@@ -3258,6 +3260,7 @@ export const ladderQueues: LadderQueuesState = {
   chainRequests: [],
   zoneDecisions: [],
   releasableDecisions: [],
+  acceptAllCalls: { zones: 0, releasable: 0 },
   currentHash: {},
 };
 
@@ -3329,6 +3332,7 @@ export function resetLadderQueues() {
   ladderQueues.chainRequests = [];
   ladderQueues.zoneDecisions = [];
   ladderQueues.releasableDecisions = [];
+  ladderQueues.acceptAllCalls = { zones: 0, releasable: 0 };
   ladderQueues.currentHash = {};
 }
 resetLadderQueues();
@@ -3348,6 +3352,11 @@ function chainMatchesFilter(chain: SectionChainRow, filter: string): boolean {
   }
 }
 
+/** Спорная цепочка с конкретным ответом модели: её принимает «Принять все» (без «не знаю»). */
+function isAcceptableChain(chain: SectionChainRow): boolean {
+  return chain.zone === null && chain.proposed_zone !== null && chain.proposed_zone !== "unknown";
+}
+
 const ladderHandlers = [
   http.get("/api/v1/semantic/section-chains", ({ request }) => {
     const url = new URL(request.url);
@@ -3359,7 +3368,29 @@ const ladderHandlers = [
       (c) => chainMatchesFilter(c, filter) && (q === "" || c.titles.join(" / ").toLowerCase().includes(q))
     );
     const start = (page - 1) * LADDER_PAGE_SIZE;
-    return HttpResponse.json({ items: matched.slice(start, start + LADDER_PAGE_SIZE), total: matched.length });
+    return HttpResponse.json({
+      items: matched.slice(start, start + LADDER_PAGE_SIZE),
+      total: matched.length,
+      acceptable_total: ladderQueues.chains.filter(isAcceptableChain).length,
+    });
+  }),
+  http.post("/api/v1/semantic/section-chains/accept-all", () => {
+    ladderQueues.acceptAllCalls.zones += 1;
+    const targets = ladderQueues.chains.filter(isAcceptableChain);
+    for (const chain of targets) {
+      chain.zone = chain.proposed_zone as SectionChainRow["zone"];
+      chain.zone_source = "human";
+      chain.proposed_zone = null;
+      chain.proposed_confidence = null;
+      chain.proposed_reason = null;
+    }
+    return HttpResponse.json({ accepted: targets.length, skipped: 0 });
+  }),
+  http.post("/api/v1/semantic/releasable-proposals/accept-all", () => {
+    ladderQueues.acceptAllCalls.releasable += 1;
+    const accepted = ladderQueues.proposals.length;
+    ladderQueues.proposals = [];
+    return HttpResponse.json({ accepted, stale: 0, failed: 0 });
   }),
   http.put("/api/v1/semantic/section-chains/:id/zone", async ({ params, request }) => {
     const chainId = Number(params.id);

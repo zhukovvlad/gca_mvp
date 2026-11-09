@@ -478,10 +478,12 @@ LADDER_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
         ("GET", f"{BASE}/section-chains"),
         ("PUT", f"{BASE}/section-chains/{{chain_id}}/zone"),
         ("GET", f"{BASE}/releasable-proposals"),
+        ("POST", f"{BASE}/releasable-proposals/accept-all"),
+        ("POST", f"{BASE}/section-chains/accept-all"),
         ("PUT", f"{BASE}/families/{{family_id}}/parameters/{{parameter_id}}/releasable"),
     }
 )
-assert len(LADDER_ROUTE_TEMPLATES) == 4
+assert len(LADDER_ROUTE_TEMPLATES) == 6
 
 
 def test_route_set_under_prefix_equals_twenty_one_literal():

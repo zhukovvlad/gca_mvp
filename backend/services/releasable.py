@@ -645,6 +645,41 @@ def decide_releasable(
     del actor_id  # решение человека — `origin = human`; отдельного журнала у признака нет
 
 
+def accept_all_proposals(db: Session, *, actor_id: int) -> dict[str, int]:
+    """Принять все действующие предложения как решения человека. Семьи по возрастанию
+    id, по транзакции на семью (коммит после семьи). Каждое предложение идёт под
+    SAVEPOINT: прочий отказ откатывает только это предложение (`failed`), семья
+    продолжается; `409 proposal_stale` исключение гасит ВНУТРИ блока SAVEPOINT, чтобы
+    удаление недействующей строки, сделанное `decide_releasable`, осталось и вошло в
+    коммит семьи (`stale`). Возвращает `{accepted, stale, failed}`."""
+    by_family: dict[int, list[ProposalView]] = {}
+    for view in current_proposals(db, family_ids=None, page=None):
+        by_family.setdefault(view.family_id, []).append(view)
+    accepted = stale = failed = 0
+    try:
+        for family_id in sorted(by_family):
+            for view in by_family[family_id]:
+                try:
+                    with db.begin_nested():
+                        try:
+                            decide_releasable(
+                                db, family_id, view.parameter_id, view.releasable,
+                                request_hash=view.request_hash, actor_id=actor_id,
+                            )
+                            accepted += 1
+                        except DomainError as exc:
+                            if exc.code != CODE_PROPOSAL_STALE:
+                                raise
+                            stale += 1
+                except DomainError:
+                    failed += 1
+            db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return {"accepted": accepted, "stale": stale, "failed": failed}
+
+
 # ---------------------------------------------------------------------------
 #  Уборка и постановка
 # ---------------------------------------------------------------------------

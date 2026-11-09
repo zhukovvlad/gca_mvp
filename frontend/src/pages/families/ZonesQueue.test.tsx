@@ -1,9 +1,12 @@
 import { QueryClient, useQuery } from "@tanstack/react-query";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 
+import { SAVING_LABEL } from "@/pages/tenders/our-price/ourPriceCopy";
 import { qk } from "@/services/queryKeys";
+import { server } from "@/test/server";
 import { chainRow, ladderQueues } from "@/test/handlers";
 import { renderWithProviders } from "@/test/utils";
 
@@ -210,5 +213,67 @@ describe("ZonesQueue", () => {
     await user.click(within(rowOf(/Корпус 2/)).getByRole("button", { name: "Подземная" }));
 
     expect(await screen.findByText("нет цепочки")).toBeInTheDocument();
+  });
+
+  describe("«Принять все предложения модели»", () => {
+    it("кнопка с числом конкретных предложений без «не знаю»", async () => {
+      renderWithProviders(<ZonesQueue />);
+
+      expect(await screen.findByRole("button", { name: "Принять все предложения модели (2)" })).toBeInTheDocument();
+    });
+
+    it("кнопки нет, когда принимать нечего", async () => {
+      ladderQueues.chains = ladderQueues.chains.filter((c) => c.proposed_zone === "unknown" || c.zone !== null);
+      renderWithProviders(<ZonesQueue />);
+
+      await screen.findAllByTestId("zone-row");
+      expect(screen.queryByRole("button", { name: /Принять все предложения модели/ })).not.toBeInTheDocument();
+    });
+
+    it("отмена не шлёт запрос", async () => {
+      const user = userEvent.setup();
+      renderWithProviders(<ZonesQueue />);
+
+      await user.click(await screen.findByRole("button", { name: "Принять все предложения модели (2)" }));
+      const dialog = await screen.findByRole("alertdialog");
+      expect(dialog).toHaveTextContent("Будут приняты 2 зон, предложенных моделью.");
+      expect(dialog).toHaveTextContent("Ответы «не знаю» останутся в очереди.");
+      await user.click(within(dialog).getByRole("button", { name: "Отмена" }));
+
+      await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+      expect(ladderQueues.acceptAllCalls.zones).toBe(0);
+    });
+
+    it("подтверждение шлёт POST, под запросом серый слой, затем тост и «не знаю» остаётся", async () => {
+      const user = userEvent.setup();
+      let release!: () => void;
+      const hold = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      server.use(
+        http.post("/api/v1/semantic/section-chains/accept-all", async () => {
+          await hold;
+          ladderQueues.acceptAllCalls.zones += 1;
+          for (const chain of ladderQueues.chains.filter((c) => c.proposed_zone && c.proposed_zone !== "unknown" && c.zone === null)) {
+            chain.zone = chain.proposed_zone as typeof chain.zone;
+            chain.zone_source = "human";
+            chain.proposed_zone = null;
+          }
+          return HttpResponse.json({ accepted: 2, skipped: 0 });
+        })
+      );
+      renderWithProviders(<ZonesQueue />);
+
+      await user.click(await screen.findByRole("button", { name: "Принять все предложения модели (2)" }));
+      await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Принять все" }));
+
+      expect(await screen.findByTestId("recalc-overlay")).toHaveTextContent(SAVING_LABEL);
+      expect(screen.getAllByTestId("zone-row")).toHaveLength(3);
+      release();
+      expect(await screen.findByText("Принято: 2")).toBeInTheDocument();
+      await waitFor(() => expect(screen.getAllByTestId("zone-row")).toHaveLength(1), LATER);
+      expect(rowOf(/Этаж -1 и кровля/)).toBeInTheDocument();
+      expect(ladderQueues.acceptAllCalls.zones).toBe(1);
+    });
   });
 });

@@ -3789,6 +3789,21 @@ export interface SectionChainRow {
 export interface SectionChainList {
   items: SectionChainRow[];
   total: number;
+  /** Спорные цепочки с конкретным ответом модели (без «не знаю») — их примет «Принять все». */
+  acceptable_total: number;
+}
+
+/** `POST /section-chains/accept-all`. */
+export interface AcceptAllZonesResult {
+  accepted: number;
+  skipped: number;
+}
+
+/** `POST /releasable-proposals/accept-all`. */
+export interface AcceptAllReleasableResult {
+  accepted: number;
+  stale: number;
+  failed: number;
 }
 
 export interface SectionChainsParams {

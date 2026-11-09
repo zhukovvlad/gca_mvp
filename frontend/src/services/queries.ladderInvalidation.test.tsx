@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -9,10 +10,18 @@ import {
   OUR_PRICE_TENDER_ID,
 } from "@/test/fixtures";
 import { handlerState, ladderQueues, SCHEMA_FAMILY_ID } from "@/test/handlers";
+import { server } from "@/test/server";
 import type { SchemaEditDraft } from "@/types/domain";
 import { semanticApi } from "./api/domain";
 import { qk } from "./queryKeys";
-import { useDecideChainZone, useDecideReleasable, useUpdateSchema } from "./queries";
+import {
+  useAcceptAllReleasable,
+  useAcceptAllZones,
+  useDecideChainZone,
+  useDecideReleasable,
+  useQueueStatus,
+  useUpdateSchema,
+} from "./queries";
 
 /**
  * Решения лестницы (зона, признак) и правка схемы меняют аналоги, а с ними цену и источник в файле
@@ -118,5 +127,62 @@ describe("правка схемы и расчёт", () => {
     });
     expect(invalidated(queryClient, ourPriceKey)).toBe(false);
     expect(invalidated(queryClient, previewKey)).toBe(false);
+  });
+});
+
+describe("решение не ждёт медленную сводку очереди", () => {
+  /** Сводка статуса считается ≈ 12 с: мутация обязана завершиться раньше её ответа. */
+  async function withHeldStatus<M extends { isSuccess: boolean }>(
+    useMutationHook: () => M,
+    start: (mutation: M) => void,
+  ) {
+    const queryClient = makeClient();
+    const { result } = renderHook(
+      () => ({ status: useQueueStatus(), mutation: useMutationHook() }),
+      { wrapper: wrapperFor(queryClient) },
+    );
+    await waitFor(() => expect(result.current.status.isSuccess).toBe(true));
+    const statusBody = result.current.status.data;
+    let releaseStatus!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseStatus = resolve;
+    });
+    let statusAnswered = false;
+    server.use(
+      http.get("/api/v1/semantic/status", async () => {
+        await gate;
+        statusAnswered = true;
+        return HttpResponse.json(statusBody);
+      }),
+    );
+    act(() => start(result.current.mutation));
+    await waitFor(() => expect(result.current.mutation.isSuccess).toBe(true));
+    expect(statusAnswered).toBe(false);
+    releaseStatus();
+    await waitFor(() => expect(statusAnswered).toBe(true));
+  }
+
+  it("решение признака", async () => {
+    const row = ladderQueues.proposals.find((p) => p.parameter.id === 11)!;
+    await withHeldStatus(useDecideReleasable, (m) =>
+      m.mutate({
+        familyId: row.family.id,
+        parameterId: 11,
+        releasable: true,
+        requestHash: row.request_hash,
+      }),
+    );
+  });
+
+  it("решение зоны", async () => {
+    await withHeldStatus(useDecideChainZone, (m) => m.mutate({ chainId: 1, zone: "whole" }));
+  });
+
+  it("принять все предложения признаков", async () => {
+    await withHeldStatus(useAcceptAllReleasable, (m) => m.mutate());
+  });
+
+  it("принять все предложения зон", async () => {
+    await withHeldStatus(useAcceptAllZones, (m) => m.mutate());
   });
 });

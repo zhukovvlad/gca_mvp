@@ -8,11 +8,13 @@ import { formatConfidence } from "@/lib/format";
 import { RecalcOverlay } from "@/pages/tenders/our-price/RecalcOverlay";
 import { SAVING_LABEL } from "@/pages/tenders/our-price/ourPriceCopy";
 import {
+  useAcceptAllReleasable,
   useDecideReleasable,
   useReleasableProposals,
 } from "@/services/queries";
 import type { ReleasableProposalRow } from "@/types/domain";
 
+import { AcceptAllDialog } from "./AcceptAllDialog";
 import { releasableLabel } from "./labels";
 import { FetchingBar, ListSkeleton } from "./pending";
 
@@ -109,6 +111,8 @@ export function ReleasableQueue() {
   const [page, setPage] = useState(1);
   const query = useReleasableProposals(page);
   const decide = useDecideReleasable();
+  const acceptAll = useAcceptAllReleasable();
+  const busy = decide.isPending || acceptAll.isPending;
 
   const items = query.data?.items ?? [];
   const total = query.data?.total ?? 0;
@@ -119,6 +123,15 @@ export function ReleasableQueue() {
   return (
     <div className="grid gap-3">
       <FetchingBar active={query.isFetching && !query.isPending} />
+
+      {total > 0 && (
+        <AcceptAllDialog
+          count={total}
+          disabled={busy}
+          description={`Будут приняты все ${total} ответов модели как решения. Исправить отдельный параметр потом можно в схеме семьи — флажок «Можно отпустить».`}
+          onConfirm={() => acceptAll.mutate()}
+        />
+      )}
 
       {query.isPending && <ListSkeleton />}
       {query.isError && (
@@ -134,7 +147,7 @@ export function ReleasableQueue() {
         />
       )}
 
-      <RecalcOverlay active={decide.isPending} label={SAVING_LABEL}>
+      <RecalcOverlay active={busy} label={SAVING_LABEL}>
         <div className="grid gap-3">
           {groupByFamily(items).map((group) => (
             <section
@@ -150,7 +163,7 @@ export function ReleasableQueue() {
                 <ParameterRow
                   key={row.parameter.id}
                   row={row}
-                  busy={decide.isPending}
+                  busy={busy}
                   onDecide={(releasable) =>
                     decide.mutate({
                       familyId: row.family.id,

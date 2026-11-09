@@ -138,4 +138,45 @@ describe("ReleasableQueue", () => {
 
     expect(await screen.findByText("Предложений нет")).toBeInTheDocument();
   });
+
+  describe("«Принять все предложения модели»", () => {
+    it("кнопка с числом предложений очереди", async () => {
+      renderWithProviders(<ReleasableQueue />);
+
+      expect(await screen.findByRole("button", { name: "Принять все предложения модели (3)" })).toBeInTheDocument();
+    });
+
+    it("пустая очередь — кнопки нет", async () => {
+      ladderQueues.proposals = [];
+      renderWithProviders(<ReleasableQueue />);
+
+      await screen.findByText("Предложений нет");
+      expect(screen.queryByRole("button", { name: /Принять все предложения модели/ })).not.toBeInTheDocument();
+    });
+
+    it("отмена не шлёт запрос", async () => {
+      const user = userEvent.setup();
+      renderWithProviders(<ReleasableQueue />);
+
+      await user.click(await screen.findByRole("button", { name: "Принять все предложения модели (3)" }));
+      const dialog = await screen.findByRole("alertdialog");
+      expect(dialog).toHaveTextContent("Будут приняты все 3 ответов модели как решения.");
+      await user.click(within(dialog).getByRole("button", { name: "Отмена" }));
+
+      await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+      expect(ladderQueues.acceptAllCalls.releasable).toBe(0);
+    });
+
+    it("подтверждение шлёт POST, показывает тост «Принято: 3», очередь пустеет", async () => {
+      const user = userEvent.setup();
+      renderWithProviders(<ReleasableQueue />);
+
+      await user.click(await screen.findByRole("button", { name: "Принять все предложения модели (3)" }));
+      await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Принять все" }));
+
+      expect(await screen.findByText("Принято: 3")).toBeInTheDocument();
+      expect(ladderQueues.acceptAllCalls.releasable).toBe(1);
+      await waitFor(() => expect(screen.queryAllByTestId("releasable-row")).toHaveLength(0), LATER);
+    });
+  });
 });

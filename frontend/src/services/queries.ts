@@ -3113,16 +3113,26 @@ export function useReleasableProposals(page: number, { poll = true }: { poll?: b
  * перезагрузки»), поэтому вместе с очередями, сводкой и схемами семей перечитывается весь
  * префикс `["tenders", "our-price"]` и все предпросмотры файла подрядчику.
  */
-function invalidateAfterLadderDecision(qc: ReturnType<typeof useQueryClient>) {
-  return Promise.all([
-    qc.invalidateQueries({ queryKey: qk.semanticQueue.zonesAll }),
-    qc.invalidateQueries({ queryKey: qk.semanticQueue.releasableAll }),
+function invalidateAfterLadderDecision(
+  qc: ReturnType<typeof useQueryClient>,
+  waitFor?: "zones" | "releasable",
+) {
+  const own = waitFor === "zones" ? qk.semanticQueue.zonesAll : qk.semanticQueue.releasableAll;
+  const other = waitFor === "zones" ? qk.semanticQueue.releasableAll : qk.semanticQueue.zonesAll;
+  // Серый слой очереди снимается по перечитыванию её самой: сводка статуса считается ≈ 12 с и
+  // схемы с экранами «Против нашей цены» не нужны, чтобы строка ушла, — их не ждём.
+  const rest = [
+    qc.invalidateQueries({ queryKey: other }),
     qc.invalidateQueries({ queryKey: qk.semanticQueue.status }),
     qc.invalidateQueries({ queryKey: qk.workFamilies.schemasAll }),
     qc.invalidateQueries({ queryKey: qk.tenders.ourPriceAll }),
     // Источник и цена в файле подрядчику считаются по тем же аналогам; отправленные не меняются.
     qc.invalidateQueries({ queryKey: qk.tenders.kpFilePreviewsAll }),
-  ]);
+  ];
+  const ownRefetch = qc.invalidateQueries({ queryKey: own });
+  if (!waitFor) return Promise.all([ownRefetch, ...rest]);
+  void Promise.all(rest);
+  return ownRefetch;
 }
 
 /** Решение человека по зоне цепочки разделов (`PUT /section-chains/{id}/zone`, 204). */
@@ -3131,7 +3141,45 @@ export function useDecideChainZone() {
   return useMutation({
     mutationFn: ({ chainId, zone }: { chainId: number; zone: SectionZone }) =>
       semanticApi.decideChainZone(chainId, zone),
-    onSuccess: () => invalidateAfterLadderDecision(qc),
+    onSuccess: () => invalidateAfterLadderDecision(qc, "zones"),
+    onError: toastApiError,
+  });
+}
+
+/** Решение человека по каждому конкретному предложению модели по зонам (`POST …/accept-all`). */
+export function useAcceptAllZones() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => semanticApi.acceptAllChainZones(),
+    onSuccess: (result) => {
+      toast.success(
+        result.skipped > 0
+          ? `Принято: ${result.accepted} (пропущено: ${result.skipped})`
+          : `Принято: ${result.accepted}`,
+      );
+      return invalidateAfterLadderDecision(qc, "zones");
+    },
+    onError: toastApiError,
+  });
+}
+
+/** Решение человека по каждому действующему предложению «можно отпустить» (`POST …/accept-all`). */
+export function useAcceptAllReleasable() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => semanticApi.acceptAllReleasable(),
+    onSuccess: (result) => {
+      const tail = [
+        result.stale > 0 ? `устарело: ${result.stale}` : null,
+        result.failed > 0 ? `не принято: ${result.failed}` : null,
+      ].filter((part) => part !== null);
+      toast.success(
+        tail.length > 0
+          ? `Принято: ${result.accepted} (${tail.join(", ")})`
+          : `Принято: ${result.accepted}`,
+      );
+      return invalidateAfterLadderDecision(qc, "releasable");
+    },
     onError: toastApiError,
   });
 }
@@ -3157,7 +3205,7 @@ export function useDecideReleasable() {
       releasable: boolean;
       requestHash: string;
     }) => semanticApi.decideReleasable(familyId, parameterId, { releasable, request_hash: requestHash }),
-    onSuccess: () => invalidateAfterLadderDecision(qc),
+    onSuccess: () => invalidateAfterLadderDecision(qc, "releasable"),
     onError: (error) => {
       if (apiErrorCode(error) === "proposal_stale") {
         toast.error(PROPOSAL_STALE_TOAST);

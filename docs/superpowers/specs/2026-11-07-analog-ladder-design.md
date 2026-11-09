@@ -252,6 +252,15 @@
 `human`, снимает предложение. Решение человека побеждает всё и не
 пересчитывается ничем.
 
+**Массовое принятие** — кнопка «Принять все предложения модели (N)» над
+списком, с подтверждением. Принимаются только конкретные предложения
+(зоны нет, `proposed_zone` не `unknown`); «не знаю» остаётся в очереди.
+Каждое принятие — решение человека (`decide_zone`: источник `human`,
+предложение снято), по возрастанию id, коммит пачками по 100; цепочка,
+у которой к записи под `FOR UPDATE` зона уже стоит или предложение пропало,
+пропускается. Исправить — фильтр «все» этой очереди. `N` — поле
+`acceptable_total` ответа списка.
+
 ### 2.5. Задание модели «зона цепочки»
 
 Новый вид задания `section_zone`; предмет — `section_chain_id` (новый
@@ -420,6 +429,15 @@
 схемы семьи (`SchemaBlock`) у главного параметра — метка «можно
 отпустить», «обязателен» или «не размечен» (+ «предложение модели» при
 открытом предложении).
+
+**Массовое принятие** — кнопка «Принять все предложения модели (N)» над
+списком, с подтверждением. Для каждого действующего предложения (по семьям
+в порядке `family_id`, транзакция на семью) вызывается `decide_releasable`
+с `request_hash` предложения: это решение человека (`origin = human`,
+`revision + 1`, предложение снято). Устаревшее предложение
+(`409 proposal_stale`) пропускается, его удаление коммитится; прочий отказ
+по предложению откатывает только его (SAVEPOINT) и считается отдельно.
+Исправить принятое — флажок «можно отпустить» в схеме семьи.
 
 ### 2.8. Аналоги и лестница работ
 
@@ -772,9 +790,11 @@ unit_mismatch_amount, not_comparable}` — `bargain` уходит; `over_freshes
 
 | Маршрут | Что |
 |---|---|
-| `GET /section-chains?filter=&q=&page=` | очередь «Зоны»: `{items: [{id, titles, zone, zone_source, proposed_zone, proposed_confidence, proposed_reason, job_status, rows_kp, rows_contracts, sample_titles}], total}`; `filter ∈ disputed\|undetermined\|rule\|model\|human\|all`, по умолчанию `disputed` |
+| `GET /section-chains?filter=&q=&page=` | очередь «Зоны»: `{items: [{id, titles, zone, zone_source, proposed_zone, proposed_confidence, proposed_reason, job_status, rows_kp, rows_contracts, sample_titles}], total, acceptable_total}`; `filter ∈ disputed\|undetermined\|rule\|model\|human\|all`, по умолчанию `disputed` |
+| `POST /section-chains/accept-all` | принять все конкретные предложения модели по зонам (без `unknown`) как решения человека; `200 {accepted, skipped}`; только `admin` (§2.4) |
 | `PUT /section-chains/{id}/zone` | `{zone}` — решение человека; 422 `invalid_zone` |
 | `GET /releasable-proposals?page=` | очередь «Можно отпустить»: по семьям, `{family, parameter, values, releasable, confidence, reason, request_hash}`; только параметры действующих версий (§2.7) |
+| `POST /releasable-proposals/accept-all` | принять все действующие предложения как решения человека; `200 {accepted, stale, failed}`; только `admin` (§2.7) |
 | `PUT /families/{fid}/parameters/{pid}/releasable` | `{releasable: bool, request_hash?: str}`; 404 — параметра нет в действующей схеме семьи; 422 `parameter_not_main`; 409 `proposal_stale` — передан `request_hash`, а **действующего** предложения с ним нет: строки нет, её хэш другой или текущий отпечаток, отрендеренный заново под замками входов, другой (семью или схему правили после вопроса, §2.7); без `request_hash` — решение человека по текущему виду схемы, без сверки; решение удаляет предложение параметра |
 
 Ответ `GET /families/{id}/schema` и тело правки схемы получают

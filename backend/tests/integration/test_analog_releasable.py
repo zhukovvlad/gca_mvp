@@ -1826,3 +1826,139 @@ def test_the_module_exposes_the_agreed_names():
     ):
         assert hasattr(releasable, name), name
     assert SemanticJobKind.releasable_params.value == "releasable_params"
+
+
+# ---------------------------------------------------------------------------
+#  Массовое принятие предложений модели
+# ---------------------------------------------------------------------------
+
+def _deferred_false(db, factories):
+    """Как `_deferred`, но модель ответила «обязателен» (false) без уверенности."""
+    world, claim = _running(db, factories)
+    world.old_hash = claim.rendered.request_hash
+    _record(db, claim, _answer(world, releasable=False, confidence=0.6))
+    return world
+
+
+def _revision(db, world) -> int:
+    db.expire_all()
+    return db.get(FamilyParameterSchema, world.schema.id).revision
+
+
+class TestAcceptAll:
+    URL = f"{BASE}/releasable-proposals/accept-all"
+
+    def test_accepts_every_live_proposal_as_a_human_decision(
+        self, admin_client, db_session, factories
+    ):
+        yes = _deferred(db_session, factories)
+        no = _deferred_false(db_session, factories)
+        db_session.commit()
+        before = (_revision(db_session, yes), _revision(db_session, no))
+
+        response = admin_client.post(self.URL)
+
+        assert response.status_code == 200
+        assert response.json() == {"accepted": 4, "stale": 0, "failed": 0}
+        assert _flags(db_session, yes) == [True, True]
+        assert _flags(db_session, no) == [False, False]
+        for world in (yes, no):
+            for pid in world.ids:
+                assert _reload(db_session, FamilyParameter, pid).origin == "human"
+        assert (_revision(db_session, yes), _revision(db_session, no)) == (
+            before[0] + 2, before[1] + 2,
+        )
+        assert _proposals(db_session) == []
+
+    def test_a_proposal_stale_before_the_read_is_not_in_the_queue_and_the_rest_are_accepted(
+        self, admin_client, db_session, factories
+    ):
+        fine = _deferred(db_session, factories)
+        stale = _deferred(db_session, factories)
+        _m_family_title(db_session, stale)
+        db_session.commit()
+        # Предусловие: у устаревшей семьи действующих предложений нет, поэтому в выборку
+        # сводки она не попадает; устареть предложение должно МЕЖДУ выборкой и решением.
+        assert {v.family_id for v in current_proposals(db_session, family_ids=None, page=None)} == {
+            fine.family.id
+        }
+
+        response = admin_client.post(self.URL)
+
+        assert response.json() == {"accepted": 2, "stale": 0, "failed": 0}
+        assert _flags(db_session, stale) == [None, None]
+
+    def test_a_proposal_that_went_stale_after_the_read_is_counted_and_removed(
+        self, db_session, factories, monkeypatch
+    ):
+        fine = _deferred(db_session, factories)
+        stale = _deferred(db_session, factories)
+        db_session.commit()
+        real = releasable.current_proposals
+
+        def read_then_change(db, **kwargs):
+            views = real(db, **kwargs)
+            _m_family_title(db, stale)  # вход семьи изменён после чтения очереди, в обход уборки
+            return views
+
+        monkeypatch.setattr(releasable, "current_proposals", read_then_change)
+
+        report = releasable.accept_all_proposals(db_session, actor_id=_admin(factories).id)
+
+        assert report == {"accepted": 2, "stale": 2, "failed": 0}
+        assert _flags(db_session, fine) == [True, True]
+        assert _flags(db_session, stale) == [None, None]
+        # недействующие строки удалены и удаление закоммичено
+        db_session.rollback()
+        assert _proposals(db_session, stale) == []
+
+    def test_another_domain_error_fails_only_that_proposal(
+        self, db_session, factories, monkeypatch
+    ):
+        world = _deferred(db_session, factories)
+        db_session.commit()
+        real = releasable.decide_releasable
+
+        def refuse_first(db, family_id, parameter_id, *args, **kwargs):
+            if parameter_id == world.ids[0]:
+                raise DomainError(422, "отказ", code="parameter_not_main")
+            return real(db, family_id, parameter_id, *args, **kwargs)
+
+        monkeypatch.setattr(releasable, "decide_releasable", refuse_first)
+
+        report = releasable.accept_all_proposals(db_session, actor_id=_admin(factories).id)
+
+        assert report == {"accepted": 1, "stale": 0, "failed": 1}
+        assert _flags(db_session, world) == [None, True]
+
+    def test_empty_queue(self, admin_client, db_session):
+        response = admin_client.post(self.URL)
+
+        assert response.status_code == 200
+        assert response.json() == {"accepted": 0, "stale": 0, "failed": 0}
+
+    def test_member_is_refused(self, member_client, db_session, factories):
+        world = _deferred(db_session, factories)
+        db_session.commit()
+
+        assert member_client.post(self.URL).status_code == 403
+        assert _flags(db_session, world) == [None, None]
+
+    def test_without_the_request_hash_the_stale_proposal_would_be_accepted(
+        self, db_session, factories, monkeypatch
+    ):
+        """Контроль теста устаревшего: без `request_hash` устаревшее принимается."""
+        stale = _deferred(db_session, factories)
+        db_session.commit()
+        real = releasable.current_proposals
+
+        def read_then_change(db, **kwargs):
+            views = real(db, **kwargs)
+            _m_family_title(db, stale)
+            return [replace(v, request_hash=None) for v in views]
+
+        monkeypatch.setattr(releasable, "current_proposals", read_then_change)
+
+        report = releasable.accept_all_proposals(db_session, actor_id=_admin(factories).id)
+
+        assert report["accepted"] == 2 and report["stale"] == 0

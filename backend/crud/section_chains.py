@@ -399,6 +399,18 @@ def backfill_chains(
 #  Очередь «Зоны»
 # ---------------------------------------------------------------------------
 
+#: Цепочки, которые массовое принятие переводит в решение человека: зоны нет, у модели
+#: конкретный ответ (`unknown` — «не знаю» — остаётся в очереди).
+_ACCEPTABLE = (
+    SectionChain.zone.is_(None),
+    SectionChain.proposed_zone.is_not(None),
+    SectionChain.proposed_zone != "unknown",
+)
+
+#: Размер пачки коммита массового принятия зон.
+ACCEPT_ALL_BATCH = 100
+
+
 def _filter_condition(flt: str):
     if flt == "disputed":
         return sa.and_(SectionChain.zone.is_(None), SectionChain.proposed_zone.is_not(None))
@@ -427,8 +439,11 @@ def list_chains(
     chains = db.execute(
         stmt.order_by(SectionChain.id).offset((page - 1) * PAGE_SIZE).limit(PAGE_SIZE)
     ).scalars().all()
+    acceptable_total = db.execute(
+        sa.select(sa.func.count()).select_from(SectionChain).where(*_ACCEPTABLE)
+    ).scalar_one()
     if not chains:
-        return {"items": [], "total": total}
+        return {"items": [], "total": total, "acceptable_total": acceptable_total}
 
     ids = [chain.id for chain in chains]
     job_status: dict[int, str] = {}
@@ -479,6 +494,8 @@ def list_chains(
             for chain in chains
         ],
         "total": total,
+        # Сколько спорных цепочек «Принять все предложения модели» примет (без «не знаю»).
+        "acceptable_total": acceptable_total,
     }
 
 
@@ -505,3 +522,35 @@ def decide_zone(db: Session, chain_id: int, zone: str, *, actor_id: int) -> None
     chain.decided_at = dt.datetime.now(dt.UTC)
     chain.proposed_zone = chain.proposed_confidence = chain.proposed_reason = None
     db.flush()
+
+
+def accept_all_zones(db: Session, *, actor_id: int) -> dict[str, int]:
+    """Принять все предложения модели по зонам: каждое — решение человека (`decide_zone`).
+    Цепочки по возрастанию id; перед записью строка перечитывается под `FOR UPDATE`, и если
+    зона уже стоит или предложение пропало либо стало «не знаю» — цепочка пропускается.
+    Коммитит сама пачками по `ACCEPT_ALL_BATCH`: одна транзакция на все цепочки держала бы
+    замки и откатывалась бы целиком. Возвращает `{accepted, skipped}`."""
+    ids = list(
+        db.execute(sa.select(SectionChain.id).where(*_ACCEPTABLE).order_by(SectionChain.id))
+        .scalars()
+    )
+    accepted = skipped = 0
+    try:
+        for start in range(0, len(ids), ACCEPT_ALL_BATCH):
+            for chain_id in ids[start:start + ACCEPT_ALL_BATCH]:
+                chain = db.execute(
+                    sa.select(SectionChain)
+                    .where(SectionChain.id == chain_id, *_ACCEPTABLE)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                ).scalar_one_or_none()
+                if chain is None:
+                    skipped += 1
+                    continue
+                decide_zone(db, chain_id, chain.proposed_zone, actor_id=actor_id)
+                accepted += 1
+            db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return {"accepted": accepted, "skipped": skipped}
