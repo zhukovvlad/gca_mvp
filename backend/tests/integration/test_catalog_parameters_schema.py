@@ -838,6 +838,7 @@ class TestParityWithMigration:
             "ck_family_parameters_ordinal_range", "ck_family_parameters_name_not_blank",
             "ck_family_parameters_role", "ck_family_parameters_value_kind",
             "ck_family_parameters_origin", "ck_family_parameters_range_shape",
+            "ck_family_parameters_releasable_main",  # миграция 0024
         },
         "family_parameter_values": {
             "ck_family_parameter_values_origin", "ck_family_parameter_values_value_not_blank",
@@ -1429,7 +1430,10 @@ class TestDowngradeOnDataWithoutCarriers:
             try:
                 with engine.begin() as conn:
                     _seed_world(conn)
-                new = {(row[0], row[1]) for row in _NEW_COLUMNS}
+                # Колонки 0022 и позднейшей 0024: откат до 0021 снимает и те, и другие.
+                new = {(row[0], row[1]) for row in _NEW_COLUMNS} | {
+                    ("family_parameters", "releasable"), ("semantic_jobs", "section_chain_id"),
+                }
                 with engine.connect() as conn:
                     kept = {
                         table: [c for c in _column_names(conn, table) if (table, c) not in new]

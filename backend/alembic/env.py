@@ -78,8 +78,11 @@ RAW_SQL_INDEXES = {
     "uq_family_parameter_schemas_frozen",
     "uq_family_parameter_schemas_building",
     # UNIQUE (kind, COALESCE(context_id,-1), COALESCE(family_id,-1), COALESCE(schema_id,-1),
-    # request_hash) — 0019; заменил uq_semantic_jobs_context_request_hash (0018).
+    # request_hash) — 0019; заменил uq_semantic_jobs_context_request_hash (0018);
+    # 0024 добавил COALESCE(section_chain_id,-1) перед request_hash.
     "uq_semantic_jobs_subject_request_hash",
+    # UNIQUE (md5(chain_key)) — 0024: ключ цепочки до 8185 байт, btree держит ~2704.
+    "uq_section_chains_chain_key_md5",
     # UNIQUE (lower(btrim(title))) — 0021, справочник категорий семей.
     "uq_family_categories_title",
     # UNIQUE (COALESCE(unit_id,-1)) WHERE kind = 'family_discovery' AND status IN

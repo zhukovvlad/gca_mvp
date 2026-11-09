@@ -36,8 +36,10 @@ from crud.our_price_load import (
     category_roots,
     category_rows,
     kp_vat_bases,
+    load_analog_details,
     load_history,
     load_kp_lines,
+    load_work_history,
 )
 from crud.stage_summary import pct_str
 from models import (
@@ -51,8 +53,9 @@ from models import (
     Tender,
     TenderRound,
 )
-from money.inflation import adjust_amount
+from money.inflation import YearMonth, adjust_amount
 from money.price import is_price
+from services.analog_ladder import FamilyLadderInfo, Figure, WorkHistory
 from services.excel import iso_date_to_ru
 from services.kp_comment import CommentInputs, InflationLabel, target_net, template_text
 from services.kp_file import FileContext, KpSourceLine, line_comment_inputs
@@ -69,10 +72,12 @@ from services.our_price import (
     RateRange,
     Rung,
     RungChoice,
+    SavedTarget,
     available_rungs,
     evaluate_offer,
     lines_totals,
     offer_totals,
+    resolve_target,
 )
 from services.our_price_money import (
     UNALLOCATED,
@@ -144,6 +149,12 @@ class _Scene:
     contracts: list[HistoryContract]
     plan: InflationPlan | None
     index: HistoryIndex
+    #: Строки истории по работам, разложенные по семьям, и сведения семей — вход лестницы аналогов.
+    #: Кандидаты семьи считаются один раз на сцену, а не на каждую строку КП.
+    work_history: WorkHistory
+    families: dict[int, FamilyLadderInfo]
+    #: Дата КП: месяц этапа. Нужна и без ряда ИПЦ — самая свежая считается всегда.
+    target_month: YearMonth | None
     kp_lines: dict[int, list[KpLineRow]]
     root_meta: dict[int, ArticleMeta]
     roots_by_estimate: dict[int, dict[int | None, Decimal | None]]
@@ -261,7 +272,10 @@ def _totals_view(totals: OfferTotals, rate: Decimal | None) -> dict:
         return money_pair(value, rate, unit=False)
 
     return {
-        "bargain": pair(totals.bargain),
+        "over_lowest": pair(totals.bargain),
+        "over_freshest": pair(totals.over_freshest),
+        "comparable_lines": totals.comparable_lines,
+        "freshest_lines": totals.freshest_lines,
         "below": pair(totals.below),
         "below_lines": totals.below_lines,
         "unit_mismatch_lines": totals.unit_mismatch_lines,
@@ -280,16 +294,17 @@ def _totals_view(totals: OfferTotals, rate: Decimal | None) -> dict:
     }
 
 
-def _progress(kp_lines: Mapping[int, Sequence[KpLineRow]]) -> dict:
+def _progress(kp_lines: Mapping[int, Sequence[KpLineRow]], results: Mapping[int, LineResult]) -> dict:
     """Тройка плашки по всем строкам (без глав) всех КП этапа. «Ждёт решения
-    администратора» — строка без варианта, не `in_progress`, с флагом сигнала."""
+    администратора» — то же правило, что у флага строки (`_waiting_admin`); `results` — расчёт
+    строк (у участника без расчёта строк в нём нет: считается только правило без варианта)."""
     lines_total = in_progress = waiting_admin = 0
     for rows in kp_lines.values():
         for row in rows:
             lines_total += 1
             if row.line.in_progress:
                 in_progress += 1
-            elif _is_waiting_admin(row.line):
+            elif _waiting_admin(row.line, results.get(row.line.position_item_id)):
                 waiting_admin += 1
     return {"lines_total": lines_total, "in_progress": in_progress, "waiting_admin": waiting_admin}
 
@@ -351,16 +366,21 @@ def _build_scene(
         raise DomainError(404, f"Строка {require_line} не найдена в КП оффера {participants_raw[0][0]}.")
 
     contracts, history_lines = load_history(db, exclude_object_id=head.object_id)
+    work_history, families = load_work_history(
+        db, estimate_of={contract.contract_id: contract.estimate_id for contract in contracts}
+    )
+    target_month = round_target_month(db, head.round_id)
     plan: InflationPlan | None = None
     if inflation_series_id is not None:
         plan = plan_history_inflation(
             db,
             [contract.estimate_id for contract in contracts],
             series_id=inflation_series_id,
-            target_month=round_target_month(db, head.round_id),
+            target_month=target_month,
         )
     factors = plan.factor_by_estimate if plan is not None else None
     index = HistoryIndex(contracts, history_lines, factor_by_estimate=factors)
+    ladder_history = WorkHistory(work_history, families, index.contracts, factors=factors)
 
     root_of, root_meta = category_roots(db)
     roots_by_estimate = net_by_root(
@@ -375,6 +395,9 @@ def _build_scene(
         contracts=contracts,
         plan=plan,
         index=index,
+        work_history=ladder_history,
+        families=families,
+        target_month=target_month,
         kp_lines=kp_lines,
         root_meta=root_meta,
         roots_by_estimate=roots_by_estimate,
@@ -390,9 +413,14 @@ def _evaluate(scene: _Scene, participant: _Participant, choice: RungChoice | Non
     return evaluate_offer(
         [row.line for row in scene.kp_lines[participant.estimate_id]],
         scene.index,
+        work_history=scene.work_history,
+        families=scene.families,
         kp_vat_base=participant.base,
         tender_area=scene.head.area,
         tender_class_id=scene.head.rate_class_id,
+        tender_contractor_id=participant.contractor_id,
+        target_month=scene.target_month,
+        factors=scene.plan.factor_by_estimate if scene.plan is not None else None,
         choice=choice,
         saved=scene.decisions[participant.estimate_id].saved,
     )
@@ -599,7 +627,9 @@ def build_round_view(db: Session, tender_id: int, round_id: int, *, inflation_se
     result = {
         "tender": _tender_view(head),
         "round": _round_view(head),
-        "progress": _progress(scene.kp_lines),
+        "progress": _progress(
+            scene.kp_lines, {pid: res for ev in evaluations.values() for pid, res in ev.lines.items()}
+        ),
         "history": _history_view(scene, history_rate),
         "participants": participant_views,
         "articles": articles,
@@ -655,9 +685,70 @@ def _range_view(rng: RateRange | None, rate: Decimal | None) -> dict | None:
     }
 
 
-def _line_view(row: KpLineRow, result: LineResult, rate: Decimal | None) -> dict:
-    """Строка КП на той ступени, на которой её посчитало ядро (спека 4а §2.12)."""
+def _period_text(period: YearMonth | None) -> str | None:
+    return None if period is None else f"{period.year:04d}-{period.month:02d}"
+
+
+def _lowest_view(result: LineResult, rate: Decimal | None) -> dict | None:
+    """Самая низкая расценка строки: у работы — аналог, у системы — ставка класса (без договора в ядре)."""
+    if result.ours is None:
+        return None
+    figure = result.ladder.lowest if result.ladder is not None else None
+    return {
+        "value": money_pair(result.ours, rate, unit=True),
+        "analog_id": None if figure is None else figure.analog_id,
+        "contract_id": None if figure is None else figure.contract_id,
+        "from_all_classes": result.ours_from_all_classes,
+    }
+
+
+def _freshest_view(figure: Figure | None, history: HistoryIndex, rate: Decimal | None) -> dict | None:
+    if figure is None:
+        return None
+    return {
+        "value": money_pair(figure.value, rate, unit=True),
+        "analog_id": figure.analog_id,
+        "contract_id": figure.contract_id,
+        "period": _period_text(history.contract(figure.contract_id).period),
+    }
+
+
+def _mismatch_view(result: LineResult) -> dict | None:
+    if result.mismatch is None:
+        return None
+    ladder = result.ladder
+    return {
+        "kp_ratio": result.mismatch.kp_ratio,
+        "all_outliers": ladder.all_outliers if ladder is not None else False,
+        "analogs": (
+            []
+            if ladder is None
+            else [
+                {"analog_id": a.position_item_id, "ratio": a.outlier_ratio}
+                for a in ladder.analogs
+                if a.outlier_ratio is not None
+            ]
+        ),
+        "contracts": [{"contract_id": contract_id, "ratio": ratio} for contract_id, ratio in result.mismatch.contracts],
+    }
+
+
+def _waiting_admin(line: KpLine, result: LineResult | None) -> bool:
+    """«Ждёт решения администратора»: нет варианта (спека 4а §2.11) либо нет зоны у цепочки (§2.10).
+    Единственное правило и для флага строки, и для счётчика плашки."""
+    return _is_waiting_admin(line) or (
+        result is not None and result.state is LineState.no_zone and line.zone_waiting
+    )
+
+
+def _line_view(row: KpLineRow, result: LineResult, rate: Decimal | None, history: HistoryIndex) -> dict:
+    """Строка КП: у работы — на лестнице аналогов, у системы — на ступени, которую выбрало ядро.
+
+    Имена ядра 4а (`ours`, `to_ours`, `bargain`) на границе ответа названы по смыслу:
+    `lowest`, `to_lowest`, `over_lowest`.
+    """
     line = row.line
+    ladder = result.ladder
     group = None
     if result.group_index is not None:
         group = {
@@ -665,14 +756,12 @@ def _line_view(row: KpLineRow, result: LineResult, rate: Decimal | None) -> dict
             "share": result.share,
             "kp_per_sqm": money_pair(result.group_per_sqm, rate, unit=True),
         }
-    mismatch = None
-    if result.mismatch is not None:
-        mismatch = {
-            "kp_ratio": result.mismatch.kp_ratio,
-            "contracts": [
-                {"contract_id": contract_id, "ratio": ratio} for contract_id, ratio in result.mismatch.contracts
-            ],
-        }
+    over_freshest = (
+        max(Decimal(0), result.to_freshest)
+        if result.state is LineState.comparable and result.to_freshest is not None
+        else None
+    )
+    waiting_admin = _waiting_admin(line, result)
     return {
         "position_item_id": line.position_item_id,
         "context_id": row.context_id,
@@ -686,13 +775,18 @@ def _line_view(row: KpLineRow, result: LineResult, rate: Decimal | None) -> dict
         "variant_label": row.variant_label,
         "secondary": [{"name": name, "value": value} for name, value in row.secondary],
         "state": result.state.value,
-        "waiting_admin": _is_waiting_admin(line),
+        "waiting_admin": waiting_admin,
         "suggestion_queue": row.suggestion_queue if _is_waiting_admin(line) else None,
         "kind": "system" if line.is_system else "work",
         "kp": {
             "unit_price": money_pair(result.kp_unit_net, rate, unit=True),
             "total": money_pair(result.kp_total_net, rate, unit=False),
         },
+        "work_rung": (
+            None
+            if ladder is None or ladder.rung_no is None
+            else {"no": ladder.rung_no, "released": list(ladder.released), "other_class": ladder.other_class}
+        ),
         "rung": (
             None
             if result.rung is None
@@ -712,21 +806,23 @@ def _line_view(row: KpLineRow, result: LineResult, rate: Decimal | None) -> dict
             }
             for count in result.rungs
         ],
+        "zone": line.zone if not line.is_system else None,
+        "section_chain_id": None if line.is_system else line.section_chain_id,
+        "lowest": _lowest_view(result, rate),
+        "freshest": _freshest_view(result.freshest, history, rate),
         "range": _range_view(result.range, rate),
-        "ours": (
-            None
-            if result.ours is None
-            else {
-                "value": money_pair(result.ours, rate, unit=True),
-                "from_all_classes": result.ours_from_all_classes,
-            }
-        ),
         "position": result.position,
-        "to_ours": money_pair(result.to_ours, rate, unit=False),
-        "bargain": money_pair(result.bargain, rate, unit=False),
+        "to_lowest": money_pair(result.to_ours, rate, unit=False),
+        "to_freshest": money_pair(result.to_freshest, rate, unit=False),
+        "to_lowest_unit": money_pair(result.to_ours_unit, rate, unit=True),
+        "to_freshest_unit": money_pair(result.to_freshest_unit, rate, unit=True),
+        "over_lowest": money_pair(result.bargain, rate, unit=False),
+        "over_freshest": money_pair(over_freshest, rate, unit=False),
         "below": money_pair(result.below, rate, unit=False),
+        "analogs_count": len(ladder.analogs) if ladder is not None else 0,
+        "no_history_reason": ladder.no_history_reason if ladder is not None else None,
         "group": group,
-        "unit_mismatch": mismatch,
+        "unit_mismatch": _mismatch_view(result),
     }
 
 
@@ -762,7 +858,13 @@ def _comment_inputs(
         kp_vat_base=participant.base,
         inflation=_inflation_label(scene.plan),
         agreed_net=agreed_net,
+        saved_target=_saved_target(scene.decisions[participant.estimate_id], row.line.position_item_id),
     )
+
+
+def _saved_target(decisions: EstimateDecisions, pid: int) -> SavedTarget | None:
+    record = decisions.targets.get(pid)
+    return None if record is None else (record[0], record[1])
 
 
 def _template_text(
@@ -797,8 +899,9 @@ def _file_ours(
 def _decision_fields(
     scene: _Scene, participant: _Participant, row: KpLineRow, result: LineResult, template: str | None
 ) -> dict:
-    """Поля решений строки: `agreed`, `comment_kind`, `manual_rung` (спека 4б §2.11).
-    Текст комментария сюда не входит — его отдаёт только панель."""
+    """Поля решений строки: `agreed`, `comment_kind`, `manual_rung`, `target_kind`, `choice`
+    (спека 4б §2.11, спека лестницы аналогов §2.14, §2.17). Текст комментария сюда не входит — его
+    отдаёт только панель."""
     decisions = scene.decisions[participant.estimate_id]
     pid = row.line.position_item_id
 
@@ -817,8 +920,7 @@ def _decision_fields(
     manual_rung = None
     manual = result.manual
     if manual is not None:
-        owner = pid if manual.target == "line" else row.line.key.family_id
-        at, user_id, email = decisions.rung_meta[(manual.target, owner)]
+        at, user_id, email = decisions.rung_meta[(manual.target, row.line.key.family_id)]
         manual_rung = {
             "level": manual.rung.level,
             "scope": manual.rung.scope,
@@ -828,7 +930,31 @@ def _decision_fields(
             "set_by": _author(user_id, email),
             "set_at": iso(at),
         }
-    return {"agreed": agreed, "comment_kind": comment_kind, "manual_rung": manual_rung}
+    choice = resolve_target(_saved_target(decisions, pid), result, is_system=row.line.is_system)
+    choice_view = None
+    if choice is not None:
+        _, _, at, user_id, email = decisions.targets[pid]
+        choice_view = {
+            "kind": choice.kind,
+            "analog_id": choice.analog_id,
+            "active": choice.active,
+            "reset_reason": choice.reset_reason,
+            "set_by": _author(user_id, email),
+            "set_at": iso(at),
+        }
+    if agreed is not None:
+        target_kind = "agreed"
+    elif result.state is not LineState.comparable:
+        target_kind = None
+    else:
+        target_kind = choice.kind if choice is not None and choice.active else "lowest"
+    return {
+        "agreed": agreed,
+        "comment_kind": comment_kind,
+        "manual_rung": manual_rung,
+        "target_kind": target_kind,
+        "choice": choice_view,
+    }
 
 
 def _line_with_decisions(scene: _Scene, participant: _Participant, row: KpLineRow, result: LineResult) -> dict:
@@ -836,7 +962,7 @@ def _line_with_decisions(scene: _Scene, participant: _Participant, row: KpLineRo
     # единицу КП не читаем: вид от неё не зависит.
     template = _template_text(scene, participant, row, result, "")
     return {
-        **_line_view(row, result, participant.base),
+        **_line_view(row, result, participant.base, scene.index),
         **_decision_fields(scene, participant, row, result, template),
     }
 
@@ -879,7 +1005,7 @@ def build_offer_view(
     result = {
         "tender": _tender_view(head),
         "round": _round_view(head),
-        "progress": _progress({participant.estimate_id: rows}),
+        "progress": _progress({participant.estimate_id: rows}, evaluation.lines),
         "history": _history_view(scene, rate),
         "participants": [view],
         "articles": articles,
@@ -912,26 +1038,38 @@ def _rung_choice(level: str | None, scope: str | None, position_item_id: int, au
 
 
 def line_for_rung_check(
-    db: Session, tender_id: int, round_id: int, offer_id: int, position_item_id: int
+    db: Session,
+    tender_id: int,
+    round_id: int,
+    offer_id: int,
+    position_item_id: int,
+    *,
+    inflation_series_id: int | None = None,
 ) -> tuple[int, KpLineRow, LineResult]:
-    """Смета, строка и её расчёт для проверки ручной ступени: та же сцена, что у разбора,
-    но без ряда ИПЦ — число договоров ступени от приведения не зависит.
+    """Смета, строка и её расчёт для проверки решения: та же сцена, что у разбора. Ручная ступень
+    системы ряд не передаёт — число договоров ступени от приведения не зависит; выбор цели работы
+    передаёт ряд чтения: остаток аналогов от приведения зависит (спека лестницы аналогов §2.17).
 
     Raises:
         DomainError 404: тендера, этапа, оффера или строки этого КП нет, у оффера нет сметы.
     """
     scene, participant, evaluation = _offer_context(
-        db, tender_id, round_id, offer_id, inflation_series_id=None, require_line=position_item_id
+        db, tender_id, round_id, offer_id, inflation_series_id=inflation_series_id, require_line=position_item_id
     )
     (row,) = (r for r in scene.kp_lines[participant.estimate_id] if r.line.position_item_id == position_item_id)
     return participant.estimate_id, row, evaluation.lines[position_item_id]
 
 
 def _vat_dropped_view(scene: _Scene, row: KpLineRow, result: LineResult) -> list[dict]:
-    """Договоры, выпавшие из-за неизвестной базы НДС, на ступени строки. Без выбранной
-    ступени (`no_history`) — на первой ступени лестницы строки, где такие договоры
-    есть: охват «класс» — только класс тендера."""
+    """Договоры, выпавшие из-за неизвестной базы НДС, на ступени строки. У работы их называет
+    лестница аналогов. У системы без выбранной ступени (`no_history`) — первая ступень строки,
+    где такие договоры есть: охват «класс» — только класс тендера."""
     line = row.line
+    if result.ladder is not None:
+        return [
+            {"contract_id": c.contract_id, "object_title": c.object_title, "number": c.number, "year": c.year}
+            for c in (scene.index.contract(contract_id) for contract_id in result.ladder.vat_dropped)
+        ]
     if result.rung is not None:
         rungs: Sequence[Rung] = [result.rung]
     elif result.state is LineState.no_history:
@@ -950,6 +1088,47 @@ def _vat_dropped_view(scene: _Scene, row: KpLineRow, result: LineResult) -> list
                 for c in dropped
             ]
     return []
+
+
+def _analogs_view(db: Session, scene: _Scene, participant: _Participant, result: LineResult) -> list[dict]:
+    """Справка работы: все аналоги выбранной ступени (включая выбросы) в порядке спеки §2.11.
+    У системы и у работы без ступени — пусто."""
+    ladder = result.ladder
+    if ladder is None or ladder.rung_no is None:
+        return []
+    details = load_analog_details(db, [analog.position_item_id for analog in ladder.analogs])
+    rate = participant.base
+    lowest = ladder.lowest.analog_id if ladder.lowest is not None else None
+    freshest = ladder.freshest.analog_id if ladder.freshest is not None else None
+    view = []
+    for analog in ladder.analogs:
+        contract = scene.index.contract(analog.contract_id)
+        title, unit, section_titles = details[analog.position_item_id]
+        view.append(
+            {
+                "analog_id": analog.position_item_id,
+                "contract_id": contract.contract_id,
+                "object_title": contract.object_title,
+                "number": contract.number,
+                "year": contract.year,
+                "period": _period_text(analog.period),
+                "rate_class": {"id": contract.rate_class_id, "title": contract.rate_class_title},
+                "contractor_id": contract.contractor_id,
+                "contractor_title": contract.contractor_title,
+                "section_titles": section_titles,
+                "title": title,
+                "unit": unit,
+                "price": money_pair(analog.net, rate, unit=True),
+                "nominal": money_pair(analog.nominal, rate, unit=True),
+                "is_lowest": analog.position_item_id == lowest,
+                "is_freshest": analog.position_item_id == freshest,
+                "outlier_ratio": analog.outlier_ratio,
+                "with_this_contractor": contract.contractor_id == participant.contractor_id,
+                "place_match": analog.place_match,
+                "selectable": analog.outlier_ratio is None,
+            }
+        )
+    return view
 
 
 def build_line_view(
@@ -1020,11 +1199,12 @@ def build_line_view(
         )
 
     vat_dropped = _vat_dropped_view(scene, row, result)
+    analogs = _analogs_view(db, scene, participant, result)
 
     template = _template_text(scene, participant, row, result, unit_texts[position_item_id])
     own_comment = scene.decisions[participant.estimate_id].comments.get(position_item_id)
     line = {
-        **_line_view(row, result, rate),
+        **_line_view(row, result, rate, scene.index),
         **_decision_fields(scene, participant, row, result, template),
         "file_ours": _file_ours(scene, participant, row, result, unit_texts[position_item_id]),
     }
@@ -1032,6 +1212,7 @@ def build_line_view(
         "line": line,
         "group_lines": group_lines,
         "contracts": contracts,
+        "analogs": analogs,
         "vat_dropped": vat_dropped,
         "comment": {
             "kind": line["comment_kind"],
@@ -1053,6 +1234,8 @@ class FileInputs:
     comments: dict[int, str]
     #: position_item_id -> (нетто за единицу, дата `ДД.ММ.ГГГГ`).
     agreements: dict[int, tuple[Decimal, str]]
+    #: position_item_id -> выбор цели работы `(вид, аналог | None)`.
+    targets: dict[int, SavedTarget]
 
 
 def build_file_inputs(
@@ -1116,4 +1299,5 @@ def build_file_inputs(
         evaluation=evaluation,
         comments={pid: record[0] for pid, record in decisions.comments.items()},
         agreements={pid: (record[0], iso_date_to_ru(iso(record[1]))) for pid, record in decisions.agreements.items()},
+        targets={pid: (record[0], record[1]) for pid, record in decisions.targets.items()},
     )

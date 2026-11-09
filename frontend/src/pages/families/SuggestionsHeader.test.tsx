@@ -27,6 +27,8 @@ function status(overrides: Partial<QueueStatus> = {}): QueueStatus {
     contexts_with_variant: 0,
     contexts_pending: 0,
     families_without_schema: 0,
+    zones_disputed: 0,
+    releasable_open: 0,
     ...overrides,
   };
 }

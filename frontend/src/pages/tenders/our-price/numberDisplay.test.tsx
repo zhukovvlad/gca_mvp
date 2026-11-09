@@ -147,7 +147,7 @@ function longView(): OurPriceLineView {
     line: longLine(OUR_PRICE_LINE_ID, {
       quantity: "2600.123456789",
       group: { lines: 2, share: "0.5000001", kp_per_sqm: pair("1", "1") },
-      unit_mismatch: { kp_ratio: "5.3333333333", contracts: [{ contract_id: 101, ratio: "0.2222222222" }] },
+      unit_mismatch: { kp_ratio: "5.3333333333", all_outliers: false, analogs: [], contracts: [{ contract_id: 101, ratio: "0.2222222222" }] },
     }),
     group_lines: [member],
     contracts: [{ ...base.contracts[0], ratio: "5.3333333333" }],

@@ -58,6 +58,7 @@ from services.parameter_ranges import (
     parse_single_number,
     range_for_number,
 )
+from services.releasable import refresh_inputs
 from services.semantic_cost import RESERVE_FORMULA_VERSION, tariffs_from
 from services.semantic_events import record_event
 from services.semantic_reconcile import (
@@ -71,6 +72,7 @@ from services.variant_request import SchemaParameterIn
 from services.work_families import (
     REFUSE_FAMILY_NOT_ACTIVE,
     REFUSE_FAMILY_NOT_FOUND,
+    UNSET,
     WorkFamilyError,
 )
 from services.work_variants import (
@@ -140,6 +142,11 @@ class ParameterDraft:
     closed: bool
     values: tuple[str, ...]
     range: RangeSpec | None
+    #: «Можно отпустить» (спека лестницы аналогов §2.6): `UNSET` — в теле не прислано,
+    #: сохраняется текущее значение параметра (у нового — не размечен); `True`/`False`
+    #: — решение человека; явный `None` — снять признак. У неглавного параметра после
+    #: проверки тела всегда `None`.
+    releasable: bool | None | object = UNSET
 
 
 @dataclass(frozen=True)
@@ -181,6 +188,7 @@ class _ParameterRow:
     range_step: Decimal | None
     origin: str
     archived: bool
+    releasable: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -268,6 +276,7 @@ def _read_state(db: Session, family_id: int, schema_id: int, revision: int) -> _
             role=row.role, value_kind=row.value_kind, closed=row.closed,
             range_from=row.range_from, range_to=row.range_to, range_step=row.range_step,
             origin=row.origin, archived=row.archived_at is not None,
+            releasable=row.releasable,
         )
         for row in db.execute(
             sa.select(
@@ -275,6 +284,7 @@ def _read_state(db: Session, family_id: int, schema_id: int, revision: int) -> _
                 FamilyParameter.name_norm, FamilyParameter.role, FamilyParameter.value_kind,
                 FamilyParameter.closed, FamilyParameter.range_from, FamilyParameter.range_to,
                 FamilyParameter.range_step, FamilyParameter.origin, FamilyParameter.archived_at,
+                FamilyParameter.releasable,
             )
             .where(FamilyParameter.schema_id == schema_id)
             .order_by(FamilyParameter.ordinal)
@@ -432,6 +442,7 @@ def _checked_drafts(drafts: Sequence[ParameterDraft]) -> list[ParameterDraft]:
                 value_kind=draft.value_kind,
                 closed=True if draft.value_kind == ParameterValueKind.range else draft.closed,
                 values=tuple(draft.values), range=draft.range,
+                releasable=draft.releasable if draft.role == ParameterRole.main else None,
             )
         )
     names = [normalize_value(draft.name) for draft in checked]
@@ -537,6 +548,10 @@ class _ParameterPlan:
     rename_to: str | None = None
     role_to: str | None = None
     closed_to: bool | None = None
+    #: Смена признака «можно отпустить» (включая сброс в `None`); `releasable_to` —
+    #: новое значение.
+    releasable_changed: bool = False
+    releasable_to: bool | None = None
     value_renames: list[tuple[int, str]] = field(default_factory=list)
     new_values: list[_NewValue] = field(default_factory=list)
     #: Смена вида, границ или шага существующего параметра (спека 3в §2.6).
@@ -549,8 +564,8 @@ class _ParameterPlan:
     def touched(self) -> bool:
         return bool(
             self.rename_to is not None or self.role_to is not None
-            or self.closed_to is not None or self.value_renames or self.new_values
-            or self.rebuild is not None
+            or self.closed_to is not None or self.releasable_changed
+            or self.value_renames or self.new_values or self.rebuild is not None
         )
 
 
@@ -823,6 +838,9 @@ def _plan_parameter(
         plan.rename_to = draft.name
     if draft.role.value != existing.role:
         plan.role_to = draft.role.value
+    if draft.releasable != existing.releasable:
+        plan.releasable_changed = True
+        plan.releasable_to = draft.releasable
     if draft.value_kind.value != existing.value_kind or (
         existing.value_kind == ParameterValueKind.range.value
         and not _same_range(existing, draft.range)
@@ -908,6 +926,7 @@ def _body_canon(drafts: Sequence[ParameterDraft]) -> list[dict[str, Any]]:
             "role": draft.role.value,
             "value_kind": draft.value_kind.value,
             "closed": draft.closed,
+            "releasable": draft.releasable,
             "values": sorted(
                 (normalize_value(value), value.strip()) for value in draft.values
             ),
@@ -936,6 +955,21 @@ def _build_plan(
             f"номера параметров {sorted(ordinals)}: нужны различные номера активных "
             "параметров версии",
         )
+    # «Не прислано» -> текущее значение параметра (у нового — не размечен): тело
+    # канонизируется и хэшируется по разрешённому значению, поэтому предпросмотр и
+    # применение совпадают, а правка, не меняющая признак, его не трогает.
+    checked = [
+        replace(
+            draft,
+            releasable=(
+                None if draft.ordinal is None
+                else active_by_ordinal[draft.ordinal].releasable
+            ),
+        )
+        if draft.releasable is UNSET
+        else draft
+        for draft in checked
+    ]
     new_count = sum(1 for draft in checked if draft.ordinal is None)
     top = max((p.ordinal for p in state.parameters.values()), default=0)
     if top + new_count > MAX_ORDINAL:
@@ -1188,6 +1222,8 @@ def _changes_of(
                 "role": plan.draft.role.value, "value_kind": plan.draft.value_kind.value,
                 "closed": plan.draft.closed,
             }
+            if plan.draft.releasable is not None:
+                change["releasable"] = plan.draft.releasable
             if plan.draft.range is not None:
                 change["range"] = {
                     "start": _norm_decimal(plan.draft.range.start),
@@ -1207,6 +1243,8 @@ def _changes_of(
             change["role"] = {"from": plan.existing.role, "to": plan.role_to}
         if plan.closed_to is not None:
             change["closed"] = {"from": plan.existing.closed, "to": plan.closed_to}
+        if plan.releasable_changed:
+            change["releasable"] = {"from": plan.existing.releasable, "to": plan.releasable_to}
         if plan.value_renames:
             change["values_renamed"] = [text for _id, text in plan.value_renames]
         if plan.rebuild is not None:
@@ -1441,7 +1479,7 @@ def _write_plan(
                 range_from=item.draft.range.start if item.draft.range else None,
                 range_to=item.draft.range.stop if item.draft.range else None,
                 range_step=item.draft.range.step if item.draft.range else None,
-                origin=ParameterOrigin.human.value,
+                origin=ParameterOrigin.human.value, releasable=item.draft.releasable,
             )
             db.add(row)
             db.flush()
@@ -1456,6 +1494,8 @@ def _write_plan(
                     values["role"] = item.role_to
                 if item.closed_to is not None:
                     values["closed"] = item.closed_to
+                if item.releasable_changed:
+                    values["releasable"] = item.releasable_to
                 if item.rebuild is not None:
                     spec = item.draft.range
                     values["value_kind"] = item.draft.value_kind.value
@@ -1464,12 +1504,13 @@ def _write_plan(
                     values["range_step"] = None if spec is None else spec.step
                 if item.existing.origin == ParameterOrigin.model.value:
                     values["origin"] = ParameterOrigin.human.value
-                db.execute(
-                    sa.update(FamilyParameter)
-                    .where(FamilyParameter.id == parameter_id)
-                    .values(**values)
-                    .execution_options(synchronize_session=False)
-                )
+                if values:  # у параметра человека одна правка значений полей не меняет
+                    db.execute(
+                        sa.update(FamilyParameter)
+                        .where(FamilyParameter.id == parameter_id)
+                        .values(**values)
+                        .execution_options(synchronize_session=False)
+                    )
         for value_id, text in item.value_renames:
             db.execute(
                 sa.update(FamilyParameterValue)
@@ -1551,6 +1592,10 @@ def _write_plan(
     report = reconcile_context_values(
         db, plan.state.context_ids, cap=NO_CAP, source="operation"
     )
+    # Входы запроса «можно отпустить» могли измениться: предложения, ставшие
+    # недействующими, убираются, задание со старым отпечатком отменяется, при
+    # неразмеченном главном ставится новое (спека лестницы аналогов §2.7).
+    refresh_inputs(db, [schema_id], settings=settings)
     for parameter_id, value_id, text in added_events:
         record_event(
             db, event_type="family_schema_value_added", family_id=family_id, actor_id=actor_id,

@@ -92,6 +92,10 @@ export function ParameterEditor({ schema, draft, saved, edited, moves, onChange,
     onChange({ values: [...draft.values, trimmed] });
   }
 
+  // Признак показывается по черновику, если его тронули, иначе по сохранённому; в теле правки он
+  // уходит только после касания флажка.
+  const releasable = draft.releasable !== undefined ? draft.releasable : (saved?.releasable ?? null);
+
   const origin =
     draft.ordinal === null
       ? PARAMETER_NEW_LABEL
@@ -118,7 +122,13 @@ export function ParameterEditor({ schema, draft, saved, edited, moves, onChange,
           value={[draft.role]}
           onValueChange={(value) => {
             const next = value[0];
-            if (next !== undefined) onChange({ role: next as ParameterRole });
+            if (next === undefined) return;
+            // Смена роли на второстепенную снимает признак: он бывает только у главного.
+            onChange(
+              next === "secondary" && releasable !== null
+                ? { role: "secondary", releasable: null }
+                : { role: next as ParameterRole }
+            );
           }}
         >
           {ROLES.map((role) => (
@@ -128,6 +138,25 @@ export function ParameterEditor({ schema, draft, saved, edited, moves, onChange,
           ))}
         </ToggleGroup>
         <p className="text-xs text-fg-tertiary">{PARAMETER_ROLE_HINT}</p>
+        {draft.role === "main" && (
+          <div className="grid gap-1">
+            <div className="flex items-center gap-2 text-sm">
+              <Checkbox
+                id="schema-edit-releasable"
+                checked={releasable === true}
+                onCheckedChange={(checked) => onChange({ releasable: checked === true })}
+              />
+              <Label htmlFor="schema-edit-releasable" className="font-normal">
+                Можно отпустить
+              </Label>
+              {releasable === null && <span className="text-xs text-fg-tertiary">не размечен</span>}
+            </div>
+            <p className="text-xs text-fg-tertiary">
+              Строку с другим значением этого параметра можно взять аналогом, если с тем же значением
+              аналога нет. Пока не отмечено, параметр обязателен.
+            </p>
+          </div>
+        )}
       </div>
 
       <div className="grid gap-2">

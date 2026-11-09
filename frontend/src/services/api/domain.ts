@@ -47,6 +47,12 @@ import type {
   JobsStatus,
   PrivacyMatch,
   QueueStatus,
+  ReleasableProposalList,
+  AcceptAllReleasableResult,
+  AcceptAllZonesResult,
+  SectionChainList,
+  SectionChainsParams,
+  SectionZone,
   ReaskPreview,
   ReconcileResult,
   SuggestionQueue,
@@ -494,6 +500,25 @@ export const tendersApi = {
   ): Promise<void> => api.put(`${lineDecisionUrl(tenderId, roundId, offerId, positionItemId)}/rung`, body).then(() => undefined),
   deleteRung: (tenderId: number, roundId: number, offerId: number, positionItemId: number): Promise<void> =>
     api.delete(`${lineDecisionUrl(tenderId, roundId, offerId, positionItemId)}/rung`).then(() => undefined),
+  /**
+   * Выбор цели строки-работы (спека лестницы аналогов §2.17). `seriesId` - ряд ИПЦ экрана: остаток
+   * аналогов от него зависит, сервер проверяет строку с тем же рядом, с которым читалась панель.
+   */
+  putTarget: (
+    tenderId: number,
+    roundId: number,
+    offerId: number,
+    positionItemId: number,
+    body: { kind: "freshest" } | { kind: "analog"; analog_id: number },
+    seriesId: number | null
+  ): Promise<void> =>
+    api
+      .put(`${lineDecisionUrl(tenderId, roundId, offerId, positionItemId)}/target`, body, {
+        params: seriesId === null ? undefined : { inflation_series_id: seriesId },
+      })
+      .then(() => undefined),
+  deleteTarget: (tenderId: number, roundId: number, offerId: number, positionItemId: number): Promise<void> =>
+    api.delete(`${lineDecisionUrl(tenderId, roundId, offerId, positionItemId)}/target`).then(() => undefined),
   /** Предпросмотр файла подрядчику; `seriesId = null` - без приведения по ИПЦ. */
   kpFilePreview: (
     tenderId: number,
@@ -738,6 +763,38 @@ export const semanticApi = {
 
   queueStatus: (): Promise<QueueStatus> =>
     api.get<QueueStatus>("/v1/semantic/status").then((r) => r.data),
+
+  listSectionChains: (params: SectionChainsParams): Promise<SectionChainList> =>
+    api
+      .get<SectionChainList>("/v1/semantic/section-chains", {
+        params: { filter: params.filter, q: params.q.trim() === "" ? undefined : params.q.trim(), page: params.page },
+      })
+      .then((r) => r.data),
+
+  decideChainZone: (chainId: number, zone: SectionZone): Promise<void> =>
+    api.put(`/v1/semantic/section-chains/${chainId}/zone`, { zone }).then(() => undefined),
+
+  acceptAllChainZones: (): Promise<AcceptAllZonesResult> =>
+    api.post<AcceptAllZonesResult>("/v1/semantic/section-chains/accept-all").then((r) => r.data),
+
+  acceptAllReleasable: (): Promise<AcceptAllReleasableResult> =>
+    api
+      .post<AcceptAllReleasableResult>("/v1/semantic/releasable-proposals/accept-all")
+      .then((r) => r.data),
+
+  listReleasableProposals: (page: number): Promise<ReleasableProposalList> =>
+    api
+      .get<ReleasableProposalList>("/v1/semantic/releasable-proposals", { params: { page } })
+      .then((r) => r.data),
+
+  decideReleasable: (
+    familyId: number,
+    parameterId: number,
+    input: { releasable: boolean; request_hash: string }
+  ): Promise<void> =>
+    api
+      .put(`/v1/semantic/families/${familyId}/parameters/${parameterId}/releasable`, input)
+      .then(() => undefined),
 
   confirmSuggestions: (suggestionIds: number[]): Promise<ConfirmSuggestionsResult> =>
     api

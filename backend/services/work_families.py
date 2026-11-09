@@ -86,6 +86,7 @@ from models import (
     WorkFamily,
     WorkVariant,
 )
+from services.releasable import refresh_family, refresh_inputs
 from services.semantic_cost import event_cap_from
 from services.semantic_events import record_event
 from services.semantic_reconcile import (
@@ -499,6 +500,10 @@ def update_family(
         actor_id=actor_id,
         payload={"changed": changed},
     )
+    if any(item["field"] in ("title", "definition") for item in changed):
+        # Имя и определение входят в запрос «можно отпустить» (спека лестницы
+        # аналогов §2.7): уборка предложений и задания действующей версии.
+        refresh_family(db, family_id, settings=app_settings)
     return family
 
 
@@ -1062,6 +1067,8 @@ def set_unit(db: Session, *, family_id: int, unit_name: str | None, actor_id: in
             actor_id=actor_id,
             payload={"changed": [{"field": "unit_id", "from": old_unit_id, "to": resolved.unit_id}]},
         )
+        # Единица входит в запрос «можно отпустить» (спека лестницы аналогов §2.7).
+        refresh_family(db, family_id, settings=app_settings)
     return family
 
 
@@ -1443,6 +1450,10 @@ def merge_families(
         reconcile_context_values(db, reconcile_ids, cap=cap, source="operation")
     if not has_current:
         reconcile_family_schemas(db, [target_family_id], cap=cap, source="operation")
+    # Версии источника переехали к цели (или ушли из `frozen`): предложения «можно
+    # отпустить», недействующие после переезда, убираются, задания версий
+    # пересматриваются (спека лестницы аналогов §2.7).
+    refresh_inputs(db, [schema.id for schema in schemas], settings=app_settings)
     return moved_count
 
 

@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Лестница аналогов — макет</title>
+<style>
+:root {
+  --bg-page:#F4F2EC; --surface:#FFFFFF; --sunken:#F7F6F2; --hover:#FAFAF7;
+  --fg:#1F2128; --fg2:#5A5D66; --fg3:#8E8B82;
+  --border:rgba(0,0,0,.08); --border2:rgba(0,0,0,.14);
+  --accent:#5F8568; --accent-soft:#E8F0EA; --accent-text:#3D5443;
+  --action:#2D3A30; --action-text:#F7F6F2;
+  --dear:#C2410C; --dear-soft:#FCEBDD; --dear-text:#7C2D12;
+  --cheap:#2563A8; --cheap-soft:#E2EDF8; --cheap-text:#1E3A5F;
+  --neutral-soft:#EFEEE6; --neutral-border:#D8D4C8; --neutral-text:#5F5E5A;
+  --warn:#B5642E; --warn-soft:#FAF1E1; --warn-border:#E8C8A8; --warn-text:#6B3915;
+  --shadow:0 1px 2px rgba(0,0,0,.05),0 8px 24px rgba(0,0,0,.05);
+  --font-serif:"Cormorant Garamond","Source Serif Pro",Georgia,serif;
+  --font-sans:"Geist","Inter",-apple-system,"Segoe UI",Roboto,sans-serif;
+  --font-mono:"JetBrains Mono","SF Mono",Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg-page:#1A1D24; --surface:#232730; --sunken:#1F232B; --hover:#262B35;
+  --fg:#E8E6E0; --fg2:#B4B2AC; --fg3:#8A8880;
+  --border:#2D323D; --border2:#3A4148;
+  --accent:#8FAB91; --accent-soft:#2A352D; --accent-text:#B8C4BB;
+  --action:#D9E2DA; --action-text:#1A1D24;
+  --dear:#F08A5D; --dear-soft:#3D2A20; --dear-text:#F4B08F;
+  --cheap:#6DA7EC; --cheap-soft:#22334A; --cheap-text:#A9CBF2;
+  --neutral-soft:#2A2D33; --neutral-border:#3A3E46; --neutral-text:#B4B2AC;
+  --warn:#D49A6E; --warn-soft:#353027; --warn-border:#4A3D2E; --warn-text:#E0AE86;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.25); color-scheme:dark; } }
+:root[data-theme="dark"] {
+  --bg-page:#1A1D24; --surface:#232730; --sunken:#1F232B; --hover:#262B35;
+  --fg:#E8E6E0; --fg2:#B4B2AC; --fg3:#8A8880;
+  --border:#2D323D; --border2:#3A4148;
+  --accent:#8FAB91; --accent-soft:#2A352D; --accent-text:#B8C4BB;
+  --action:#D9E2DA; --action-text:#1A1D24;
+  --dear:#F08A5D; --dear-soft:#3D2A20; --dear-text:#F4B08F;
+  --cheap:#6DA7EC; --cheap-soft:#22334A; --cheap-text:#A9CBF2;
+  --neutral-soft:#2A2D33; --neutral-border:#3A3E46; --neutral-text:#B4B2AC;
+  --warn:#D49A6E; --warn-soft:#353027; --warn-border:#4A3D2E; --warn-text:#E0AE86;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.25); color-scheme:dark; }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg-page); color:var(--fg); font-family:var(--font-sans); font-size:14px; line-height:1.5; }
+.wrap { max-width:1240px; margin:0 auto; padding:32px 24px 64px; }
+@media (max-width:640px){ .wrap{ padding:20px 16px 48px; } }
+h1,h2,h3 { margin:0; text-wrap:balance; } p { margin:0; }
+.serif { font-family:var(--font-serif); font-weight:600; letter-spacing:-.01em; }
+.eyebrow { font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--fg3); font-weight:500; }
+.num { font-family:var(--font-mono); font-variant-numeric:tabular-nums; white-space:nowrap; }
+.t2{color:var(--fg2)} .t3{color:var(--fg3)} .small{font-size:12px} .xs{font-size:11px}
+.intro { display:grid; gap:10px; max-width:84ch; }
+.intro h1 { font-size:clamp(30px,4.5vw,42px); line-height:1.05; }
+.intro .lead { color:var(--fg2); font-size:15px; }
+.tabs { display:flex; gap:4px; flex-wrap:wrap; background:var(--neutral-soft); padding:4px; border-radius:10px; width:fit-content; max-width:100%; margin:28px 0 14px; }
+.tab { border:0; background:transparent; color:var(--fg2); font:inherit; font-size:13px; font-weight:500; padding:7px 14px; border-radius:7px; cursor:pointer; }
+.tab[aria-selected="true"] { background:var(--surface); color:var(--fg); box-shadow:0 1px 2px rgba(0,0,0,.08); }
+button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.tabnote { color:var(--fg2); font-size:13px; margin-bottom:14px; max-width:92ch; }
+.view[hidden] { display:none; }
+.app { background:var(--bg-page); border:1px solid var(--border2); border-radius:12px; overflow:hidden; box-shadow:var(--shadow); }
+.appbar { display:flex; align-items:center; gap:18px; padding:10px 16px; background:var(--surface); border-bottom:1px solid var(--border); overflow-x:auto; }
+.appbar .logo { font-family:var(--font-serif); font-weight:600; font-size:18px; }
+.appbar nav { display:flex; gap:14px; font-size:13px; color:var(--fg2); white-space:nowrap; }
+.appbar nav .on { color:var(--fg); font-weight:500; }
+.page { padding:18px 20px 24px; display:grid; gap:16px; min-width:0; }
+@media (max-width:640px){ .page{ padding:14px 12px 20px; } }
+.btn { height:30px; padding:0 11px; border-radius:7px; border:1px solid var(--border2); background:var(--surface); color:var(--fg); font:inherit; font-size:12.5px; cursor:pointer; white-space:nowrap; display:inline-flex; align-items:center; gap:6px; }
+.btn.primary { background:var(--action); color:var(--action-text); border-color:transparent; }
+.btn.ghost { border-color:transparent; background:transparent; color:var(--fg2); }
+.btn.sm { height:26px; padding:0 8px; font-size:12px; }
+.badge { display:inline-flex; align-items:center; gap:4px; font-size:11px; line-height:1; padding:4px 7px; border-radius:999px; border:1px solid var(--neutral-border); background:var(--neutral-soft); color:var(--neutral-text); white-space:nowrap; }
+.badge.accent { background:var(--accent-soft); color:var(--accent-text); border-color:transparent; }
+.badge.warn { background:var(--warn-soft); color:var(--warn-text); border-color:var(--warn-border); }
+.badge.cheap { background:var(--cheap-soft); color:var(--cheap-text); border-color:transparent; }
+.badge.dear { background:var(--dear-soft); color:var(--dear-text); border-color:transparent; }
+.card { background:var(--surface); border:1px solid var(--border); border-radius:10px; }
+/* разбор: фон и лист панели */
+.split { display:grid; grid-template-columns:minmax(0,1fr) 560px; min-height:640px; }
+@media (max-width:1100px){ .split{ grid-template-columns:1fr; } .behind{ display:none; } }
+.behind { padding:18px 20px; opacity:.45; pointer-events:none; display:grid; gap:12px; align-content:start; }
+.sheet { background:var(--surface); border-left:1px solid var(--border2); padding:18px 20px 24px; display:grid; gap:18px; align-content:start; min-width:0; }
+@media (max-width:640px){ .sheet{ padding:14px 12px; } }
+.sheet h3 { font-size:17px; font-weight:600; line-height:1.3; }
+.sec { display:grid; gap:8px; min-width:0; }
+.sheet > *, .fig, .kv > div { min-width:0; }
+.sec > .eyebrow { border-bottom:1px solid var(--border); padding-bottom:6px; }
+.kv { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px 14px; }
+@media (max-width:640px){ .kv{ grid-template-columns:repeat(2,minmax(0,1fr)); } }
+.kv div { display:grid; gap:2px; } .kv .k { font-size:11px; color:var(--fg3); } .kv .v { font-size:13px; }
+.figs { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+@media (max-width:520px){ .figs{ grid-template-columns:1fr; } }
+.fig { border:1px solid var(--border); border-radius:10px; padding:10px 12px; display:grid; gap:4px; background:var(--sunken); }
+.fig .price { font-size:20px; font-weight:600; }
+.fig .diff { font-size:12px; white-space:normal; }
+.up { color:var(--dear); } .down { color:var(--cheap); }
+.rungline { display:flex; flex-wrap:wrap; gap:6px; align-items:center; font-size:13px; }
+table.list { width:100%; border-collapse:collapse; font-size:12.5px; }
+table.list th { text-align:left; font-weight:500; color:var(--fg3); font-size:11px; padding:6px 6px; border-bottom:1px solid var(--border2); white-space:nowrap; }
+table.list td { padding:7px 6px; border-bottom:1px solid var(--border); vertical-align:top; }
+table.list td.r, table.list th.r { text-align:right; }
+table.list tr.out td { background:var(--warn-soft); }
+table.list .badge { white-space:normal; line-height:1.3; border-radius:6px; }
+table.list td:nth-child(2) { min-width:160px; }
+table.list tr.more td { color:var(--fg2); }
+.chain { font-size:11px; color:var(--fg3); }
+.scroll { overflow-x:auto; }
+.target { border:1px solid var(--accent); background:var(--accent-soft); border-radius:10px; padding:10px 12px; display:grid; gap:8px; }
+.row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; justify-content:space-between; }
+.warnbox { border:1px solid var(--warn-border); background:var(--warn-soft); color:var(--warn-text); border-radius:8px; padding:8px 10px; font-size:12.5px; }
+/* очереди */
+.qtabs { display:flex; gap:2px; border-bottom:1px solid var(--border2); flex-wrap:wrap; }
+.qtab { padding:7px 12px; font-size:13px; color:var(--fg2); border-bottom:2px solid transparent; }
+.qtab.on { color:var(--fg); border-color:var(--action); font-weight:500; }
+.filters { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+.select, .input { height:30px; border:1px solid var(--border2); border-radius:7px; background:var(--surface); padding:0 10px; font-size:12.5px; color:var(--fg); display:inline-flex; align-items:center; }
+.input { min-width:220px; color:var(--fg3); }
+.toggle { align-self:start; display:inline-flex; border:1px solid var(--border2); border-radius:7px; overflow:hidden; }
+.toggle span { padding:4px 9px; font-size:12px; border-right:1px solid var(--border2); white-space:nowrap; cursor:pointer; }
+.toggle span:last-child { border-right:0; }
+.toggle span.on { background:var(--action); color:var(--action-text); }
+.qitem { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px 16px; padding:12px 14px; border-bottom:1px solid var(--border); }
+@media (max-width:760px){ .qitem{ grid-template-columns:1fr; } }
+.qitem:last-child { border-bottom:0; }
+.qitem .titles { font-size:13px; } .qitem .titles b { font-weight:600; }
+.model { font-size:12px; color:var(--fg2); }
+.param { display:grid; grid-template-columns:200px minmax(0,1fr) auto; gap:6px 14px; padding:10px 14px; border-bottom:1px solid var(--border); align-items:start; }
+@media (max-width:760px){ .param{ grid-template-columns:1fr; } }
+.param:last-child { border-bottom:0; }
+.vals { display:flex; flex-wrap:wrap; gap:4px; }
+.fam { padding:10px 14px; background:var(--sunken); border-bottom:1px solid var(--border); display:flex; gap:10px; align-items:baseline; flex-wrap:wrap; }
+.dialog { max-width:760px; margin:0 auto; }
+.check { display:inline-flex; gap:6px; align-items:center; font-size:13px; }
+.box { width:15px; height:15px; border:1.5px solid var(--fg2); border-radius:3px; display:inline-grid; place-items:center; font-size:11px; line-height:1; }
+.box.on { background:var(--action); border-color:var(--action); color:var(--action-text); }
+.legend { display:grid; gap:6px; font-size:12.5px; color:var(--fg2); margin-top:18px; max-width:92ch; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="intro">
+    <div class="eyebrow">Макет к спеке 2026-11-07-analog-ladder · гейт 2</div>
+    <h1 class="serif">Лестница аналогов</h1>
+    <p class="lead">Панель строки-работы на экране «Против нашей цены» и два места разметки: зоны разделов и признак «можно отпустить». Объекты, подрядчики и числа выдуманы.</p>
+  </header>
+
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" aria-selected="true" data-v="panel">Панель строки</button>
+    <button class="tab" role="tab" aria-selected="false" data-v="nohist">Строка без аналога</button>
+    <button class="tab" role="tab" aria-selected="false" data-v="zones">Очередь «Зоны»</button>
+    <button class="tab" role="tab" aria-selected="false" data-v="rel">Очередь «Можно отпустить»</button>
+    <button class="tab" role="tab" aria-selected="false" data-v="schema">Схема семьи</button>
+  </div>
+
+  <!-- ПАНЕЛЬ -->
+  <section class="view" id="v-panel">
+    <p class="tabnote">Вместо шести ступеней и списка договоров — ступень, две цифры и справка из строк договоров. Самая низкая и самая свежая считаются только по аналогам без выбросов; выброс стоит в справке с пометкой. Цель строки выбирает администратор: по умолчанию самая низкая.</p>
+    <div class="app">
+      <div class="appbar"><span class="logo">GCA</span><nav><span>Тендеры</span><span class="on">Против нашей цены</span><span>Семьи</span></nav></div>
+      <div class="split">
+        <div class="behind">
+          <div class="small t3">Тендер «Генподряд» · Объект Т · этап 3 · Подрядчик 1</div>
+          <div class="card" style="padding:12px;display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
+            <div><div class="xs t3">КП выше самых низких расценок</div><div class="num" style="font-size:18px">48 210 400 ₽</div></div>
+            <div><div class="xs t3">КП выше самых свежих расценок</div><div class="num" style="font-size:18px">21 905 100 ₽</div><div class="xs t3">по 412 из 455 строк</div></div>
+            <div><div class="xs t3">Ниже самой низкой расценки</div><div class="num" style="font-size:18px">−3 118 000 ₽</div></div>
+          </div>
+          <div class="card" style="padding:12px;height:420px"></div>
+        </div>
+        <aside class="sheet" aria-label="Панель строки">
+          <div class="sec">
+            <div class="eyebrow">Строка КП · надземная часть</div>
+            <h3>Устройство монолитных стен B40 W6, толщ. 200 мм</h3>
+            <div class="chain">Корпус 2 / Надземная часть / Этажи 15–25 / Монолитные работы</div>
+          </div>
+          <div class="sec">
+            <div class="eyebrow">Цены</div>
+            <div class="kv">
+              <div><span class="k">КП за м³</span><span class="v num">72 400,00</span></div>
+              <div><span class="k">Объём</span><span class="v num">1 257,00 м³</span></div>
+              <div><span class="k">Стоимость КП</span><span class="v num">91 006 800,00</span></div>
+              <div><span class="k">Показ</span><span class="v">без НДС · ИПЦ к 09.2026</span></div>
+            </div>
+          </div>
+          <div class="sec">
+            <div class="eyebrow">Сравнение</div>
+            <div class="rungline"><span class="badge accent">тот же вариант</span><span class="t2">класс объекта «бизнес» · 7 аналогов в 4 договорах</span></div>
+            <div class="figs">
+              <div class="fig">
+                <span class="xs t3">Самая низкая расценка</span>
+                <span class="price num">61 200,00 ₽</span>
+                <span class="xs t2">Объект Б · дог. 17/24 · 03.2025</span>
+                <span class="diff up num">КП выше на 11 200,00 за м³ · +14 078 400 ₽</span>
+              </div>
+              <div class="fig">
+                <span class="xs t3">Самая свежая расценка</span>
+                <span class="price num">66 800,00 ₽</span>
+                <span class="xs t2">Объект В · дог. ГП-08 · 08.2026</span>
+                <span class="diff up num">КП выше на 5 600,00 за м³ · +7 039 200 ₽</span>
+              </div>
+            </div>
+          </div>
+          <div class="sec">
+            <div class="row"><span class="eyebrow">Аналоги · ближе по месту и дате выше</span><span class="xs t3">цены приведены к 09.2026</span></div>
+            <div class="scroll">
+            <table class="list">
+              <thead><tr><th>Объект, договор</th><th>Строка договора</th><th>Дата</th><th class="r">За м³</th><th></th></tr></thead>
+              <tbody>
+                <tr><td>Объект В<br><span class="xs t3">ГП-08 · Подрядчик 3</span></td><td>Стены монолитные B40 W6, 200 мм<div class="chain">Корп. 1 / Надземная часть / Этажи 15–25 / Монолит</div></td><td class="num">08.2026</td><td class="r num">66 800,00</td><td><span class="badge accent">свежая</span></td></tr>
+                <tr><td>Объект Б<br><span class="xs t3">17/24 · Подрядчик 1 <span class="badge cheap">с этим подрядчиком</span></span></td><td>Стены B40 W6 t=200<div class="chain">Надземная часть / Этажи 2–14 / Монолит</div></td><td class="num">03.2025</td><td class="r num">61 200,00</td><td><span class="badge accent">самая низкая</span></td></tr>
+                <tr><td>Объект Б<br><span class="xs t3">17/24 · Подрядчик 1</span></td><td>Стены лифтовых шахт B40 W6<div class="chain">Надземная часть / Этажи 2–14 / Монолит</div></td><td class="num">03.2025</td><td class="r num">69 900,00</td><td><button class="btn sm">целью</button></td></tr>
+                <tr><td>Объект Д<br><span class="xs t3">Д-112 · Подрядчик 4</span></td><td>Монолитные стены B40 W6<div class="chain">Надземная часть / Типовой этаж</div></td><td class="num">11.2025</td><td class="r num">64 350,00</td><td><button class="btn sm">целью</button></td></tr>
+                <tr class="out"><td>Объект Е<br><span class="xs t3">Е-3 · Подрядчик 2</span></td><td>Стены B40 W6<div class="chain">Надземная часть / Монолит</div></td><td class="num">06.2024</td><td class="r num">6 120,00</td><td><span class="badge warn">×0,1 к остальным — проверьте единицу учёта</span></td></tr>
+                <tr class="more"><td colspan="5"><button class="btn ghost sm">ещё 2 аналога</button></td></tr>
+              </tbody>
+            </table>
+            </div>
+          </div>
+          <div class="sec">
+            <div class="eyebrow">Для выгрузки</div>
+            <div class="target">
+              <div class="row"><span><b>Цель:</b> самая низкая расценка <span class="badge">авто</span></span><span class="num">61 200,00 ₽ за м³</span></div>
+              <div class="row" style="justify-content:flex-start"><button class="btn">Сделать целью самую свежую</button><span class="xs t3">или «целью» у аналога в справке</span></div>
+            </div>
+            <div class="kv" style="grid-template-columns:1fr 2fr">
+              <div><span class="k">Договорились, м³, без НДС</span><span class="v t3">не договаривались</span></div>
+              <div><span class="k">Комментарий для подрядчика · шаблон</span><span class="v small">Ваша цена — 72 400,00 ₽ за м³ без НДС. В нашем договоре с вами по объекту Объект Б, 2025 г., эта работа стоила 58 400,00 ₽ за м³ без НДС; с учётом инфляции (Росстат, к 09.2026) — 61 200,00 ₽. Просим снизить до 61 200,00 или обосновать разницу.</span></div>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </div>
+    <div class="legend">
+      <div>• Подпись ступени: «тот же вариант» (1), «без марки по водонепроницаемости» (2), «… · другой класс» (3–4).</div>
+      <div>• При выбранном аналоге блок цели: «Цель: аналог — Объект Д, дог. Д-112» и кнопка «Вернуть к самой низкой». Если выбор перестал действовать — плашка «Выбор не действует: аналога больше нет на ступени — цель: самая низкая».</div>
+      <div>• Строка «разные единицы» (все аналоги — выбросы): вместо двух цифр плашка «Разные единицы учёта?», справка с пометками у каждого аналога.</div>
+    </div>
+  </section>
+
+  <!-- БЕЗ АНАЛОГА -->
+  <section class="view" id="v-nohist" hidden>
+    <p class="tabnote">«Не с чем сравнить» называет причину. Если не определена зона раздела строки — подпись «ждёт решения администратора» ведёт в очередь «Зоны».</p>
+    <div class="app">
+      <div class="appbar"><span class="logo">GCA</span><nav><span>Тендеры</span><span class="on">Против нашей цены</span><span>Семьи</span></nav></div>
+      <div class="split">
+        <div class="behind"><div class="card" style="height:500px"></div></div>
+        <aside class="sheet">
+          <div class="sec">
+            <div class="eyebrow">Строка КП · подземная часть</div>
+            <h3>Устройство фундаментной плиты B35 W8, толщ. 1000 мм</h3>
+            <div class="chain">Паркинг / Подземная часть / Монолитные работы</div>
+          </div>
+          <div class="sec">
+            <div class="eyebrow">Сравнение</div>
+            <div class="warnbox"><b>Не с чем сравнить:</b> нет аналога в зоне «подземная часть». Плиты B35 W8 есть в договорах только надземной части.</div>
+          </div>
+          <div class="sec">
+            <div class="eyebrow">Другая строка того же КП</div>
+            <h3 style="font-size:15px">Монтаж ограждения кровли</h3>
+            <div class="chain">Корпус 2 / Раздел 7 / Прочие работы</div>
+            <div class="warnbox"><b>Не с чем сравнить:</b> зона раздела не определена — <a href="#" style="color:inherit">ждёт решения администратора</a>.</div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </section>
+
+  <!-- ЗОНЫ -->
+  <section class="view" id="v-zones" hidden>
+    <p class="tabnote">Семьи → «Предложения» → очередь «Зоны». Решение ставится на цепочку разделов и действует на все сметы, где она встречается. По умолчанию — спорные; фильтр открывает и зоны, поставленные правилом или моделью, чтобы поправить.</p>
+    <div class="app">
+      <div class="appbar"><span class="logo">GCA</span><nav><span>Тендеры</span><span class="on">Семьи</span></nav></div>
+      <div class="page">
+        <div class="qtabs"><span class="qtab">Семья из списка</span><span class="qtab">Смена семьи</span><span class="qtab">Новая</span><span class="qtab on">Зоны · 37</span><span class="qtab">Можно отпустить · 52</span><span class="qtab">Ошибки</span></div>
+        <div class="filters"><span class="select">Спорные ▾</span><span class="input">поиск по разделам…</span><span class="xs t3">37 цепочек · под ними 2 914 строк</span></div>
+        <div class="card">
+          <div class="qitem">
+            <div>
+              <div class="titles">Корпус 2 / Раздел 7 / <b>Прочие работы</b></div>
+              <div class="xs t3">КП: 412 строк · договоры: 0 · например: «Монтаж ограждения кровли», «Устройство приямков», «Огнезащита металлоконструкций»</div>
+              <div class="model">Модель: <b>надземная часть</b> · уверенность 0,62 — «ограждение кровли и огнезащита относятся к зданию, приямки — к подземной части; раздел смешанный»</div>
+            </div>
+            <div class="toggle"><span>Подземная</span><span class="on">Надземная</span><span>Территория</span><span>Весь объект</span></div>
+          </div>
+          <div class="qitem">
+            <div>
+              <div class="titles">Общестроительные работы / <b>Временные сети</b></div>
+              <div class="xs t3">КП: 96 · договоры: 14 · «Временное электроснабжение», «Временный водопровод»</div>
+              <div class="model">Модель: <b>весь объект</b> · 0,81 — «временные сети обслуживают стройку целиком»</div>
+            </div>
+            <div class="toggle"><span>Подземная</span><span>Надземная</span><span>Территория</span><span class="on">Весь объект</span></div>
+          </div>
+          <div class="qitem">
+            <div>
+              <div class="titles">Секция 3 / <b>Этаж -1 и кровля</b></div>
+              <div class="xs t3">КП: 58 · договоры: 0 · правило без ответа: в разделе и «подзем…», и «кровл…»</div>
+              <div class="model">Модель: не знаю — «раздел объединяет подземный этаж и кровлю»</div>
+            </div>
+            <div class="toggle"><span>Подземная</span><span>Надземная</span><span>Территория</span><span>Весь объект</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- МОЖНО ОТПУСТИТЬ -->
+  <section class="view" id="v-rel" hidden>
+    <p class="tabnote">Модель один раз проходит все семьи. Уверенные ответы ставятся сами, здесь — только сомнительные. Пока параметр не отмечен «можно отпустить», он обязателен: лучше «не с чем сравнить», чем плита против стен.</p>
+    <div class="app">
+      <div class="appbar"><span class="logo">GCA</span><nav><span>Тендеры</span><span class="on">Семьи</span></nav></div>
+      <div class="page">
+        <div class="qtabs"><span class="qtab">Семья из списка</span><span class="qtab">Смена семьи</span><span class="qtab">Новая</span><span class="qtab">Зоны · 37</span><span class="qtab on">Можно отпустить · 52</span><span class="qtab">Ошибки</span></div>
+        <div class="card">
+          <div class="fam"><b>Гидроизоляция фундаментов</b><span class="xs t3">м² · 3 главных параметра</span></div>
+          <div class="param">
+            <div><b>Толщина</b><div class="xs t3">главный</div></div>
+            <div><div class="vals"><span class="badge">2 мм</span><span class="badge">3 мм</span><span class="badge">4 мм</span><span class="badge">не уточнено</span></div>
+              <div class="model" style="margin-top:6px">Модель: <b>можно отпустить</b> · 0,71 — «толщина меняет расход материала, но цена за м² близка в пределах слоя»</div></div>
+            <div class="toggle"><span class="on">Можно отпустить</span><span>Обязателен</span></div>
+          </div>
+          <div class="param">
+            <div><b>Тип материала</b><div class="xs t3">главный</div></div>
+            <div><div class="vals"><span class="badge">наплавляемая</span><span class="badge">обмазочная</span><span class="badge">мембрана ПВХ</span></div>
+              <div class="model" style="margin-top:6px">Модель: <b>обязателен</b> · 0,88 — «разные технологии, цена отличается в разы»</div></div>
+            <div class="toggle"><span>Можно отпустить</span><span class="on">Обязателен</span></div>
+          </div>
+          <div class="fam"><b>Устройство жб конструкций</b><span class="xs t3">м³ · 3 главных · уверенно размечено моделью: W — можно отпустить</span></div>
+          <div class="param">
+            <div><b>Тип конструкции</b><div class="xs t3">главный</div></div>
+            <div><div class="vals"><span class="badge">стены</span><span class="badge">плита фундаментная</span><span class="badge">колонны</span><span class="badge">…ещё 6</span></div>
+              <div class="model" style="margin-top:6px">Модель: <b>обязателен</b> · 0,93</div></div>
+            <div class="toggle"><span>Можно отпустить</span><span class="on">Обязателен</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- СХЕМА -->
+  <section class="view" id="v-schema" hidden>
+    <p class="tabnote">Признак живёт в схеме семьи рядом с ролью параметра: виден в блоке схемы и правится в диалоге правки — только у главных параметров.</p>
+    <div class="app">
+      <div class="appbar"><span class="logo">GCA</span><nav><span>Тендеры</span><span class="on">Семьи</span></nav></div>
+      <div class="page">
+        <div class="card dialog" style="padding:16px;display:grid;gap:14px">
+          <div class="row"><b>Правка схемы · Устройство жб конструкций</b><span class="xs t3">версия 2 · правка 5</span></div>
+          <div style="display:grid;grid-template-columns:220px 1fr;gap:16px">
+            <div style="display:grid;gap:4px;font-size:13px">
+              <span class="xs t3">Главные</span>
+              <span style="padding:5px 8px;border-radius:6px">Класс бетона <span class="badge" style="margin-left:4px">обязателен</span></span>
+              <span style="padding:5px 8px;border-radius:6px">Тип конструкции <span class="badge" style="margin-left:4px">обязателен</span></span>
+              <span style="padding:5px 8px;border-radius:6px;background:var(--neutral-soft)">Марка по водонепроницаемости <span class="badge accent" style="margin-left:4px">можно отпустить</span></span>
+              <span class="xs t3" style="margin-top:8px">Второстепенные</span>
+              <span style="padding:5px 8px">Морозостойкость</span>
+            </div>
+            <div style="display:grid;gap:10px;align-content:start">
+              <div class="small t3">Параметр</div>
+              <div style="font-size:15px;font-weight:600">Марка по водонепроницаемости</div>
+              <div class="row" style="justify-content:flex-start;gap:14px"><span class="toggle"><span class="on">Главный</span><span>Второстепенный</span></span>
+                <span class="check"><span class="box on">✓</span>Можно отпустить</span></div>
+              <div class="xs t3">Можно отпустить — строку с другим значением этого параметра можно взять аналогом, если с тем же значением аналога нет. Пока не отмечено — параметр обязателен.</div>
+              <div class="check"><span class="box"></span>Только из списка</div>
+              <div class="vals"><span class="badge">W4</span><span class="badge">W6</span><span class="badge">W8</span><span class="badge">W10</span><span class="badge">W12</span><span class="badge">не уточнено</span></div>
+            </div>
+          </div>
+          <div class="row" style="justify-content:flex-end"><button class="btn">Отмена</button><button class="btn primary">Сохранить</button></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+<script>
+document.querySelectorAll('.tab').forEach(function (t) {
+  t.addEventListener('click', function () {
+    document.querySelectorAll('.tab').forEach(function (x) { x.setAttribute('aria-selected', x === t ? 'true' : 'false'); });
+    document.querySelectorAll('.view').forEach(function (v) { v.hidden = v.id !== 'v-' + t.dataset.v; });
+  });
+});
+</script>
+</body>
+</html>

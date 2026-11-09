@@ -59,21 +59,33 @@ LINE_KEYS = {
     "suggestion_queue",
     "kind",
     "kp",
+    "work_rung",
     "rung",
     "rungs",
+    "zone",
+    "section_chain_id",
+    "lowest",
+    "freshest",
     "range",
-    "ours",
     "position",
-    "to_ours",
-    "bargain",
+    "to_lowest",
+    "to_freshest",
+    "to_lowest_unit",
+    "to_freshest_unit",
+    "over_lowest",
+    "over_freshest",
     "below",
+    "analogs_count",
+    "no_history_reason",
     "group",
     "unit_mismatch",
+    "target_kind",
+    "choice",
     "agreed",
     "comment_kind",
     "manual_rung",
 }
-PANEL_KEYS = {"line", "group_lines", "contracts", "vat_dropped", "comment"}
+PANEL_KEYS = {"line", "group_lines", "contracts", "analogs", "vat_dropped", "comment"}
 TOLERANCE = D("1e-20")
 
 
@@ -449,11 +461,11 @@ class TestLineForm:
             "max": (D("140"), D("168")),
             "median": (D("120"), D("144")),
         }
-        assert _pair(line["ours"]["value"]) == (D("100"), D("120"))
-        assert line["ours"]["from_all_classes"] is False
+        assert _pair(line["lowest"]["value"]) == (D("100"), D("120"))
+        assert line["lowest"]["from_all_classes"] is False
         assert line["position"] == "in"
-        assert line["to_ours"] == {"net": "200.00", "shown": "240.00"}
-        assert line["bargain"] == {"net": "200.00", "shown": "240.00"}
+        assert line["to_lowest"] == {"net": "200.00", "shown": "240.00"}
+        assert line["over_lowest"] == {"net": "200.00", "shown": "240.00"}
         assert line["below"] is None
 
     def test_unit_rates_are_not_rounded_and_sums_are(self, member_client, stage):
@@ -467,7 +479,7 @@ class TestLineForm:
         net = line["kp"]["unit_price"]["net"]
         assert abs(D(net) - D("144.5") / D("1.2")) < TOLERANCE
         assert len(net.split(".")[1]) > 2
-        sums = {"total": line["kp"]["total"], "to_ours": line["to_ours"], "bargain": line["bargain"]}
+        sums = {"total": line["kp"]["total"], "to_ours": line["to_lowest"], "bargain": line["over_lowest"]}
         for field, pair in sums.items():
             for value in pair.values():
                 assert len(value.split(".")[1]) == 2, (field, value)
@@ -483,13 +495,13 @@ class TestLineForm:
 
         line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
 
-        assert line["rung"]["level"] == "v"
+        assert line["work_rung"]["no"] == 1
         assert {k: D(v["net"]) for k, v in line["range"].items()} == {
             "min": D("100.123"),
             "max": D("140.456"),
             "median": D("120.2895"),
         }
-        assert D(line["ours"]["value"]["net"]) == D("100.123")
+        assert D(line["lowest"]["value"]["net"]) == D("100.123")
 
     def test_our_rate_from_all_classes_is_flagged(self, member_client, stage, factories):
         """Договоров класса тендера на ступени нет — наша расценка по всем классам."""
@@ -502,11 +514,11 @@ class TestLineForm:
 
         line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
 
-        assert (line["rung"]["level"], line["rung"]["scope"]) == ("v", "all")
-        assert _pair(line["ours"]["value"]) == (D("100"), D("100"))
-        assert line["ours"]["from_all_classes"] is True
+        assert line["work_rung"] == {"no": 3, "released": [], "other_class": True}
+        assert _pair(line["lowest"]["value"]) == (D("100"), D("100"))
+        assert line["lowest"]["from_all_classes"] is True
 
-    def test_rungs_list_the_available_rungs_with_contract_counts(self, member_client, stage):
+    def test_a_work_carries_the_work_ladder_and_no_system_rungs(self, member_client, stage):
         v2 = _second_variant(stage)
         stage.history(D("100"))
         stage.history(D("140"))
@@ -517,32 +529,10 @@ class TestLineForm:
 
         line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
 
-        assert line["rung"] == {"level": "v", "scope": "cls", "auto": True, "threshold_met": True}
-        assert line["rungs"] == [
-            {"level": "v", "scope": "cls", "contracts": 2, "selectable": True},
-            {"level": "v", "scope": "all", "contracts": 2, "selectable": True},
-            {"level": "f", "scope": "cls", "contracts": 3, "selectable": True},
-            {"level": "f", "scope": "all", "contracts": 3, "selectable": True},
-        ]
-
-    def test_a_second_main_parameter_adds_the_p_rungs(self, member_client, stage, world):
-        world.param(stage.schema, 2, "Длина")
-        stage.history(D("100"))
-        stage.history(D("140"))
-        rnd = stage.round()
-        part = stage.participant(rnd, "Подрядчик А")
-        item = stage.kp(part, D("144"))
-
-        line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
-
-        assert [(r["level"], r["scope"], r["contracts"]) for r in line["rungs"]] == [
-            ("v", "cls", 2),
-            ("v", "all", 2),
-            ("p", "cls", 2),
-            ("p", "all", 2),
-            ("f", "cls", 2),
-            ("f", "all", 2),
-        ]
+        assert line["work_rung"] == {"no": 1, "released": [], "other_class": False}
+        # ступени 4а — только у систем; у работы вариант v2 аналогом не бывает
+        assert (line["rung"], line["rungs"]) == (None, [])
+        assert line["analogs_count"] == 2
 
     def test_secondary_parameters_are_named_pairs(self, member_client, stage, world, db_session):
         from models import ContextParameterValue
@@ -567,8 +557,8 @@ class TestLineForm:
         assert line["secondary"] == [{"name": "Цвет", "value": "серый"}]
 
     def test_signed_difference_when_the_kp_is_under_our_rate(self, member_client, stage, factories):
-        """Вилка 100-200, наша расценка 200, КП 150, объём 1: разница к нашей расценке
-        `-50`, в торг она не идёт, а ниже минимума ступени цена не опускается."""
+        """Аналог 200, КП 150, объём 1: разница к самой низкой `-50`, в «выше самых низких»
+        она не идёт, а ниже самой низкой расценки цена опускается: `below = -50`."""
         other_class = factories.RateClassFactory.create(title="Класс Ч")
         _history(stage, D("200"))
         _history(stage, D("100"), rate_class=other_class)
@@ -578,12 +568,13 @@ class TestLineForm:
 
         line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
 
-        assert line["rung"] == {"level": "v", "scope": "all", "auto": True, "threshold_met": True}
-        assert _pair(line["ours"]["value"]) == (D("200"), D("200"))
-        assert {k: _pair(v) for k, v in line["range"].items()}["min"] == (D("100"), D("100"))
-        assert line["to_ours"] == {"net": "-50.00", "shown": "-50.00"}
-        assert line["bargain"] == {"net": "0.00", "shown": "0.00"}
-        assert line["below"] is None
+        # ступень 1 — свой класс: аналог 200; договор чужого класса 100 на ступень не попадает
+        assert line["work_rung"] == {"no": 1, "released": [], "other_class": False}
+        assert _pair(line["lowest"]["value"]) == (D("200"), D("200"))
+        assert {k: _pair(v) for k, v in line["range"].items()}["min"] == (D("200"), D("200"))
+        assert line["to_lowest"] == {"net": "-50.00", "shown": "-50.00"}
+        assert line["over_lowest"] == {"net": "0.00", "shown": "0.00"}
+        assert line["below"] == {"net": "-50.00", "shown": "-50.00"}
 
     def test_price_under_the_minimum_gives_a_negative_below_and_a_zero_bargain(self, member_client, stage):
         _history_pair(stage)
@@ -594,8 +585,8 @@ class TestLineForm:
         line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
 
         assert line["position"] == "below"
-        assert line["to_ours"] == {"net": "-200.00", "shown": "-240.00"}
-        assert line["bargain"] == {"net": "0.00", "shown": "0.00"}
+        assert line["to_lowest"] == {"net": "-200.00", "shown": "-240.00"}
+        assert line["over_lowest"] == {"net": "0.00", "shown": "0.00"}
         assert line["below"] == {"net": "-200.00", "shown": "-240.00"}
 
     def test_price_over_the_maximum_is_above(self, member_client, stage):
@@ -607,7 +598,7 @@ class TestLineForm:
         line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
 
         assert line["position"] == "above"
-        assert line["to_ours"] == {"net": "600.00", "shown": "720.00"}
+        assert line["to_lowest"] == {"net": "600.00", "shown": "720.00"}
         assert line["below"] is None
 
     def test_unit_mismatch_keeps_a_signed_difference_but_no_bargain_or_below(self, member_client, stage):
@@ -619,13 +610,14 @@ class TestLineForm:
         line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
 
         assert line["state"] == "unit_mismatch"
-        assert line["to_ours"] == {"net": "6000.00", "shown": "7200.00"}
-        assert line["bargain"] is None
+        assert line["to_lowest"] == {"net": "6000.00", "shown": "7200.00"}
+        assert line["over_lowest"] is None
         assert line["below"] is None
         assert abs(D(line["unit_mismatch"]["kp_ratio"]) - D("5.8333333333333333333333333333")) < TOLERANCE
         assert line["unit_mismatch"]["contracts"] == []
 
-    def test_a_mismatch_of_a_contract_alone_names_the_contract(self, member_client, stage):
+    def test_an_outlier_among_the_analogs_does_not_make_the_line_a_unit_mismatch(self, member_client, stage):
+        """Выброс среди аналогов в цифры не входит, а строку в «разные единицы» не переводит."""
         _history(stage, D("100"))
         _history(stage, D("110"))
         wide, _, _ = _history(stage, D("700"))
@@ -635,11 +627,32 @@ class TestLineForm:
 
         line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
 
+        assert line["state"] == "comparable"
+        assert line["unit_mismatch"] is None
+        assert line["analogs_count"] == 3
+        assert {k: _pair(v)[0] for k, v in line["range"].items()} == {
+            "min": D("100"),
+            "max": D("110"),
+            "median": D("105"),
+        }
+
+    def test_all_outliers_is_a_unit_mismatch_without_numbers(self, member_client, stage):
+        _history(stage, D("2"))
+        _history(stage, D("100000"))
+        rnd = stage.round()
+        part = stage.participant(rnd, "Подрядчик А", vat=D("0"))
+        item = stage.kp(part, D("120"))
+
+        line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
+
         assert line["state"] == "unit_mismatch"
+        assert line["unit_mismatch"]["all_outliers"] is True
         assert line["unit_mismatch"]["kp_ratio"] is None
-        (flagged,) = line["unit_mismatch"]["contracts"]
-        assert flagged["contract_id"] == wide.id
-        assert abs(D(flagged["ratio"]) - D("6.6666666666666666666666666667")) < TOLERANCE
+        assert len(line["unit_mismatch"]["analogs"]) == 2
+        assert line["unit_mismatch"]["contracts"] == []
+        for key in ("range", "lowest", "freshest", "position", "to_lowest", "to_freshest", "to_lowest_unit", "to_freshest_unit", "over_lowest", "below"):
+            assert line[key] is None, key
+        assert line["target_kind"] is None
 
     def test_line_without_history_has_no_comparison(self, member_client, stage):
         stage.history(D("100"))
@@ -651,9 +664,9 @@ class TestLineForm:
         line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
 
         assert line["state"] == "no_history"
-        assert line["rung"] is None
-        assert [r["contracts"] for r in line["rungs"]] == [0, 0, 0, 0]
-        for key in ("range", "ours", "position", "to_ours", "bargain", "below", "group", "unit_mismatch"):
+        assert line["no_history_reason"] == "no_family"
+        assert (line["rung"], line["rungs"], line["work_rung"], line["analogs_count"]) == (None, [], None, 0)
+        for key in ("range", "lowest", "freshest", "position", "to_lowest", "over_lowest", "below", "group", "unit_mismatch"):
             assert line[key] is None, key
         assert _pair(line["kp"]["unit_price"]) == (D("100"), D("100"))
 
@@ -678,7 +691,7 @@ class TestLineForm:
         assert line["state"] == "no_price"
         assert line["kp"]["total"] == {"net": "0.00", "shown": "0.00"}
         assert _pair(line["kp"]["unit_price"]) == (D("0"), D("0"))
-        assert (line["to_ours"], line["bargain"], line["below"]) == (None, None, None)
+        assert (line["to_lowest"], line["over_lowest"], line["below"]) == (None, None, None)
 
 
 # ---------------------------------------------------------------------------
@@ -733,7 +746,7 @@ class TestLineStates:
         assert all(a["lines_totals"] is None for a in body["articles"])
         line = _line_of(body, first)
         assert (line["kp"]["unit_price"], line["kp"]["total"]) == (None, None)
-        assert (line["rung"], line["rungs"], line["to_ours"]) == (None, [], None)
+        assert (line["rung"], line["rungs"], line["to_lowest"]) == (None, [], None)
 
 
 class TestLineContextId:
@@ -908,9 +921,9 @@ class TestSystemGroups:
             assert D(line["group"]["share"]) == share
             assert _pair(line["group"]["kp_per_sqm"]) == (D("120"), D("120"))
         # группа: (120 - 100) * 1000 = 20 000; доли 0.25 и 0.75
-        assert first["to_ours"] == {"net": "5000.00", "shown": "5000.00"}
-        assert second["to_ours"] == {"net": "15000.00", "shown": "15000.00"}
-        assert first["bargain"] == {"net": "5000.00", "shown": "5000.00"}
+        assert first["to_lowest"] == {"net": "5000.00", "shown": "5000.00"}
+        assert second["to_lowest"] == {"net": "15000.00", "shown": "15000.00"}
+        assert first["over_lowest"] == {"net": "5000.00", "shown": "5000.00"}
         assert first["rung"] == {"level": "v", "scope": "cls", "auto": True, "threshold_met": True}
 
     def test_group_money_uses_the_participant_rate(self, member_client, stage):
@@ -924,7 +937,7 @@ class TestSystemGroups:
 
         # нетто 30 000 и 90 000: цена группы 120, ₽/м² в ставке КП — 144
         assert _pair(line["group"]["kp_per_sqm"]) == (D("120"), D("144"))
-        assert line["to_ours"] == {"net": "5000.00", "shown": "6000.00"}
+        assert line["to_lowest"] == {"net": "5000.00", "shown": "6000.00"}
 
     def test_group_price_and_share_are_not_rounded(self, member_client, stage):
         """Нетто строк 30 001,5 и 90 000: цена группы 120,0015 за м², доли — бесконечные
@@ -951,7 +964,7 @@ class TestSystemGroups:
             assert line["group"]["lines"] == 2
             assert D(line["group"]["share"]) == share
             assert _pair(line["group"]["kp_per_sqm"]) == (D("120"), D("120"))
-            assert (line["to_ours"], line["range"], line["ours"]) == (None, None, None)
+            assert (line["to_lowest"], line["range"], line["lowest"]) == (None, None, None)
 
     def test_a_system_line_outside_every_group_has_no_group(self, member_client, stage):
         rnd = stage.round()
@@ -1000,7 +1013,11 @@ class TestTotals:
         (only,) = body["participants"]
         assert only["totals"] == _participant(round_body, part)["totals"]
         assert only["totals"] == {
-            "bargain": {"net": "500.00", "shown": "600.00"},
+            "over_lowest": {"net": "500.00", "shown": "600.00"},
+            # у обоих договоров одна дата цены: самая свежая — по меньшей цене, то есть та же самая низкая
+            "over_freshest": {"net": "500.00", "shown": "600.00"},
+            "comparable_lines": 3,
+            "freshest_lines": 3,
             "below": {"net": "-200.00", "shown": "-240.00"},
             "below_lines": 1,
             "unit_mismatch_lines": 1,
@@ -1015,7 +1032,10 @@ class TestTotals:
 
         zero = {"net": "0.00", "shown": "0.00"}
         assert _offer_article(body, stage, "R")["lines_totals"] == {
-            "bargain": {"net": "500.00", "shown": "600.00"},
+            "over_lowest": {"net": "500.00", "shown": "600.00"},
+            "over_freshest": {"net": "500.00", "shown": "600.00"},
+            "comparable_lines": 2,
+            "freshest_lines": 2,
             "below": zero,
             "below_lines": 0,
             "unit_mismatch_lines": 0,
@@ -1023,7 +1043,10 @@ class TestTotals:
             "not_comparable": {"total": zero, "by_state": {}},
         }
         assert _offer_article(body, stage, "R2")["lines_totals"] == {
-            "bargain": zero,
+            "over_lowest": zero,
+            "over_freshest": zero,
+            "comparable_lines": 1,
+            "freshest_lines": 1,
             "below": {"net": "-200.00", "shown": "-240.00"},
             "below_lines": 1,
             "unit_mismatch_lines": 1,
@@ -1084,9 +1107,9 @@ class TestTotals:
 
         body = _ok(member_client, stage.tender, rnd, part)
 
-        shares = [D(_offer_article(body, stage, cat)["lines_totals"]["bargain"]["net"]) for cat in ("R", "R2")]
+        shares = [D(_offer_article(body, stage, cat)["lines_totals"]["over_lowest"]["net"]) for cat in ("R", "R2")]
         assert shares == [D("5000.00"), D("15000.00")]
-        assert D(body["participants"][0]["totals"]["bargain"]["net"]) == sum(shares)
+        assert D(body["participants"][0]["totals"]["over_lowest"]["net"]) == sum(shares)
 
     def test_unit_mismatch_lines_of_the_article_count_only_that_article(self, member_client, stage):
         rnd, part = _totals_scene(stage)
@@ -1136,7 +1159,7 @@ class TestLinePanelAuto:
             panel = _panel(member_client, stage_.tender, rnd, part, item)
             assert _breakdown_part(panel["line"]) == _line_of(body, item), item.id
 
-    def test_contracts_of_the_auto_rung_carry_the_contract_card(self, member_client, stage):
+    def test_analogs_of_the_work_carry_the_analog_card(self, member_client, stage):
         own = stage.participant(stage.round(), "Подрядчик Я")
         low, _, _ = _history(stage, D("100"), contractor=own.contractor)
         high, _, _ = _history(stage, D("140"))
@@ -1146,36 +1169,54 @@ class TestLinePanelAuto:
 
         panel = _panel(member_client, stage.tender, rnd, part, item)
 
-        first, second = panel["contracts"]
+        assert panel["contracts"] == [] and panel["group_lines"] == []
+        first, second = panel["analogs"]
         assert set(first) == {
+            "analog_id",
             "contract_id",
             "object_title",
             "number",
             "year",
+            "period",
             "rate_class",
             "contractor_id",
             "contractor_title",
-            "rate",
-            "is_lower_bound",
+            "section_titles",
+            "title",
+            "unit",
+            "price",
+            "nominal",
+            "is_lowest",
+            "is_freshest",
+            "outlier_ratio",
             "with_this_contractor",
-            "ratio",
+            "place_match",
+            "selectable",
         }
         assert first["contract_id"] == low.id
         assert first["object_title"] == low.object.title
         assert first["number"] == low.contract_number
-        assert first["year"] == 2025
+        assert (first["year"], first["period"]) == (2025, "2025-04")
         assert first["rate_class"] == {"id": stage.rate_class.id, "title": "Класс Т"}
         assert first["contractor_id"] == low.contractor_id
         assert first["contractor_title"] == own.contractor.title
         assert second["contractor_title"] == high.contractor.title
-        assert first["contractor_title"] != second["contractor_title"]
-        assert _pair(first["rate"]) == (D("100"), D("120"))
-        assert (first["is_lower_bound"], first["with_this_contractor"], first["ratio"]) == (True, True, None)
+        assert first["section_titles"] == ["Общий раздел"]
+        assert first["unit"] == stage.db.get(UnitOfMeasure, stage.world.unit_id).symbol
+        assert first["title"]
+        assert _pair(first["price"]) == (D("100"), D("120"))
+        assert _pair(first["nominal"]) == (D("100"), D("120"))
+        assert (first["is_lowest"], first["with_this_contractor"], first["outlier_ratio"], first["selectable"]) == (
+            True,
+            True,
+            None,
+            True,
+        )
         assert second["contract_id"] == high.id
-        assert _pair(second["rate"]) == (D("140"), D("168"))
-        assert (second["is_lower_bound"], second["with_this_contractor"]) == (False, False)
+        assert _pair(second["price"]) == (D("140"), D("168"))
+        assert (second["is_lowest"], second["with_this_contractor"]) == (False, False)
 
-    def test_every_contract_at_the_minimum_is_a_lower_bound(self, member_client, stage):
+    def test_only_one_analog_is_the_lowest_even_when_prices_are_equal(self, member_client, stage):
         _history(stage, D("100"))
         _history(stage, D("100"))
         _history(stage, D("140"))
@@ -1185,26 +1226,27 @@ class TestLinePanelAuto:
 
         panel = _panel(member_client, stage.tender, rnd, part, item)
 
-        assert [c["is_lower_bound"] for c in panel["contracts"]] == [True, True, False]
+        assert [a["is_lowest"] for a in panel["analogs"]].count(True) == 1
+        lowest = next(a for a in panel["analogs"] if a["is_lowest"])
+        assert panel["line"]["lowest"]["analog_id"] == lowest["analog_id"]
+        assert panel["line"]["lowest"]["contract_id"] == lowest["contract_id"]
 
-    def test_lower_bound_is_the_minimum_of_the_rung_not_our_rate(self, member_client, stage, factories):
-        """Ступень `v·all`: договор своего класса 200 (наша расценка) и чужого 100 —
-        нижняя граница у договора 100, а не у нашей расценки."""
+    def test_the_reference_holds_only_the_analogs_of_the_chosen_rung(self, member_client, stage, factories):
+        """Ступень 1 — свой класс: договор чужого класса дешевле, но он ступенью ниже и в справке его нет."""
         other_class = factories.RateClassFactory.create(title="Класс Ч")
         ours, _, _ = _history(stage, D("200"))
-        cheaper, _, _ = _history(stage, D("100"), rate_class=other_class)
+        _history(stage, D("100"), rate_class=other_class)
         rnd = stage.round()
         part = stage.participant(rnd, "Подрядчик А", vat=D("0"))
         item = stage.kp(part, D("150"), qty=D("1"))
 
         panel = _panel(member_client, stage.tender, rnd, part, item)
 
-        assert _pair(panel["line"]["ours"]["value"]) == (D("200"), D("200"))
-        bounds = {c["contract_id"]: c["is_lower_bound"] for c in panel["contracts"]}
-        assert bounds == {ours.id: False, cheaper.id: True}
+        assert _pair(panel["line"]["lowest"]["value"]) == (D("200"), D("200"))
+        assert [a["contract_id"] for a in panel["analogs"]] == [ours.id]
 
-    def test_ratio_is_filled_for_the_contract_that_breaks_the_scale(self, member_client, stage):
-        _history(stage, D("100"))
+    def test_an_outlier_analog_is_shown_with_its_ratio_and_cannot_be_selected(self, member_client, stage):
+        first, _, _ = _history(stage, D("100"))
         _history(stage, D("110"))
         wide, _, _ = _history(stage, D("700"))
         rnd = stage.round()
@@ -1213,10 +1255,12 @@ class TestLinePanelAuto:
 
         panel = _panel(member_client, stage.tender, rnd, part, item)
 
-        ratios = {c["contract_id"]: c["ratio"] for c in panel["contracts"]}
-        assert [r is None for cid, r in ratios.items() if cid != wide.id] == [True, True]
-        assert abs(D(ratios[wide.id]) - D("6.6666666666666666666666666667")) < TOLERANCE
-        assert ratios[wide.id] == panel["line"]["unit_mismatch"]["contracts"][0]["ratio"]
+        by_contract = {a["contract_id"]: a for a in panel["analogs"]}
+        assert [a["outlier_ratio"] is None for cid, a in by_contract.items() if cid != wide.id] == [True, True]
+        assert abs(D(by_contract[wide.id]["outlier_ratio"]) - D("6.6666666666666666666666666667")) < TOLERANCE
+        assert [a["selectable"] for a in panel["analogs"] if a["contract_id"] == wide.id] == [False]
+        assert all(a["selectable"] for a in panel["analogs"] if a["contract_id"] != wide.id)
+        assert by_contract[first.id]["is_lowest"] is True
 
     def test_line_that_did_not_reach_the_ladder_has_no_contracts_but_names_the_dropped_ones(self, member_client, stage):
         rnd = stage.round()
@@ -1322,7 +1366,7 @@ class TestLinePanelAuto:
         rnd, part, item = _scene(stage)
         with count_statements(db_session) as seen:
             assert _panel_get(member_client, stage.tender, rnd, part, item).status_code == 200
-            assert _panel_get(member_client, stage.tender, rnd, part, item, level="f", scope="all").status_code == 200
+            assert _panel_get(member_client, stage.tender, rnd, part, item, level="f", scope="all").status_code == 422
             assert _panel_get(member_client, stage.tender, rnd, part, item, level="x", scope="all").status_code == 422
 
         writes = [s for s in seen if s.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE"))]
@@ -1331,101 +1375,21 @@ class TestLinePanelAuto:
     def test_panel_has_no_float_literal(self, member_client, stage):
         rnd, part, item = _scene(stage)
 
-        panel = _panel(member_client, stage.tender, rnd, part, item, level="f", scope="all")
+        panel = _panel(member_client, stage.tender, rnd, part, item)
 
-        assert panel["contracts"]  # `_json` падает на любом дробном литерале
+        assert panel["analogs"]  # `_json` падает на любом дробном литерале
 
 
 class TestRungPreview:
-    def _wide_scene(self, stage_, factories):
-        """Вариант 1: договоры 100 и 140 своего класса. Вариант 2: 60 своего класса и 300
-        чужого. КП (НДС 20 %): нетто 120 за 10 единиц на варианте 1."""
-        other_class = factories.RateClassFactory.create(title="Класс Ч")
-        v2 = _second_variant(stage_)
-        stage_.history(D("100"))
-        stage_.history(D("140"))
-        _history(stage_, D("60"), variant=v2)
-        _history(stage_, D("300"), variant=v2, rate_class=other_class)
-        rnd = stage_.round()
-        part = stage_.participant(rnd, "Подрядчик А")
-        return rnd, part, stage_.kp(part, D("144"))
-
-    def test_preview_f_all_changes_the_rung_the_range_and_the_money(self, member_client, stage, factories):
-        rnd, part, item = self._wide_scene(stage, factories)
-        auto = _panel(member_client, stage.tender, rnd, part, item)["line"]
-
-        line = _panel(member_client, stage.tender, rnd, part, item, level="f", scope="all")["line"]
-
-        assert auto["rung"]["auto"] is True
-        assert (auto["rung"]["level"], auto["rung"]["scope"]) == ("v", "cls")
-        assert line["rung"] == {"level": "f", "scope": "all", "auto": False, "threshold_met": True}
-        assert {k: _pair(v)[0] for k, v in line["range"].items()} == {
-            "min": D("60"),
-            "max": D("300"),
-            "median": D("120"),
-        }
-        assert _pair(line["ours"]["value"]) == (D("60"), D("72"))
-        assert line["ours"]["from_all_classes"] is False
-        # (120 - 60) * 10 вместо (120 - 100) * 10
-        assert line["to_ours"] == {"net": "600.00", "shown": "720.00"}
-        assert line["bargain"] == {"net": "600.00", "shown": "720.00"}
-        assert line["to_ours"] != auto["to_ours"]
-        assert line["range"] != auto["range"] and line["ours"] != auto["ours"]
-        assert line["rungs"] == auto["rungs"]
-        assert line["state"] == auto["state"] == "comparable"
-
-    def test_preview_changes_the_contracts_of_the_panel(self, member_client, stage, factories):
-        rnd, part, item = self._wide_scene(stage, factories)
-
-        auto = _panel(member_client, stage.tender, rnd, part, item)
-        wide = _panel(member_client, stage.tender, rnd, part, item, level="f", scope="all")
-        narrow = _panel(member_client, stage.tender, rnd, part, item, level="f", scope="cls")
-
-        assert len(auto["contracts"]) == 2
-        assert sorted(_pair(c["rate"])[0] for c in wide["contracts"]) == [D("60"), D("100"), D("140"), D("300")]
-        assert sorted(_pair(c["rate"])[0] for c in narrow["contracts"]) == [D("60"), D("100"), D("140")]
-        assert [c["is_lower_bound"] for c in wide["contracts"] if _pair(c["rate"])[0] == D("60")] == [True]
-
-    def test_preview_of_the_auto_rung_still_reads_as_a_manual_choice(self, member_client, stage):
+    def test_a_work_preview_is_refused_because_a_work_has_no_rungs(self, member_client, stage):
         rnd, part, item = _scene(stage)
-
-        line = _panel(member_client, stage.tender, rnd, part, item, level="v", scope="cls")["line"]
-        auto = _panel(member_client, stage.tender, rnd, part, item)["line"]
-
-        assert line["rung"] == {"level": "v", "scope": "cls", "auto": False, "threshold_met": True}
-        assert auto == {**line, "rung": auto["rung"]}
-
-    def test_preview_does_not_touch_the_screen_sums(self, member_client, stage, factories):
-        rnd, part, item = self._wide_scene(stage, factories)
         before = _ok(member_client, stage.tender, rnd, part)
 
-        _panel(member_client, stage.tender, rnd, part, item, level="f", scope="all")
-        after = _ok(member_client, stage.tender, rnd, part)
+        response = _panel_get(member_client, stage.tender, rnd, part, item, level="v", scope="cls")
 
-        assert before == after
-        assert _line_of(after, item)["rung"]["auto"] is True
-
-    def test_preview_on_a_line_without_history_is_a_rung_without_contracts(self, member_client, stage):
-        stage.history(D("100"))
-        family2, variant2 = _other_family(stage)
-        rnd = stage.round()
-        part = stage.participant(rnd, "Подрядчик А", vat=D("0"))
-        item = _put(stage, part.proposal, "R", D("100"), variant=variant2, family=family2)
-
-        panel = _panel(member_client, stage.tender, rnd, part, item, level="v", scope="all")
-
-        assert panel["line"]["state"] == "no_history"
-        assert panel["line"]["rung"] == {"level": "v", "scope": "all", "auto": False, "threshold_met": False}
-        assert (panel["contracts"], panel["vat_dropped"]) == ([], [])
-
-    def test_p_rungs_preview_when_the_family_has_a_second_main(self, member_client, stage, world):
-        world.param(stage.schema, 2, "Длина")
-        rnd, part, item = _scene(stage)
-
-        line = _panel(member_client, stage.tender, rnd, part, item, level="p", scope="cls")["line"]
-
-        assert line["rung"] == {"level": "p", "scope": "cls", "auto": False, "threshold_met": True}
-        assert line["state"] == "comparable"
+        assert response.status_code == 422
+        assert response.json()["detail"]["code"] == "unknown_rung"
+        assert _ok(member_client, stage.tender, rnd, part) == before
 
     def test_system_preview_moves_the_whole_family_group(self, member_client, stage):
         v2 = _second_variant(stage)
@@ -1445,11 +1409,11 @@ class TestRungPreview:
         assert wide["line"]["rung"] == {"level": "f", "scope": "cls", "auto": False, "threshold_met": True}
         assert sorted(_pair(c["rate"])[0] for c in wide["contracts"]) == [D("60"), D("100"), D("140")]
         # группа: (120 - 60) * 1000 = 60 000; доля 0.25
-        assert wide["line"]["to_ours"] == {"net": "15000.00", "shown": "15000.00"}
+        assert wide["line"]["to_lowest"] == {"net": "15000.00", "shown": "15000.00"}
         assert [line["position_item_id"] for line in wide["group_lines"]] == [small.id, large.id]
         # предпросмотр у системной строки — для всей семьи: у соседней строки та же ступень
         assert other_line["line"]["rung"] == wide["line"]["rung"]
-        assert other_line["line"]["to_ours"] == {"net": "45000.00", "shown": "45000.00"}
+        assert other_line["line"]["to_lowest"] == {"net": "45000.00", "shown": "45000.00"}
 
     @pytest.mark.parametrize(
         "params",
@@ -1475,15 +1439,15 @@ class TestRungPreview:
         assert detail["code"] == "unknown_rung"
         assert isinstance(detail["message"], str) and detail["message"]
 
-    @pytest.mark.parametrize("level", ["v", "f"])
+    @pytest.mark.parametrize("level", ["v", "p", "f"])
     @pytest.mark.parametrize("scope", ["cls", "all"])
-    def test_every_available_pair_is_accepted(self, member_client, stage, level, scope):
+    def test_every_pair_is_unknown_rung_for_a_work(self, member_client, stage, level, scope):
         rnd, part, item = _scene(stage)
 
-        panel = _panel(member_client, stage.tender, rnd, part, item, level=level, scope=scope)
+        response = _panel_get(member_client, stage.tender, rnd, part, item, level=level, scope=scope)
 
-        assert panel["line"]["rung"]["level"] == level
-        assert panel["line"]["rung"]["scope"] == scope
+        assert response.status_code == 422
+        assert response.json()["detail"]["code"] == "unknown_rung"
 
     def test_line_without_a_key_has_no_rung_to_choose(self, member_client, stage):
         rnd = stage.round()
@@ -1546,7 +1510,9 @@ class TestVatDropped:
 
         assert _panel(member_client, stage.tender, rnd, part, item)["vat_dropped"] == []
 
-    def test_a_dropped_contract_of_another_class_appears_only_on_the_all_scope(self, member_client, stage, factories):
+    def test_a_dropped_contract_of_another_class_is_named_only_when_the_other_class_rung_is_chosen(
+        self, member_client, stage, factories
+    ):
         other_class = factories.RateClassFactory.create(title="Класс Ч")
         stage.history(D("100"))
         stage.history(D("140"))
@@ -1555,25 +1521,33 @@ class TestVatDropped:
         part = stage.participant(rnd, "Подрядчик А")
         item = stage.kp(part, D("144"))
 
-        narrow = _panel(member_client, stage.tender, rnd, part, item, level="v", scope="cls")
-        wide = _panel(member_client, stage.tender, rnd, part, item, level="v", scope="all")
+        own_rung = _panel(member_client, stage.tender, rnd, part, item)
 
-        assert narrow["vat_dropped"] == []
-        assert [d["contract_id"] for d in wide["vat_dropped"]] == [foreign.id]
+        assert own_rung["line"]["work_rung"]["no"] == 1
+        assert own_rung["vat_dropped"] == []
 
-    def test_a_dropped_contract_of_another_variant_is_not_on_the_variant_rung(self, member_client, stage):
-        stage.history(D("100"))
-        stage.history(D("140"))
-        elsewhere, _, _ = _history(stage, D("120"), vat=None, variant=_second_variant(stage))
+    def test_a_dropped_contract_is_named_on_the_chosen_other_class_rung(self, member_client, stage, factories):
+        other_class = factories.RateClassFactory.create(title="Класс Ч")
+        _history(stage, D("100"), rate_class=other_class)
+        foreign, _, _ = _history(stage, D("120"), vat=None, rate_class=other_class)
         rnd = stage.round()
         part = stage.participant(rnd, "Подрядчик А")
         item = stage.kp(part, D("144"))
 
-        on_variant = _panel(member_client, stage.tender, rnd, part, item, level="v", scope="cls")
-        on_family = _panel(member_client, stage.tender, rnd, part, item, level="f", scope="cls")
+        panel = _panel(member_client, stage.tender, rnd, part, item)
 
-        assert on_variant["vat_dropped"] == []
-        assert [d["contract_id"] for d in on_family["vat_dropped"]] == [elsewhere.id]
+        assert panel["line"]["work_rung"] == {"no": 3, "released": [], "other_class": True}
+        assert [d["contract_id"] for d in panel["vat_dropped"]] == [foreign.id]
+
+    def test_a_dropped_contract_of_another_variant_is_not_on_the_variant_rung(self, member_client, stage):
+        stage.history(D("100"))
+        stage.history(D("140"))
+        _history(stage, D("120"), vat=None, variant=_second_variant(stage))
+        rnd = stage.round()
+        part = stage.participant(rnd, "Подрядчик А")
+        item = stage.kp(part, D("144"))
+
+        assert _panel(member_client, stage.tender, rnd, part, item)["vat_dropped"] == []
 
     def test_without_a_rung_the_dropped_contract_of_the_key_is_still_named(self, member_client, stage):
         dropped, _, _ = _history(stage, D("120"), vat=None)
@@ -1597,8 +1571,12 @@ class TestVatDropped:
         assert panel["line"]["state"] == "no_history"
         assert panel["vat_dropped"] == []
 
-    def test_without_a_rung_the_first_rung_with_dropped_contracts_decides(self, member_client, stage):
-        elsewhere, _, _ = _history(stage, D("120"), vat=None, variant=_second_variant(stage))
+    def test_without_a_rung_a_dropped_contract_of_another_variant_is_not_named_without_released_params(
+        self, member_client, stage
+    ):
+        """Другой вариант той же семьи — аналог только по ступеням 2 и 4, а у семьи сцены отпускаемых
+        параметров нет: такого договора ни в одной ступени нет, называть нечего."""
+        _history(stage, D("120"), vat=None, variant=_second_variant(stage))
         rnd = stage.round()
         part = stage.participant(rnd, "Подрядчик А")
         item = stage.kp(part, D("144"))
@@ -1606,7 +1584,7 @@ class TestVatDropped:
         panel = _panel(member_client, stage.tender, rnd, part, item)
 
         assert panel["line"]["state"] == "no_history"
-        assert [d["contract_id"] for d in panel["vat_dropped"]] == [elsewhere.id]
+        assert panel["vat_dropped"] == []
 
     def test_without_a_rung_a_dropped_contract_of_another_class_is_named_only_from_the_all_scope(
         self, member_client, stage, factories
@@ -1872,7 +1850,7 @@ class TestInflation:
         panel = _panel(member_client, stage.tender, rnd, part, item)
 
         for body in (offer, panel):
-            assert not {k for k in _keys(body) if "inflat" in k or k in {"nominal", "factor"}}
+            assert not {k for k in _keys(body) if "inflat" in k or k == "factor"}
 
     def test_with_a_series_the_breakdown_carries_the_block_and_adjusted_history(self, member_client, stage, db_session):
         rnd, part, item, series_id = _inflation_scene(stage, db_session, "ok")
@@ -1884,20 +1862,21 @@ class TestInflation:
         assert body["inflation"]["target_month"] == "2026-08"
         assert body["inflation"]["sentence"] == f"Цены приведены к августу 2026 по ряду «{SERIES_NAME}»."
         # ставка ступени приведена: (120 - 100 * k) * 10
-        assert _line_of(nominal, item)["bargain"]["net"] == "200.00"
-        assert _line_of(body, item)["bargain"]["net"] == "88.97"
+        assert _line_of(nominal, item)["over_lowest"]["net"] == "200.00"
+        assert _line_of(body, item)["over_lowest"]["net"] == "88.97"
         # КП не приводится
         assert _line_of(body, item)["kp"] == _line_of(nominal, item)["kp"]
         assert body["participants"][0]["per_sqm"] == nominal["participants"][0]["per_sqm"]
 
-    def test_with_a_series_the_panel_contracts_are_adjusted(self, member_client, stage, db_session):
+    def test_with_a_series_the_panel_analogs_are_adjusted(self, member_client, stage, db_session):
         rnd, part, item, series_id = _inflation_scene(stage, db_session, "ok")
 
         panel = _panel(member_client, stage.tender, rnd, part, item, inflation_series_id=series_id)
 
-        (contract,) = panel["contracts"]
-        assert abs(D(contract["rate"]["net"]) - D("100") * FACTOR_FEB_2025) < D("1e-18")
-        assert panel["line"]["bargain"]["net"] == "88.97"
+        (analog,) = panel["analogs"]
+        assert abs(D(analog["price"]["net"]) - D("100") * FACTOR_FEB_2025) < D("1e-18")
+        assert D(analog["nominal"]["net"]) == D("100")  # номинал без множителя
+        assert panel["line"]["over_lowest"]["net"] == "88.97"
 
     def test_the_series_answer_of_the_panel_line_equals_the_breakdown_line(self, member_client, stage, db_session):
         rnd, part, item, series_id = _inflation_scene(stage, db_session, "ok")
@@ -1995,7 +1974,7 @@ class TestFileTargetAndSentFiles:
 
         line = _panel(member_client, stage_.tender, rnd, part, item)["line"]
 
-        assert _pair(line["ours"]["value"]) == (D("10"), D("10"))
+        assert _pair(line["lowest"]["value"]) == (D("10"), D("10"))
         assert _pair(line["file_ours"]) == (D("500"), D("500"))
 
     def test_work_file_target_equals_ours(self, member_client, stage):
@@ -2003,7 +1982,7 @@ class TestFileTargetAndSentFiles:
 
         line = _panel(member_client, stage.tender, rnd, part, item)["line"]
 
-        assert line["file_ours"] == line["ours"]["value"]
+        assert line["file_ours"] == line["lowest"]["value"]
         assert line["file_ours"] is not None
 
     def test_system_with_a_volume_that_fails_the_weight_predicate_has_no_file_target(
@@ -2013,7 +1992,7 @@ class TestFileTargetAndSentFiles:
 
         line = _panel(member_client, stage_.tender, rnd, part, item)["line"]
 
-        assert line["ours"] is not None
+        assert line["lowest"] is not None
         assert line["file_ours"] is None
 
     def test_participant_without_an_estimate_counts_its_sent_files(self, member_client, stage, db_session, tmp_storage):

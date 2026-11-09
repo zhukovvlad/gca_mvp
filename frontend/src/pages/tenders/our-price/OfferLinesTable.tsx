@@ -27,7 +27,9 @@ import {
   RUNG_MANUAL_INACTIVE_TAG,
   RUNG_MANUAL_TAG,
   SECONDARY_MARK,
+  TARGET_MARK,
   variantCaption,
+  workRungCaption,
 } from "./ourPriceCopy";
 import { LineStateText } from "./LineStateText";
 import { SortHead } from "./SortHead";
@@ -63,9 +65,9 @@ function decimalOf(line: OurPriceLine, key: SortKey, vat: VatView): Decimal | nu
     case "fork":
       return pick(line.range?.min ?? null, vat);
     case "ours":
-      return pick(line.ours?.value ?? null, vat);
+      return pick(line.lowest?.value ?? null, vat);
     case "to_ours": {
-      const value = pick(line.to_ours, vat);
+      const value = pick(line.to_lowest, vat);
       return value === null ? null : absDecimal(value);
     }
     default:
@@ -81,6 +83,8 @@ function compareLines(a: OurPriceLine, b: OurPriceLine, sort: SortState<SortKey>
 
 /** Подпись ступени: «вариант · Класс 2 · 3 дог.»; у строки без ступени её нет. */
 function rungCaption(line: OurPriceLine, rateClass: string): string | null {
+  // Работа на лестнице аналогов: ступень §2.8 и число аналогов, класс объекта в подписи не нужен.
+  if (line.work_rung !== null) return workRungCaption(line);
   const rung = line.rung;
   if (rung === null) return null;
   const contracts = line.rungs.find((r) => r.level === rung.level && r.scope === rung.scope)?.contracts;
@@ -228,7 +232,8 @@ export function OfferLinesTable({ lines, vat, rateClass, canResolve = false, onO
         header: LINE_COLUMN.ours,
         cell: ({ row }) => {
           const line = row.original;
-          const value = pick(line.ours?.value ?? null, vat);
+          const value = pick(line.lowest?.value ?? null, vat);
+          const targetMark = line.target_kind === null ? undefined : TARGET_MARK[line.target_kind];
           // Нет показанной цены (база НДС неизвестна) — метки нет, а не прочерк: решение от вида не зависит.
           const agreed = line.agreed === null ? null : pick(line.agreed, vat);
           return (
@@ -237,10 +242,18 @@ export function OfferLinesTable({ lines, vat, rateClass, canResolve = false, onO
               {line.kind === "system" && value !== null && (
                 <span className="block text-[0.6875rem] text-fg-secondary">{comparedUnit(line)}</span>
               )}
-              {line.ours?.from_all_classes === true && (
+              {line.lowest?.from_all_classes === true && (
                 <Badge variant="outline" className="ml-1">
                   {ALL_CLASSES_LABEL}
                 </Badge>
+              )}
+              {targetMark !== undefined && (
+                <span
+                  data-testid={`target-mark-${line.position_item_id}`}
+                  className="block text-[0.6875rem] leading-snug text-fg-secondary"
+                >
+                  {targetMark}
+                </span>
               )}
               {agreed !== null && (
                 <span
@@ -259,7 +272,7 @@ export function OfferLinesTable({ lines, vat, rateClass, canResolve = false, onO
         header: LINE_COLUMN.toOurs,
         cell: ({ row }) => {
           const line = row.original;
-          const diff = pick(line.to_ours, vat);
+          const diff = pick(line.to_lowest, vat);
           const label = lineStateLabel(line);
           return (
             <div data-testid={`to-ours-${line.position_item_id}`}>

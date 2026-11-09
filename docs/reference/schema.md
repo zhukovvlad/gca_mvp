@@ -1,4 +1,4 @@
-**Когда читать:** сверяешься с устройством схемы БД: таблицы и FK, идентичность входного написания в каталоге, семантический контур (семьи и контексты), нормативы, служебные поля импорта, очередь семантических предложений, варианты работ и схемы параметров семей, решения по строкам КП и отправленные файлы.
+**Когда читать:** сверяешься с устройством схемы БД: таблицы и FK, идентичность входного написания в каталоге, семантический контур (семьи и контексты), нормативы, служебные поля импорта, очередь семантических предложений, варианты работ и схемы параметров семей, решения по строкам КП и отправленные файлы, цепочки разделов, признак «можно отпустить» и цели строк.
 
 ## 1. Доменный контур
 
@@ -643,7 +643,7 @@ semantic_events                      -- расширение (0021): тип cont
 
 ## 9. Решения по строкам КП и отправленные файлы
 
-Пять таблиц, миграция `0023` ([спека 4б](../superpowers/specs/2026-10-27-contractor-file-design.md) §2.10, §2.13); существующие таблицы не меняются. Отсутствие решения — отсутствие строки, а не `NULL`. Все внешние ключи на пользователя — `RESTRICT`; на строку КП, смету, семью и оффер — `CASCADE`. Все пять — в `_DOMAIN_TABLES` тестов.
+Пять таблиц, миграция `0023` (одна из них, `kp_line_rungs`, с `0024` удалена — см. ниже и раздел 10) ([спека 4б](../superpowers/specs/2026-10-27-contractor-file-design.md) §2.10, §2.13); существующие таблицы не меняются. Отсутствие решения — отсутствие строки, а не `NULL`. Все внешние ключи на пользователя — `RESTRICT`; на строку КП, смету, семью и оффер — `CASCADE`. Все пять — в `_DOMAIN_TABLES` тестов.
 
 ```
 kp_line_agreements                   -- «Договорились» по строке КП, цена в нетто
@@ -656,11 +656,7 @@ kp_line_comments                     -- свой комментарий к ст�
   text NOT NULL, set_by → users RESTRICT, set_at
   # CHECK char_length(text) <= 2000; пустая строка законна
 
-kp_line_rungs                        -- ручная ступень работы строки
-  position_item_id PK → position_items ON DELETE CASCADE
-  level ('v'|'p'|'f'), scope ('cls'|'all'), key jsonb NOT NULL   # снимок ключа ступени, без внешних ключей
-  set_by → users RESTRICT, set_at
-  # вариант и семья могут уйти — тогда ступень просто не действует
+kp_line_rungs                        -- УДАЛЕНА миграцией 0024 (раздел 10): ручной ступени у работы больше нет, её заменил kp_line_targets
 
 kp_family_rungs                      -- ручная ступень системы для семьи в смете
   PK (estimate_id → estimates CASCADE, work_family_id → work_families CASCADE)
@@ -678,6 +674,57 @@ kp_sent_files                        -- отправленный подрядч�
 
 Владелец отправленного файла — оффер: замена раунда офферы не трогает, файлы её переживают. Принадлежность («смета — смета оффера, строка — не глава») схемой не держится — её держат эндпоинт и тест.
 
-**`downgrade` отказывает**, если есть строка в любой из пяти таблиц, и называет таблицу и счёт.
+**`downgrade` 0023 отказывает**, если есть строка в любой из пяти таблиц, и называет таблицу и счёт; `downgrade` 0024 возвращает `kp_line_rungs` пустой, с прежними ограничениями.
 
 **Трёхзначная логика CHECK** (`docs/pitfalls/db.md`): CHECK цены стоит явными `<>`, равенство `kp_family_rungs` — на двух NOT NULL сторонах.
+
+## 10. Цепочки разделов, признак «можно отпустить» и цели строк
+
+Миграция `0024` ([спека лестницы аналогов](../superpowers/specs/2026-11-07-analog-ladder-design.md) §2.18); `section_chains`, `releasable_proposals` и `kp_line_targets` — в `_DOMAIN_TABLES` тестов, литералы CHECK — в паритетном тесте. Отсутствие решения — отсутствие строки или `NULL`, а не пустое значение.
+
+```
+section_chains                       -- цепочка названий глав от корня сметы до главы строки; зона принадлежит цепочке
+  id PK, chain_key text NOT NULL     # нормализованная цепочка через " / " (нижний регистр, ё→е, пробелы схлопнуты)
+  # уникальность — индекс по md5(chain_key), а не по самому ключу: ключ на стенде до 8 185 байт, предел btree ≈ 2 700
+  titles text[] NOT NULL             # названия сверху вниз, как у первой встреченной строки
+  zone text NULL                     # CHECK в четырёх кодах: underground|aboveground|territory|whole
+  zone_source text NULL              # CHECK rule|model|human
+  # CHECK (zone IS NULL) = (zone_source IS NULL)
+  proposed_zone text NULL (те же коды и 'unknown'), proposed_confidence numeric NULL, proposed_reason text NULL
+  # CHECK: предложение только при zone IS NULL
+  decided_by NULL → users ON DELETE RESTRICT, decided_at NULL
+  # CHECK (zone_source = 'human') = (decided_by IS NOT NULL)
+  created_at
+
+position_items.section_chain_id      -- bigint NULL → section_chains ON DELETE RESTRICT, индекс
+  # CHECK NOT is_chapter OR section_chain_id IS NULL: у глав NULL; у строки до заполнения тоже NULL — зона не определена
+
+family_parameters.releasable         -- boolean NULL: NULL — не размечен, false — обязателен, true — можно отпустить
+  # CHECK releasable IS NULL OR role = 'main'; для сравнения NULL и false одинаковы (обязателен, пока не true)
+
+releasable_proposals                 -- отложенное предложение модели по параметру
+  parameter_id PK → family_parameters ON DELETE CASCADE
+  releasable boolean, confidence numeric (CHECK 0..1), reason text, request_hash text, created_at — все NOT NULL
+  # request_hash — отпечаток запроса, на который ответила модель; действующим предложение признаёт повторный рендер, а не эта строка
+
+semantic_jobs                        -- пятый и шестой виды (0024)
+  kind (+ 'section_zone', 'releasable_params'), section_chain_id bigint NULL → section_chains ON DELETE RESTRICT
+  # CHECK предмета: section_zone — только section_chain_id; releasable_params — family_id и schema_id;
+  #   у прочих видов section_chain_id IS NULL
+  # уникальный ключ заданий — с COALESCE(section_chain_id, ...)
+
+kp_line_targets                      -- выбор цели строки КП (только работа): «самая свежая» или конкретный аналог
+  position_item_id PK → position_items ON DELETE CASCADE
+  kind text NOT NULL                 # CHECK freshest|analog
+  analog_position_item_id bigint NULL   # снимок строки договора БЕЗ внешнего ключа: она уходит с заменой сметы, тогда выбор не действует (analog_unavailable)
+  # CHECK (kind = 'analog') = (analog_position_item_id IS NOT NULL)
+  set_by NOT NULL → users ON DELETE RESTRICT, set_at
+
+kp_line_rungs                        -- удалена (см. раздел 9)
+```
+
+**Миграция.** `upgrade` отказывает, если в `kp_line_rungs` есть строки: «есть ручные ступени работ: N — снимите их на экране 4б до обновления» (образец — отказ downgrade 0022). `downgrade` отказывает при решениях людей: строки `kp_line_targets`, цепочки с `zone_source = 'human'`, параметры с `releasable IS NOT NULL` и `origin = 'human'`; иначе удаляет новое и восстанавливает пустую `kp_line_rungs`.
+
+**Что значит `releasable`.** Модель пишет признак, не меняя `origin` параметра и `revision` схемы; решение человека (очередь «Можно отпустить» или правка схемы) переводит параметр в `human` и повышает `revision` на 1. Правка схемы без поля `releasable` сохраняет текущий признак, явный `null` снимает его (тоже решение человека); смена роли `main → secondary` обнуляет признак. Параметры модели при пересборке не переносятся, человеческие переносятся вместе с признаком.
+
+**Блокировки и уборка предложений.** Порядок замков: строка семьи `FOR SHARE`, затем версия схемы, затем её активные главные параметры, затем строка предложения или задания `FOR UPDATE`. Решение человека берёт версию `FOR NO KEY UPDATE` (оно повышает `revision`; два решения с `FOR SHARE` встретились бы на этом повышении и замкнулись в цикл). Предложения, ставшие недействующими, убирают `schema_edit`, `update_family`, `set_unit`, `merge_families`, `merge_parameter_values`, `apply_values` (новое значение) и заморозка версии; уборка — гигиена таблицы, защиту держит повторный рендер запроса.

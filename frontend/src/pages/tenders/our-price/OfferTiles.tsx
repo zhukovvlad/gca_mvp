@@ -11,6 +11,7 @@ import {
   emptyReasonOf,
   FILTER_HINT,
   FILTER_LABEL,
+  freshestCoverageNote,
   linesCount,
   medianCaption,
   PER_SQM_TILE_LABEL,
@@ -27,11 +28,18 @@ export interface OfferTilesProps {
 }
 
 type FilterTile = Exclude<OfferFilter, "all">;
-const FILTER_TILES: FilterTile[] = ["above_ours", "below_paid", "unit_mismatch", "not_comparable"];
+const FILTER_TILES: FilterTile[] = [
+  "above_lowest",
+  "above_freshest",
+  "below_lowest",
+  "unit_mismatch",
+  "not_comparable",
+];
 
 const TONE_CLASS: Partial<Record<FilterTile, string>> = {
-  above_ours: "text-warning-text",
-  below_paid: "text-info-text",
+  above_lowest: "text-warning-text",
+  above_freshest: "text-warning-text",
+  below_lowest: "text-info-text",
 };
 
 /**
@@ -49,9 +57,12 @@ export function OfferTiles({ offer, vat, filter, onFilter }: OfferTilesProps) {
   const amount = (filterKey: FilterTile): MoneyPair | null => {
     if (totals === null) return null;
     switch (filterKey) {
-      case "above_ours":
-        return totals.bargain;
-      case "below_paid":
+      case "above_lowest":
+        return totals.over_lowest;
+      case "above_freshest":
+        // `null` при пустом покрытии: плитка печатает «—», а не ноль (спека лестницы аналогов §2.12).
+        return totals.over_freshest;
+      case "below_lowest":
         return totals.below;
       case "unit_mismatch":
         return totals.unit_mismatch_amount;
@@ -63,15 +74,15 @@ export function OfferTiles({ offer, vat, filter, onFilter }: OfferTilesProps) {
   const money = (filterKey: FilterTile): string => {
     const value = pick(amount(filterKey), vat);
     if (value === null) return "—";
-    if (filterKey === "above_ours") return formatSigned(value);
-    return filterKey === "below_paid" ? formatBelow(value) : formatMoney(value);
+    if (filterKey === "above_lowest" || filterKey === "above_freshest") return formatSigned(value);
+    return filterKey === "below_lowest" ? formatBelow(value) : formatMoney(value);
   };
 
   const count = (key: OfferFilter) => offer.lines.filter((line) => matchesFilter(line, key)).length;
 
   return (
     <div className="space-y-3">
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-[minmax(0,1.3fr)_repeat(4,minmax(0,1fr))]">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-[minmax(0,1.3fr)_repeat(5,minmax(0,1fr))]">
         <Card size="sm" data-testid="tile-per_sqm" className="col-span-2 lg:col-span-1">
           <CardContent className="space-y-1 text-sm">
             <p className="text-xs text-fg-secondary">{PER_SQM_TILE_LABEL}</p>
@@ -114,8 +125,13 @@ export function OfferTiles({ offer, vat, filter, onFilter }: OfferTilesProps) {
               <span className="block text-xs text-fg-secondary">{FILTER_LABEL[key]}</span>
               <span className={cn("block font-mono text-lg tabular-nums", TONE_CLASS[key])}>{money(key)}</span>
               <span className="block text-xs text-fg-secondary">
-                {linesCount(n)} · {FILTER_HINT[key]}
+                {FILTER_HINT[key] === undefined ? linesCount(n) : `${linesCount(n)} · ${FILTER_HINT[key]}`}
               </span>
+              {key === "above_freshest" && totals !== null && freshestCoverageNote(totals) !== null && (
+                <span data-testid="freshest-coverage" className="block text-xs text-fg-secondary">
+                  {freshestCoverageNote(totals)}
+                </span>
+              )}
             </button>
           );
         })}

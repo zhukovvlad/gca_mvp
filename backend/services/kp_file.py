@@ -33,8 +33,17 @@ from services.kp_comment import (
     target_sum_net,
     template_text,
     vat_words,
+    work_source,
 )
-from services.our_price import HistoryIndex, LineResult, LineState, OfferEvaluation
+from services.our_price import (
+    HistoryIndex,
+    LineResult,
+    LineState,
+    OfferEvaluation,
+    SavedTarget,
+    resolve_target,
+    target_analog,
+)
 
 if TYPE_CHECKING:
     from crud.comparison import InflationPlan
@@ -162,12 +171,23 @@ def line_comment_inputs(
     kp_vat_base: Decimal,
     inflation: InflationLabel | None,
     agreed_net: Decimal | None,
+    saved_target: SavedTarget | None = None,
 ) -> CommentInputs:
     """Вход комментария строки: единственное место, где он собирается.
 
     Файл, строки разбора и панель зовут эту функцию, поэтому случай комментария
-    везде один. Система или работа — по строке сметы.
+    везде один. Система или работа — по строке сметы. Источник работы — аналог цели (действующий
+    выбор `saved_target`, иначе самая низкая), системы — договор самой низкой ставки.
     """
+    if line.is_system:
+        level = result.rung.level if result.rung is not None else None
+        source = pick_source(result, history, tender_class_id=tender_class_id, tender_contractor_id=tender_contractor_id)
+    else:
+        analog = target_analog(result, resolve_target(saved_target, result, is_system=False))
+        level = None if result.ladder is None or result.ladder.rung_no is None else (
+            "v" if result.ladder.rung_no in (1, 3) else "p"
+        )
+        source = None if analog is None else work_source(history, analog)
     return CommentInputs(
         result=result,
         is_system=line.is_system,
@@ -176,13 +196,8 @@ def line_comment_inputs(
         kp_total_net=_net(line.total, kp_vat_base),
         quantity=line.quantity,
         agreed_net=agreed_net,
-        level=result.rung.level if result.rung is not None else None,
-        source=pick_source(
-            result,
-            history,
-            tender_class_id=tender_class_id,
-            tender_contractor_id=tender_contractor_id,
-        ),
+        level=level,
+        source=source,
         tender_contractor_id=tender_contractor_id,
         tender_area=tender_area,
         inflation=inflation,
@@ -223,8 +238,7 @@ def _source_text(inp: CommentInputs) -> str:
     nominal = rub_in_base(inp, src.rate.nominal)
     vat = vat_words(inp.vat_base)
     if not inp.is_system:
-        average = "в среднем " if src.rate.lines >= 2 else ""
-        return f"{head}{average}{nominal} ₽ за {inp.unit_text} {vat}"
+        return f"{head}{nominal} ₽ за {inp.unit_text} {vat}"
     text = f"{head}{nominal} ₽ на м² объекта {vat}"
     if not is_weight(inp.quantity):
         with localcontext(_CONTEXT):
@@ -247,6 +261,7 @@ def _file_line(
     *,
     comments: Mapping[int, str],
     agreements: Mapping[int, tuple[Decimal, str]],
+    targets: Mapping[int, SavedTarget],
     context: FileContext,
 ) -> FileLine:
     agreed = agreements.get(src.position_item_id)
@@ -260,6 +275,7 @@ def _file_line(
         kp_vat_base=context.kp_vat_base,
         inflation=context.inflation,
         agreed_net=agreed[0] if agreed is not None else None,
+        saved_target=targets.get(src.position_item_id),
     )
     target = target_net(inp)
 
@@ -307,9 +323,11 @@ def build_file_rows(
     *,
     comments: Mapping[int, str],
     agreements: Mapping[int, tuple[Decimal, str]],
+    targets: Mapping[int, SavedTarget] | None = None,
     context: FileContext,
 ) -> list[FileSection | FileLine]:
-    """Строки файла в порядке входа; `agreements` — нетто и уже напечатанная дата `ДД.ММ.ГГГГ`."""
+    """Строки файла в порядке входа; `agreements` — нетто и уже напечатанная дата `ДД.ММ.ГГГГ`;
+    `targets` — сохранённые выборы цели работ `(вид, аналог)`."""
     rows: list[FileSection | FileLine] = []
     for src in source_lines:
         if src.is_chapter:
@@ -321,6 +339,7 @@ def build_file_rows(
                     evaluation.lines[src.position_item_id],
                     comments=comments,
                     agreements=agreements,
+                    targets=targets or {},
                     context=context,
                 )
             )

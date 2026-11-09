@@ -898,12 +898,16 @@ class TestPreviewAndLocks:
         order = [
             "work_families", "family_parameter_schemas", "family_parameters",
             "family_parameter_values", "catalog_contexts", "work_variants",
+            # Задания — последними: уборка «можно отпустить» (`refresh_inputs`) идёт после
+            # сверки значений, в порядке модулей `services/schema_edit.py`.
+            "semantic_jobs",
         ]
         tables = [table for table, _mode in first_seen]
         assert [mode for _table, mode in first_seen] == ["UPDATE"] * len(first_seen)
         assert tables == [table for table in order if table in tables]
         assert tables[:4] == order[:4]
         assert "catalog_contexts" in tables and "work_variants" in tables
+        assert tables[-1] == "semantic_jobs"
 
     def test_a_rebuild_without_new_values_locks_values_and_contexts_before_the_rows(
         self, db_session, factories

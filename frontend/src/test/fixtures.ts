@@ -34,6 +34,7 @@ import type {
   MoneyPair,
   KpFilePreview,
   KpSentFileItem,
+  OurPriceAnalog,
   OurPriceCell,
   OurPriceFork,
   OurPriceInflation,
@@ -2756,7 +2757,10 @@ function ourPriceProgress(inProgress: number): OurPriceProgress {
 
 function ourPriceTotals(): OurPriceTotals {
   return {
-    bargain: pair("120000.00", "146400.00"),
+    over_lowest: pair("120000.00", "146400.00"),
+    over_freshest: pair("90000.00", "109800.00"),
+    comparable_lines: 6,
+    freshest_lines: 6,
     below: pair("-30000.00", "-36600.00"),
     below_lines: 2,
     unit_mismatch_lines: 1,
@@ -2898,6 +2902,9 @@ export function ourPriceLineFixture(overrides: Partial<OurPriceLine> = {}): OurP
     suggestion_queue: null,
     kind: "work",
     kp: { unit_price: pair("1200", "1464"), total: pair("120000.00", "146400.00") },
+    // Ступень семьи 4а (как у системы): ручная ступень и лестница живут на ней. Строка-работа
+    // лестницы аналогов - `workLineFixture`: у неё `rung = null`, `rungs = []`, `work_rung` и аналоги.
+    work_rung: null,
     rung: { level: "v", scope: "cls", auto: true, threshold_met: true },
     rungs: [
       { level: "v", scope: "cls", contracts: 3, selectable: true },
@@ -2905,14 +2912,25 @@ export function ourPriceLineFixture(overrides: Partial<OurPriceLine> = {}): OurP
       { level: "f", scope: "cls", contracts: 4, selectable: true },
       { level: "f", scope: "all", contracts: 6, selectable: false },
     ],
+    zone: null,
+    section_chain_id: null,
     range: { min: pair("900", "1098"), max: pair("1300", "1586"), median: pair("1100", "1342") },
-    ours: { value: pair("1000", "1220"), from_all_classes: false },
+    lowest: { value: pair("1000", "1220"), analog_id: null, contract_id: null, from_all_classes: false },
+    freshest: null,
     position: "in",
-    to_ours: pair("20000.00", "24400.00"),
-    bargain: pair("20000.00", "24400.00"),
+    to_lowest: pair("20000.00", "24400.00"),
+    to_freshest: null,
+    to_lowest_unit: pair("200", "244"),
+    to_freshest_unit: null,
+    over_lowest: pair("20000.00", "24400.00"),
+    over_freshest: null,
     below: null,
+    analogs_count: 0,
+    no_history_reason: null,
     group: null,
     unit_mismatch: null,
+    target_kind: "lowest",
+    choice: null,
     agreed: null,
     comment_kind: null,
     manual_rung: null,
@@ -2986,8 +3004,84 @@ export function ourPriceLineViewFixture(
         ratio: null,
       },
     ],
+    analogs: [],
     vat_dropped: [],
     comment: { kind: "template", text: KP_FILE_TEMPLATE_TEXT, template_text: KP_FILE_TEMPLATE_TEXT },
+  };
+}
+
+/** Аналог справки: по умолчанию аналог остатка (`selectable`), без меток. */
+export function ourPriceAnalogFixture(overrides: Partial<OurPriceAnalog> = {}): OurPriceAnalog {
+  return {
+    analog_id: 8001,
+    contract_id: 101,
+    object_title: "Объект Ж",
+    number: "ГП-08",
+    year: 2025,
+    period: "2025-03",
+    rate_class: { id: 2, title: "Класс 2" },
+    contractor_id: 401,
+    contractor_title: "Подрядчик А",
+    section_titles: ["Корпус 1", "Надземная часть", "Монолит"],
+    title: "Стены монолитные B40, 200 мм",
+    unit: "м2",
+    price: pair("1000", "1220"),
+    nominal: pair("1000", "1220"),
+    is_lowest: false,
+    is_freshest: false,
+    outlier_ratio: null,
+    with_this_contractor: false,
+    place_match: 2,
+    selectable: true,
+    ...overrides,
+  };
+}
+
+/** Строка-работа лестницы аналогов: ступень 1, зона, самая низкая и самая свежая от аналогов. */
+export function workLineFixture(overrides: Partial<OurPriceLine> = {}): OurPriceLine {
+  return ourPriceLineFixture({
+    work_rung: { no: 1, released: [], other_class: false },
+    rung: null,
+    rungs: [],
+    zone: "aboveground",
+    section_chain_id: 77,
+    lowest: { value: pair("1000", "1220"), analog_id: 8001, contract_id: 101, from_all_classes: false },
+    freshest: { value: pair("1100", "1342"), analog_id: 8002, contract_id: 102, period: "2026-08" },
+    to_lowest: pair("20000.00", "24400.00"),
+    to_freshest: pair("10000.00", "12200.00"),
+    to_lowest_unit: pair("200", "244"),
+    to_freshest_unit: pair("100", "122"),
+    over_lowest: pair("20000.00", "24400.00"),
+    over_freshest: pair("10000.00", "12200.00"),
+    analogs_count: 2,
+    ...overrides,
+  });
+}
+
+/** Панель строки-работы: два аналога остатка, самая низкая и самая свежая. */
+export function workLineViewFixture(
+  opts: { line?: Partial<OurPriceLine>; analogs?: OurPriceAnalog[] } = {}
+): OurPriceLineView {
+  const base = ourPriceLineViewFixture();
+  return {
+    ...base,
+    line: workLineFixture(opts.line),
+    contracts: [],
+    analogs: opts.analogs ?? [
+      ourPriceAnalogFixture({ analog_id: 8001, is_lowest: true, with_this_contractor: true }),
+      ourPriceAnalogFixture({
+        analog_id: 8002,
+        contract_id: 102,
+        object_title: "Объект З",
+        number: "Д-112",
+        period: "2026-08",
+        contractor_id: 402,
+        contractor_title: "Подрядчик Б",
+        price: pair("1100", "1342"),
+        nominal: pair("1100", "1342"),
+        is_freshest: true,
+      }),
+    ],
   };
 }
 

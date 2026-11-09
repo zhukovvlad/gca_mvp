@@ -257,7 +257,11 @@ def test_kp_file_comment_case_row6_over():
     ],
 )
 def test_kp_file_comment_case_work_compares_in_kopecks(kp, ours, expected):
-    inp = inputs(kp_unit_net=kp, result=result(kp_unit_net=kp, ours=ours, position="in"))
+    inp = inputs(
+        kp_unit_net=kp,
+        result=result(kp_unit_net=kp, ours=ours, position="in"),
+        source=source(rate=rate(1, str(ours))),
+    )
     assert comment_case(inp) == expected
 
 
@@ -364,8 +368,8 @@ def test_kp_file_comment_case_system_without_valid_volume_still_over_by_total(qu
 
 
 def test_kp_file_comment_case_work_without_kp_price_or_ours_is_none():
+    # у сравнимой работы цель есть всегда: это нетто аналога-источника
     assert comment_case(inputs(kp_unit_net=None)) is None
-    assert comment_case(inputs(result=result(ours=None))) is None
 
 
 def test_kp_file_comment_case_system_without_tender_area_has_no_target():
@@ -577,7 +581,7 @@ def test_kp_file_comment_text_work_over_uses_year_and_object_of_the_source():
 @pytest.mark.parametrize("level", ["p", "f"])
 def test_kp_file_comment_text_work_over_comparable_works_on_p_and_f(level):
     text = template_text(inputs(level=level))
-    assert "сопоставимые работы стоили 100,00 ₽ за м2" in text
+    assert "сопоставимая работа стоила 100,00 ₽ за м2" in text
     assert "эта работа" not in text
 
 
@@ -587,13 +591,12 @@ def test_kp_file_comment_text_work_over_this_work_on_v():
     assert "сопоставимые" not in text
 
 
-def test_kp_file_comment_text_work_on_average_only_from_two_lines():
-    two = template_text(inputs(source=source(rate=rate(1, "100", lines=2))))
-    assert "эта работа стоила в среднем 100,00 ₽" in two
-    one = template_text(inputs(source=source(rate=rate(1, "100", lines=1))))
-    assert "в среднем" not in one
-    many = template_text(inputs(level="p", source=source(rate=rate(1, "100", lines=5))))
-    assert "сопоставимые работы стоили в среднем 100,00 ₽" in many
+def test_kp_file_comment_text_work_never_says_on_average():
+    # аналог работы — одна строка договора (спека лестницы аналогов §2.15)
+    for lines in (1, 2, 5):
+        text = template_text(inputs(source=source(rate=rate(1, "100", lines=lines))))
+        assert "в среднем" not in text
+        assert "эта работа стоила 100,00 ₽" in text
 
 
 def test_kp_file_comment_text_work_over_inflation_tail():
@@ -688,8 +691,8 @@ def test_kp_file_comment_text_none_without_a_case():
     assert template_text(inputs(kp_unit_net=D(90), result=result(kp_unit_net=D(90), position="in"))) is None
 
 
-def test_kp_file_comment_text_none_for_over_without_a_source():
-    assert template_text(inputs(source=None)) is None
+def test_kp_file_comment_text_none_for_system_over_without_a_source():
+    assert template_text(system_inputs(source=None)) is None
 
 
 # --- тексты: система, три формы ----------------------------------------------------

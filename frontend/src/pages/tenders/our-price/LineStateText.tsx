@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 
 import type { OurPriceLine } from "@/types/domain";
 
-import { isWaitingAdminLine } from "./ourPriceCopy";
+import { isWaitingAdminLine, zoneQueueHref } from "./ourPriceCopy";
 
 interface LineStateTextProps {
   line: OurPriceLine;
@@ -29,10 +29,20 @@ function resolveHref(line: OurPriceLine, contextId: number): string {
  * без контекста — тот же текст. Щелчок по ссылке не открывает панель строки.
  */
 export function LineStateText({ line, label, canResolve }: LineStateTextProps) {
-  if (!canResolve || !isWaitingAdminLine(line) || line.context_id === null) return <>{label}</>;
+  if (!canResolve || !isWaitingAdminLine(line)) return <>{label}</>;
+  // `no_zone` ведёт в очередь «Зоны» с цепочкой разделов строки (спека лестницы аналогов §2.10).
+  const href =
+    line.state === "no_zone"
+      ? line.section_chain_id === null
+        ? null
+        : zoneQueueHref(line.section_chain_id)
+      : line.context_id === null
+        ? null
+        : resolveHref(line, line.context_id);
+  if (href === null) return <>{label}</>;
   return (
     <Link
-      to={resolveHref(line, line.context_id)}
+      to={href}
       className="underline underline-offset-2 hover:text-fg"
       onClick={(event) => event.stopPropagation()}
     >

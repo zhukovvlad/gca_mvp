@@ -2858,6 +2858,10 @@ export interface QueueStatus {
   contexts_with_variant: number;
   contexts_pending: number;
   families_without_schema: number;
+  /** Цепочки разделов с предложением зоны, но без зоны (очередь «Зоны», «спорные»). */
+  zones_disputed: number;
+  /** Действующие предложения «можно отпустить» (очередь «Можно отпустить»). */
+  releasable_open: number;
 }
 
 export interface ConfirmSuggestionsResult {
@@ -2943,6 +2947,17 @@ export interface FamilySchemaParameter {
   off_list: SchemaOffListEntry[];
   /** Живые контексты, у которых значение параметра помечено «уточняется». */
   refreshing: number;
+  /** «Можно отпустить» (лестница аналогов §2.6): `null` — не размечен, `false` — обязателен. */
+  releasable: boolean | null;
+  /** Действующее предложение модели по параметру; `null` — предложения нет. */
+  releasable_proposal: ReleasableProposal | null;
+}
+
+/** Предложение модели «можно отпустить» (уверенность — строка Decimal). */
+export interface ReleasableProposal {
+  releasable: boolean;
+  confidence: string;
+  reason: string;
 }
 
 /**
@@ -2984,6 +2999,11 @@ export interface SchemaEditDraft {
   closed: boolean;
   values: string[];
   range: SchemaRange | null;
+  /**
+   * «Можно отпустить»: ключа нет — пользователь признака не трогал и сервер сохраняет текущий;
+   * `null` — снять признак; `true`/`false` — решение. Ключ ставится только касанием флажка.
+   */
+  releasable?: boolean | null;
 }
 
 /** Число контекстов, у которых модель запросит параметр. */
@@ -3317,6 +3337,7 @@ export type OurPriceLineState =
   | "no_price"
   | "no_area"
   | "no_variant"
+  | "no_zone"
   | "no_history"
   | "unit_mismatch"
   | "comparable";
@@ -3374,7 +3395,14 @@ export interface OurPriceNotComparable {
 }
 
 export interface OurPriceTotals {
-  bargain: MoneyPair | null;
+  /** «КП выше самых низких расценок» (спека лестницы аналогов §2.12). */
+  over_lowest: MoneyPair | null;
+  /** «КП выше самых свежих расценок»; `null` при пустом покрытии (`freshest_lines = 0`), не ноль. */
+  over_freshest: MoneyPair | null;
+  /** Сравнимых строк (`comparable`) в сумме. */
+  comparable_lines: number;
+  /** Из них строк с самой свежей расценкой. */
+  freshest_lines: number;
   below: MoneyPair | null;
   below_lines: number;
   unit_mismatch_lines: number;
@@ -3427,6 +3455,73 @@ export interface OurPriceOfferArticle extends OurPriceArticleHead, OurPriceCell 
   lines_totals: OurPriceTotals | null;
 }
 
+/** Ступень лестницы аналогов работы: номер 1-4, отпущенные параметры и признак другого класса. */
+export interface WorkRung {
+  no: 1 | 2 | 3 | 4;
+  released: string[];
+  other_class: boolean;
+}
+
+export type NoHistoryReason = "no_family" | "path_conflict" | "no_params" | "no_zone_match";
+
+export interface LowestFigure {
+  value: MoneyPair;
+  /** `position_item_id` строки договора-аналога; у системы `null`. */
+  analog_id: number | null;
+  contract_id: number | null;
+  from_all_classes: boolean;
+}
+
+export interface FreshestFigure {
+  value: MoneyPair;
+  analog_id: number | null;
+  contract_id: number | null;
+  /** `ГГГГ-ММ`. */
+  period: string | null;
+}
+
+export type TargetKind = "agreed" | "lowest" | "freshest" | "analog";
+
+/** Почему выбор цели перестал действовать (спека лестницы аналогов §2.14). */
+export type TargetResetReason = "kind_changed" | "not_comparable" | "analog_unavailable" | "no_freshest";
+
+export interface TargetChoice {
+  kind: "freshest" | "analog";
+  analog_id: number | null;
+  /** `false` - выбор сохранён, но не действует (см. `reset_reason`). */
+  active: boolean;
+  reset_reason: TargetResetReason | null;
+  set_by: UserRef;
+  set_at: string;
+}
+
+/** Строка справки панели: аналог выбранной ступени (спека лестницы аналогов §2.17). */
+export interface OurPriceAnalog {
+  analog_id: number;
+  contract_id: number;
+  object_title: string;
+  number: string;
+  year: number;
+  /** `ГГГГ-ММ`; `null` - даты цены нет. */
+  period: string | null;
+  rate_class: { id: number; title: string };
+  contractor_id: number;
+  contractor_title: string;
+  section_titles: string[];
+  title: string;
+  unit: string | null;
+  price: MoneyPair;
+  nominal: MoneyPair;
+  is_lowest: boolean;
+  is_freshest: boolean;
+  /** Кратность к остальным аналогам: задана только у выброса. */
+  outlier_ratio: Decimal | null;
+  with_this_contractor: boolean;
+  place_match: number;
+  /** Аналог остатка (не выброс): его можно сделать целью. */
+  selectable: boolean;
+}
+
 export interface OurPriceLine {
   position_item_id: number;
   /** Контекст членства строки; `null` у строки без членства. */
@@ -3447,20 +3542,45 @@ export interface OurPriceLine {
   suggestion_queue: "list" | "new" | null;
   kind: "work" | "system";
   kp: { unit_price: MoneyPair | null; total: MoneyPair | null };
+  /** Ступень лестницы аналогов у работы (спека лестницы аналогов §2.8); у системы `null`. */
+  work_rung: WorkRung | null;
+  /** Ступень семьи у системы; у работы `null`. */
   rung: { level: RungLevel; scope: RungScope; auto: boolean; threshold_met: boolean } | null;
-  /** `selectable` - ступень можно выбрать руками: на ней у строки есть что сравнивать. */
+  /** `selectable` - ступень можно выбрать руками: на ней у строки есть что сравнивать. У работы пусто. */
   rungs: Array<{ level: RungLevel; scope: RungScope; contracts: number; selectable: boolean }>;
+  /** Зона цепочки разделов строки-работы; `null` - зона не определена или строка - система. */
+  zone: SectionZone | null;
+  section_chain_id: number | null;
   range: { min: MoneyPair; max: MoneyPair; median: MoneyPair } | null;
-  ours: { value: MoneyPair; from_all_classes: boolean } | null;
+  /** Самая низкая расценка (у системы - расценка действующей ступени). */
+  lowest: LowestFigure | null;
+  /** Самая свежая расценка; `null` - её нет (нет аналогов с датой цены или строка - система). */
+  freshest: FreshestFigure | null;
   position: "above" | "in" | "below" | null;
-  to_ours: MoneyPair | null;
-  bargain: MoneyPair | null;
+  to_lowest: MoneyPair | null;
+  to_freshest: MoneyPair | null;
+  /** Разница цены КП за единицу к самой низкой / свежей (₽ за единицу строки, без округления). */
+  to_lowest_unit: MoneyPair | null;
+  to_freshest_unit: MoneyPair | null;
+  over_lowest: MoneyPair | null;
+  over_freshest: MoneyPair | null;
   below: MoneyPair | null;
+  /** Аналогов на ступени, с выбросами; у системы 0. */
+  analogs_count: number;
+  no_history_reason: NoHistoryReason | null;
   group: { lines: number; share: Decimal; kp_per_sqm: MoneyPair | null } | null;
   unit_mismatch: {
     kp_ratio: Decimal | null;
+    all_outliers: boolean;
+    /** Выбросы среди аналогов работы. */
+    analogs: Array<{ analog_id: number; ratio: Decimal }>;
+    /** Расходящиеся договоры системы. */
     contracts: Array<{ contract_id: number; ratio: Decimal }>;
   } | null;
+  /** Чем сейчас считается цель строки; `null` - цели нет (строка не сравнима). */
+  target_kind: TargetKind | null;
+  /** Сохранённый выбор цели работы (§2.14), в том числе недействующий; `null` - выбора нет. */
+  choice: TargetChoice | null;
   /** «Договорились» по строке (спека 4б §2.3); `null` - решения нет. */
   agreed: AgreedValue | null;
   /** Чей комментарий у строки: свой, шаблонный или никакого. Текст отдаёт только панель. */
@@ -3553,6 +3673,8 @@ export interface OurPriceLineView {
   line: OurPriceLine;
   group_lines: OurPriceLine[];
   contracts: OurPriceRungContract[];
+  /** Справка работы в порядке §2.11; у системы пусто. */
+  analogs: OurPriceAnalog[];
   vat_dropped: OurPriceVatDropped[];
   /**
    * Комментарий строки: `text` - свой, если задан, иначе шаблонный; `template_text` -
@@ -3636,4 +3758,72 @@ export interface KpSentFileItem {
   vat_rate: Decimal;
   level_label: string;
   size_bytes: number;
+}
+
+
+// ========== Лестница аналогов: очереди «Зоны» и «Можно отпустить» (спека §2.17) ==========
+
+/** Зона цепочки разделов (`backend/services/section_zone.py::ZONES`). */
+export type SectionZone = "underground" | "aboveground" | "territory" | "whole";
+
+/** Фильтр очереди «Зоны» (`GET /section-chains?filter=`). */
+export type SectionChainFilter = "disputed" | "undetermined" | "rule" | "model" | "human" | "all";
+
+/** Строка очереди «Зоны» (`crud/section_chains.py::list_chains`). */
+export interface SectionChainRow {
+  id: number;
+  titles: string[];
+  zone: SectionZone | null;
+  zone_source: "rule" | "model" | "human" | null;
+  /** `unknown` — модель ответила «не знаю» (цепочка спорная, спека §2.18); `null` — ответа нет. */
+  proposed_zone: SectionZone | "unknown" | null;
+  /** Строка Decimal; `null` — предложения нет. */
+  proposed_confidence: string | null;
+  proposed_reason: string | null;
+  job_status: string | null;
+  rows_kp: number;
+  rows_contracts: number;
+  sample_titles: string[];
+}
+
+export interface SectionChainList {
+  items: SectionChainRow[];
+  total: number;
+  /** Спорные цепочки с конкретным ответом модели (без «не знаю») — их примет «Принять все». */
+  acceptable_total: number;
+}
+
+/** `POST /section-chains/accept-all`. */
+export interface AcceptAllZonesResult {
+  accepted: number;
+  skipped: number;
+}
+
+/** `POST /releasable-proposals/accept-all`. */
+export interface AcceptAllReleasableResult {
+  accepted: number;
+  stale: number;
+  failed: number;
+}
+
+export interface SectionChainsParams {
+  filter: SectionChainFilter;
+  q: string;
+  page: number;
+}
+
+/** Строка очереди «Можно отпустить»: плоский список, группировку по семьям делает экран. */
+export interface ReleasableProposalRow {
+  family: { id: number; title: string };
+  parameter: { id: number; name: string };
+  values: string[];
+  releasable: boolean;
+  confidence: string;
+  reason: string;
+  request_hash: string;
+}
+
+export interface ReleasableProposalList {
+  items: ReleasableProposalRow[];
+  total: number;
 }

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { formatRatio, linesCount, offerSubtitle, progressCaption, roundSubtitle, variantCaption, priceBasisLabel,VAT_NET_LABEL, VAT_UNKNOWN_LABEL, inflationCaptionOf, KP_NOT_ADJUSTED_NOTE, groupLinesCaption, ratioNote, unitWarnContracts, unitWarnKp } from "./ourPriceCopy";
+import { ourPriceLineFixture } from "@/test/fixtures";
+
+import { formatRatio, linesCount, offerSubtitle, progressCaption, roundSubtitle, variantCaption, priceBasisLabel,VAT_NET_LABEL, VAT_UNKNOWN_LABEL, inflationCaptionOf, KP_NOT_ADJUSTED_NOTE, groupLinesCaption, ratioNote, unitWarnContracts, unitWarnKp, isWaitingAdminLine, LINE_STATE_LABEL, lineStateLabel, periodRu, targetInactiveNote, WAITING_ADMIN_LABEL, workRungCaption, workRungLabel } from "./ourPriceCopy";
 
 describe("groupLinesCaption", () => {
   it.each([
@@ -133,5 +135,56 @@ describe("priceBasisLabel", () => {
 
   it("в ставке КП без ставки: показано то, чего нет, — подпись «база НДС неизвестна», а не «без НДС»", () => {
     expect(priceBasisLabel("shown", null)).toBe(VAT_UNKNOWN_LABEL);
+  });
+});
+
+describe("лестница аналогов: подписи", () => {
+  it("подпись ступени работы: 1-2 по классу объекта, 3-4 с «другой класс»; 2 и 4 называют отпущенные параметры", () => {
+    expect(workRungLabel({ no: 1, released: [], other_class: false })).toBe("тот же вариант");
+    expect(workRungLabel({ no: 2, released: ["Марка W", "Толщина"], other_class: false })).toBe("без Марка W, Толщина");
+    expect(workRungLabel({ no: 3, released: [], other_class: true })).toBe("тот же вариант · другой класс");
+    expect(workRungLabel({ no: 4, released: ["Марка W"], other_class: true })).toBe("без Марка W · другой класс");
+  });
+
+  it("«N аналогов»: склонение 1, 2-4, 5, 11, 21", () => {
+    const caption = (n: number) => workRungCaption({ work_rung: { no: 1, released: [], other_class: false }, analogs_count: n });
+    expect(caption(1)).toBe("тот же вариант · 1 аналог");
+    expect(caption(3)).toBe("тот же вариант · 3 аналога");
+    expect(caption(5)).toBe("тот же вариант · 5 аналогов");
+    expect(caption(11)).toBe("тот же вариант · 11 аналогов");
+    expect(caption(21)).toBe("тот же вариант · 21 аналог");
+  });
+
+  it("строка без ступени подписи не имеет", () => {
+    expect(workRungCaption({ work_rung: null, analogs_count: 0 })).toBeNull();
+  });
+
+  it("причины no_history: no_family, no_params, no_zone_match с зоной; отдельный код — своя подпись", () => {
+    const base = ourPriceLineFixture({ state: "no_history", zone: "underground" });
+    expect(lineStateLabel({ ...base, no_history_reason: "no_family" })).toBe("в договорах нет работ этой семьи");
+    expect(lineStateLabel({ ...base, no_history_reason: "no_params" })).toBe("нет аналога с этими параметрами");
+    expect(lineStateLabel({ ...base, no_history_reason: "path_conflict" })).toBe(
+      "нет аналога: параметры расходятся по разделам сметы"
+    );
+    expect(lineStateLabel({ ...base, no_history_reason: "no_zone_match" })).toBe("нет аналога в зоне «подземная часть»");
+    expect(lineStateLabel({ ...base, no_history_reason: null })).toBe(LINE_STATE_LABEL.no_history);
+  });
+
+  it("no_zone: подпись состояния и «ждёт решения администратора» при флаге", () => {
+    const base = ourPriceLineFixture({ state: "no_zone" });
+    expect(lineStateLabel({ ...base, waiting_admin: false })).toBe(LINE_STATE_LABEL.no_zone);
+    expect(lineStateLabel({ ...base, waiting_admin: true })).toBe(WAITING_ADMIN_LABEL);
+    expect(isWaitingAdminLine({ ...base, waiting_admin: true })).toBe(true);
+  });
+
+  it("период ГГГГ-ММ → ММ.ГГГГ; пусто — прочерк", () => {
+    expect(periodRu("2025-03")).toBe("03.2025");
+    expect(periodRu(null)).toBe("—");
+  });
+
+  it("причины недействующего выбора цели: по тексту на каждый код ответа", () => {
+    expect(targetInactiveNote("analog_unavailable")).toBe("Выбор не действует: аналога больше нет на ступени — цель: самая низкая");
+    expect(targetInactiveNote("no_freshest")).toContain("самой свежей расценки больше нет");
+    expect(targetInactiveNote(null)).toBe("Выбор не действует — цель: самая низкая");
   });
 });

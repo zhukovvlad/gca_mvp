@@ -76,7 +76,7 @@ describe("наша расценка справкой и подписи поля"
       line: {
         kind: "system",
         unit: "компл",
-        ours: { value: { net: "10", shown: "12.2" }, from_all_classes: false },
+        lowest: { value: { net: "10", shown: "12.2" }, analog_id: null, contract_id: null, from_all_classes: false },
         file_ours: { net: "500", shown: "610" },
       },
     });

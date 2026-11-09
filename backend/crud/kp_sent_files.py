@@ -44,6 +44,7 @@ def _assemble(
         inputs.evaluation,
         comments=inputs.comments,
         agreements=inputs.agreements,
+        targets=inputs.targets,
         context=inputs.context,
     )
     return build_header(inputs.context, rows), rows, inputs.context.kp_vat_base

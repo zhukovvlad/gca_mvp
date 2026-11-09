@@ -22,9 +22,10 @@ from models import (
     Contractor,
     Estimate,
     ImportJobStatus,
+    KpFamilyRung,
     KpLineAgreement,
     KpLineComment,
-    KpLineRung,
+    KpLineTarget,
     KpSentFile,
     Lot,
     Offer,
@@ -33,10 +34,11 @@ from models import (
     Proposal,
 )
 from tests.integration.test_estimates_api import finished_job, xlsx_bytes
-from tests.integration.test_kp_file_scene import _agree, _comment, _family_rung, _line_rung, _user
+from tests.integration.test_kp_file_scene import _agree, _comment, _family_rung, _user
 from tests.integration.test_our_price_load import World
 from tests.integration.test_our_price_round_api import Stage, count_statements
 from tests.integration.test_tenders_api import P_A, P_B, TENDERS, upload_round
+from tests.integration.test_work_variants_schema import _family
 from tests.payloads import round_payload
 
 pytestmark = pytest.mark.integration
@@ -45,7 +47,7 @@ D = Decimal
 
 REPLACE_REQUIRED_TEXT = "Раунд уже загружен; для замены всех его смет повторите запрос с replace=true."
 LOST_WARNING = (
-    "Заменой раунда удалены решения по строкам КП: договорённостей — {a}, комментариев — {c}, ручных ступеней — {r}."
+    "Заменой раунда удалены решения по строкам КП: договорённостей — {a}, комментариев — {c}, ручных ступеней — {r}, выбранных аналогов — 0."
 )
 
 
@@ -162,19 +164,24 @@ def _offer(db, inn):
 
 
 def _decide(db, user):
-    """Два «Договорились», один комментарий и одна ручная ступень строки на двух сметах."""
+    """Два «Договорились», один комментарий и одна ручная ступень семьи на двух сметах."""
     item_a, item_b = _item(db, "7700000001"), _item(db, "7700000002")
     _agree(db, item_a, D("9"), user)
     _agree(db, item_b, D("11"), user)
     _comment(db, item_a, "Свой текст", user)
-    _line_rung(db, item_b, "v", "cls", {"level": "v", "variant_id": 1}, user)
+    db.add(
+        KpFamilyRung(
+            estimate_id=item_b.proposal.lot.estimate_id, work_family_id=_family(db).id,
+            level="v", scope="cls", set_by=user.id,
+        )
+    )
     db.commit()
 
 
 def _decision_rows(db):
     return [
         db.execute(sa.select(sa.func.count()).select_from(model)).scalar_one()
-        for model in (KpLineAgreement, KpLineComment, KpLineRung)
+        for model in (KpLineAgreement, KpLineComment, KpFamilyRung)
     ]
 
 
@@ -190,14 +197,13 @@ class TestCounts:
         _agree(db_session, items["a1"], D("9"), user)
         _agree(db_session, items["b1"], D("8"), user)
         _comment(db_session, items["a1"], "Т", user)
-        _line_rung(db_session, items["b1"], "v", "cls", {"level": "v", "variant_id": 1}, user)
         _family_rung(db_session, a1.estimate, stage.family, "f", "cls", user)
         _family_rung(db_session, b1.estimate, stage.family, "f", "cls", user)
 
         counts = kd.count_round_decisions(db_session, rnd1.id)
 
-        # две ступени семьи из разных смет и одна ступень строки — три ступени
-        assert counts == kd.DecisionCounts(agreements=2, comments=1, rungs=3)
+        # две ступени семьи из разных смет
+        assert counts == kd.DecisionCounts(agreements=2, comments=1, rungs=2, targets=0)
 
     def test_round_counts_nothing_of_another_round(self, stage, db_session):
         rnd1, rnd2, _, _, _, items = _stage_two_rounds(stage, db_session)
@@ -205,14 +211,14 @@ class TestCounts:
         _agree(db_session, items["a2"], D("9"), user)
         _comment(db_session, items["a2"], "Т", user)
 
-        assert kd.count_round_decisions(db_session, rnd2.id) == kd.DecisionCounts(1, 1, 0)
+        assert kd.count_round_decisions(db_session, rnd2.id) == kd.DecisionCounts(1, 1, 0, 0)
         # на первом этапе решений нет, второй им не мешает
-        assert kd.count_round_decisions(db_session, rnd1.id) == kd.DecisionCounts(0, 0, 0)
+        assert kd.count_round_decisions(db_session, rnd1.id) == kd.DecisionCounts(0, 0, 0, 0)
 
     def test_empty_round_counts_zero(self, stage, db_session):
         rnd = stage.round()
 
-        assert kd.count_round_decisions(db_session, rnd.id) == kd.DecisionCounts(0, 0, 0)
+        assert kd.count_round_decisions(db_session, rnd.id) == kd.DecisionCounts(0, 0, 0, 0)
 
     def test_package_counts_every_round_of_the_participant_and_no_other_package(self, stage, db_session):
         _, _, a1, b1, _, items = _stage_two_rounds(stage, db_session)
@@ -220,13 +226,12 @@ class TestCounts:
         _agree(db_session, items["a1"], D("9"), user)
         _agree(db_session, items["a2"], D("9"), user)
         _comment(db_session, items["a2"], "Т", user)
-        _line_rung(db_session, items["a1"], "v", "all", {"level": "v", "variant_id": 1}, user)
         _family_rung(db_session, a1.estimate, stage.family, "f", "cls", user)
         _agree(db_session, items["b1"], D("9"), user)
         _comment(db_session, items["b1"], "Т", user)
 
-        assert kd.count_package_decisions(db_session, a1.offer.package_id) == kd.DecisionCounts(2, 1, 2)
-        assert kd.count_package_decisions(db_session, b1.offer.package_id) == kd.DecisionCounts(1, 1, 0)
+        assert kd.count_package_decisions(db_session, a1.offer.package_id) == kd.DecisionCounts(2, 1, 1, 0)
+        assert kd.count_package_decisions(db_session, b1.offer.package_id) == kd.DecisionCounts(1, 1, 0, 0)
 
     def test_count_is_one_statement_however_many_estimates(self, stage, db_session):
         rnd1, _, a1, _, _, items = _stage_two_rounds(stage, db_session)
@@ -306,9 +311,25 @@ class TestReplaceRequired:
         assert detail["agreements"] == 2
         assert detail["comments"] == 1
         assert detail["rungs"] == 1
+        assert detail["targets"] == 0
         assert "договорённостей — 2" in detail["message"]
         assert "комментариев — 1" in detail["message"]
         assert "ручных ступеней — 1" in detail["message"]
+
+    def test_a_work_target_choice_is_counted_and_named_in_the_refusal(
+        self, committing_client, committing_db, committing_factories, tender, round_stub
+    ):
+        user = _loaded(committing_client, tender, round_stub, committing_db, committing_factories)
+        committing_db.add(KpLineTarget(position_item_id=_item(committing_db, "7700000001").id, kind="freshest", set_by=user.id))
+        committing_db.commit()
+
+        response = upload_round(committing_client, tender, content=xlsx_bytes("b"))
+
+        assert response.status_code == 409
+        detail = response.json()["detail"]
+        assert detail["code"] == "replace_required"
+        assert (detail["targets"], detail["agreements"], detail["comments"], detail["rungs"]) == (1, 0, 0, 0)
+        assert "выбранных аналогов — 1" in detail["message"]
 
     def test_without_decisions_the_text_is_the_old_one_and_no_context(
         self, committing_client, committing_db, committing_factories, tender, round_stub
@@ -514,7 +535,7 @@ class TestConfirmationToken:
         user = _user(stage.f)
         _agree(db_session, item, D("9"), user)
         _comment(db_session, item, "Т", user)
-        _line_rung(db_session, item, "v", "cls", {"level": "v", "variant_id": 1}, user)
+        _family_rung(db_session, part.estimate, stage.family, "v", "cls", user)
         _sent(db_session, tmp_storage, part.offer.id, user)
         _sent(db_session, tmp_storage, part.offer.id, user)
 

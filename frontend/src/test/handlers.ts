@@ -62,6 +62,8 @@ import type {
   MemberPath,
   ProjectPassport,
   QueueStatus,
+  ReleasableProposalRow,
+  SectionChainRow,
   FamilySchema,
   FamilySchemaParameter,
   FamilySchemaValue,
@@ -505,7 +507,7 @@ interface HandlerState {
    * `refused` - решение отвергнуто кодом `unknown_rung` (422); `invalid_agreed` и
    * `comment_too_long` - отказы уровня поля с текстом сервера.
    */
-  kpFileDecisionOutcome: "ok" | "refused" | "invalid_agreed" | "comment_too_long";
+  kpFileDecisionOutcome: "ok" | "refused" | "invalid_agreed" | "comment_too_long" | "analog_unavailable";
   /** `unknown_vat_base` - выгрузка отвечает кодированным 422 с текстом сервера. */
   kpFileExportOutcome: "ok" | "unknown_vat_base";
   /** `missing` - 404, `gone` - 410 (файл пропал из хранилища, запись жива). */
@@ -1116,6 +1118,8 @@ function initialQueueStatus(): QueueStatus {
     contexts_with_variant: 37,
     contexts_pending: 5,
     families_without_schema: 12,
+    zones_disputed: 2,
+    releasable_open: 3,
   };
 }
 
@@ -2051,6 +2055,10 @@ async function kpDecision({ request }: { request: Request }): Promise<Response> 
     refused: { code: "unknown_rung", message: "Такой ступени у строки нет." },
     invalid_agreed: { code: "invalid_agreed", message: "Цена должна быть числом больше нуля." },
     comment_too_long: { code: "comment_too_long", message: "Комментарий длиннее 2000 символов." },
+    analog_unavailable: {
+      code: "analog_unavailable",
+      message: "Этот аналог не входит в остаток ступени строки: выбрать его нельзя.",
+    },
   } as const;
   const outcome = handlerState.kpFileDecisionOutcome;
   if (outcome !== "ok") {
@@ -2221,6 +2229,8 @@ export function schemaParameter(
     origin: "model",
     off_list: [],
     refreshing: 0,
+    releasable: null,
+    releasable_proposal: null,
     ...extra,
   };
 }
@@ -2486,6 +2496,14 @@ function applySchemaEdit(current: FamilySchema, drafts: SchemaEditDraft[]): Fami
         origin: touched ? "human" : (existing?.origin ?? "human"),
         off_list: existing?.off_list ?? [],
         refreshing: existing?.refreshing ?? 0,
+        // `schema_edit`: не прислано - текущий признак; у неглавного он сбрасывается.
+        releasable:
+          draft.role !== "main"
+            ? null
+            : draft.releasable === undefined
+              ? (existing?.releasable ?? null)
+              : draft.releasable,
+        releasable_proposal: existing?.releasable_proposal ?? null,
       }
     );
   });
@@ -2743,6 +2761,7 @@ export function resetHandlerState() {
   handlerState.errorJobs = initialErrorJobs();
   handlerState.holdJobs = initialHoldJobs();
   handlerState.unitHoldGroups = initialUnitHoldGroups();
+  resetLadderQueues();
   handlerState.createFamilyRequests = [];
   handlerState.createFamilyOutcome = "ok";
   handlerState.retryJobRequests = [];
@@ -3213,7 +3232,208 @@ function adjustedComparison(
   };
 }
 
+
+// ========== Лестница аналогов: очереди «Зоны» и «Можно отпустить» (спека 2026-11-07-analog-ladder §2.17) ==========
+// Формы ответов — `crud/section_chains.py::list_chains` и `routers/semantic.py` (`/releasable-proposals`).
+
+/** Размер страницы очередей (`section_chains.PAGE_SIZE`, `releasable.PAGE_SIZE`). */
+export const LADDER_PAGE_SIZE = 50;
+
+export interface LadderQueuesState {
+  chains: SectionChainRow[];
+  proposals: ReleasableProposalRow[];
+  /** Query-строки `GET /section-chains` по порядку. */
+  chainRequests: string[];
+  /** Решения зон: `PUT /section-chains/:id/zone`. */
+  zoneDecisions: Array<{ chainId: number; zone: string }>;
+  /** Решения признака: `PUT …/releasable`. */
+  releasableDecisions: Array<{ familyId: number; parameterId: number; body: Record<string, unknown> }>;
+  /** Сколько раз вызваны `POST …/accept-all` очередей. */
+  acceptAllCalls: { zones: number; releasable: number };
+  /** Отпечаток, который сервер считает действующим по параметру; нет записи — отпечаток строки очереди. */
+  currentHash: Record<number, string>;
+}
+
+export const ladderQueues: LadderQueuesState = {
+  chains: [],
+  proposals: [],
+  chainRequests: [],
+  zoneDecisions: [],
+  releasableDecisions: [],
+  acceptAllCalls: { zones: 0, releasable: 0 },
+  currentHash: {},
+};
+
+export function chainRow(id: number, extra: Partial<SectionChainRow> = {}): SectionChainRow {
+  return {
+    id,
+    titles: [`Корпус ${id}`, "Прочие работы"],
+    zone: null,
+    zone_source: null,
+    proposed_zone: "aboveground",
+    proposed_confidence: "0.62",
+    proposed_reason: "раздел смешанный",
+    job_status: null,
+    rows_kp: 412,
+    rows_contracts: 0,
+    sample_titles: ["Монтаж ограждения кровли", "Устройство приямков"],
+    ...extra,
+  };
+}
+
+export function releasableRow(
+  familyId: number,
+  familyTitle: string,
+  parameterId: number,
+  parameterName: string,
+  extra: Partial<ReleasableProposalRow> = {}
+): ReleasableProposalRow {
+  return {
+    family: { id: familyId, title: familyTitle },
+    parameter: { id: parameterId, name: parameterName },
+    values: ["2 мм", "3 мм"],
+    releasable: true,
+    confidence: "0.71",
+    reason: "цена за единицу близка",
+    request_hash: `hash-${parameterId}`,
+    ...extra,
+  };
+}
+
+function initialChains(): SectionChainRow[] {
+  return [
+    chainRow(1, { titles: ["Корпус 2", "Раздел 7", "Прочие работы"], proposed_zone: "aboveground" }),
+    chainRow(2, {
+      titles: ["Общестроительные работы", "Временные сети"],
+      proposed_zone: "whole",
+      proposed_confidence: "0.81",
+      rows_kp: 96,
+      rows_contracts: 14,
+    }),
+    chainRow(3, { titles: ["Секция 3", "Этаж -1 и кровля"], proposed_zone: "unknown", proposed_confidence: "0.35", proposed_reason: "этажи под и над землёй" }),
+    chainRow(4, { titles: ["Фундаменты"], zone: "underground", zone_source: "rule", proposed_zone: null, proposed_confidence: null, proposed_reason: null }),
+    chainRow(5, { titles: ["Благоустройство"], zone: "territory", zone_source: "model", proposed_zone: null, proposed_confidence: null, proposed_reason: null }),
+    chainRow(6, { titles: ["Прочие затраты"], proposed_zone: null, proposed_confidence: null, proposed_reason: null, job_status: "error" }),
+  ];
+}
+
+function initialProposals(): ReleasableProposalRow[] {
+  return [
+    releasableRow(1, "Гидроизоляция фундаментов", 11, "Толщина"),
+    releasableRow(1, "Гидроизоляция фундаментов", 12, "Тип материала", { releasable: false, confidence: "0.88", reason: "разные технологии" }),
+    releasableRow(2, "Устройство жб конструкций", 21, "Тип конструкции", { releasable: false, confidence: "0.93", reason: "" }),
+  ];
+}
+
+/** Вызывается из `resetHandlerState`. */
+export function resetLadderQueues() {
+  ladderQueues.chains = initialChains();
+  ladderQueues.proposals = initialProposals();
+  ladderQueues.chainRequests = [];
+  ladderQueues.zoneDecisions = [];
+  ladderQueues.releasableDecisions = [];
+  ladderQueues.acceptAllCalls = { zones: 0, releasable: 0 };
+  ladderQueues.currentHash = {};
+}
+resetLadderQueues();
+
+function chainMatchesFilter(chain: SectionChainRow, filter: string): boolean {
+  switch (filter) {
+    case "disputed":
+      return chain.zone === null && chain.proposed_zone !== null;
+    case "undetermined":
+      return chain.zone === null && chain.proposed_zone === null;
+    case "rule":
+    case "model":
+    case "human":
+      return chain.zone_source === filter;
+    default:
+      return true;
+  }
+}
+
+/** Спорная цепочка с конкретным ответом модели: её принимает «Принять все» (без «не знаю»). */
+function isAcceptableChain(chain: SectionChainRow): boolean {
+  return chain.zone === null && chain.proposed_zone !== null && chain.proposed_zone !== "unknown";
+}
+
+const ladderHandlers = [
+  http.get("/api/v1/semantic/section-chains", ({ request }) => {
+    const url = new URL(request.url);
+    ladderQueues.chainRequests.push(url.search);
+    const filter = url.searchParams.get("filter") ?? "disputed";
+    const q = (url.searchParams.get("q") ?? "").trim().toLowerCase();
+    const page = Number(url.searchParams.get("page") ?? "1");
+    const matched = ladderQueues.chains.filter(
+      (c) => chainMatchesFilter(c, filter) && (q === "" || c.titles.join(" / ").toLowerCase().includes(q))
+    );
+    const start = (page - 1) * LADDER_PAGE_SIZE;
+    return HttpResponse.json({
+      items: matched.slice(start, start + LADDER_PAGE_SIZE),
+      total: matched.length,
+      acceptable_total: ladderQueues.chains.filter(isAcceptableChain).length,
+    });
+  }),
+  http.post("/api/v1/semantic/section-chains/accept-all", () => {
+    ladderQueues.acceptAllCalls.zones += 1;
+    const targets = ladderQueues.chains.filter(isAcceptableChain);
+    for (const chain of targets) {
+      chain.zone = chain.proposed_zone as SectionChainRow["zone"];
+      chain.zone_source = "human";
+      chain.proposed_zone = null;
+      chain.proposed_confidence = null;
+      chain.proposed_reason = null;
+    }
+    return HttpResponse.json({ accepted: targets.length, skipped: 0 });
+  }),
+  http.post("/api/v1/semantic/releasable-proposals/accept-all", () => {
+    ladderQueues.acceptAllCalls.releasable += 1;
+    const accepted = ladderQueues.proposals.length;
+    ladderQueues.proposals = [];
+    return HttpResponse.json({ accepted, stale: 0, failed: 0 });
+  }),
+  http.put("/api/v1/semantic/section-chains/:id/zone", async ({ params, request }) => {
+    const chainId = Number(params.id);
+    const body = (await request.json()) as { zone: string };
+    ladderQueues.zoneDecisions.push({ chainId, zone: body.zone });
+    if (!["underground", "aboveground", "territory", "whole"].includes(body.zone)) {
+      return HttpResponse.json({ detail: { code: "invalid_zone", message: "invalid_zone" } }, { status: 422 });
+    }
+    const chain = ladderQueues.chains.find((c) => c.id === chainId);
+    if (!chain) return HttpResponse.json({ detail: { code: "not_found", message: "нет цепочки" } }, { status: 404 });
+    chain.zone = body.zone as SectionChainRow["zone"];
+    chain.zone_source = "human";
+    chain.proposed_zone = null;
+    chain.proposed_confidence = null;
+    chain.proposed_reason = null;
+    return new HttpResponse(null, { status: 204 });
+  }),
+  http.get("/api/v1/semantic/releasable-proposals", ({ request }) => {
+    const page = Number(new URL(request.url).searchParams.get("page") ?? "1");
+    const start = (page - 1) * LADDER_PAGE_SIZE;
+    return HttpResponse.json({
+      items: ladderQueues.proposals.slice(start, start + LADDER_PAGE_SIZE),
+      total: ladderQueues.proposals.length,
+    });
+  }),
+  http.put("/api/v1/semantic/families/:fid/parameters/:pid/releasable", async ({ params, request }) => {
+    const familyId = Number(params.fid);
+    const parameterId = Number(params.pid);
+    const body = (await request.json()) as { releasable: boolean; request_hash?: string };
+    ladderQueues.releasableDecisions.push({ familyId, parameterId, body });
+    const row = ladderQueues.proposals.find((p) => p.parameter.id === parameterId);
+    const expected = ladderQueues.currentHash[parameterId] ?? row?.request_hash;
+    // Сервер при устаревшем отпечатке коммитит удаление предложения и отвечает отказом.
+    ladderQueues.proposals = ladderQueues.proposals.filter((p) => p.parameter.id !== parameterId);
+    if (body.request_hash !== undefined && body.request_hash !== expected) {
+      return HttpResponse.json({ detail: { code: "proposal_stale", message: "proposal_stale" } }, { status: 409 });
+    }
+    return new HttpResponse(null, { status: 204 });
+  }),
+];
+
 export const handlers = [
+  ...ladderHandlers,
   http.get("/api/health", () => HttpResponse.json({ status: "ok" })),
 
   // Auth

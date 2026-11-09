@@ -185,7 +185,7 @@ describe("цены панели", () => {
   });
 
   it("наша расценка взята по всем классам — у неё подпись «все классы»", async () => {
-    serveView(() => view({ ours: { value: pair("1000", "1220"), from_all_classes: true } }));
+    serveView(() => view({ lowest: { value: pair("1000", "1220"), analog_id: null, contract_id: null, from_all_classes: true } }));
     renderSheet();
     expect(await screen.findByTestId("sheet-ours")).toHaveTextContent(ALL_CLASSES_LABEL);
   });
@@ -200,7 +200,7 @@ describe("цены панели", () => {
   });
 
   it("с НДС, но без ставки КП: подпись не «без НДС», а «база НДС неизвестна»; цифры — прочерки", async () => {
-    serveView(() => view({ kp: { unit_price: pair("1200", null), total: pair("120000.00", null) }, to_ours: pair("20000.00", null), ours: { value: pair("1000", null), from_all_classes: false } }));
+    serveView(() => view({ kp: { unit_price: pair("1200", null), total: pair("120000.00", null) }, to_lowest: pair("20000.00", null), lowest: { value: pair("1000", null), analog_id: null, contract_id: null, from_all_classes: false } }));
     renderSheet({ vat: "shown", vatRate: null });
     const prices = await screen.findByTestId("sheet-prices");
     expect(prices).toHaveTextContent(VAT_UNKNOWN_LABEL);
@@ -209,13 +209,13 @@ describe("цены панели", () => {
   });
 
   it("разница отрицательна — знак «−»", async () => {
-    serveView(() => view({ to_ours: pair("-300.00", "-366.00") }));
+    serveView(() => view({ to_lowest: pair("-300.00", "-366.00") }));
     renderSheet();
     expect(await screen.findByTestId("sheet-to-ours")).toHaveTextContent("−300,00");
   });
 
   it("строка без разницы и расценки печатает прочерки, а не нули", async () => {
-    serveView(() => view({ to_ours: null, ours: null }));
+    serveView(() => view({ to_lowest: null, lowest: null }));
     renderSheet();
     expect(await screen.findByTestId("sheet-to-ours")).toHaveTextContent("—");
     expect(screen.getByTestId("sheet-ours")).toHaveTextContent("—");
@@ -437,7 +437,7 @@ describe("лестница", () => {
   it("строка без ступени: подпись состояния и ни одной ступени", async () => {
     serveView(() =>
       view(
-        { state: "no_history", position: null, to_ours: null, ours: null, range: null, rung: null, rungs: [] },
+        { state: "no_history", position: null, to_lowest: null, lowest: null, range: null, rung: null, rungs: [] },
         { contracts: [] }
       )
     );
@@ -624,7 +624,7 @@ describe("договоры ступени", () => {
   it("без ступени (нет истории) выпавшие договоры всё равно названы", async () => {
     serveView(() =>
       view(
-        { state: "no_history", position: null, to_ours: null, ours: null, range: null, rung: null, rungs: [] },
+        { state: "no_history", position: null, to_lowest: null, lowest: null, range: null, rung: null, rungs: [] },
         {
           contracts: [],
           vat_dropped: [{ contract_id: 201, object_title: "Объект 201", number: "Договор 201", year: 2019 }],
@@ -651,7 +651,7 @@ describe("плашка «Разные единицы учёта?»", () => {
       view({
         state: "unit_mismatch",
         position: null,
-        unit_mismatch: { kp_ratio: "12.5", contracts: [{ contract_id: 101, ratio: "7.5" }] },
+        unit_mismatch: { kp_ratio: "12.5", all_outliers: false, analogs: [], contracts: [{ contract_id: 101, ratio: "7.5" }] },
       })
     );
     renderSheet();
@@ -667,7 +667,7 @@ describe("плашка «Разные единицы учёта?»", () => {
       view({
         state: "unit_mismatch",
         position: null,
-        unit_mismatch: { kp_ratio: null, contracts: [{ contract_id: 101, ratio: "9" }] },
+        unit_mismatch: { kp_ratio: null, all_outliers: false, analogs: [], contracts: [{ contract_id: 101, ratio: "9" }] },
       })
     );
     renderSheet();
@@ -678,7 +678,7 @@ describe("плашка «Разные единицы учёта?»", () => {
 
   it("расходится только цена КП (договоров с кратностью нет): строки про договоры нет", async () => {
     serveView(() =>
-      view({ state: "unit_mismatch", position: null, unit_mismatch: { kp_ratio: "6", contracts: [] } })
+      view({ state: "unit_mismatch", position: null, unit_mismatch: { kp_ratio: "6", all_outliers: false, analogs: [], contracts: [] } })
     );
     renderSheet();
     const warn = await screen.findByTestId("unit-warn");
@@ -723,7 +723,7 @@ describe("панель как окно", () => {
         calls += 1;
         if (calls === 1) return HttpResponse.json(view());
         await hold;
-        return HttpResponse.json(view({ to_ours: pair("-300.00", "-366.00") }));
+        return HttpResponse.json(view({ to_lowest: pair("-300.00", "-366.00") }));
       })
     );
     const queryClient = createTestQueryClient();
@@ -802,7 +802,7 @@ describe("в составе страницы разбора", () => {
   it("предпросмотр ступени не меняет цифры страницы разбора и не повторяет её запрос", async () => {
     renderPage();
     await screen.findByTestId("tile-per_sqm");
-    const tiles = ["tile-per_sqm", "tile-above_ours", "tile-below_paid"].map((id) => screen.getByTestId(id).textContent);
+    const tiles = ["tile-per_sqm", "tile-above_lowest", "tile-below_lowest"].map((id) => screen.getByTestId(id).textContent);
     const toOurs = screen.getByTestId(`to-ours-${OUR_PRICE_LINE_ID}`).textContent;
     const offerCalls = requestsOf("offer").length;
 
@@ -814,7 +814,7 @@ describe("в составе страницы разбора", () => {
 
     const preview = requestsOf("line").map((r) => new URL(r.url).searchParams.get("level"));
     expect(preview).toContain("f");
-    expect(["tile-per_sqm", "tile-above_ours", "tile-below_paid"].map((id) => screen.getByTestId(id).textContent)).toEqual(tiles);
+    expect(["tile-per_sqm", "tile-above_lowest", "tile-below_lowest"].map((id) => screen.getByTestId(id).textContent)).toEqual(tiles);
     expect(screen.getByTestId(`to-ours-${OUR_PRICE_LINE_ID}`).textContent).toBe(toOurs);
     expect(requestsOf("offer")).toHaveLength(offerCalls);
   });

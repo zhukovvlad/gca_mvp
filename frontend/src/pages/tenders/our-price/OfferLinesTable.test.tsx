@@ -2,7 +2,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 
-import { agreedFixture, ourPriceLineFixture } from "@/test/fixtures";
+import { agreedFixture, ourPriceLineFixture, workLineFixture } from "@/test/fixtures";
 import type { MoneyPair, OurPriceLine } from "@/types/domain";
 
 import { OfferLinesTable } from "./OfferLinesTable";
@@ -37,7 +37,7 @@ function order(): number[] {
 }
 
 function toOurs(id: number, net: string | null, shown: string | null = net): Partial<OurPriceLine> {
-  return { position_item_id: id, to_ours: net === null ? null : pair(net, shown) };
+  return { position_item_id: id, to_lowest: net === null ? null : pair(net, shown) };
 }
 
 describe("сортировка по умолчанию — по модулю «к нашей расценке»", () => {
@@ -70,7 +70,7 @@ describe("сортировка по умолчанию — по модулю «�
       line(2, toOurs(2, null)),
       line(3, toOurs(3, "200.00")),
     ]);
-    const head = screen.getByRole("button", { name: /К нашей расценке/ });
+    const head = screen.getByRole("button", { name: /К самой низкой/ });
     fireEvent.click(head);
     expect(order()).toEqual([1, 3, 2]);
     fireEvent.click(head);
@@ -119,13 +119,13 @@ describe("сортировка по другим колонкам", () => {
 
   it("вилка — по нижней границе, наша расценка — по значению; без вилки и без расценки — в конце", () => {
     renderTable([
-      line(1, { range: { min: pair("90", "90"), max: pair("100", "100"), median: pair("95", "95") }, ours: { value: pair("300", "300"), from_all_classes: false } }),
-      line(2, { range: null, ours: null }),
-      line(3, { range: { min: pair("8", "8"), max: pair("100", "100"), median: pair("95", "95") }, ours: { value: pair("1000", "1000"), from_all_classes: false } }),
+      line(1, { range: { min: pair("90", "90"), max: pair("100", "100"), median: pair("95", "95") }, lowest: { value: pair("300", "300"), analog_id: null, contract_id: null, from_all_classes: false } }),
+      line(2, { range: null, lowest: null }),
+      line(3, { range: { min: pair("8", "8"), max: pair("100", "100"), median: pair("95", "95") }, lowest: { value: pair("1000", "1000"), analog_id: null, contract_id: null, from_all_classes: false } }),
     ]);
     fireEvent.click(screen.getByRole("button", { name: /Наши договоры: вилка/ }));
     expect(order()).toEqual([3, 1, 2]);
-    fireEvent.click(screen.getByRole("button", { name: "Наша расценка" }));
+    fireEvent.click(screen.getByRole("button", { name: "Самая низкая" }));
     expect(order()).toEqual([1, 3, 2]);
   });
 
@@ -146,13 +146,13 @@ describe("сортировка по другим колонкам", () => {
 
   it("заголовок активной колонки несёт aria-sort", () => {
     renderTable([line(1), line(2)]);
-    expect(screen.getByRole("columnheader", { name: /К нашей расценке/ })).toHaveAttribute("aria-sort", "descending");
+    expect(screen.getByRole("columnheader", { name: /К самой низкой/ })).toHaveAttribute("aria-sort", "descending");
     expect(screen.getByRole("columnheader", { name: "Ед." })).toHaveAttribute("aria-sort", "none");
   });
 
   it("стрелка направления — только у активной колонки: вниз при убывании, вверх при возрастании", () => {
     renderTable([line(1), line(2)]);
-    const toOursHead = screen.getByRole("button", { name: /К нашей расценке/ });
+    const toOursHead = screen.getByRole("button", { name: /К самой низкой/ });
     const unitHead = screen.getByRole("button", { name: "Ед." });
     expect(toOursHead.querySelector("svg")?.getAttribute("class")).toMatch(/arrow-down/);
     expect(unitHead.querySelector("svg")).toBeNull();
@@ -195,7 +195,7 @@ describe("колонки строки", () => {
   });
 
   it("нет разницы — прочерк и подпись состояния", () => {
-    renderTable([line(1, { ...toOurs(1, null), state: "no_history", position: null, range: null, ours: null })]);
+    renderTable([line(1, { ...toOurs(1, null), state: "no_history", position: null, range: null, lowest: null })]);
     expect(screen.getByTestId("to-ours-1")).toHaveTextContent("—");
     expect(screen.getByTestId("to-ours-1")).toHaveTextContent(LINE_STATE_LABEL.no_history);
   });
@@ -310,7 +310,7 @@ describe("колонки строки", () => {
   it("копеечная расценка и копеечная нижняя граница вилки — тоже «< 0,01»", () => {
     renderTable([
       line(1, {
-        ours: { value: pair("0.003", null), from_all_classes: false },
+        lowest: { value: pair("0.003", null), analog_id: null, contract_id: null, from_all_classes: false },
         range: { min: pair("0.001", null), max: pair("0.5", null), median: pair("0.2", null) },
       }),
     ]);
@@ -377,9 +377,9 @@ describe("колонки строки", () => {
 
   it("наша расценка с пометкой «все кл.» только когда взята по всем классам", () => {
     renderTable([
-      line(1, { ours: { value: pair("1000", "1220"), from_all_classes: true } }),
-      line(2, { ours: { value: pair("1000", "1220"), from_all_classes: false } }),
-      line(3, { ours: null }),
+      line(1, { lowest: { value: pair("1000", "1220"), analog_id: null, contract_id: null, from_all_classes: true } }),
+      line(2, { lowest: { value: pair("1000", "1220"), analog_id: null, contract_id: null, from_all_classes: false } }),
+      line(3, { lowest: null }),
     ]);
     expect(screen.getByTestId("ours-1")).toHaveTextContent("все кл.");
     expect(screen.getByTestId("ours-2")).not.toHaveTextContent("все кл.");
@@ -614,5 +614,67 @@ describe("решения 4б в строках таблицы", () => {
   it("у строки без ступени и с недействующей ручной метка всё равно видна", () => {
     renderTable([line(1, { rung: null, manual_rung: manual({ active: false, reset_reason: "rung_empty" }) })]);
     expect(screen.getByTestId("rung-1")).toHaveTextContent("ручная не действует");
+  });
+});
+
+describe("лестница аналогов: колонки и подписи строки-работы", () => {
+  const workRow = (id: number, over: Partial<OurPriceLine> = {}) => line(id, workLineFixture({ position_item_id: id, ...over }));
+
+  it("заголовки «Самая низкая» и «К самой низкой»; старых «Наша расценка» и «К нашей расценке» нет", () => {
+    renderTable([workRow(1)]);
+    expect(screen.getByRole("button", { name: "Самая низкая" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /К самой низкой/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Наша расценка" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /К нашей расценке/ })).not.toBeInTheDocument();
+  });
+
+  it("подпись под ценой: ступень §2.8 и «N аналогов»", () => {
+    renderTable([
+      workRow(1, { work_rung: { no: 1, released: [], other_class: false }, analogs_count: 7 }),
+      workRow(2, { work_rung: { no: 4, released: ["Марка W"], other_class: true }, analogs_count: 1 }),
+      workRow(3, { work_rung: { no: 2, released: ["Толщина"], other_class: false }, analogs_count: 2 }),
+    ]);
+    expect(screen.getByTestId("rung-1")).toHaveTextContent("тот же вариант · 7 аналогов");
+    expect(screen.getByTestId("rung-2")).toHaveTextContent("без Марка W · другой класс · 1 аналог");
+    expect(screen.getByTestId("rung-3")).toHaveTextContent("без Толщина · 2 аналога");
+  });
+
+  it("метка цели: у «самой свежей» и «аналога» есть, у «самой низкой» и «договорились» нет", () => {
+    renderTable([
+      workRow(1, { target_kind: "freshest" }),
+      workRow(2, { target_kind: "analog" }),
+      workRow(3, { target_kind: "lowest" }),
+      workRow(4, { target_kind: "agreed" }),
+    ]);
+    expect(screen.getByTestId("ours-1")).toHaveTextContent("цель: самая свежая");
+    expect(screen.getByTestId("ours-2")).toHaveTextContent("цель: аналог");
+    expect(screen.getByTestId("ours-3")).not.toHaveTextContent("цель:");
+    expect(screen.getByTestId("ours-4")).not.toHaveTextContent("цель:");
+  });
+
+  it("сумма «самой низкой» — расценка аналога, а не вилка; разница со знаком", () => {
+    renderTable([workRow(1)]);
+    expect(screen.getByTestId("ours-1")).toHaveTextContent("1 000,00");
+    expect(screen.getByTestId("to-ours-1")).toHaveTextContent("+20 000,00");
+  });
+
+  it("причина no_history текстом в колонке разницы; no_zone — «ждёт решения» ссылкой в очередь «Зоны»", () => {
+    render(
+      <MemoryRouter initialEntries={["/tenders/1"]}>
+        <OfferLinesTable
+          lines={[
+        workRow(1, { state: "no_history", no_history_reason: "no_family", lowest: null, to_lowest: null, work_rung: null }),
+        workRow(2, { state: "no_zone", waiting_admin: true, zone: null, section_chain_id: 91, lowest: null, to_lowest: null, work_rung: null }),
+          ]}
+          vat="net"
+          rateClass="Класс 2"
+          canResolve
+          onOpenLine={() => undefined}
+        />
+      </MemoryRouter>
+    );
+    expect(screen.getByTestId("to-ours-1")).toHaveTextContent("в договорах нет работ этой семьи");
+    const link = within(screen.getByTestId("to-ours-2")).getByRole("link", { name: WAITING_ADMIN_LABEL });
+    expect(link).toHaveAttribute("href", "/families?tab=suggestions&queue=zones&chain=91");
   });
 });

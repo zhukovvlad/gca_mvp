@@ -1,5 +1,16 @@
 import { formatDecimalMoney, formatNumber, pluralRu, roundDecimal } from "@/lib/format";
-import type { Decimal, OurPriceLine, OurPriceLineState, OurPriceParticipant, ResetReason } from "@/types/domain";
+import type {
+  Decimal,
+  NoHistoryReason,
+  OurPriceLine,
+  OurPriceLineState,
+  OurPriceParticipant,
+  OurPriceTotals,
+  ResetReason,
+  SectionZone,
+  TargetResetReason,
+  WorkRung,
+} from "@/types/domain";
 
 import type { OfferFilter } from "./offerFilter";
 
@@ -15,6 +26,7 @@ export const LINE_STATE_LABEL: Record<OurPriceLineState, string> = {
   no_price: "в КП нет цены",
   no_area: "у объекта нет площади",
   no_variant: "вариант не определён",
+  no_zone: "зона раздела не определена",
   no_history: "нет наших договоров для сравнения",
   unit_mismatch: "разные единицы учёта",
   comparable: "сопоставима",
@@ -105,11 +117,27 @@ export const MATRIX_HINT =
 export const UNALLOCATED_ARTICLE = "unallocated";
 
 export const CARD_LABEL = {
-  bargain: "Можно выторговать",
-  below: "Ниже всего, что платили",
-  unitMismatch: "Разные единицы учёта",
+  overLowest: "КП выше самых низких расценок",
+  overFreshest: "КП выше самых свежих расценок",
+  below: "Ниже самой низкой расценки",
+  unitMismatch: "Разные единицы",
   notComparable: "Не с чем сравнить",
 } as const;
+
+/**
+ * Подпись покрытия у суммы «КП выше самых свежих расценок» (спека лестницы аналогов §2.12):
+ * самой свежей расценки может не быть у части сравнимых строк, и тогда сумма не по всем.
+ * Пустое покрытие даёт `null` у суммы - «—», а не ноль; ноль значит «нигде не выше».
+ */
+export function freshestCoverageNote(
+  totals: Pick<OurPriceTotals, "comparable_lines" | "freshest_lines">
+): string | null {
+  const { comparable_lines: comparable, freshest_lines: freshest } = totals;
+  if (comparable === 0) return null;
+  if (freshest === 0) return "у сравнимых строк нет датированных расценок";
+  if (freshest < comparable) return `по ${formatNumber(freshest)} из ${formatNumber(comparable)} строк`;
+  return null;
+}
 
 export function linesCount(n: number): string {
   return `${formatNumber(n)} стр.`;
@@ -219,15 +247,16 @@ export function offerTitle(contractor: string): string {
 
 export const FILTER_LABEL: Record<OfferFilter, string> = {
   all: "Все строки",
-  above_ours: "Дороже нашей расценки",
-  below_paid: "Ниже всего, что платили",
-  unit_mismatch: "Разные единицы учёта",
-  not_comparable: "Не с чем сравнить",
+  above_lowest: CARD_LABEL.overLowest,
+  above_freshest: CARD_LABEL.overFreshest,
+  below_lowest: CARD_LABEL.below,
+  unit_mismatch: CARD_LABEL.unitMismatch,
+  not_comparable: CARD_LABEL.notComparable,
 };
 
-export const FILTER_HINT: Record<Exclude<OfferFilter, "all">, string> = {
-  above_ours: "потенциал торга",
-  below_paid: "риск допработ и замены",
+/** Подписи плиток нейтральные: у «выше» подписи нет, только счёт строк (спека лестницы аналогов §2.12). */
+export const FILTER_HINT: Partial<Record<Exclude<OfferFilter, "all">, string>> = {
+  below_lowest: "риск допработ и замены",
   unit_mismatch: "вопрос подрядчику про единицу учёта",
   not_comparable: "не разобраны, нет в договорах, нет цены",
 };
@@ -258,8 +287,8 @@ export const LINE_COLUMN = {
   quantity: "Объём",
   kpPrice: "Цена КП",
   fork: "Наши договоры: вилка, ₽",
-  ours: "Наша расценка",
-  toOurs: "К нашей расценке",
+  ours: "Самая низкая",
+  toOurs: "К самой низкой",
 } as const;
 
 export const EMPTY_LINES_LABEL = "В этой статье строк под фильтр нет.";
@@ -275,16 +304,72 @@ export const POSITION_LABEL = {
 
 export const RUNG_LEVEL_LABEL = { v: "вариант", p: "по параметру", f: "вся семья" } as const;
 
-/** Строка без варианта, чьё решение ждёт администратора (спека 4а §2.11). */
+/** Зона строки-работы в подписях панели. */
+export const ZONE_CAPTION: Record<SectionZone, string> = {
+  underground: "подземная часть",
+  aboveground: "надземная часть",
+  territory: "территория",
+  whole: "весь объект",
+};
+
+/** Причина `no_history` у работы (спека лестницы аналогов §2.10): текстом, а не кодом. */
+export const NO_HISTORY_REASON_LABEL: Record<Exclude<NoHistoryReason, "no_zone_match">, string> = {
+  no_family: "в договорах нет работ этой семьи",
+  path_conflict: "нет аналога: параметры расходятся по разделам сметы",
+  no_params: "нет аналога с этими параметрами",
+};
+
+export function noZoneMatchLabel(zone: SectionZone | null): string {
+  return zone === null ? "нет аналога в зоне строки" : `нет аналога в зоне «${ZONE_CAPTION[zone]}»`;
+}
+
+/** Строка без варианта или без зоны, чьё решение ждёт администратора (спека 4а §2.11, лестницы аналогов §2.10). */
 export function isWaitingAdminLine(line: OurPriceLine): boolean {
-  return line.state === "no_variant" && line.waiting_admin;
+  return (line.state === "no_variant" || line.state === "no_zone") && line.waiting_admin;
 }
 
 /** Подпись состояния рядом с разницей; у сопоставимой строки — её положение в вилке. */
 export function lineStateLabel(line: OurPriceLine): string | null {
   if (line.state === "comparable") return line.position === null ? null : POSITION_LABEL[line.position];
   if (isWaitingAdminLine(line)) return WAITING_ADMIN_LABEL;
+  if (line.state === "no_history" && line.no_history_reason !== null) {
+    return line.no_history_reason === "no_zone_match"
+      ? noZoneMatchLabel(line.zone)
+      : NO_HISTORY_REASON_LABEL[line.no_history_reason];
+  }
   return LINE_STATE_LABEL[line.state];
+}
+
+function analogsCount(n: number): string {
+  return `${formatNumber(n)} ${pluralForm(n, "аналог", "аналога", "аналогов")}`;
+}
+
+/** Подпись ступени работы (спека лестницы аналогов §2.8): «тот же вариант», «без …», «… · другой класс». */
+export function workRungLabel(rung: WorkRung): string {
+  const base = rung.no === 1 || rung.no === 3 ? "тот же вариант" : `без ${rung.released.join(", ")}`;
+  return rung.other_class ? `${base} · другой класс` : base;
+}
+
+/** Подпись под ценой в таблице строк: ступень и число аналогов; без ступени подписи нет. */
+export function workRungCaption(line: Pick<OurPriceLine, "work_rung" | "analogs_count">): string | null {
+  if (line.work_rung === null) return null;
+  return `${workRungLabel(line.work_rung)} · ${analogsCount(line.analogs_count)}`;
+}
+
+/** Метка цели в таблице строк, если цель — не самая низкая и не «договорились». */
+export const TARGET_MARK: Partial<Record<NonNullable<OurPriceLine["target_kind"]>, string>> = {
+  freshest: "цель: самая свежая",
+  analog: "цель: аналог",
+};
+
+/** Строка сравнения панели работы: «7 аналогов в 4 договорах». */
+export function analogsInContracts(analogs: number, contracts: number): string {
+  return `${analogsCount(analogs)} в ${formatNumber(contracts)} ${pluralForm(contracts, "договоре", "договорах", "договорах")}`;
+}
+
+/** «2025-03» → «03.2025»; перестановкой строки. */
+export function periodRu(period: string | null): string {
+  return period === null ? "—" : period.split("-").reverse().join(".");
 }
 
 /** Панель строки (спека 4а §2.12, §2.14): тексты. */
@@ -293,6 +378,8 @@ export const SHEET_ERROR_LABEL = "Не удалось открыть строк�
 export const SHEET_DESCRIPTION = "Сравнение строки КП с нашими договорами";
 export const SHEET_SECTION = {
   prices: "Цены",
+  comparison: "Сравнение",
+  analogs: "Аналоги",
   ladder: "Лестница сравнения",
   family: "Вся семья в этом КП",
   contracts: "Договоры на этой ступени",
@@ -303,10 +390,78 @@ export const SHEET_FIELD = {
   kpPrice: "Цена КП",
   kpTotal: "Сумма строки в КП",
   quantity: "Объём",
-  toOurs: "К нашей расценке",
-  ours: "Наша расценка (справкой)",
+  toOurs: "К самой низкой",
+  ours: "Самая низкая (справкой)",
   secondary: "Второстепенные",
 } as const;
+
+/** Карточки цифр работы (спека лестницы аналогов §2.20): подписи и подсказки. */
+export const FIGURE_LABEL = { lowest: "Самая низкая расценка", freshest: "Самая свежая расценка" } as const;
+export const FIGURE_NONE = "нет аналога с датой цены";
+export const FIGURE_KP_ABOVE = "КП выше";
+export const FIGURE_KP_BELOW = "КП ниже";
+export const FIGURE_KP_EQUAL = "КП на уровне расценки";
+
+/** Справка аналогов. */
+export const ANALOGS_COLUMN = {
+  contract: "Объект, договор",
+  line: "Строка договора",
+  date: "Дата",
+  price: "Цена за ед.",
+} as const;
+export const ANALOG_FIRST = 5;
+export function analogsMore(n: number): string {
+  return `ещё ${formatNumber(n)} ${pluralForm(n, "аналог", "аналога", "аналогов")}`;
+}
+export const ANALOGS_LESS = "свернуть";
+export const ANALOG_LOWEST = "самая низкая";
+export const ANALOG_FRESHEST = "свежая";
+export const ANALOG_THIS_CONTRACTOR = "договор с этим подрядчиком";
+export const ANALOG_MAKE_TARGET = "целью";
+export const ANALOG_IS_TARGET = "цель";
+export const ANALOGS_EMPTY = "Аналогов на этой ступени нет.";
+export const ANALOGS_NOMINAL_TITLE = "номинал в договоре";
+
+/** Кратность выброса: «×N к остальным — проверьте единицу учёта». */
+export function analogOutlierNote(ratio: Decimal): string {
+  const { text, smaller } = ratioParts(ratio);
+  return `${smaller ? `в ${text} раз меньше остальных` : `×${text} к остальным`} — проверьте единицу учёта`;
+}
+
+/** Блок «Для выгрузки»: цель строки-работы (спека лестницы аналогов §2.14, §2.20). */
+export const TARGET_LABEL = "Цель";
+export const TARGET_TEXT = {
+  agreed: "договорённая цена",
+  lowest: "самая низкая расценка",
+  freshest: "самая свежая расценка",
+  analog: "аналог",
+} as const;
+export const TARGET_AUTO_TAG = "авто";
+export const TARGET_MAKE_FRESHEST = "Сделать целью самую свежую";
+export const TARGET_BACK_TO_LOWEST = "Вернуть к самой низкой";
+export const TARGET_HINT = "или «сделать целью» у аналога в справке";
+export function targetAnalogText(objectTitle: string | null, number: string | null): string {
+  const named = [objectTitle, number === null ? null : `дог. ${number}`].filter((p): p is string => p !== null);
+  return named.length === 0 ? TARGET_TEXT.analog : `${TARGET_TEXT.analog} — ${named.join(", ")}`;
+}
+export const TARGET_RESET_REASON: Record<TargetResetReason, string> = {
+  kind_changed: "строка стала системой",
+  not_comparable: "строка перестала быть сравнимой",
+  analog_unavailable: "аналога больше нет на ступени",
+  no_freshest: "самой свежей расценки больше нет",
+};
+export function targetInactiveNote(reason: TargetResetReason | null): string {
+  const why = reason === null ? "" : `: ${TARGET_RESET_REASON[reason]}`;
+  return `Выбор не действует${why} — цель: самая низкая`;
+}
+
+/** Плашка «Разные единицы учёта?» работы: все аналоги расходятся между собой. */
+export const UNIT_WARN_ALL_OUTLIERS = "Аналоги расходятся между собой — самой низкой и самой свежей расценки нет.";
+
+/** Ссылка у `no_zone`: очередь «Зоны» с подсветкой цепочки (спека лестницы аналогов §2.10). */
+export function zoneQueueHref(chainId: number): string {
+  return `/families?tab=suggestions&queue=zones&chain=${chainId}`;
+}
 
 /**
  * Подпись цен панели строки. В ставке КП без ставки (база НДС неизвестна) поле «в ставке КП»

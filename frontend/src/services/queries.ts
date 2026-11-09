@@ -70,6 +70,8 @@ import type {
   SchemaEditDraft,
   PrivacyMatch,
   StaleGroupTransferInput,
+  SectionChainsParams,
+  SectionZone,
   SuggestionsParams,
   ObjectInput,
   RateClassInput,
@@ -2475,6 +2477,8 @@ export function useUpdateSchema() {
     }) => semanticApi.updateSchema(familyId, parameters, previewHash),
     onSuccess: (_, { familyId }) => {
       invalidateSchema(qc, familyId);
+      // Правка главных параметров и признак «можно отпустить» меняют аналоги: расчёт и файл устарели.
+      void invalidateAfterLadderDecision(qc);
       toast.success("Схема сохранена.");
     },
     onError: (error, { familyId }) => {
@@ -2957,6 +2961,49 @@ export function useDeleteRung(tenderId: number, roundId: number, offerId: number
   );
 }
 
+/** Текст тоста `422 analog_unavailable` (спека лестницы аналогов §2.20). */
+export const ANALOG_UNAVAILABLE_TOAST = "Аналог больше не в остатке — обновите панель.";
+
+export type PutTargetInput =
+  | { positionItemId: number; kind: "freshest" }
+  | { positionItemId: number; kind: "analog"; analogId: number };
+
+/**
+ * Выбор цели строки-работы. Передаёт ряд ИПЦ экрана: остаток аналогов зависит от ряда, и сервер
+ * проверяет запись тем же рядом, которым читалась панель. `422 analog_unavailable` - тост и
+ * перезапрос панелей: аналог уже выпал из остатка. Инвалидация и ключ мутации - как у решений 4б.
+ */
+export function usePutTarget(tenderId: number, roundId: number, offerId: number, seriesId: number | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationKey: kpDecisionMutationKey(tenderId, roundId, offerId),
+    mutationFn: (input: PutTargetInput) =>
+      tendersApi.putTarget(
+        tenderId,
+        roundId,
+        offerId,
+        input.positionItemId,
+        input.kind === "freshest" ? { kind: "freshest" } : { kind: "analog", analog_id: input.analogId },
+        seriesId
+      ),
+    onSuccess: () => invalidateAfterDecision(qc, tenderId, roundId, offerId),
+    onError: (error) => {
+      if (apiErrorCode(error) === "analog_unavailable") {
+        toast.error(ANALOG_UNAVAILABLE_TOAST);
+        void invalidateAfterDecision(qc, tenderId, roundId, offerId);
+        return;
+      }
+      toastApiError(error);
+    },
+  });
+}
+
+export function useDeleteTarget(tenderId: number, roundId: number, offerId: number) {
+  return useKpDecision(tenderId, roundId, offerId, ({ positionItemId }: { positionItemId: number }) =>
+    tendersApi.deleteTarget(tenderId, roundId, offerId, positionItemId)
+  );
+}
+
 /**
  * Выгрузка файла подрядчику. Ряд ИПЦ - тот же, что у показанного предпросмотра, а имя
  * файла берётся из шапки этого предпросмотра: заголовки ответа через CORS не читаются.
@@ -3033,5 +3080,139 @@ export function useSetOfferVatBase(tenderId: number, roundId: number) {
       qc.invalidateQueries({ queryKey: qk.tenders.kpFilePreviewsOfRound(tenderId, roundId) });
     },
     onError: toastApiError,
+  });
+}
+
+
+// ========== Лестница аналогов: очереди «Зоны» и «Можно отпустить» (спека §2.17, §2.20) ==========
+
+/** Очередь «Зоны»: фильтр, поиск и страница; при смене параметров прежняя страница остаётся на месте. */
+export function useSectionChains(params: SectionChainsParams, { poll = true }: { poll?: boolean } = {}) {
+  return useQuery({
+    queryKey: qk.semanticQueue.zones(params),
+    queryFn: () => semanticApi.listSectionChains(params),
+    placeholderData: keepPreviousData,
+    refetchInterval: poll ? QUEUE_STATUS_POLL_MS : false,
+    refetchIntervalInBackground: false,
+  });
+}
+
+/** Очередь «Можно отпустить»: плоский список страницы, по семьям его раскладывает экран. */
+export function useReleasableProposals(page: number, { poll = true }: { poll?: boolean } = {}) {
+  return useQuery({
+    queryKey: qk.semanticQueue.releasable(page),
+    queryFn: () => semanticApi.listReleasableProposals(page),
+    placeholderData: keepPreviousData,
+    refetchInterval: poll ? QUEUE_STATUS_POLL_MS : false,
+    refetchIntervalInBackground: false,
+  });
+}
+
+/**
+ * Зона и признак меняют аналоги на всех экранах «Против нашей цены» (дизайн §7 п. 7: «без
+ * перезагрузки»), поэтому вместе с очередями, сводкой и схемами семей перечитывается весь
+ * префикс `["tenders", "our-price"]` и все предпросмотры файла подрядчику.
+ */
+function invalidateAfterLadderDecision(
+  qc: ReturnType<typeof useQueryClient>,
+  waitFor?: "zones" | "releasable",
+) {
+  const own = waitFor === "zones" ? qk.semanticQueue.zonesAll : qk.semanticQueue.releasableAll;
+  const other = waitFor === "zones" ? qk.semanticQueue.releasableAll : qk.semanticQueue.zonesAll;
+  // Серый слой очереди снимается по перечитыванию её самой: сводка статуса считается ≈ 12 с и
+  // схемы с экранами «Против нашей цены» не нужны, чтобы строка ушла, — их не ждём.
+  const rest = [
+    qc.invalidateQueries({ queryKey: other }),
+    qc.invalidateQueries({ queryKey: qk.semanticQueue.status }),
+    qc.invalidateQueries({ queryKey: qk.workFamilies.schemasAll }),
+    qc.invalidateQueries({ queryKey: qk.tenders.ourPriceAll }),
+    // Источник и цена в файле подрядчику считаются по тем же аналогам; отправленные не меняются.
+    qc.invalidateQueries({ queryKey: qk.tenders.kpFilePreviewsAll }),
+  ];
+  const ownRefetch = qc.invalidateQueries({ queryKey: own });
+  if (!waitFor) return Promise.all([ownRefetch, ...rest]);
+  void Promise.all(rest);
+  return ownRefetch;
+}
+
+/** Решение человека по зоне цепочки разделов (`PUT /section-chains/{id}/zone`, 204). */
+export function useDecideChainZone() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ chainId, zone }: { chainId: number; zone: SectionZone }) =>
+      semanticApi.decideChainZone(chainId, zone),
+    onSuccess: () => invalidateAfterLadderDecision(qc, "zones"),
+    onError: toastApiError,
+  });
+}
+
+/** Решение человека по каждому конкретному предложению модели по зонам (`POST …/accept-all`). */
+export function useAcceptAllZones() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => semanticApi.acceptAllChainZones(),
+    onSuccess: (result) => {
+      toast.success(
+        result.skipped > 0
+          ? `Принято: ${result.accepted} (пропущено: ${result.skipped})`
+          : `Принято: ${result.accepted}`,
+      );
+      return invalidateAfterLadderDecision(qc, "zones");
+    },
+    onError: toastApiError,
+  });
+}
+
+/** Решение человека по каждому действующему предложению «можно отпустить» (`POST …/accept-all`). */
+export function useAcceptAllReleasable() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => semanticApi.acceptAllReleasable(),
+    onSuccess: (result) => {
+      const tail = [
+        result.stale > 0 ? `устарело: ${result.stale}` : null,
+        result.failed > 0 ? `не принято: ${result.failed}` : null,
+      ].filter((part) => part !== null);
+      toast.success(
+        tail.length > 0
+          ? `Принято: ${result.accepted} (${tail.join(", ")})`
+          : `Принято: ${result.accepted}`,
+      );
+      return invalidateAfterLadderDecision(qc, "releasable");
+    },
+    onError: toastApiError,
+  });
+}
+
+/** Текст тоста `409 proposal_stale` (спека §2.20). */
+export const PROPOSAL_STALE_TOAST = "Семью или её схему правили после вопроса — очередь обновлена.";
+
+/**
+ * Решение по признаку «можно отпустить» с `request_hash` предложения. `409 proposal_stale` —
+ * тост и перезапрос очереди: сервер уже убрал недействующее предложение.
+ */
+export function useDecideReleasable() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      familyId,
+      parameterId,
+      releasable,
+      requestHash,
+    }: {
+      familyId: number;
+      parameterId: number;
+      releasable: boolean;
+      requestHash: string;
+    }) => semanticApi.decideReleasable(familyId, parameterId, { releasable, request_hash: requestHash }),
+    onSuccess: () => invalidateAfterLadderDecision(qc, "releasable"),
+    onError: (error) => {
+      if (apiErrorCode(error) === "proposal_stale") {
+        toast.error(PROPOSAL_STALE_TOAST);
+        void invalidateAfterLadderDecision(qc);
+        return;
+      }
+      toastApiError(error);
+    },
   });
 }

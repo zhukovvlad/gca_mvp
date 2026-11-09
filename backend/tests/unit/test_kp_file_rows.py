@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from money.inflation import YearMonth
+from services.analog_ladder import Analog, Figure, WorkLadder
 from services.kp_comment import (
     InflationLabel,
     SourceContract,
@@ -75,6 +76,40 @@ def rate(cid: int, net: str, *, nominal: str | None = None, lines: int = 1) -> C
     return ContractRate(contract_id=cid, net=D(net), nominal=D(nominal if nominal is not None else net), lines=lines)
 
 
+def work_ladder(contracts: tuple[ContractRate, ...], ours: Decimal | None, rung_no: int = 1) -> WorkLadder | None:
+    """Лестница работы: по аналогу на каждую ставку (строка аналога — `100 * contract_id`);
+    самая низкая — аналог со ставкой `ours`."""
+    if not contracts or ours is None:
+        return None
+    analogs = tuple(
+        Analog(
+            position_item_id=100 * c.contract_id,
+            contract_id=c.contract_id,
+            net=c.net,
+            nominal=c.nominal,
+            period=None,
+            place_match=0,
+            outlier_ratio=None,
+        )
+        for c in contracts
+    )
+    low = next(a for a in analogs if a.net == ours)
+    return WorkLadder(
+        rung_no=rung_no,
+        released=(),
+        other_class=False,
+        zone="whole",
+        analogs=analogs,
+        remainder_ids=frozenset(a.position_item_id for a in analogs),
+        lowest=Figure(low.net, low.position_item_id, low.contract_id),
+        freshest=None,
+        all_outliers=False,
+        kp_ratio=None,
+        no_history_reason=None,
+        vat_dropped=(),
+    )
+
+
 def result(**overrides) -> LineResult:
     """Работа: сравнима, наша 100, договор 1 с той же ставкой, КП 120 за единицу."""
     values = dict(
@@ -101,6 +136,8 @@ def result(**overrides) -> LineResult:
         mismatch=None,
     )
     values.update(overrides)
+    if "ladder" not in values:
+        values["ladder"] = work_ladder(values["contracts"], values["ours"])
     return LineResult(**values)
 
 
@@ -116,6 +153,7 @@ def system_result(**overrides) -> LineResult:
         group_lines=2,
         share=D("0.5"),
         group_per_sqm=D("10.4"),
+        ladder=None,
     )
     values.update(overrides)
     return result(**values)
@@ -626,9 +664,9 @@ def test_kp_file_source_of_a_work_quotes_the_nominal_rate_without_vat():
     assert row.source == "Объект Т, договор № Д-1, 2024 г.: 100,00 ₽ за м2 без НДС"
 
 
-def test_kp_file_source_says_on_average_for_a_rate_folded_from_two_lines():
+def test_kp_file_source_of_a_work_never_says_on_average():
     row = one(line(), result(contracts=(rate(1, "100", lines=2),)))
-    assert row.source == "Объект Т, договор № Д-1, 2024 г.: в среднем 100,00 ₽ за м2 без НДС"
+    assert row.source == "Объект Т, договор № Д-1, 2024 г.: 100,00 ₽ за м2 без НДС"
 
 
 def test_kp_file_source_does_not_say_on_average_for_a_single_line_rate():
@@ -860,8 +898,13 @@ def test_kp_file_comment_inputs_carry_quantity_unit_and_agreement():
 
 
 def test_kp_file_comment_inputs_take_the_level_from_the_active_rung():
-    assert comment_inputs(line(), result(rung=Rung("p", "all"))).level == "p"
-    assert comment_inputs(line(), result(rung=None, state=LineState.no_history)).level is None
+    # работа: уровень по ступени лестницы аналогов, 1 и 3 — «эта работа», 2 и 4 — «сопоставимая»
+    for rung_no, level in ((1, "v"), (2, "p"), (3, "v"), (4, "p")):
+        res = result(ladder=work_ladder((rate(1, "100"),), D(100), rung_no))
+        assert comment_inputs(line(), res).level == level
+    assert comment_inputs(line(), result(rung=None, state=LineState.no_history, ladder=None)).level is None
+    # система: по ступени 4а
+    assert comment_inputs(system_line(), system_result(rung=Rung("p", "all"))).level == "p"
 
 
 def test_kp_file_comment_inputs_pick_the_source_contract():

@@ -18,6 +18,7 @@ from typing import Literal
 from money.price import is_price, is_weight
 from money.vat import net_to_gross, quantize_money
 from parser.summary_block import ARITHMETIC_PRECISION
+from services.analog_ladder import Analog
 from services.our_price import (
     ContractRate,
     HistoryContract,
@@ -80,7 +81,8 @@ def pick_source(
     tender_class_id: int,
     tender_contractor_id: int,
 ) -> SourceContract | None:
-    """Договор, давший нашу расценку (спека 4б §2.7, «Подстановки»)."""
+    """Договор, давший нашу расценку системы (спека 4б §2.7, «Подстановки»). У работы источник —
+    аналог цели, `work_source`."""
     candidates: list[SourceContract] = []
     for rate in result.contracts:
         if rate.net != result.ours:
@@ -94,6 +96,14 @@ def pick_source(
     return min(
         candidates,
         key=lambda s: (s.contract.contractor_id != tender_contractor_id, -s.contract.year, s.contract.contract_id),
+    )
+
+
+def work_source(history: HistoryIndex, analog: Analog) -> SourceContract:
+    """Источник комментария работы: аналог цели (спека лестницы аналогов §2.15). Аналог — одна строка."""
+    return SourceContract(
+        history.contract(analog.contract_id),
+        ContractRate(contract_id=analog.contract_id, net=analog.net, nominal=analog.nominal, lines=1),
     )
 
 
@@ -115,7 +125,7 @@ def target_net(inp: CommentInputs) -> Decimal | None:
     if inp.result.state is not LineState.comparable:
         return None
     if not inp.is_system:
-        return inp.result.ours
+        return inp.source.rate.net
     total = target_sum_net(inp)
     if total is None or not is_weight(inp.quantity):
         return None
@@ -197,10 +207,11 @@ def _kp_phrase(inp: CommentInputs) -> str:
 
 
 def _what(inp: CommentInputs) -> tuple[str, str]:
-    singular, plural = ("система", "системы") if inp.is_system else ("работа", "работы")
+    if not inp.is_system:
+        return ("эта работа", "стоила") if inp.level == "v" else ("сопоставимая работа", "стоила")
     if inp.level == "v":
-        return f"эта {singular}", "стоила"
-    return f"сопоставимые {plural}", "стоили"
+        return "эта система", "стоила"
+    return "сопоставимые системы", "стоили"
 
 
 def _over_text(inp: CommentInputs) -> str | None:
@@ -219,11 +230,10 @@ def _over_text(inp: CommentInputs) -> str | None:
     series = f"; с учётом инфляции ({inp.inflation.series_name}, к {inp.inflation.month}) — " if inflated else ""
     nominal = src.rate.nominal
     if not inp.is_system:
-        average = "в среднем " if src.rate.lines >= 2 else ""
         goal = rub_in_base(inp, target_net(inp))
         tail = f"{series}{goal} ₽" if inflated else ""
         return (
-            f"{head}{average}{rub_in_base(inp, nominal)} ₽ за {unit} {vat}{tail}. "
+            f"{head}{rub_in_base(inp, nominal)} ₽ за {unit} {vat}{tail}. "
             f"Просим снизить до {goal} ₽ или обосновать разницу."
         )
     with localcontext(_CONTEXT):

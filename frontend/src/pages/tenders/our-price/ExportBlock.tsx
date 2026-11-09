@@ -12,9 +12,10 @@ import {
   usePutAgreed,
   usePutComment,
 } from "@/services/queries";
-import type { Decimal, OurPriceLine, OurPriceLineView } from "@/types/domain";
+import type { Decimal, OurPriceAnalog, OurPriceLine, OurPriceLineView } from "@/types/domain";
 
 import { formatMoney, formatUnitPrice, pick, priceUnitLabel, type VatView } from "./money";
+import { TargetRow } from "./TargetRow";
 import {
   AGREED_HINT,
   AGREED_PLACEHOLDER,
@@ -44,6 +45,10 @@ export interface ExportBlockProps {
   vatView: VatView;
   /** Ставка КП; `null` — база НДС неизвестна, ввод только нетто. */
   vatRate: Decimal | null;
+  /** Ряд ИПЦ экрана для выбора цели работы; без него — `null`. */
+  seriesId?: number | null;
+  /** Справка аналогов панели: по ней строка цели называет выбранный аналог. */
+  analogs?: OurPriceAnalog[];
 }
 
 const DASH = "—";
@@ -64,7 +69,18 @@ function commentTag(comment: OurPriceLineView["comment"]): string | null {
  * Блок «Для выгрузки» (спека 4б §2.14): наша расценка справкой, «Договорились» и комментарий
  * для подрядчика. Сохранение — явной кнопкой; отказ уровня поля стоит у поля, а не тостом.
  */
-export function ExportBlock({ tenderId, roundId, offerId, line, comment, canEdit, vatView, vatRate }: ExportBlockProps) {
+export function ExportBlock({
+  tenderId,
+  roundId,
+  offerId,
+  line,
+  comment,
+  canEdit,
+  vatView,
+  vatRate,
+  seriesId = null,
+  analogs = [],
+}: ExportBlockProps) {
   const positionItemId = line.position_item_id;
   const shownRate = vatView === "shown" ? vatRate : null;
   const basis = shownRate !== null ? "shown" : "net";
@@ -137,6 +153,17 @@ export function ExportBlock({ tenderId, roundId, offerId, line, comment, canEdit
 
   return (
     <div data-testid="export-block" className="space-y-4 text-sm">
+      {line.kind === "work" && (
+        <TargetRow
+          tenderId={tenderId}
+          roundId={roundId}
+          offerId={offerId}
+          seriesId={seriesId}
+          line={line}
+          analogs={analogs}
+          canEdit={canEdit}
+        />
+      )}
       <p>
         <span className="text-fg-secondary">{EXPORT_OURS_LABEL}</span>{" "}
         <span data-testid="export-ours" className="font-mono tabular-nums">

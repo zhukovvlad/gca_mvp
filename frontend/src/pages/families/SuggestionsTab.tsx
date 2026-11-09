@@ -24,19 +24,21 @@ import type {
 import { ChangeQueue } from "./ChangeQueue";
 import { DiscoveryBlock } from "./discovery/DiscoveryBlock";
 import { ErrorsQueue } from "./ErrorsQueue";
+import { ReleasableQueue } from "./ReleasableQueue";
 import { BAND_LABEL } from "./labels";
 import { NewQueue } from "./NewQueue";
 import { FetchingBar, ListSkeleton } from "./pending";
 import { PreviewDialog } from "./PreviewDialog";
 import { SuggestionGroups } from "./SuggestionGroups";
 import { SuggestionsHeader } from "./SuggestionsHeader";
+import { ZonesQueue } from "./ZonesQueue";
 import { usePersistedPageSize } from "./usePersistedPageSize";
 
 const ANY = "any";
 const NO_UNIT = "none";
 const DEFAULT_PAGE_SIZE = 10;
 const BAND_OPTIONS: SuggestionBand[] = ["high", "mid", "low"];
-type QueueTab = "list" | "change" | "new" | "err";
+type QueueTab = "list" | "change" | "new" | "zones" | "releasable" | "err";
 /** Счётчик вкладки очереди, которая ещё не загрузилась. */
 const COUNTER_PLACEHOLDER = "…";
 
@@ -63,6 +65,8 @@ interface SuggestionsTabProps {
   onOpenFamily?: (familyId: number) => void;
   /** Вход по ссылке с подписи «ждёт решения администратора»: единица и предложение контекста. */
   target?: SuggestionTarget | null;
+  /** Вход по ссылке `?chain=`: очередь «Зоны» с подсвеченной цепочкой разделов. */
+  chainId?: number | null;
 }
 
 /**
@@ -73,8 +77,8 @@ interface SuggestionsTabProps {
  * и «Ошибки». Фильтры и подтверждения выполняет сервер; страницы — по группам.
  * Единица фильтрует «Семью из списка», «Смену семьи» и «Новую»; у «Ошибок» её нет.
  */
-export function SuggestionsTab({ onOpenFamily, target = null }: SuggestionsTabProps = {}) {
-  const [queue, setQueue] = useState<QueueTab>(target?.queue ?? "list");
+export function SuggestionsTab({ onOpenFamily, target = null, chainId = null }: SuggestionsTabProps = {}) {
+  const [queue, setQueue] = useState<QueueTab>(chainId !== null ? "zones" : (target?.queue ?? "list"));
   const [unitFilter, setUnitFilter] = useState<string>(() => unitSelectValue(target?.unit));
   const [bandFilter, setBandFilter] = useState<string>(ANY);
   const [multiOwner, setMultiOwner] = useState(false);
@@ -129,6 +133,9 @@ export function SuggestionsTab({ onOpenFamily, target = null }: SuggestionsTabPr
     change: changeQ.isFetching && !changeQ.isPending,
     new: newQ.isFetching && !newQ.isPending,
     err: (errorsQ.isFetching && !errorsQ.isPending) || (holdQ.isFetching && !holdQ.isPending),
+    // Очереди лестницы аналогов показывают свою полосу сами.
+    zones: false,
+    releasable: false,
   }[queue];
   const pageGroups = groups.slice((page - 1) * pageSize, page * pageSize);
 
@@ -168,6 +175,7 @@ export function SuggestionsTab({ onOpenFamily, target = null }: SuggestionsTabPr
     if (next === "list") void queueQ.refetch();
     else if (next === "change") void changeQ.refetch();
     else if (next === "new") void newQ.refetch();
+    else if (next === "zones" || next === "releasable") void statusQ.refetch();
     else {
       void errorsQ.refetch();
       void holdQ.refetch();
@@ -205,6 +213,18 @@ export function SuggestionsTab({ onOpenFamily, target = null }: SuggestionsTabPr
               Новая
               <span className="ml-1 opacity-60">{counter(newQ.data !== undefined, newRows.length)}</span>
             </TabsTrigger>
+            <TabsTrigger value="zones" className={TAB_CLASS}>
+              Зоны
+              <span className="ml-1 opacity-60">
+                {counter(statusQ.data !== undefined, statusQ.data?.zones_disputed ?? 0)}
+              </span>
+            </TabsTrigger>
+            <TabsTrigger value="releasable" className={TAB_CLASS}>
+              Можно отпустить
+              <span className="ml-1 opacity-60">
+                {counter(statusQ.data !== undefined, statusQ.data?.releasable_open ?? 0)}
+              </span>
+            </TabsTrigger>
             <TabsTrigger value="err" className={TAB_CLASS}>
               Ошибки
               <span className="ml-1 opacity-60">{counter(errorsQ.data !== undefined && holdQ.data !== undefined, errorsTotal)}</span>
@@ -213,7 +233,7 @@ export function SuggestionsTab({ onOpenFamily, target = null }: SuggestionsTabPr
         </Tabs>
 
         <div className="flex flex-wrap items-center gap-x-3.5 gap-y-2 text-sm text-fg-secondary">
-          {queue !== "err" && (
+          {queue !== "err" && queue !== "zones" && queue !== "releasable" && (
             <div className="flex items-center gap-2">
               <Label htmlFor="suggestions-unit-filter" className="text-sm font-normal">
                 Единица
@@ -366,6 +386,9 @@ export function SuggestionsTab({ onOpenFamily, target = null }: SuggestionsTabPr
           highlightContextId={target?.queue === "new" ? target.contextId : null}
         />
       )}
+
+      {queue === "zones" && <ZonesQueue highlightChainId={chainId} />}
+      {queue === "releasable" && <ReleasableQueue />}
 
       {queue === "err" && (errorsQ.isPending || holdQ.isPending) && (
         <ListSkeleton />
