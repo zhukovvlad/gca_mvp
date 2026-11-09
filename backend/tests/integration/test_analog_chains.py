@@ -541,6 +541,47 @@ class TestBackfill:
         assert report.rule_changed == 1
         assert report.enqueued == 1
 
+    def test_reapply_rule_sets_rule_zone_over_a_pending_model_proposal(
+        self, db_session, factories, monkeypatch
+    ):
+        # Стенд 09.11.2026: правило не знало «котлован», модель предложила «подземная»
+        # ниже порога, цепочка ждала человека. После правки шаблонов `--reapply-rule`
+        # ставит зону правилом и снимает предложение; цепочку без ответа правила и
+        # решения человека и модели не трогает.
+        user = factories.UserFactory.create()
+        _, _, _, items = _scene(factories, ["Устройство котлована", "Земляные работы"])
+        _, _, _, silent_items = _scene(factories, ["Общестроительные работы"])
+        monkeypatch.setattr(chains_crud, "rule_zone", lambda titles: None)
+        backfill_chains(db_session, enqueue=False, reapply_rule=False)
+        for item, zone in ((items[0], "underground"), (silent_items[0], "aboveground")):
+            chain = _chain_of(db_session, item)
+            chain.proposed_zone, chain.proposed_confidence, chain.proposed_reason = zone, 0.85, "ниже 0.000"
+            db_session.flush()  # `_chain_of` сбрасывает сессию: несохранённое предложение пропало бы
+        human = SectionChain(
+            chain_key="котлован человек", titles=["Устройство котлована"], zone="whole",
+            zone_source="human", decided_by=user.id, decided_at=sa.func.now(),
+        )
+        model = SectionChain(
+            chain_key="котлован модель", titles=["Устройство котлована"], zone="territory",
+            zone_source="model",
+        )
+        db_session.add_all([human, model])
+        db_session.flush()
+        monkeypatch.undo()
+
+        report = backfill_chains(db_session, enqueue=False, reapply_rule=True)
+
+        chain = _chain_of(db_session, items[0])
+        assert (chain.zone, chain.zone_source) == ("underground", "rule")
+        assert (chain.proposed_zone, chain.proposed_confidence, chain.proposed_reason) == (None, None, None)
+        silent = _chain_of(db_session, silent_items[0])
+        assert (silent.zone, silent.proposed_zone) == (None, "aboveground")
+        db_session.refresh(human)
+        db_session.refresh(model)
+        assert (human.zone, human.zone_source) == ("whole", "human")
+        assert (model.zone, model.zone_source) == ("territory", "model")
+        assert report.rule_changed == 1
+
     def test_without_reapply_flag_rule_chains_stay(self, db_session, factories, monkeypatch):
         _, _, _, items = _scene(factories, ["Подземная часть"])
         backfill_chains(db_session, enqueue=False, reapply_rule=False)

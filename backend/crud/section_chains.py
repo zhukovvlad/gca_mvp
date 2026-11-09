@@ -244,8 +244,10 @@ def _rows_without_chain(db: Session, *, after: int, limit: int) -> list[tuple[in
 
 def _reapply_rule(db: Session) -> int:
     """Пересчёт цепочек с источником `rule`: зона по правилу, а если правило больше
-    не отвечает, — без зоны. Цепочки `model` и `human` не трогаются (условие
-    `zone_source = 'rule'` — в самом `UPDATE`). Возвращает число изменённых."""
+    не отвечает, — без зоны. Плюс нерешённые цепочки с предложением модели: если
+    правило теперь отвечает, зона ставится правилом, предложение снимается (правило
+    стоит выше модели, как у новой цепочки). Цепочки с зоной `model` и `human` не
+    трогаются (условия — в самих `UPDATE`). Возвращает число изменённых."""
     by_zone: dict[str | None, list[int]] = {}
     for row in db.execute(
         sa.select(SectionChain.id, SectionChain.titles, SectionChain.zone)
@@ -264,6 +266,28 @@ def _reapply_rule(db: Session) -> int:
             sa.update(SectionChain)
             .where(SectionChain.id.in_(ids), SectionChain.zone_source == "rule")
             .values(**values)
+        ).rowcount
+    proposed_by_zone: dict[str, list[int]] = {}
+    for row in db.execute(
+        sa.select(SectionChain.id, SectionChain.titles)
+        .where(SectionChain.zone.is_(None), SectionChain.proposed_zone.is_not(None))
+        .order_by(SectionChain.id)
+    ).all():
+        zone = rule_zone(row.titles)
+        if zone is not None:
+            proposed_by_zone.setdefault(zone, []).append(row.id)
+    for zone, ids in sorted(proposed_by_zone.items()):
+        changed += db.execute(
+            sa.update(SectionChain)
+            .where(
+                SectionChain.id.in_(ids),
+                SectionChain.zone.is_(None),
+                SectionChain.proposed_zone.is_not(None),
+            )
+            .values(
+                zone=zone, zone_source="rule",
+                proposed_zone=None, proposed_confidence=None, proposed_reason=None,
+            )
         ).rowcount
     return changed
 

@@ -77,6 +77,14 @@ def test_chain_key_keeps_empty_title_in_its_place():
         "Минус2",
         "Секция 1, -2 эт.",
         "Секция 1, - 3 эт.",
+        "Устройство котлована",
+        "Устройство свайного основания",
+        "Сваи",
+        "Срезка оголовка сваи",
+        "Ростверки",
+        "Строительное водопонижение",
+        "Демонтаж форшахт",
+        "Устройство распорной системы",
     ],
 )
 def test_underground_alternatives(title):
@@ -132,6 +140,22 @@ def test_parking_title_matches_two_templates_and_gives_no_answer():
 
 def test_maf_needs_word_boundaries():
     assert rule_zone(["Мафия"]) is None
+
+
+def test_piles_need_a_word_start():
+    # «сва» внутри слова — не сваи.
+    assert rule_zone(["Мансвая"]) is None
+
+
+def test_pit_section_under_a_neutral_parent_is_underground():
+    # Стенд 09.11.2026: «Устройство котлована / Земляные работы» правило не узнавало,
+    # и строки котлована всех договоров выпадали из аналогов.
+    assert rule_zone(["Устройство котлована", "Земляные работы"]) == "underground"
+
+
+@pytest.mark.parametrize("title", ["Фундаменты", "Земляные работы", "Стилобат", "Дренаж"])
+def test_words_seen_in_several_zones_are_not_in_the_rule(title):
+    assert rule_zone([title]) is None
 
 
 def test_two_alternatives_of_the_same_template_are_one_template():
