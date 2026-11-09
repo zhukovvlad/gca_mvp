@@ -125,7 +125,7 @@ tr.ln.hl td { background:var(--accent-soft); }
 <body>
 <div class="wrap">
 <div class="intro">
-  <div class="eyebrow">GCA · макет к дизайну «Упрощение управления каталогом» · ред. 2</div>
+  <div class="eyebrow">GCA · макет к дизайну «Упрощение управления каталогом» · ред. 3</div>
   <h1 class="serif">Строки КП по статьям и разделам сметы</h1>
   <p class="lead">Скелет — наш классификатор во всю глубину: <b>4 Конструктивные решения → 4.2 Надземная часть → 4.2.4 …</b>
   Суммы, ₽/м², вилки и выгрузки остаются по статьям, как сейчас. Внутри конечной статьи строки разложены по разделам
@@ -142,7 +142,7 @@ tr.ln.hl td { background:var(--accent-soft); }
 <section class="view" id="v1">
   <ul class="chg">
     <li>Серые строки — <b>статьи классификатора</b> (корень, промежуточные, конечная). Сворачиваются нажатием; открыты две ветки, остальные свёрнуты.</li>
-    <li>Строки с меткой <span class="eb">в смете</span> — <b>раздел сметы участника</b> внутри статьи: его номер и название, под ним — где он в смете (этап и уровень выше), без повторения статьи.</li>
+    <li>Строки с меткой <span class="eb">в смете</span> — <b>раздел сметы участника</b> внутри статьи, только словами: этап, уровень выше и сам раздел; то, что повторяет статью, не пишется. <b>Номеров сметы в таблице нет</b> — все номера здесь наши, классификатора; номер из сметы участника («п. 4.1.2.4.1») — в панели строки.</li>
     <li>В тендере все участники заполняют одну ведомость заказчика, поэтому разделы у них совпадают. Подсвечена строка со скриншота.</li>
   </ul>
   <div class="app">
@@ -172,9 +172,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.1.1.1</span> <span class="cht">Устройство фундаментной плиты</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">1 Этап ЖК · </span><span class="cht">Ж/Б конструкции подземной части</span>
     <span class="chm">3 строки · КП 626 723 621 ₽</span>
-    <span class="crumb">4.1 1 Этап ЖК › 4.1.1 Ж/Б конструкции подземной части</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -209,9 +208,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.2.1.1</span> <span class="cht">Устройство фундаментной плиты</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">2 Этап БЦ · </span><span class="cht">Ж/Б конструкции подземной части</span>
     <span class="chm">3 строки · КП 231 630 928 ₽</span>
-    <span class="crumb">4.2 2 Этап БЦ › 4.2.1 Ж/Б конструкции подземной части</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -252,9 +250,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.1.1.2.1</span> <span class="cht">Плита перекрытия/покрытия 200/250/300мм</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">1 Этап ЖК · Ж/Б конструкции подземной части · </span><span class="cht">Плита перекрытия/покрытия 200/250/300мм</span>
     <span class="chm">5 строк · КП 357 655 075 ₽</span>
-    <span class="crumb">4.1 1 Этап ЖК › 4.1.1 Ж/Б конструкции подземной части</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -309,9 +306,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.1.1.2.2</span> <span class="cht">Балки, капители, трансферные конструкции, лестницы</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">1 Этап ЖК · Ж/Б конструкции подземной части · </span><span class="cht">Балки, капители, трансферные конструкции, лестницы</span>
     <span class="chm">4 строки · КП 106 722 281 ₽</span>
-    <span class="crumb">4.1 1 Этап ЖК › 4.1.1 Ж/Б конструкции подземной части</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -356,9 +352,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.2.1.2.1</span> <span class="cht">Плита перекрытия/покрытия 200/250/300мм</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">2 Этап БЦ · Ж/Б конструкции подземной части · </span><span class="cht">Плита перекрытия/покрытия 200/250/300мм</span>
     <span class="chm">5 строк · КП 48 614 483 ₽</span>
-    <span class="crumb">4.2 2 Этап БЦ › 4.2.1 Ж/Б конструкции подземной части</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -413,9 +408,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.2.1.2.2</span> <span class="cht">Балки, капители, трансферные конструкции, лестницы</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">2 Этап БЦ · Ж/Б конструкции подземной части · </span><span class="cht">Балки, капители, трансферные конструкции, лестницы</span>
     <span class="chm">4 строки · КП 19 285 077 ₽</span>
-    <span class="crumb">4.2 2 Этап БЦ › 4.2.1 Ж/Б конструкции подземной части</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -466,9 +460,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.1.1.3.1</span> <span class="cht">Стены 370мм</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">1 Этап ЖК · Ж/Б конструкции подземной части · </span><span class="cht">Стены 370мм</span>
     <span class="chm">5 строк · КП 178 739 036 ₽</span>
-    <span class="crumb">4.1 1 Этап ЖК › 4.1.1 Ж/Б конструкции подземной части</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -523,9 +516,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.1.1.3.2</span> <span class="cht">Колонны, пилоны, трансферные конструкции</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">1 Этап ЖК · Ж/Б конструкции подземной части · </span><span class="cht">Колонны, пилоны, трансферные конструкции</span>
     <span class="chm">6 строк · КП 66 980 400 ₽</span>
-    <span class="crumb">4.1 1 Этап ЖК › 4.1.1 Ж/Б конструкции подземной части</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -590,9 +582,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.2.1.3.1</span> <span class="cht">Стены 370мм</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">2 Этап БЦ · Ж/Б конструкции подземной части · </span><span class="cht">Стены 370мм</span>
     <span class="chm">5 строк · КП 36 387 929 ₽</span>
-    <span class="crumb">4.2 2 Этап БЦ › 4.2.1 Ж/Б конструкции подземной части</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -647,9 +638,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.2.1.3.2</span> <span class="cht">Колонны, пилоны, трансферные конструкции</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">2 Этап БЦ · Ж/Б конструкции подземной части · </span><span class="cht">Колонны, пилоны, трансферные конструкции</span>
     <span class="chm">6 строк · КП 12 233 054 ₽</span>
-    <span class="crumb">4.2 2 Этап БЦ › 4.2.1 Ж/Б конструкции подземной части</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -726,9 +716,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.1.2.1.1</span> <span class="cht">Плита перекрытия/покрытия 200/250/300мм</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">1 Этап ЖК · Ж/Б конструкции надземной части · </span><span class="cht">Плита перекрытия/покрытия 200/250/300мм</span>
     <span class="chm">5 строк · КП 161 658 733 ₽</span>
-    <span class="crumb">4.1 1 Этап ЖК › 4.1.2 Ж/Б конструкции надземной части</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -783,9 +772,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.1.2.1.2</span> <span class="cht">Балки, капители, трансферные конструкции</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">1 Этап ЖК · Ж/Б конструкции надземной части · </span><span class="cht">Балки, капители, трансферные конструкции</span>
     <span class="chm">4 строки · КП 15 675 814 ₽</span>
-    <span class="crumb">4.1 1 Этап ЖК › 4.1.2 Ж/Б конструкции надземной части</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -830,9 +818,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.2.2.1.1</span> <span class="cht">Плита перекрытия/покрытия 200/250/300мм</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">2 Этап БЦ · Ж/Б конструкции надземной части · </span><span class="cht">Плита перекрытия/покрытия 200/250/300мм</span>
     <span class="chm">3 строки · КП 34 340 759 ₽</span>
-    <span class="crumb">4.2 2 Этап БЦ › 4.2.2 Ж/Б конструкции надземной части</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -867,9 +854,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.2.2.1.2</span> <span class="cht">Балки, капители, трансферные конструкции</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">2 Этап БЦ · Ж/Б конструкции надземной части · </span><span class="cht">Балки, капители, трансферные конструкции</span>
     <span class="chm">4 строки · КП 17 655 961 ₽</span>
-    <span class="crumb">4.2 2 Этап БЦ › 4.2.2 Ж/Б конструкции надземной части</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -920,9 +906,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.1.2.2.1</span> <span class="cht">Стены 200/250мм</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">1 Этап ЖК · Ж/Б конструкции надземной части · </span><span class="cht">Стены 200/250мм</span>
     <span class="chm">5 строк · КП 68 131 763 ₽</span>
-    <span class="crumb">4.1 1 Этап ЖК › 4.1.2 Ж/Б конструкции надземной части</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -977,9 +962,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.1.2.2.2</span> <span class="cht">Колонны, пилоны, трансферные конструкции</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">1 Этап ЖК · Ж/Б конструкции надземной части · </span><span class="cht">Колонны, пилоны, трансферные конструкции</span>
     <span class="chm">5 строк · КП 24 003 823 ₽</span>
-    <span class="crumb">4.1 1 Этап ЖК › 4.1.2 Ж/Б конструкции надземной части</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -1034,9 +1018,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.2.2.2.1</span> <span class="cht">Стены 200/250мм</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">2 Этап БЦ · Ж/Б конструкции надземной части · </span><span class="cht">Стены 200/250мм</span>
     <span class="chm">5 строк · КП 31 701 693 ₽</span>
-    <span class="crumb">4.2 2 Этап БЦ › 4.2.2 Ж/Б конструкции надземной части</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -1091,9 +1074,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.2.2.2.2</span> <span class="cht">Колонны, пилоны, трансферные конструкции</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">2 Этап БЦ · Ж/Б конструкции надземной части · </span><span class="cht">Колонны, пилоны, трансферные конструкции</span>
     <span class="chm">5 строк · КП 6 453 168 ₽</span>
-    <span class="crumb">4.2 2 Этап БЦ › 4.2.2 Ж/Б конструкции надземной части</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -1154,9 +1136,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.1.2.3.1</span> <span class="cht">Плита перекрытия/покрытия 200мм</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">1 Этап ЖК · Ж/Б конструкции надземной части · </span><span class="cht">Плита перекрытия/покрытия 200мм</span>
     <span class="chm">4 строки · КП 532 647 755 ₽</span>
-    <span class="crumb">4.1 1 Этап ЖК › 4.1.2 Ж/Б конструкции надземной части</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -1201,9 +1182,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.1.2.3.2</span> <span class="cht">Плита перекрытия/покрытия кровля 250мм</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">1 Этап ЖК · Ж/Б конструкции надземной части · </span><span class="cht">Плита перекрытия/покрытия кровля 250мм</span>
     <span class="chm">4 строки · КП 370 082 409 ₽</span>
-    <span class="crumb">4.1 1 Этап ЖК › 4.1.2 Ж/Б конструкции надземной части</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -1248,9 +1228,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.1.2.3.3</span> <span class="cht">Балки, капители, трансферные конструкции</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">1 Этап ЖК · Ж/Б конструкции надземной части · </span><span class="cht">Балки, капители, трансферные конструкции</span>
     <span class="chm">5 строк · КП 62 172 323 ₽</span>
-    <span class="crumb">4.1 1 Этап ЖК › 4.1.2 Ж/Б конструкции надземной части</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -1305,9 +1284,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.2.2.3.1</span> <span class="cht">Плита перекрытия/покрытия 200мм</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">2 Этап БЦ · Ж/Б конструкции надземной части · </span><span class="cht">Плита перекрытия/покрытия 200мм</span>
     <span class="chm">7 строк · КП 443 906 397 ₽</span>
-    <span class="crumb">4.2 2 Этап БЦ › 4.2.2 Ж/Б конструкции надземной части</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -1382,9 +1360,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.2.2.3.2</span> <span class="cht">Балки, капители, трансферные конструкции</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">2 Этап БЦ · Ж/Б конструкции надземной части · </span><span class="cht">Балки, капители, трансферные конструкции</span>
     <span class="chm">4 строки · КП 77 332 274 ₽</span>
-    <span class="crumb">4.2 2 Этап БЦ › 4.2.2 Ж/Б конструкции надземной части</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -1435,9 +1412,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.1.2.4.1</span> <span class="cht">Стены 200/250мм</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">1 Этап ЖК · Ж/Б конструкции надземной части · </span><span class="cht">Стены 200/250мм</span>
     <span class="chm">9 строк · КП 672 989 459 ₽</span>
-    <span class="crumb">4.1 1 Этап ЖК › 4.1.2 Ж/Б конструкции надземной части</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -1532,9 +1508,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.1.2.4.2</span> <span class="cht">Колонны, пилоны , трансферные конструкции</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">1 Этап ЖК · Ж/Б конструкции надземной части · </span><span class="cht">Колонны, пилоны , трансферные конструкции</span>
     <span class="chm">12 строк · КП 157 343 824 ₽</span>
-    <span class="crumb">4.1 1 Этап ЖК › 4.1.2 Ж/Б конструкции надземной части</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -1659,9 +1634,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.2.2.4.1</span> <span class="cht">Стены 200/250мм</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">2 Этап БЦ · Ж/Б конструкции надземной части · </span><span class="cht">Стены 200/250мм</span>
     <span class="chm">9 строк · КП 174 370 522 ₽</span>
-    <span class="crumb">4.2 2 Этап БЦ › 4.2.2 Ж/Б конструкции надземной части</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -1756,9 +1730,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="3" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:68px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.2.2.4.2</span> <span class="cht">Колонны, пилоны , трансферные конструкции</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">2 Этап БЦ · Ж/Б конструкции надземной части · </span><span class="cht">Колонны, пилоны , трансферные конструкции</span>
     <span class="chm">12 строк · КП 35 799 489 ₽</span>
-    <span class="crumb">4.2 2 Этап БЦ › 4.2.2 Ж/Б конструкции надземной части</span>
   </td>
 </tr>
 <tr class="ln" data-depth="4">
@@ -1889,9 +1862,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="2" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:50px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.1.3</span> <span class="cht">Металлоконструкции</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="cht">1 Этап ЖК</span>
     <span class="chm">4 строки · КП 77 529 656 ₽</span>
-    <span class="crumb">4.1 1 Этап ЖК</span>
   </td>
 </tr>
 <tr class="ln" data-depth="3">
@@ -1936,9 +1908,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="2" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:50px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.2.3</span> <span class="cht">Металлоконструкции</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="cht">2 Этап БЦ</span>
     <span class="chm">4 строки · КП 18 553 344 ₽</span>
-    <span class="crumb">4.2 2 Этап БЦ</span>
   </td>
 </tr>
 <tr class="ln" data-depth="3">
@@ -1989,9 +1960,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="2" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:50px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.1.4</span> <span class="cht">Прочее (конструктивные решения)</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="cht">1 Этап ЖК</span>
     <span class="chm">1 строка · КП 0 ₽</span>
-    <span class="crumb">4.1 1 Этап ЖК</span>
   </td>
 </tr>
 <tr class="ln" data-depth="3">
@@ -2006,9 +1976,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="2" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:50px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.2.4</span> <span class="cht">Прочее (конструктивные решения)</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="cht">2 Этап БЦ</span>
     <span class="chm">1 строка · КП 0 ₽</span>
-    <span class="crumb">4.2 2 Этап БЦ</span>
   </td>
 </tr>
 <tr class="ln" data-depth="3">
@@ -2043,9 +2012,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="1" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:32px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.1.2.4.1</span> <span class="cht">Стены 200/250мм</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">1 Этап ЖК · Ж/Б конструкции надземной части · </span><span class="cht">Стены 200/250мм</span>
     <span class="chm">9 строк · КП 672 989 459 ₽</span>
-    <span class="crumb">4.1 1 Этап ЖК › 4.1.2 Ж/Б конструкции надземной части</span>
   </td>
 </tr>
 <tr class="ln" data-depth="2">
@@ -2140,9 +2108,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="1" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:32px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.1.2.4.2</span> <span class="cht">Колонны, пилоны , трансферные конструкции</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">1 Этап ЖК · Ж/Б конструкции надземной части · </span><span class="cht">Колонны, пилоны , трансферные конструкции</span>
     <span class="chm">12 строк · КП 157 343 824 ₽</span>
-    <span class="crumb">4.1 1 Этап ЖК › 4.1.2 Ж/Б конструкции надземной части</span>
   </td>
 </tr>
 <tr class="ln" data-depth="2">
@@ -2267,9 +2234,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="1" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:32px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.2.2.4.1</span> <span class="cht">Стены 200/250мм</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">2 Этап БЦ · Ж/Б конструкции надземной части · </span><span class="cht">Стены 200/250мм</span>
     <span class="chm">9 строк · КП 174 370 522 ₽</span>
-    <span class="crumb">4.2 2 Этап БЦ › 4.2.2 Ж/Б конструкции надземной части</span>
   </td>
 </tr>
 <tr class="ln" data-depth="2">
@@ -2364,9 +2330,8 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr>
 <tr class="ch sec" data-depth="1" tabindex="0" aria-expanded="true">
   <td colspan="7" style="padding-left:32px">
-    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="num chn">4.2.2.4.2</span> <span class="cht">Колонны, пилоны , трансферные конструкции</span>
+    <span class="tw" aria-hidden="true">▾</span><span class="eb">в смете</span> <span class="t2">2 Этап БЦ · Ж/Б конструкции надземной части · </span><span class="cht">Колонны, пилоны , трансферные конструкции</span>
     <span class="chm">12 строк · КП 35 799 489 ₽</span>
-    <span class="crumb">4.2 2 Этап БЦ › 4.2.2 Ж/Б конструкции надземной части</span>
   </td>
 </tr>
 <tr class="ln" data-depth="2">
@@ -2491,7 +2456,7 @@ tr.ln.hl td { background:var(--accent-soft); }
 </tr></tbody></table></div>
     <aside class="sheet">
       <div><h3>Корпуса 1  с +10-го этажа до кровли B40 W6 F150 арматурой класса А500С, А240</h3><p class="small t3">Устройство жб конструкций · B40 · W6 · стены</p></div>
-      <div class="where"><div class="lbl">статья</div><span class="artchip"><span class="num">4.2.4</span> Устройство вертикальных монолитных конструкций надземных этажей (кроме 1-го)</span><div class="lbl">в смете КП</div><ul class="path small"><li style="padding-left:0px"><span class="num t3">4</span> Возведение несущих конструкций здания</li><li style="padding-left:14px"><span class="num t3">4.1</span> 1 Этап ЖК</li><li style="padding-left:28px"><span class="num t3">4.1.2</span> Ж/Б конструкции надземной части</li><li style="padding-left:42px"><span class="num t3">4.1.2.4</span> Устройство вертикальных монолитных конструкций надземных этажей</li><li style="padding-left:56px"><span class="num t3">4.1.2.4.1</span> Стены 200/250мм</li></ul></div>
+      <div class="where"><div class="lbl">статья</div><span class="artchip"><span class="num">4.2.4</span> Устройство вертикальных монолитных конструкций надземных этажей (кроме 1-го)</span><div class="lbl">в смете КП</div><ul class="path small"><li style="padding-left:0px"><span class="num t3">п. 4</span> — Возведение несущих конструкций здания</li><li style="padding-left:14px"><span class="num t3">п. 4.1</span> — 1 Этап ЖК</li><li style="padding-left:28px"><span class="num t3">п. 4.1.2</span> — Ж/Б конструкции надземной части</li><li style="padding-left:42px"><span class="num t3">п. 4.1.2.4</span> — Устройство вертикальных монолитных конструкций надземных этажей</li><li style="padding-left:56px"><span class="num t3">п. 4.1.2.4.1</span> — Стены 200/250мм</li></ul></div>
       <div class="small t2">Цена КП <span class="num">68 664,14</span> ₽/м³ · объём <span class="num">2 245,81</span> м³ · без Марка по водонепроницаемости · 8 аналогов</div>
       <div class="eyebrow">Аналоги</div>
       
