@@ -128,13 +128,21 @@ tr.ln.np .num { color:var(--dear-text); }
 .an-t { font-size:13.5px; }
 .an-w { display:grid; gap:4px; }
 .an-a { display:flex; gap:6px; }
+.chips { display:flex; gap:6px; flex-wrap:wrap; }
+.pill { font-size:11.5px; padding:3px 9px; border-radius:999px; background:var(--neutral-soft); border:1px solid var(--neutral-border); color:var(--neutral-text); }
+.pill.same { background:var(--accent-soft); color:var(--accent-text); border-color:transparent; }
+.target { background:var(--sunken); border-radius:8px; padding:10px 12px; display:grid; gap:8px; }
+.pills { display:flex; gap:6px; flex-wrap:wrap; }
+.tp { border:1px solid var(--border2); background:var(--surface); color:var(--fg); font:inherit; font-size:12.5px; padding:5px 11px; border-radius:999px; cursor:pointer; }
+.tp[aria-pressed="true"] { background:var(--action); color:var(--action-text); border-color:transparent; }
+.tp .auto { font-size:10.5px; opacity:.75; margin-left:4px; }
 .chg { display:grid; gap:6px; max-width:96ch; font-size:13px; color:var(--fg2); margin:0 0 14px; padding-left:18px; }
 </style>
 </head>
 <body>
 <div class="wrap">
 <div class="intro">
-  <div class="eyebrow">GCA · макет к дизайну «Упрощение управления каталогом» · ред. 4</div>
+  <div class="eyebrow">GCA · макет к дизайну «Упрощение управления каталогом» · ред. 5</div>
   <h1 class="serif">Строки КП по статьям и разделам сметы</h1>
   <p class="lead">Скелет — наш классификатор во всю глубину: <b>4 Конструктивные решения → 4.2 Надземная часть → 4.2.4 …</b>
   Суммы, ₽/м², вилки и выгрузки остаются по статьям, как сейчас. Внутри конечной статьи строки разложены по разделам
@@ -2016,6 +2024,7 @@ tr.ln.np .num { color:var(--dear-text); }
 <section class="view" id="v2" hidden>
   <ul class="chg">
     <li>Сверху — <b>где строка</b>: её статья классификатора и путь в смете КП целым деревом с номерами.</li>
+    <li>Цель — <b>пилюлями с цифрой</b>: самая низкая (авто) · самая свежая · с этим подрядчиком; нажатая — текущая. Рядом отметка класса объекта: «тот же класс» (ступени 1–2) или «другой класс» (3–4, когда в своём аналогов нет).</li>
     <li>У каждого аналога — его статья и путь в смете договора целиком, без обрезки; аналоги карточками, вбок ничего не уезжает.</li>
   </ul>
   <div class="app"><div class="appbar"><span class="logo">База расценок ГП</span><nav><span class="on">Тендеры</span></nav></div>
@@ -2474,7 +2483,18 @@ tr.ln.np .num { color:var(--dear-text); }
     <aside class="sheet">
       <div><h3>Корпуса 1  с +10-го этажа до кровли B40 W6 F150 арматурой класса А500С, А240</h3><p class="small t3">Устройство жб конструкций · B40 · W6 · стены</p></div>
       <div class="where"><div class="lbl">статья</div><span class="artchip"><span class="num">4.2.4</span> Устройство вертикальных монолитных конструкций надземных этажей (кроме 1-го)</span><div class="lbl">в смете КП</div><ul class="path small"><li style="padding-left:0px"><span class="num t3">п. 4</span> — Возведение несущих конструкций здания</li><li style="padding-left:14px"><span class="num t3">п. 4.1</span> — 1 Этап ЖК</li><li style="padding-left:28px"><span class="num t3">п. 4.1.2</span> — Ж/Б конструкции надземной части</li><li style="padding-left:42px"><span class="num t3">п. 4.1.2.4</span> — Устройство вертикальных монолитных конструкций надземных этажей</li><li style="padding-left:56px"><span class="num t3">п. 4.1.2.4.1</span> — Стены 200/250мм</li></ul></div>
-      <div class="small t2">Цена КП <span class="num">68 664,14</span> ₽/м³ · объём <span class="num">2 245,81</span> м³ · без Марка по водонепроницаемости · 8 аналогов</div>
+      <div class="small t2">Цена КП <span class="num">68 664,14</span> ₽/м³ · объём <span class="num">2 245,81</span> м³</div>
+      <div class="chips"><span class="pill same">тот же класс объекта · Жилые — бизнес</span><span class="pill">без марки по водонепроницаемости</span><span class="pill">8 аналогов в 3 договорах</span></div>
+      <div class="target">
+        <div class="lbl">цель для выгрузки</div>
+        <div class="pills" role="group" aria-label="Цель">
+          <button type="button" class="tp" aria-pressed="true">самая низкая · <span class="num">55 540,85</span> <span class="auto">авто</span></button>
+          <button type="button" class="tp" aria-pressed="false">самая свежая · <span class="num">56 476,51</span></button>
+          <button type="button" class="tp" aria-pressed="false">с этим подрядчиком · <span class="num">56 476,51</span></button>
+        </div>
+        <p class="xs t3">«С этим подрядчиком» — самая свежая цена из нашего договора с этим же подрядчиком; пилюли нет, если такого договора нет (в макете — условно).
+        «Выбранный аналог» появится пилюлей после «сделать целью» у аналога. «Договорились» — отдельное поле ниже, перекрывает любую цель.</p>
+      </div>
       <div class="eyebrow">Аналоги</div>
       
 <div class="an">
@@ -2563,6 +2583,7 @@ function apply(tbody) {
     if (isCh) stack.push({ d, open: r.getAttribute('aria-expanded') === 'true' });
   }
 }
+document.querySelectorAll('.tp').forEach(b => b.addEventListener('click', () => document.querySelectorAll('.tp').forEach(x => x.setAttribute('aria-pressed', x === b))));
 document.querySelectorAll('[data-np]').forEach(b => b.addEventListener('click', () => {
   npMode = b.dataset.np;
   document.querySelectorAll('[data-np]').forEach(x => x.setAttribute('aria-pressed', x === b));
