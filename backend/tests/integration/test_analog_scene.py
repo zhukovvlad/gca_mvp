@@ -17,7 +17,7 @@ import pytest
 import sqlalchemy as sa
 
 from crud.our_price_load import load_history, load_kp_lines, load_work_history
-from models import FamilyParameter, SemanticJob, WorkVariantValue
+from models import ContextParameterValue, FamilyParameter, SemanticJob, WorkVariantValue
 from services.analog_ladder import FamilyLadderInfo
 from tests.integration.test_our_price_load import World
 from tests.integration.test_our_price_offer_api import (
@@ -618,6 +618,40 @@ class TestAnalogs:
         assert line["state"] == "no_history"
         assert line["no_history_reason"] == reason
         assert (line["work_rung"], line["analogs_count"]) == (None, 0)
+
+    def test_path_conflict_of_the_main_parameter_is_not_a_match(self, member_client, stage, world, db_session):
+        chain = world.chain(("Раздел А",), "whole")
+        _, _, hist_item = _hist(stage, D("100"), chain=chain)
+        rnd, part = _kp_part(stage)
+        item = _line(stage, part.proposal, D("120"), chain=chain)
+        param = db_session.execute(
+            sa.select(FamilyParameter).where(FamilyParameter.schema_id == stage.schema.id)
+        ).scalar_one()
+
+        control = _line_of(_ok(member_client, stage.tender, rnd, part), item)
+        assert (control["state"], control["work_rung"]["no"]) == ("comparable", 1)
+
+        for line_item in (hist_item, item):
+            db_session.execute(
+                sa.delete(ContextParameterValue).where(ContextParameterValue.context_id == line_item.context_id)
+            )
+            db_session.add(
+                ContextParameterValue(
+                    context_id=line_item.context_id,
+                    schema_id=stage.schema.id,
+                    parameter_id=param.id,
+                    value_id=None,
+                    source="path_conflict",
+                )
+            )
+        db_session.flush()
+
+        lines, _ = _load_work(db_session, stage)
+        assert [line.conflicted for line in lines] == [frozenset({param.id})]
+        kp_row = _kp_row(db_session, part, item)
+        assert kp_row.conflicted == frozenset({param.id})
+        line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
+        assert (line["state"], line["no_history_reason"]) == ("no_history", "path_conflict")
 
     def _released_scene(self, stage, world, db_session, *, own_class, factories=None):
         mark = world.param(stage.schema, 2, "Марка")

@@ -163,6 +163,9 @@ describe("лестница аналогов: подписи", () => {
     const base = ourPriceLineFixture({ state: "no_history", zone: "underground" });
     expect(lineStateLabel({ ...base, no_history_reason: "no_family" })).toBe("в договорах нет работ этой семьи");
     expect(lineStateLabel({ ...base, no_history_reason: "no_params" })).toBe("нет аналога с этими параметрами");
+    expect(lineStateLabel({ ...base, no_history_reason: "path_conflict" })).toBe(
+      "нет аналога: параметры расходятся по разделам сметы"
+    );
     expect(lineStateLabel({ ...base, no_history_reason: "no_zone_match" })).toBe("нет аналога в зоне «подземная часть»");
     expect(lineStateLabel({ ...base, no_history_reason: null })).toBe(LINE_STATE_LABEL.no_history);
   });

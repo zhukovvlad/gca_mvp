@@ -26,7 +26,7 @@ from services.zone_rules import Zone
 MIN_NOMINAL: Decimal = Decimal(1)
 
 RungNo = Literal[1, 2, 3, 4]
-NoHistoryReason = Literal["no_family", "no_params", "no_zone_match"]
+NoHistoryReason = Literal["no_family", "path_conflict", "no_params", "no_zone_match"]
 
 _RUNGS: tuple[RungNo, ...] = (1, 2, 3, 4)
 
@@ -47,6 +47,9 @@ class KpWork:
     chain_titles: frozenset[str]
     #: Нетто цены за единицу, без приведения.
     net: Decimal
+    #: Главные параметры контекста строки с `source = 'path_conflict'` (на версии схемы варианта):
+    #: конфликт — не значение и не совпадает ни с чем (спека §2.8).
+    conflicted: frozenset[int] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,8 @@ class WorkHistoryLine:
     unit_price: Decimal | None
     weight: Decimal | None
     vat_base: Decimal | None
+    #: Главные параметры контекста строки с `source = 'path_conflict'` (на версии схемы варианта).
+    conflicted: frozenset[int] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -174,7 +179,7 @@ class _FamilyPool:
     #: Строки с неизвестной базой НДС, разложенные так же.
     unknown_by_variant: Mapping[tuple[Zone, int], tuple[_Unknown, ...]]
     unknown_by_values: Mapping[tuple[Zone, _ValuesKey], tuple[_Unknown, ...]]
-    #: Варианты кандидатов.
+    #: Варианты кандидатов без конфликтных главных параметров.
     variant_ids: frozenset[int]
     #: Ключи значений у кандидатов на действующей версии схемы семьи.
     values_keys: frozenset[_ValuesKey]
@@ -234,8 +239,9 @@ class WorkHistory:
         required = _required_ids(info)
 
         def values_key(line: WorkHistoryLine) -> _ValuesKey | None:
-            """Ключ значений строки на действующей версии схемы семьи; иначе `None`."""
-            if info is None or line.schema_id != info.schema_id:
+            """Ключ значений строки на действующей версии схемы семьи; иначе `None`. Конфликт по
+            неотпускаемому параметру — не значение: ключа нет (спека §2.8)."""
+            if info is None or line.schema_id != info.schema_id or line.conflicted & set(required):
                 return None
             return _values_key(line.main_values, required)
 
@@ -244,7 +250,8 @@ class WorkHistory:
         for cand in candidates:
             zone = cand.line.zone
             assert zone is not None
-            by_variant.setdefault((zone, cand.line.variant_id), []).append(cand)
+            if not cand.line.conflicted:
+                by_variant.setdefault((zone, cand.line.variant_id), []).append(cand)
             key = values_key(cand.line)
             if key is not None:
                 by_values.setdefault((zone, key), []).append(cand)
@@ -252,7 +259,8 @@ class WorkHistory:
         unknown_by_values: dict[tuple[Zone, _ValuesKey], list[_Unknown]] = {}
         for line, contract in unknown_base:
             assert line.zone is not None
-            unknown_by_variant.setdefault((line.zone, line.variant_id), []).append((line, contract))
+            if not line.conflicted:
+                unknown_by_variant.setdefault((line.zone, line.variant_id), []).append((line, contract))
             key = values_key(line)
             if key is not None:
                 unknown_by_values.setdefault((line.zone, key), []).append((line, contract))
@@ -262,7 +270,7 @@ class WorkHistory:
             by_values={k: tuple(v) for k, v in by_values.items()},
             unknown_by_variant={k: tuple(v) for k, v in unknown_by_variant.items()},
             unknown_by_values={k: tuple(v) for k, v in unknown_by_values.items()},
-            variant_ids=frozenset(c.line.variant_id for c in candidates),
+            variant_ids=frozenset(variant_id for _, variant_id in by_variant),
             values_keys=frozenset(key for _, key in by_values),
         )
 
@@ -309,7 +317,12 @@ def ladder_for(
         and kp.schema_id == info.schema_id
         and any(p in info.releasable_ids for p in info.main_parameter_ids)
     )
-    kp_values = _values_key(kp.main_values, _required_ids(info))
+    required = _required_ids(info)
+    kp_values = _values_key(kp.main_values, required)
+    # Конфликт строки КП: ступени 1 и 3 не берут её вовсе; 2 и 4 — только если конфликт по
+    # неотпускаемому параметру (отпускаемый и так отпущен).
+    by_variant_blocked = bool(kp.conflicted)
+    by_values_blocked = bool(kp.conflicted & set(required))
     pool = history.pool(kp.family_id)
 
     # Ступень берёт строки зоны строки КП (вне её — ни одна, §2.8): ступени 1 и 3 — с вариантом
@@ -319,8 +332,8 @@ def ladder_for(
         if kp.zone is None:
             return ()
         if rung_no in (1, 3):
-            return by_variant.get((kp.zone, kp.variant_id), ())
-        if not releasable_ladder:
+            return () if by_variant_blocked else by_variant.get((kp.zone, kp.variant_id), ())
+        if not releasable_ladder or by_values_blocked:
             return ()
         return by_values.get((kp.zone, kp_values), ())
 
@@ -362,7 +375,12 @@ def ladder_for(
             freshest=None,
             all_outliers=False,
             kp_ratio=None,
-            no_history_reason=_no_history_reason(pool, kp.variant_id, kp_values if releasable_ladder else None),
+            no_history_reason=_no_history_reason(
+                pool,
+                kp.variant_id,
+                kp_values if releasable_ladder and not by_values_blocked else None,
+                conflicted=by_variant_blocked and (by_values_blocked or not releasable_ladder),
+            ),
             vat_dropped=_dropped_on_first_rung(),
         )
 
@@ -454,12 +472,17 @@ def _no_history_reason(
     pool: _FamilyPool,
     variant_id: int,
     values_key: tuple[int | None, ...] | None,
+    *,
+    conflicted: bool = False,
 ) -> NoHistoryReason:
     """Первая причина по кандидатам семьи любого класса и любой зоны (§2.10). Параметры совпали —
     у кандидата тот же вариант либо (ступени 2 и 4 доступны, `values_key` задан) те же значения
-    неотпускаемых главных параметров на действующей версии схемы."""
+    неотпускаемых главных параметров на действующей версии схемы. `conflicted` — у строки КП есть
+    конфликтный главный параметр, мешающий на всех ступенях: причина раньше `no_params`."""
     if not pool.candidates:
         return "no_family"
+    if conflicted:
+        return "path_conflict"
     if variant_id not in pool.variant_ids and (values_key is None or values_key not in pool.values_keys):
         return "no_params"
     return "no_zone_match"

@@ -51,6 +51,7 @@ from models import (
     SemanticReconcileBatch,
     SemanticWorkerState,
     UnitOfMeasure,
+    ValueSource,
     WorkCategory,
     WorkFamily,
     WorkVariant,
@@ -551,6 +552,40 @@ def _family_ladder_infos(db: Session) -> dict[int, FamilyLadderInfo]:
     }
 
 
+def _conflicted_parameters(db: Session, context_ids: Sequence[int]) -> dict[int, dict[int, frozenset[int]]]:
+    """Главные параметры контекстов со значением `path_conflict`: context_id -> schema_id ->
+    parameter_id. Один запрос на любое число контекстов; конфликт — не значение (спека §2.8)."""
+    ids = sorted(set(context_ids))
+    if not ids:
+        return {}
+    grouped: dict[int, dict[int, set[int]]] = defaultdict(lambda: defaultdict(set))
+    for context_id, schema_id, parameter_id in db.execute(
+        sa.select(ContextParameterValue.context_id, FamilyParameter.schema_id, FamilyParameter.id)
+        .select_from(ContextParameterValue)
+        .join(FamilyParameter, FamilyParameter.id == ContextParameterValue.parameter_id)
+        .where(
+            ContextParameterValue.context_id.in_(ids),
+            ContextParameterValue.source == ValueSource.path_conflict.value,
+            FamilyParameter.role == ParameterRole.main.value,
+            FamilyParameter.archived_at.is_(None),
+        )
+    ).all():
+        grouped[context_id][schema_id].add(parameter_id)
+    return {
+        context_id: {schema_id: frozenset(parameters) for schema_id, parameters in by_schema.items()}
+        for context_id, by_schema in grouped.items()
+    }
+
+
+def _conflicts_of(
+    conflicts: Mapping[int, Mapping[int, frozenset[int]]], context_id: int | None, schema_id: int | None
+) -> frozenset[int]:
+    """Конфликтные главные параметры контекста на версии схемы варианта; иначе пусто."""
+    if context_id is None or schema_id is None:
+        return frozenset()
+    return conflicts.get(context_id, {}).get(schema_id, frozenset())
+
+
 def load_work_history(
     db: Session, *, estimate_of: Mapping[int, int]
 ) -> tuple[list[WorkHistoryLine], dict[int, FamilyLadderInfo]]:
@@ -565,7 +600,7 @@ def load_work_history(
     цепочкой, у которой зона определена: аналог без зоны не аналог (спека §2.8). Строка с
     неизвестной базой НДС остаётся — ядро называет по ней выпавший договор. Строки читаются
     по идентификаторам смет. Число запросов фиксировано: строки, три запроса вариантов,
-    семьи.
+    конфликтные параметры контекстов, семьи.
     """
     contract_of = {estimate_id: contract_id for contract_id, estimate_id in estimate_of.items()}
     is_system = CatalogContext.semantic_kind == "SYSTEM"
@@ -577,6 +612,7 @@ def load_work_history(
             SectionChain.zone,
             SectionChain.titles,
             CatalogContext.work_variant_id,
+            CatalogContext.id,
             PositionItem.unit_cost_total,
             _WEIGHT,
             sa.func.coalesce(Estimate.vat_rate_base_override, Proposal.vat_rate),
@@ -601,9 +637,10 @@ def load_work_history(
         .order_by(Estimate.contract_id, PositionItem.id)
     ).all()
     infos = _variant_infos(db, [row[5] for row in rows])
+    conflicts = _conflicted_parameters(db, [row[6] for row in rows])
     titles_of: dict[int, frozenset[str]] = {}
     lines: list[WorkHistoryLine] = []
-    for item_id, estimate_id, chain_id, zone, titles, variant_id, unit_price, weight, vat_base in rows:
+    for item_id, estimate_id, chain_id, zone, titles, variant_id, context_id, unit_price, weight, vat_base in rows:
         if chain_id not in titles_of:
             titles_of[chain_id] = frozenset(normalize_title(title) for title in titles)
         info = infos[variant_id]
@@ -621,6 +658,7 @@ def load_work_history(
                 unit_price=unit_price,
                 weight=weight,
                 vat_base=vat_base,
+                conflicted=_conflicts_of(conflicts, context_id, info.schema_id),
             )
         )
     return lines, _family_ladder_infos(db)
@@ -710,7 +748,7 @@ def load_kp_lines(db: Session, estimate_ids: Sequence[int]) -> dict[int, list[Kp
 
     Строки отдаются все, без предикатов цены и веса: пригодность решает ядро.
     Число запросов не зависит от числа строк: строки, сигнал каталога, три
-    запроса вариантов, второстепенные параметры и дерево статей. Строка без
+    запроса вариантов, второстепенные параметры, конфликтные главные параметры и дерево статей. Строка без
     членства или без варианта — `key = None`, `variant_label = None`; название
     семьи берётся у любого контекста, у которого она есть.
     """
@@ -754,6 +792,7 @@ def load_kp_lines(db: Session, estimate_ids: Sequence[int]) -> dict[int, list[Kp
     signals = catalog_signal(db, estimate_ids)
     infos = _variant_infos(db, [row[11] for row in rows if row[11] is not None])
     secondary = _secondary_values(db, [row[10] for row in rows if row[10] is not None])
+    conflicts = _conflicted_parameters(db, [row[10] for row in rows if row[10] is not None])
     root_of, _ = category_roots(db)
     chains = _chain_states(db, [row[15] for row in rows if row[15] is not None])
     current_schema_of = {
@@ -812,6 +851,7 @@ def load_kp_lines(db: Session, estimate_ids: Sequence[int]) -> dict[int, list[Kp
                     chain_titles=chain.titles if chain is not None else frozenset(),
                     schema_id=info.schema_id if info is not None else None,
                     main_values=info.main_values if info is not None else {},
+                    conflicted=_conflicts_of(conflicts, context_id, info.schema_id if info else None),
                     zone_waiting=chain is not None
                     and chain.zone is None
                     and (chain.disputed or chain.stuck or waiting_chain),

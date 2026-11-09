@@ -44,6 +44,7 @@ def kp(
     zone: str | None = ZONE,
     titles: tuple[str, ...] = (),
     net: str = "100",
+    conflicted: frozenset[int] = frozenset(),
 ) -> KpWork:
     return KpWork(
         position_item_id=9000,
@@ -54,6 +55,7 @@ def kp(
         zone=zone,  # type: ignore[arg-type]
         chain_titles=frozenset(titles),
         net=D(net),
+        conflicted=conflicted,
     )
 
 
@@ -79,6 +81,7 @@ def line(
     vat: str | None = "0",
     weight: str | None = "1",
     family: int = FAMILY,
+    conflicted: frozenset[int] = frozenset(),
 ) -> WorkHistoryLine:
     return WorkHistoryLine(
         position_item_id=pid,
@@ -93,6 +96,7 @@ def line(
         unit_price=D(price),
         weight=None if weight is None else D(weight),
         vat_base=None if vat is None else D(vat),
+        conflicted=conflicted,
     )
 
 
@@ -876,3 +880,96 @@ def test_median_and_outside_values() -> None:
     assert median([D(1), D(2)]) == D("1.5")
     assert not outside(D(5)) and not outside(D("0.2"))
     assert outside(D("5.01")) and outside(D("0.19"))
+
+
+# ---------------------------------------------------------------------------
+#  Конфликт по разделам (`path_conflict`) — не значение и не совпадает ни с чем (спека §2.8)
+# ---------------------------------------------------------------------------
+
+CONFLICT_REQUIRED = frozenset({REQUIRED})
+CONFLICT_RELEASED = frozenset({RELEASED})
+EMPTY_REQUIRED = {RELEASED: 1, REQUIRED: None}
+
+
+def test_conflict_on_kp_blocks_same_empty_variant_and_names_the_reason() -> None:
+    cand = line(1, 1, "100", values=EMPTY_REQUIRED)
+    control = run(kp(values=EMPTY_REQUIRED), [cand], [contract(1)])
+    assert (control.rung_no, ids(control)) == (1, [1])
+    ladder = run(kp(values=EMPTY_REQUIRED, conflicted=CONFLICT_REQUIRED), [cand], [contract(1)])
+    assert (ladder.rung_no, ladder.no_history_reason) == (None, "path_conflict")
+
+
+def test_conflict_on_candidate_is_not_a_candidate_of_rungs_one_and_three() -> None:
+    conflicted = line(1, 1, "100", values=EMPTY_REQUIRED, conflicted=CONFLICT_REQUIRED)
+    clean = line(2, 2, "90", values=EMPTY_REQUIRED)
+    work = kp(values=EMPTY_REQUIRED)
+    assert run(work, [conflicted], [contract(1)]).rung_no is None
+    for cls_a, cls_b, rung in ((CLASS_A, CLASS_A, 1), (CLASS_B, CLASS_B, 3)):
+        ladder = run(work, [conflicted, clean], [contract(1, cls=cls_a), contract(2, cls=cls_b)])
+        assert (ladder.rung_no, ids(ladder)) == (rung, [2])
+
+
+def test_conflict_on_released_parameter_does_not_block_rung_two() -> None:
+    work = kp(values={RELEASED: None, REQUIRED: 5}, conflicted=CONFLICT_RELEASED)
+    cand = line(1, 1, "80", variant=W8, values={RELEASED: None, REQUIRED: 5}, conflicted=CONFLICT_RELEASED)
+    ladder = run(work, [cand], [contract(1)])
+    assert (ladder.rung_no, ids(ladder)) == (2, [1])
+
+
+def test_conflict_on_required_parameter_keeps_candidate_out_of_rungs_two_and_four() -> None:
+    cand = line(1, 1, "80", variant=W8, values=EMPTY_REQUIRED, conflicted=CONFLICT_REQUIRED)
+    work = kp(values=EMPTY_REQUIRED)
+    for cls in (CLASS_A, CLASS_B):
+        assert run(work, [cand], [contract(1, cls=cls)]).rung_no is None
+    clean = line(2, 2, "90", variant=W8, values=EMPTY_REQUIRED)
+    ladder = run(work, [cand, clean], [contract(1), contract(2)])
+    assert (ladder.rung_no, ids(ladder)) == (2, [2])
+
+
+def test_conflict_on_kp_required_parameter_blocks_rungs_two_and_four() -> None:
+    work = kp(variant=W8, values=EMPTY_REQUIRED, conflicted=CONFLICT_REQUIRED)
+    other = line(1, 1, "80", variant=W6, values=EMPTY_REQUIRED)
+    assert run(kp(variant=W8, values=EMPTY_REQUIRED), [other], [contract(1)]).rung_no == 2
+    for cls in (CLASS_A, CLASS_B):
+        ladder = run(work, [other], [contract(1, cls=cls)])
+        assert (ladder.rung_no, ladder.no_history_reason) == (None, "path_conflict")
+
+
+def test_conflict_on_kp_released_parameter_only_leaves_reason_by_the_rest() -> None:
+    work = kp(values={RELEASED: None, REQUIRED: 5}, conflicted=CONFLICT_RELEASED)
+    far = line(1, 1, "80", variant=W8, values={RELEASED: 1, REQUIRED: 6})
+    assert run(work, [far], [contract(1)]).no_history_reason == "no_params"
+
+
+def test_conflict_on_kp_without_releasable_ladder_names_path_conflict() -> None:
+    far = line(1, 1, "80", variant=W8, values={RELEASED: 1, REQUIRED: 6})
+    work = kp(conflicted=CONFLICT_RELEASED)
+    ladder = run(work, [far], [contract(1)], families={FAMILY: info(releasable=())})
+    assert ladder.no_history_reason == "path_conflict"
+
+
+def test_no_family_comes_before_path_conflict() -> None:
+    work = kp(conflicted=CONFLICT_REQUIRED)
+    assert run(work, [line(1, 1, "100", family=2)], [contract(1)]).no_history_reason == "no_family"
+
+
+def test_path_conflict_comes_before_no_zone_match() -> None:
+    work = kp(values=EMPTY_REQUIRED, conflicted=CONFLICT_REQUIRED)
+    cand = line(1, 1, "100", values=EMPTY_REQUIRED, zone="aboveground")
+    assert run(work, [cand], [contract(1)]).no_history_reason == "path_conflict"
+
+
+def test_conflicted_candidate_does_not_hide_no_params_or_zone_reasons() -> None:
+    cand = line(1, 1, "100", values=EMPTY_REQUIRED, zone="aboveground", conflicted=CONFLICT_REQUIRED)
+    work = kp(values=EMPTY_REQUIRED)
+    assert run(work, [cand], [contract(1)]).no_history_reason == "no_params"
+
+
+def test_conflict_applies_to_unknown_vat_base_lines() -> None:
+    work = kp(values=EMPTY_REQUIRED, conflicted=CONFLICT_REQUIRED)
+    unknown = line(1, 1, "100", values=EMPTY_REQUIRED, vat=None)
+    assert run(work, [unknown], [contract(1)]).vat_dropped == ()
+    clean_work = kp(values=EMPTY_REQUIRED)
+    assert run(clean_work, [unknown], [contract(1)]).vat_dropped == (1,)
+    conflicted_unknown = line(1, 1, "100", values=EMPTY_REQUIRED, vat=None, conflicted=CONFLICT_REQUIRED)
+    assert run(clean_work, [conflicted_unknown], [contract(1)]).vat_dropped == ()

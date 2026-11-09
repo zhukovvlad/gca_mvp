@@ -3462,7 +3462,7 @@ export interface WorkRung {
   other_class: boolean;
 }
 
-export type NoHistoryReason = "no_family" | "no_params" | "no_zone_match";
+export type NoHistoryReason = "no_family" | "path_conflict" | "no_params" | "no_zone_match";
 
 export interface LowestFigure {
   value: MoneyPair;

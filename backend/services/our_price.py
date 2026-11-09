@@ -155,6 +155,8 @@ class KpLine:
     main_values: Mapping[int, int | None] = field(default_factory=dict)
     #: Цепочка ждёт решения администратора (спорная зона или задание в `error`/`privacy_hold`).
     zone_waiting: bool = False
+    #: Главные параметры контекста строки со значением `path_conflict` (версия схемы варианта).
+    conflicted: frozenset[int] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -686,6 +688,7 @@ def _evaluate_work(
             zone=line.zone,
             chain_titles=line.chain_titles,
             net=kp_unit_net,
+            conflicted=line.conflicted,
         ),
         work_history,
         tender_class_id=tender_class_id,

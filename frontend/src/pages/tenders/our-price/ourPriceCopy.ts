@@ -315,6 +315,7 @@ export const ZONE_CAPTION: Record<SectionZone, string> = {
 /** Причина `no_history` у работы (спека лестницы аналогов §2.10): текстом, а не кодом. */
 export const NO_HISTORY_REASON_LABEL: Record<Exclude<NoHistoryReason, "no_zone_match">, string> = {
   no_family: "в договорах нет работ этой семьи",
+  path_conflict: "нет аналога: параметры расходятся по разделам сметы",
   no_params: "нет аналога с этими параметрами",
 };
 
