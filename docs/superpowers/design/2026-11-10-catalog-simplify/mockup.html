@@ -175,7 +175,7 @@ tr.ln.np .num { color:var(--dear-text); }
 :root[data-theme="dark"] .k:not(.k-class):not(.k-rel):not(.soft) { color:#1A1D24; }
 .thm { position:fixed; top:14px; right:16px; z-index:10; box-shadow:var(--shadow); background:var(--surface); }
 .an[hidden] { display:none; }
-.an.is-target .mk { display:none; }
+.an.is-pinned .mk { display:none; }
 .anmore { all:unset; box-sizing:border-box; cursor:pointer; width:100%; text-align:center; padding:9px; border:1px dashed var(--border2); border-radius:8px; color:var(--fg2); font-size:12.5px; }
 .anmore:hover { background:var(--hover); color:var(--fg); }
 .btn.tgt { border-color:var(--action); font-weight:600; } .btn.tgt i { font-style:normal; }
@@ -2602,7 +2602,7 @@ tr.ln.np .num { color:var(--dear-text); }
           <button type="button" class="tc tc-pick" aria-pressed="false" hidden><span class="ktags"><span class="k k-pick"><i>◎</i>выбранный аналог</span></span>
             <span class="tc-n"><span class="num pv"></span> <span class="t3 xs">₽/м³</span></span><span class="xs t2 po"></span><span class="tc-f"><span class="on">✓ цель</span><span class="off">сделать целью</span></span></button>
         </div>
-        <p class="xs t3">Нажатая карточка — цель. Выбирается <b>стратегия</b>, а не договор: «самая свежая» и «с этим подрядчиком» сейчас указывают на один договор, но с новым договором другого подрядчика разойдутся — и цель останется той, что нажата. Если договора с этим подрядчиком среди аналогов нет — карточки нет. Закрепить конкретный договор — «сделать целью» у аналога ниже, появится карточка «выбранный аналог».</p>
+        <p class="xs t3">Нажатая карточка — цель. Выбирается <b>стратегия</b>, а не договор: «самая свежая» и «с этим подрядчиком» сейчас указывают на один договор, но с новым договором другого подрядчика разойдутся — и цель останется той, что нажата. Если договора с этим подрядчиком среди аналогов нет — карточки нет. Закрепить конкретный договор — «сделать целью» у аналога ниже, даже у того, на котором стоит метка стратегии: появится карточка «выбранный аналог», и цель перестанет следовать за данными.</p>
       </section>
 
       <section class="blk"><div class="eyebrow">Аналоги · показаны 5 из 8</div>
@@ -2798,7 +2798,10 @@ function setTarget(card) {
   sh.querySelectorAll('.tc').forEach(x => x.setAttribute('aria-pressed', x === card));
   sh.dataset.ours = card.dataset.v; sh.dataset.tl = card.querySelector('.ktags .k').textContent.replace(/^[^а-яё]+/i, '');
   showExport(sh);
-  sh.querySelectorAll('.an').forEach(x => x.classList.toggle('is-target', x.dataset.an === card.dataset.an));
+  sh.querySelectorAll('.an').forEach(x => {
+    x.classList.toggle('is-target', x.dataset.an === card.dataset.an);
+    x.classList.toggle('is-pinned', card.classList.contains('tc-pick') && x.dataset.an === card.dataset.an);
+  });
   sh.querySelector('.ta').value = `Ваша цена — ${KPV} ₽ за м3 с НДС 22 %. В нашем договоре с вами по объекту ${card.dataset.o}, ${card.dataset.y} г., эта работа стоила ${card.dataset.vat} ₽ за м3 с НДС 22 %. Просим снизить до ${card.dataset.vat} ₽ или обосновать разницу.`;
 }
 function showExport(sh) {
@@ -2816,8 +2819,9 @@ document.querySelectorAll('aside.sheet').forEach(sh => { sh.dataset.ours = sh.qu
 document.querySelectorAll('.tc').forEach(c => c.addEventListener('click', () => setTarget(c)));
 document.querySelectorAll('.mk').forEach(b => b.addEventListener('click', () => {
   const sh = b.closest('aside'), an = b.closest('.an');
-  const card = [...sh.querySelectorAll('.tc:not(.tc-pick)')].find(c => c.dataset.an === an.dataset.an) || sh.querySelector('.tc-pick');
-  if (card.classList.contains('tc-pick')) {
+  // «сделать целью» всегда закрепляет конкретный аналог (вид analog), даже если на нём стоит метка стратегии
+  const card = sh.querySelector('.tc-pick');
+  {
     Object.assign(card.dataset, { an: an.dataset.an, v: b.dataset.v, vat: b.dataset.vat, o: b.dataset.o, y: b.dataset.y });
     card.querySelector('.pv').textContent = b.dataset.v;
     card.querySelector('.po').textContent = an.querySelector('.an-h b').textContent + ' · ' + b.dataset.y;
