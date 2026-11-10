@@ -1661,3 +1661,163 @@ class TestRoutes:
 
         assert response.status_code == 403
 
+
+# ---------------------------------------------------------------------------
+#  Первый круг правок ревью
+# ---------------------------------------------------------------------------
+
+def _capture_for_update(db):
+    """Контекст-менеджер: `FOR UPDATE`-операторы по порядку их выполнения."""
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _cm():
+        seen: list[str] = []
+
+        def _tick(_conn, _cursor, statement, *_args, **_kwargs):
+            if "FOR UPDATE" in statement:
+                seen.append(statement)
+
+        engine = db.get_bind()
+        sa.event.listen(engine, "before_cursor_execute", _tick)
+        try:
+            yield seen
+        finally:
+            sa.event.remove(engine, "before_cursor_execute", _tick)
+
+    return _cm()
+
+
+def _first(seen, table):
+    return next(i for i, s in enumerate(seen) if f"FROM {table}" in s)
+
+
+class TestLockOrder:
+    """Порядок замков записи тот же, что у слияния в Review и `apply_values`: строка каталога
+    корзины раньше самой корзины (встречный порядок давал бы взаимную блокировку)."""
+
+    def test_the_write_locks_the_catalog_row_before_the_bucket(self, db_session, factories):
+        scene = _scene(db_session, factories)
+        prepared = _prepared(db_session, scene)
+
+        with _capture_for_update(db_session) as seen:
+            assert _write(db_session, scene, prepared).status == "split"
+
+        assert _first(seen, "catalog_positions") < _first(seen, "context_buckets")
+
+    def test_the_undo_locks_the_catalog_row_before_the_bucket(self, db_session, factories):
+        scene = _split_scene(db_session, factories)
+
+        with _capture_for_update(db_session) as seen:
+            _undo(db_session, scene)
+
+        assert _first(seen, "catalog_positions") < _first(seen, "context_buckets")
+
+
+class TestPrivacyOfSentBodies:
+    def test_a_changed_input_after_the_claim_sends_nothing_to_the_model(
+        self, committing_session_factory, committing_db, committing_factories
+    ):
+        scene = _scene(committing_db, committing_factories)
+        committing_db.commit()
+        with committing_session_factory() as other:
+            claim = worker.claim_next(other, settings=S, now=NOW)
+        assert claim is not None and claim.kind == SemanticJobKind.auto_split
+        chapter = committing_db.get(PositionItem, _chapter_of(committing_db, scene, "Колонны"))
+        chapter.job_title_in_proposal = "Перегородки"
+        committing_db.commit()
+        before = _state(committing_db)
+        calls: list = []
+
+        class _Spy:
+            def complete(self, body, *, timeout_s):
+                calls.append(body)
+                raise AssertionError("модель не должна вызываться")
+
+        worker._run_auto_split_claim(
+            committing_session_factory, _Spy(), claim, settings=S, clock=lambda: NOW
+        )
+
+        assert calls == []
+        job = _job(committing_db, scene)
+        assert (job.status, job.cancel_reason, job.claim_token) == (
+            "cancelled", "input_changed", None,
+        )
+        assert _state(committing_db) == before
+        committing_db.expire_all()
+        [attempt] = committing_db.execute(
+            sa.select(SemanticJobAttempt).where(SemanticJobAttempt.job_id == job.id)
+        ).scalars()
+        assert attempt.finished_at is not None
+
+
+class TestResplitUnavailable:
+    def test_a_context_that_cannot_queue_the_job_is_refused_before_the_undo(
+        self, db_session, factories
+    ):
+        from tests.integration.test_work_variants_core import _set_pending
+        from tests.integration.test_work_variants_schema import _family
+
+        scene = _split_scene(db_session, factories)
+        _set_pending(
+            db_session, factories, scene.ctx,
+            _family(db_session, status="active", definition="Другая"),
+        )
+        before = _state(db_session)
+
+        refused = _refused(
+            lambda: journal.resplit_action(db_session, scene.entry.id, user_id=scene.actor, level=2)
+        )
+
+        assert (refused.status_code, refused.code) == (409, "journal_resplit_unavailable")
+        assert _state(db_session) == before
+        assert _journal_rows(db_session)[0].undone_at is None
+
+
+class TestMergedGroupTitle:
+    def test_the_rest_group_merged_with_a_heading_does_not_leave_a_dangling_plus(
+        self, db_session, factories
+    ):
+        scene = _scene(db_session, factories, _WITH_REST)
+
+        assert _split(db_session, scene, {"": "балки", "Стены": "балки", "Колонны": "колонны"}).status == "split"
+
+        [entry] = _journal_rows(db_session)
+        assert [g["title"] for g in entry.payload["groups"]] == ["Стены", "Колонны"]
+
+    def test_the_rest_group_alone_keeps_the_empty_title(self, db_session, factories):
+        scene = _scene(db_session, factories, _WITH_REST)
+
+        assert _split(db_session, scene, {"": "балки", "Стены": "стены", "Колонны": "колонны"}).status == "split"
+
+        [entry] = _journal_rows(db_session)
+        assert entry.payload["groups"][0]["title"] == ""
+
+
+class TestRestoreQueuesTheSplit:
+    def test_the_restore_queues_the_job_again_while_the_context_is_in_conflict(
+        self, db_session, factories
+    ):
+        scene = _split_scene(db_session, factories)
+        _undo(db_session, scene)
+        assert [j.status for j in _jobs(db_session, "auto_split", context_id=scene.ctx)] == ["done"]
+
+        journal.restore_auto(db_session, scene.entry.id, user_id=scene.actor)
+
+        context = _context(db_session, scene.ctx)
+        assert (context.auto_split_blocked_at, context.auto_split_blocked_by) == (None, None)
+        assert [j.status for j in _jobs(db_session, "auto_split", context_id=scene.ctx)] == [
+            "pending"
+        ]
+
+    def test_the_restore_queues_nothing_when_the_context_is_no_longer_in_conflict(
+        self, db_session, factories
+    ):
+        scene = _split_scene(db_session, factories)
+        _undo(db_session, scene)
+        _context(db_session, scene.ctx).variant_split_hint = None
+        db_session.flush()
+
+        journal.restore_auto(db_session, scene.entry.id, user_id=scene.actor)
+
+        assert [j.status for j in _jobs(db_session, "auto_split", context_id=scene.ctx)] == ["done"]

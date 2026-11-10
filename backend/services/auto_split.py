@@ -91,6 +91,7 @@ from services.work_variants import (
     JobGuard,
     _acquire_domain_locks,
     _is_applicable,
+    _lock_catalog_row_statement,
     _lock_job_statement,
     _owns,
     active_main_ordinals,
@@ -603,6 +604,17 @@ class AutoSplitOutcome:
 AskGroupValues = Callable[[int, SplitGroup], Mapping[int, ValueAnswer]]
 
 
+def _lock_catalog_then_bucket(db: Session, bucket_id: int) -> None:
+    """Строка каталога корзины `FOR UPDATE`, затем сама корзина: порядок слияния в Review и
+    `apply_values` (каталог -> корзина -> семья -> схема -> вариант -> контекст), встречный
+    порядок дал бы взаимную блокировку."""
+    catalog_position_id = db.execute(
+        sa.select(ContextBucket.catalog_position_id).where(ContextBucket.id == bucket_id)
+    ).scalar_one()
+    db.execute(_lock_catalog_row_statement(catalog_position_id)).scalar_one()
+    lock_buckets(db, [bucket_id], exclusive=True)
+
+
 def _close_job(job: SemanticJob, status: SemanticJobStatus, cancel: SemanticCancelReason | None = None) -> None:
     job.status = status.value
     job.cancel_reason = cancel.value if cancel is not None else None
@@ -738,7 +750,7 @@ def auto_split_context(
             FamilyParameterSchema.status == SchemaStatus.frozen.value,
         )
     ).scalar_one_or_none()
-    lock_buckets(db, [bucket_id], exclusive=True)
+    _lock_catalog_then_bucket(db, bucket_id)
     if schema_id is None:
         job = db.execute(_lock_job_statement(guard.job_id)).scalar_one()
         if not _owns(job, guard):
@@ -832,7 +844,9 @@ def auto_split_context(
         groups = [
             {
                 "context_id": part_id,
-                "title": " + ".join(plan.groups[index].title for index in cluster),
+                "title": " + ".join(
+                    plan.groups[index].title for index in cluster if plan.groups[index].title
+                ),
                 "value_ids": _value_ids(db, part_id),
                 "members": sorted(
                     member_id for index in cluster for member_id in plan.groups[index].member_ids
@@ -928,13 +942,21 @@ def run_auto_split_job(
     return outcome
 
 
-def _close_not_applicable(db: Session, guard: JobGuard) -> AutoSplitOutcome:
+def close_auto_split_job(
+    db: Session, guard: JobGuard,
+    reason: SemanticCancelReason = SemanticCancelReason.not_applicable,
+) -> AutoSplitOutcome:
+    """Закрывает своё задание отменой без записи в домен; чужое (`lost_claim`) не трогает."""
     job = db.execute(_lock_job_statement(guard.job_id)).scalar_one()
     if not _owns(job, guard):
         return AutoSplitOutcome("lost_claim", None, None)
-    _close_job(job, SemanticJobStatus.cancelled, SemanticCancelReason.not_applicable)
+    _close_job(job, SemanticJobStatus.cancelled, reason)
     db.flush()
-    return AutoSplitOutcome("input_changed", None, "not_applicable")
+    return AutoSplitOutcome("input_changed", None, reason.value)
+
+
+def _close_not_applicable(db: Session, guard: JobGuard) -> AutoSplitOutcome:
+    return close_auto_split_job(db, guard)
 
 
 # ---------------------------------------------------------------------------
@@ -1044,6 +1066,40 @@ def split_parts(db: Session, payload: Mapping) -> list[dict]:
     ]
 
 
+def can_queue_after_undo(db: Session, action_id: int) -> bool:
+    """Сможет ли исходный контекст записи принять новое задание после отмены: не архивирован,
+    есть семья без ожидания и действующая схема, пути членов вычислимы."""
+    row = _action(db, action_id)
+    context = db.execute(
+        sa.select(
+            CatalogContext.archived_at, CatalogContext.work_family_id,
+            CatalogContext.pending_family_id,
+        ).where(CatalogContext.id == row.context_id)
+    ).one()
+    if (
+        context.archived_at is not None
+        or context.work_family_id is None
+        or context.pending_family_id is not None
+    ):
+        return False
+    has_schema = db.execute(
+        sa.select(
+            sa.exists().where(
+                FamilyParameterSchema.family_id == context.work_family_id,
+                FamilyParameterSchema.status == SchemaStatus.frozen.value,
+            )
+        )
+    ).scalar_one()
+    if not has_schema:
+        return False
+    try:
+        for part_id in _part_ids(row.payload):
+            load_member_paths(db, part_id)
+    except RoutingError:
+        return False
+    return True
+
+
 def resplit_has_groups(db: Session, action_id: int, level: int) -> bool:
     """Дал бы заданный уровень группы по нынешним членам всех частей записи."""
     row = _action(db, action_id)
@@ -1079,7 +1135,7 @@ def undo_split(
     задания автоделения снимаются. `block` ставит пометку «автоделение не трогает» от имени
     `user_id`; «поправить» её не ставит. Запись помечает отменённой вызывающий.
 
-    Корзина берётся `FOR UPDATE` раньше проверки замка: ручной перенос не проскочит между
+    Строка каталога и корзина берутся `FOR UPDATE` раньше проверки замка: ручной перенос не проскочит между
     проверкой и слиянием. Коммит за вызывающим; отказ откатывает вызывающий.
 
     Raises:
@@ -1092,7 +1148,7 @@ def undo_split(
     bucket_id = db.execute(
         sa.select(CatalogContext.bucket_id).where(CatalogContext.id == original_id)
     ).scalar_one()
-    lock_buckets(db, [bucket_id], exclusive=True)
+    _lock_catalog_then_bucket(db, bucket_id)
     locked_by = split_lock(db, action_id)
     if locked_by is not None:
         raise SplitUndoLocked(locked_by)

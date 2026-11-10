@@ -63,6 +63,7 @@ REFUSE_JOURNAL_NOT_UNDONE = "journal_not_undone"
 REFUSE_JOURNAL_ALREADY_RESTORED = "journal_already_restored"
 REFUSE_JOURNAL_UNDO_LOCKED = "journal_undo_locked"
 REFUSE_JOURNAL_RESPLIT_NO_GROUPS = "journal_resplit_no_groups"
+REFUSE_JOURNAL_RESPLIT_UNAVAILABLE = "journal_resplit_unavailable"
 
 JournalState = Literal["active", "undone", "locked"]
 
@@ -500,6 +501,11 @@ def resplit_action(db: Session, item_id: int, *, user_id: int, level: int) -> Jo
             409, "части правили вручную после деления: отмена недоступна",
             code=REFUSE_JOURNAL_UNDO_LOCKED, context={"locked_by": locked_by},
         )
+    if not auto_split.can_queue_after_undo(db, item_id):
+        raise _refuse(
+            409, REFUSE_JOURNAL_RESPLIT_UNAVAILABLE,
+            "у контекста нет семьи, схемы или он ждёт семью: новое деление поставить нельзя",
+        )
     if not auto_split.resplit_has_groups(db, item_id, level):
         raise _refuse(
             409, REFUSE_JOURNAL_RESPLIT_NO_GROUPS,
@@ -532,6 +538,12 @@ def restore_auto(db: Session, item_id: int, *, user_id: int) -> JournalItem:
             sa.update(CatalogContext)
             .where(CatalogContext.id == row.context_id)
             .values(auto_split_blocked_at=None, auto_split_blocked_by=None)
+        )
+    if row.kind == "split":
+        # «Вернуть автоматику» запускает автоделение снова, пока контекст всё ещё «к делению».
+        db.flush()
+        auto_split.enqueue_auto_split(
+            db, context_id=row.context_id, settings=app_settings, revive=True
         )
     if "veto_id" in decision:
         db.execute(sa.delete(CompositeVeto).where(CompositeVeto.id == decision["veto_id"]))

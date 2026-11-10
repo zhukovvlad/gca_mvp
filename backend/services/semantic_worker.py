@@ -50,7 +50,12 @@ from models import (
     SuggestionUnpublishedReason,
     WorkFamily,
 )
-from services.auto_split import prepare_auto_split, render_auto_split, run_auto_split_job
+from services.auto_split import (
+    close_auto_split_job,
+    prepare_auto_split,
+    render_auto_split,
+    run_auto_split_job,
+)
 from services.discovery_result import apply_discovery
 from services.family_change import apply_publication_rules, thresholds_from
 from services.family_discovery import (
@@ -1613,6 +1618,22 @@ def _run_auto_split_claim(
                 attempt.outcome = result.value
             db.flush()
             _apply_fuse(db, attempt, now=now)
+
+        if prepared is not None and prepared.rendered.request_hash != claim.rendered.request_hash:
+            # Тела групп собраны уже после захвата и приватность их не проверяла: наружу уходит
+            # только то, что проверено при захвате (тот же отпечаток), иначе модель не зовётся.
+            with session_factory() as db:
+                stale = close_auto_split_job(
+                    db,
+                    JobGuard(
+                        job_id=claim.job_id, claim_token=claim.claim_token,
+                        expected_request_hash=claim.rendered.request_hash,
+                    ),
+                    SemanticCancelReason.input_changed,
+                )
+                finish(db, stale)
+                db.commit()
+            return
 
         try:
             with session_factory() as db:
