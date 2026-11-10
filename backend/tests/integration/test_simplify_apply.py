@@ -13,8 +13,11 @@ from types import SimpleNamespace
 import pytest
 import sqlalchemy as sa
 
+import services.value_filters as value_filters
+import services.variant_request as variant_request
 from models import (
     CatalogAutoAction,
+    CatalogContext,
     ContextParameterValue,
     FamilyParameter,
     FamilyParameterValue,
@@ -22,8 +25,15 @@ from models import (
 )
 from services.composite_values import composite_parts
 from services.human_decisions import add_not_duplicate, add_veto
+from services.semantic_reconcile import NO_CAP, reconcile_context_values
 from services.variant_answer import ValueItem, ValuesAnswer
-from services.work_variants import apply_values, freeze_schema, rebuild_schema
+from services.work_variants import (
+    apply_values,
+    freeze_schema,
+    merge_parameter_values,
+    rebuild_schema,
+)
+from tests.integration.test_catalog_parameters_values import _RANGE_VALUES, _make_range
 from tests.integration.test_work_variants_core import _parameter_in, _schema_answer
 from tests.integration.test_work_variants_material import _settings
 from tests.integration.test_work_variants_schema_life import (
@@ -126,6 +136,14 @@ def _composites(db, scene):
 
 def _ids(scene, *names):
     return sorted(scene.ids[name] for name in names)
+
+
+def _merge(db, scene, source, target):
+    merge_parameter_values(
+        db, parameter_id=scene.parameter_id, source_value_id=scene.ids[source],
+        target_value_id=scene.ids[target], actor_id=scene.actor,
+    )
+    db.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +291,7 @@ class TestExactMatchFirst:
         assert outcome.values_added == ()
 
     def test_the_exact_text_of_a_vetoed_value_is_set_even_when_the_veto_exists(
-        self, db_session, factories
+        self, db_session, factories, monkeypatch
     ):
         scene = _scene(db_session, factories, ("плиты", "балки", "плиты и балки"))
         add_veto(
@@ -281,6 +299,14 @@ class TestExactMatchFirst:
             part_ids=[scene.ids["плиты"], scene.ids["балки"]],
             value_id=scene.ids["плиты и балки"], user_id=scene.actor,
         )
+
+        # Фильтр 1 с вето дал бы то же V, поэтому исход сам по себе точное
+        # совпадение не отличает: путь через разрез запрещён явно.
+        def _no_filter_one(*args, **kwargs):
+            raise AssertionError("точное совпадение обязано идти раньше фильтра 1")
+
+        monkeypatch.setattr(value_filters, "split_candidate", _no_filter_one)
+        monkeypatch.setattr(value_filters, "find_or_create_composite", _no_filter_one)
 
         _run(db_session, scene, _new("плиты и балки"))
 
@@ -542,6 +568,24 @@ class TestSeveral:
         assert source == "name"
 
     @pytest.mark.parametrize(
+        ("combine", "text"), [("all", "130 + 170"), ("any", "130 или 170")]
+    )
+    def test_several_on_a_range_parameter_is_off_list_with_the_assembled_text(
+        self, db_session, factories, combine, text
+    ):
+        # Решение исполнителя (спека о диапазоне молчит): составного из диапазонов
+        # не бывает, `several` у параметра-диапазона — значение не из списка.
+        scene = _scene(db_session, factories, ("балки",))
+        ranges = _make_range(db_session, scene.world, 1, _RANGE_VALUES)
+        before = len(_values(db_session, scene))
+
+        _run(db_session, scene, _several(combine, "130", "170"))
+
+        assert _row_of(db_session, scene) == (None, "off_list", text)
+        assert len(_values(db_session, scene)) == before == len(ranges)
+        assert _journal(db_session, scene) == []
+
+    @pytest.mark.parametrize(
         ("combine", "text"), [("all", "бетон + гранит"), ("any", "бетон или гранит")]
     )
     def test_a_closed_parameter_with_a_part_outside_the_list_is_off_list(
@@ -554,6 +598,73 @@ class TestSeveral:
         assert _row_of(db_session, scene) == (None, "off_list", text)
         assert len(_values(db_session, scene)) == 2
         assert _journal(db_session, scene) == []
+
+
+# ---------------------------------------------------------------------------
+#  Слитый синоним в ответе (Review Focus плана, п. 1)
+# ---------------------------------------------------------------------------
+
+class TestMergedSynonym:
+    """Элемент ответа пришёл текстом слитого синонима. «панели» слиты в «плиты»:
+    леммы у них разные, поэтому совпасть они могут только через слияние, а не через
+    фильтр 2."""
+
+    NAMES = ("плиты", "балки", "панели")
+
+    def _merged(self, db, factories, *, closed=False):
+        scene = _scene(db, factories, self.NAMES, closed=closed)
+        _merge(db, scene, "панели", "плиты")
+        return scene
+
+    def test_a_merged_synonym_and_its_target_collapse_to_the_simple_value(
+        self, db_session, factories
+    ):
+        scene = self._merged(db_session, factories)
+
+        outcome = _run(db_session, scene, _several("all", "плиты", "Панели"))
+
+        assert _row_of(db_session, scene)[0] == scene.ids["плиты"]
+        assert _composites(db_session, scene) == []
+        assert outcome.values_added == ()
+        assert _journal(db_session, scene) == []
+
+    def test_a_merged_synonym_is_a_part_of_the_composite_by_its_target(
+        self, db_session, factories
+    ):
+        scene = self._merged(db_session, factories)
+
+        _run(db_session, scene, _several("all", "панели", "балки"))
+
+        value_id, _source, _off_list = _row_of(db_session, scene)
+        assert _parts_of(db_session, value_id) == _ids(scene, "плиты", "балки")
+        assert _value(db_session, value_id).value == "плиты + балки"
+
+    def test_filter_one_knows_a_part_by_a_merged_synonym(self, db_session, factories):
+        scene = self._merged(db_session, factories)
+
+        _run(db_session, scene, _new("панели, балки"))
+
+        value_id, _source, _off_list = _row_of(db_session, scene)
+        assert _value(db_session, value_id).composite_kind == "all"
+        assert _parts_of(db_session, value_id) == _ids(scene, "плиты", "балки")
+
+    def test_a_closed_parameter_reads_a_merged_synonym_as_listed(self, db_session, factories):
+        scene = self._merged(db_session, factories, closed=True)
+
+        _run(db_session, scene, _several("any", "панели", "балки"))
+
+        value_id, source, off_list = _row_of(db_session, scene)
+        assert (source, off_list) == ("name", None)
+        assert _parts_of(db_session, value_id) == _ids(scene, "плиты", "балки")
+
+    def test_a_closed_parameter_sets_the_target_of_a_merged_new_text(
+        self, db_session, factories
+    ):
+        scene = self._merged(db_session, factories, closed=True)
+
+        _run(db_session, scene, _new("панели"))
+
+        assert _row_of(db_session, scene) == (scene.ids["плиты"], "name", None)
 
 
 # ---------------------------------------------------------------------------
@@ -589,12 +700,27 @@ class TestValueAdded:
 #  Контексты не перезапрашиваются
 # ---------------------------------------------------------------------------
 
-def test_an_applied_context_is_not_requested_again(db_session, factories):
+def test_an_applied_context_is_not_requested_again(db_session, factories, monkeypatch):
+    # Контекст записан при прежнем тексте промпта; сверка при новом его не
+    # перезапрашивает: нужда сравнивает `variant_paths_hash` с путями, а промпт и
+    # формат в этот хэш не входят.
     scene = _scene(db_session, factories, ("балки", "плиты"))
-
+    monkeypatch.setattr(variant_request, "VALUES_PROMPT", "прежний текст промпта")
     _run(db_session, scene, _several("all", "балки", "плиты"))
+    monkeypatch.undo()
+
+    reconcile_context_values(db_session, [scene.context_id], cap=NO_CAP, source="operation")
 
     assert _jobs(db_session, "context_values") == []
+    # Положительный контроль: та же сверка ставит задание, когда хэш путей разошёлся.
+    db_session.execute(
+        sa.update(CatalogContext)
+        .where(CatalogContext.id == scene.context_id)
+        .values(variant_paths_hash="другой")
+    )
+    db_session.flush()
+    reconcile_context_values(db_session, [scene.context_id], cap=NO_CAP, source="operation")
+    assert len(_jobs(db_session, "context_values")) == 1
 
 
 # ---------------------------------------------------------------------------
