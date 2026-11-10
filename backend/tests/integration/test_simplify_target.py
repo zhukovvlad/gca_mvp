@@ -300,6 +300,43 @@ class TestContractorTarget:
         assert line["choice"]["active"] is True
 
 
+class TestTheTargetIsAStrategy:
+    """Цель — стратегия, а не аналог (спека §2.9, §2.16): запись хранит вид, число пересчитывается при
+    каждом чтении. Сервер, сохранивший аналог вместо вида, оставил бы цель на прежнем аналоге."""
+
+    @pytest.mark.parametrize(
+        ("kind", "cost", "prepared", "own", "before"),
+        [
+            # свой подрядчик: 2026-07 свежее его прежнего 2026-04
+            pytest.param("contractor", D("140"), dt.date(2026, 7, 1), True, D("130"), id="contractor"),
+            # чужой подрядчик: тот же месяц, что у самой свежей 150, но ниже по цене — ничья дат решается ценой
+            pytest.param("freshest", D("140"), dt.date(2026, 8, 1), False, D("150"), id="freshest"),
+        ],
+    )
+    def test_a_newer_analog_of_the_remainder_becomes_the_target_without_a_new_put(
+        self, admin_client, stage, world, db_session, kind, cost, prepared, own, before
+    ):
+        scene = _contractor_scene(stage, world)
+        assert _put(admin_client, stage, scene, {"kind": kind}).status_code == 204
+        first = _panel(admin_client, stage.tender, scene.rnd, scene.part, scene.item)
+        assert _pair(first["line"]["file_ours"]) == (before, before)
+
+        _, _, newcomer = _hist(
+            stage, cost, chain=scene.chain, prepared=prepared, contractor=scene.part.contractor if own else None
+        )
+        db_session.flush()
+        panel = _panel(admin_client, stage.tender, scene.rnd, scene.part, scene.item)
+        line = panel["line"]
+
+        assert newcomer.id in {a["analog_id"] for a in panel["analogs"] if a["selectable"]}
+        assert line[kind]["analog_id"] == newcomer.id
+        assert line["target_kind"] == kind
+        assert (line["choice"]["kind"], line["choice"]["analog_id"], line["choice"]["active"]) == (kind, None, True)
+        assert _pair(line["file_ours"]) == (D("140"), D("140"))
+        assert "эта работа стоила 140,00 ₽" in panel["comment"]["text"]
+        assert _rows(db_session, scene.item) == [(kind, None)]
+
+
 # ---------------------------------------------------------------------------
 #  Форма значения: загрузка вместе со значениями варианта
 # ---------------------------------------------------------------------------
@@ -578,9 +615,7 @@ class TestCompositeParameter:
 
         assert row["composite_parameter"] is None
 
-    def test_a_composite_row_with_candidates_still_names_the_parameter(
-        self, admin_client, stage, world, db_session
-    ):
+    def test_a_composite_row_with_candidates_still_names_the_parameter(self, admin_client, stage, world, db_session):
         types, scene = _parts_scene(stage, world, db_session, with_composite_candidate=True)
 
         row = _line_of(_ok(admin_client, stage.tender, scene.rnd, scene.part), scene.item)
