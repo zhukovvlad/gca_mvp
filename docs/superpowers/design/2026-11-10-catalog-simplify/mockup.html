@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ru">
+<html lang="ru" data-theme="light">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -160,6 +160,21 @@ tr.ln.np .num { color:var(--dear-text); }
 .row { display:flex; gap:8px; } .row .inp { flex:1; }
 .ta { width:100%; box-sizing:border-box; resize:vertical; line-height:1.45; }
 .exp { background:var(--sunken); border-radius:10px; padding:12px; border-top:0; }
+/* Тема — как в приложении: по умолчанию светлая, системную не берём (ThemeProvider enableSystem=false);
+   тёмные значения — из frontend/src/index.css [data-theme="dark"]. */
+:root[data-theme="dark"] {
+  --bg-page:#1A1D24; --surface:#232730; --sunken:#1F232B; --hover:#262B35;
+  --fg:#EDEAE0; --fg2:#B5B2A8; --fg3:#8E8B82;
+  --border:#2D323D; --border2:#3A4148;
+  --accent:#8FAB91; --accent-soft:#2A352D; --accent-text:#B8C4BB;
+  --action:#B8C4BB; --action-text:#1A1D24;
+  --neutral-soft:#2A2D33; --neutral-border:#353944; --neutral-text:#B5B2A8;
+  --warn:#D49A6E; --warn-soft:#353027; --warn-border:#4A3D2E; --warn-text:#D49A6E;
+  --dear:#E07878; --dear-soft:#3A2929; --dear-text:#E8A0A0;
+  --k-fresh:#4FC3C1; --k-fresh-soft:#1D3534; --k-own:#9085E9; --k-own-soft:#2E2A45;
+  color-scheme:dark; }
+:root[data-theme="dark"] .k:not(.k-class):not(.k-rel):not(.soft) { color:#1A1D24; }
+.thm { position:fixed; top:14px; right:16px; z-index:10; box-shadow:var(--shadow); background:var(--surface); }
 .an[hidden] { display:none; }
 .an.is-target .mk { display:none; }
 .anmore { justify-self:start; }
@@ -180,8 +195,9 @@ tr.ln.np .num { color:var(--dear-text); }
 </head>
 <body>
 <div class="wrap">
+<div class="seg thm" role="group" aria-label="Тема"><button type="button" aria-pressed="true" data-th="light">светлая</button><button type="button" aria-pressed="false" data-th="dark">тёмная</button></div>
 <div class="intro">
-  <div class="eyebrow">GCA · макет к дизайну «Упрощение управления каталогом» · ред. 7</div>
+  <div class="eyebrow">GCA · макет к дизайну «Упрощение управления каталогом» · ред. 8</div>
   <h1 class="serif">Строки КП по статьям и разделам сметы</h1>
   <p class="lead">Скелет — наш классификатор во всю глубину: <b>4 Конструктивные решения → 4.2 Надземная часть → 4.2.4 …</b>
   Суммы, ₽/м², вилки и выгрузки остаются по статьям, как сейчас. Внутри конечной статьи строки разложены по разделам
@@ -2638,6 +2654,13 @@ tr.ln.np .num { color:var(--dear-text); }
 </section>
 </div>
 <script>
+function setTheme(t) {
+  document.documentElement.dataset.theme = t;
+  document.querySelectorAll('[data-th]').forEach(b => b.setAttribute('aria-pressed', b.dataset.th === t));
+  try { localStorage.setItem('mk-theme', t); } catch (e) {}
+}
+document.querySelectorAll('[data-th]').forEach(b => b.addEventListener('click', () => setTheme(b.dataset.th)));
+try { const t = localStorage.getItem('mk-theme'); if (t === 'dark' || t === 'light') setTheme(t); } catch (e) {}
 document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
   document.querySelectorAll('.tab').forEach(x => x.setAttribute('aria-selected', x === t));
   document.querySelectorAll('.view').forEach(v => v.hidden = v.id !== t.dataset.v);
