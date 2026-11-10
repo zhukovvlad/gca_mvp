@@ -94,9 +94,15 @@ RECONCILER_MODULE = "services.semantic_reconcile"
 #: (спека `2026-11-07-analog-ladder-design.md` §2.7, §2.17): `crud.section_chains` присваивает
 #: `position_items.section_chain_id` — вход только задания `section_zone`, у которого своя
 #: постановка; `services.releasable` пишет `family_parameters.releasable` — признак в тело
-#: запросов не входит, актуальность решает повторный рендер (докстрока модуля). Исключение
+#: запросов не входит, актуальность решает повторный рендер (докстрока модуля);
+#: `services.composite_values` (спека упрощения каталога §2.3) пишет составные значения,
+#: которых модель не видит никогда: запросы списков значений отбирают
+#: `composite_kind IS NULL`, а слияние части, которое переписывает составные, идёт из
+#: `merge_parameter_values` и сверяет очередь там. Исключение
 #: поимённое и узкое: новый модуль с такой записью по-прежнему попадёт в список нарушений.
-LADDER_NON_INPUT_WRITERS = frozenset({"crud.section_chains", "services.releasable"})
+LADDER_NON_INPUT_WRITERS = frozenset(
+    {"crud.section_chains", "services.releasable", "services.composite_values"}
+)
 _MEMBER_MOVE_FIELDS = frozenset({"context_id", "bucket_id"})
 _MEMBER_RECEIVER = re.compile(r"member", re.IGNORECASE)
 _SESSION_NAMES = frozenset({"db", "session", "self.db", "self.session"})

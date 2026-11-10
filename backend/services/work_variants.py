@@ -50,6 +50,7 @@ from models import (
     FamilyParameterValue,
     FamilyStatus,
     FamilySuggestion,
+    FamilyValuePart,
     ParameterOrigin,
     ParameterRole,
     ParameterValueKind,
@@ -826,7 +827,11 @@ def _carry_human_parameters(
     списка», признак «можно отпустить», происхождение и активные значения (слитые и выведенные не
     переносятся) копируются. Параметры модели прежней версии не переносятся.
     Возвращает `({прежний id параметра: новый}, {прежний id значения: новый},
-    описание параметров для события)`."""
+    описание параметров для события)`. Составные значения переносятся вторым
+    проходом: части — через `value_map`, ключ состава пересобирается; составное,
+    у которого переносится меньше двух частей, в `value_map` не попадает."""
+    from services.composite_values import composite_key
+
     old_parameters = db.execute(
         sa.select(FamilyParameter)
         .where(
@@ -850,7 +855,7 @@ def _carry_human_parameters(
         db.flush()
         parameter_map[old.id] = row.id
         copied = 0
-        for old_value in db.execute(
+        active_values = db.execute(
             sa.select(FamilyParameterValue)
             .where(
                 FamilyParameterValue.parameter_id == old.id,
@@ -858,12 +863,42 @@ def _carry_human_parameters(
                 FamilyParameterValue.retired_at.is_(None),
             )
             .order_by(FamilyParameterValue.id)
-        ).scalars():
+        ).scalars().all()
+        # Два прохода: сначала простые значения, затем составные — их части уже
+        # получили новые `id` (спека упрощения каталога §2.3, место 5).
+        for old_value in active_values:
+            if old_value.composite_kind is not None:
+                continue
             value_row = FamilyParameterValue(
                 parameter_id=row.id, value=old_value.value, value_norm=old_value.value_norm,
                 origin=old_value.origin, range_lo=old_value.range_lo, range_hi=old_value.range_hi,
             )
             db.add(value_row)
+            db.flush()
+            value_map[old_value.id] = value_row.id
+            copied += 1
+        for old_value in active_values:
+            if old_value.composite_kind is None:
+                continue
+            old_parts = db.execute(
+                sa.select(FamilyValuePart.part_value_id).where(
+                    FamilyValuePart.value_id == old_value.id
+                )
+            ).scalars().all()
+            new_parts = sorted(value_map[part] for part in old_parts if part in value_map)
+            if len(new_parts) < 2:
+                continue  # потерявшее части не переносится
+            value_row = FamilyParameterValue(
+                parameter_id=row.id, value=old_value.value, value_norm=old_value.value_norm,
+                origin=old_value.origin, composite_kind=old_value.composite_kind,
+                composite_key=composite_key(old_value.composite_kind, new_parts),
+            )
+            db.add(value_row)
+            db.flush()
+            db.add_all(
+                FamilyValuePart(value_id=value_row.id, part_value_id=part, parameter_id=row.id)
+                for part in new_parts
+            )
             db.flush()
             value_map[old_value.id] = value_row.id
             copied += 1
@@ -881,7 +916,8 @@ def _carry_human_rows(
     «уточняется» не копируется: она ссылается на выведенное значение, которого в
     новой версии нет, и параметр становится недостающим. Значение строки без
     отметки всегда активно (спека 3в §2.2), поэтому перевод по `value_map`
-    полон."""
+    полон, кроме составного, не перенесённого за потерей частей: его строки
+    становятся «не уточнено»."""
     if not parameter_map:
         return
     rows = db.execute(
@@ -893,16 +929,38 @@ def _carry_human_rows(
         )
         .order_by(ContextParameterValue.context_id, ContextParameterValue.parameter_id)
     ).scalars().all()
-    copies = [
-        {
-            "context_id": row.context_id, "schema_id": schema.id,
-            "parameter_id": parameter_map[row.parameter_id],
-            "value_id": value_map[row.value_id] if row.value_id is not None else None,
-            "source": row.source, "job_id": row.job_id, "created_at": row.created_at,
-            "off_list_text": row.off_list_text, "refresh_requested_at": None,
-        }
-        for row in rows
-    ]
+    # Составное, потерявшее части, не переносится: строки на нём становятся «не
+    # уточнено» (спека упрощения каталога §2.3, место 5). Любая иная строка без
+    # перевода — ошибка, как и раньше.
+    dropped = {
+        row.value_id for row in rows
+        if row.value_id is not None and row.value_id not in value_map
+    }
+    if dropped:
+        dropped = set(
+            db.execute(
+                sa.select(FamilyParameterValue.id).where(
+                    FamilyParameterValue.id.in_(dropped),
+                    FamilyParameterValue.composite_kind.is_not(None),
+                )
+            ).scalars()
+        )
+    copies = []
+    for row in rows:
+        carried_off = row.value_id in dropped
+        copies.append(
+            {
+                "context_id": row.context_id, "schema_id": schema.id,
+                "parameter_id": parameter_map[row.parameter_id],
+                "value_id": (
+                    None if row.value_id is None or carried_off else value_map[row.value_id]
+                ),
+                "source": ValueSource.none.value if carried_off else row.source,
+                "job_id": None if carried_off else row.job_id, "created_at": row.created_at,
+                "off_list_text": None if carried_off else row.off_list_text,
+                "refresh_requested_at": None,
+            }
+        )
     if copies:
         db.execute(sa.insert(ContextParameterValue), copies)
         db.flush()
@@ -2017,7 +2075,7 @@ def _lock_contexts_statement(context_ids: Sequence[int]):
 
 def merge_parameter_values(
     db: Session, *, parameter_id: int, source_value_id: int, target_value_id: int,
-    actor_id: int,
+    actor_id: int | None, cascade: bool = False,
 ) -> Mapping[int, int]:
     """Слияние синонимов значений одного параметра (спека §2.8): источник
     становится синонимом цели. Возвращает отображение «вариант-источник ->
@@ -2036,8 +2094,14 @@ def merge_parameter_values(
         WorkFamilyError: параметра нет или он архивный; значения нет; значения разных
             параметров; источник уже слит; каноническая цель — сам источник
             или его предок; источник или каноническая цель выведены из
-            списка (`REFUSE_MERGE_VALUE_RETIRED`).
+            списка (`REFUSE_MERGE_VALUE_RETIRED`); составное и простое значение либо
+            составные разного вида (`merge_values_composite_mismatch`). Слияние,
+            которое делает сам сервис составных (`cascade`), пары составное -> простое
+            не отказывает: часть слили с другой частью, и составное стало ею.
     """
+    from services.composite_values import REFUSE_MERGE_COMPOSITE_MISMATCH, rebuild_after_part_merge
+    from services.human_decisions import rewrite_after_merge
+
     located = db.execute(
         sa.select(
             FamilyParameter.schema_id, FamilyParameterSchema.family_id, FamilyParameter.role
@@ -2105,6 +2169,13 @@ def merge_parameter_values(
         for value in db.execute(_lock_values_statement({source_value_id, canonical_id})).scalars()
     }
     source_value = locked_values[source_value_id]
+    if not cascade and source_value.composite_kind != locked_values[canonical_id].composite_kind:
+        raise WorkFamilyError(
+            REFUSE_MERGE_COMPOSITE_MISMATCH,
+            f"значения {source_value_id} и {canonical_id}: составное сливается только с "
+            "составным того же вида",
+            value_id=source_value_id,
+        )
     for retired_id in (source_value_id, canonical_id):
         if locked_values[retired_id].retired_at is not None:
             raise WorkFamilyError(
@@ -2244,6 +2315,16 @@ def merge_parameter_values(
         .values(origin=ParameterOrigin.human.value)
     )
     db.flush()
+    # Решения человека и составные значения следуют за слиянием в той же транзакции
+    # (спека упрощения каталога §2.3 место 2, §2.6).
+    rewrite_after_merge(
+        db, parameter_id=parameter_id, source_value_id=source_value_id,
+        canonical_value_id=canonical_id,
+    )
+    rebuild_after_part_merge(
+        db, parameter_id=parameter_id, source_id=source_value_id, canonical_id=canonical_id,
+        actor_id=actor_id,
+    )
     bump_revision(db, schema_id)
     record_event(
         db,

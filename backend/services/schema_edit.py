@@ -42,6 +42,7 @@ from models import (
     FamilyParameter,
     FamilyParameterSchema,
     FamilyParameterValue,
+    FamilyValuePart,
     ParameterOrigin,
     ParameterRole,
     ParameterValueKind,
@@ -51,6 +52,7 @@ from models import (
     ValueSource,
     WorkFamily,
 )
+from services.composite_values import REFUSE_SCHEMA_COMPOSITE_TEXT
 from services.parameter_ranges import (
     RangeValue,
     build_range_values,
@@ -202,6 +204,7 @@ class _ValueRow:
     merged_into: int | None = None
     range_lo: Decimal | None = None
     range_hi: Decimal | None = None
+    composite: bool = False
 
     @property
     def active(self) -> bool:
@@ -254,6 +257,7 @@ def _read_values(db: Session, parameter_ids: Sequence[int]) -> dict[int, list[_V
             FamilyParameterValue.value, FamilyParameterValue.value_norm,
             FamilyParameterValue.merged_into_id, FamilyParameterValue.retired_at,
             FamilyParameterValue.range_lo, FamilyParameterValue.range_hi,
+            FamilyParameterValue.composite_kind,
         )
         .where(FamilyParameterValue.parameter_id.in_(list(values)))
         .order_by(FamilyParameterValue.id)
@@ -264,6 +268,7 @@ def _read_values(db: Session, parameter_ids: Sequence[int]) -> dict[int, list[_V
                 value_norm=row.value_norm, merged=row.merged_into_id is not None,
                 retired=row.retired_at is not None, merged_into=row.merged_into_id,
                 range_lo=row.range_lo, range_hi=row.range_hi,
+                composite=row.composite_kind is not None,
             )
         )
     return values
@@ -788,6 +793,7 @@ def _plan_rebuild(
             continue
         carrier = by_id[slot.value_id]
         if slot.current_text != slot.text:
+            _refuse_composite_text(carrier, existing.ordinal)
             plan.value_renames.append((slot.value_id, slot.text))
         if (carrier.range_lo, carrier.range_hi) != (slot.lo, slot.hi):
             bounds.append((slot.value_id, slot.lo, slot.hi))
@@ -796,6 +802,18 @@ def _plan_rebuild(
         sorted({slot.value_id: slot.text for slot in slots if slot.value_id is not None}.items())
     )
     plan.texts_after = (*carried.values(), *(slot.text for slot in slots if slot.value_id is None))
+
+
+def _refuse_composite_text(value: _ValueRow, ordinal: int | None) -> None:
+    """Текст составного значения собирается из частей и не правится (спека упрощения
+    каталога §2.3, место 4)."""
+    if value.composite:
+        raise WorkFamilyError(
+            REFUSE_SCHEMA_COMPOSITE_TEXT,
+            f"параметр {ordinal}: текст составного значения не правится — он собирается "
+            "из частей",
+            ordinal=ordinal,
+        )
 
 
 def _plan_parameter(
@@ -875,6 +893,7 @@ def _plan_parameter(
         elif found.retired:
             plan.new_values.append(_NewValue(text=text, norm=norm, revive_id=found.id))
         elif found.value != text:
+            _refuse_composite_text(found, draft.ordinal)
             plan.value_renames.append((found.id, text))
     return plan
 
@@ -1453,6 +1472,47 @@ def _write_rebuild(
             .values(retired_at=now)
             .execution_options(synchronize_session=False)
         )
+        _retire_composites_of(db, parameter_id, retired_ids, now)
+
+
+def _retire_composites_of(
+    db: Session, parameter_id: int, retired_ids: Sequence[int], now: datetime
+) -> None:
+    """Составное значение, у которого вывели часть, выводится тем же `retired_at`
+    (спека упрощения каталога §2.3, место 3); строки контекстов на нём — как у
+    выведенного простого: «уточняется»."""
+    composite_ids = list(
+        db.execute(
+            sa.select(FamilyParameterValue.id)
+            .join(FamilyValuePart, FamilyValuePart.value_id == FamilyParameterValue.id)
+            .where(
+                FamilyParameterValue.parameter_id == parameter_id,
+                FamilyValuePart.part_value_id.in_(list(retired_ids)),
+                FamilyParameterValue.retired_at.is_(None),
+                FamilyParameterValue.merged_into_id.is_(None),
+            )
+            .distinct()
+        ).scalars()
+    )
+    if not composite_ids:
+        return
+    context_ids = sorted(
+        db.execute(
+            sa.select(ContextParameterValue.context_id).where(
+                ContextParameterValue.parameter_id == parameter_id,
+                ContextParameterValue.value_id.in_(composite_ids),
+            )
+        ).scalars()
+    )
+    if context_ids:
+        db.execute(_lock_contexts_statement(context_ids)).all()
+        mark_rows_for_refresh(db, context_ids, parameter_id)
+    db.execute(
+        sa.update(FamilyParameterValue)
+        .where(FamilyParameterValue.id.in_(composite_ids))
+        .values(retired_at=now)
+        .execution_options(synchronize_session=False)
+    )
 
 
 def _write_plan(

@@ -296,6 +296,7 @@ def load_human_parameters(
             FamilyParameterValue.parameter_id.in_(list(values_of)),
             FamilyParameterValue.merged_into_id.is_(None),
             FamilyParameterValue.retired_at.is_(None),
+            FamilyParameterValue.composite_kind.is_(None),
         )
         .order_by(FamilyParameterValue.parameter_id, FamilyParameterValue.id)
     ).all():
@@ -333,6 +334,7 @@ def load_schema_parameters(
                 FamilyParameterValue.parameter_id.in_(parameter_ids),
                 FamilyParameterValue.merged_into_id.is_(None),
                 FamilyParameterValue.retired_at.is_(None),
+                FamilyParameterValue.composite_kind.is_(None),
             )
             .order_by(FamilyParameterValue.parameter_id, FamilyParameterValue.id)
         ).all():

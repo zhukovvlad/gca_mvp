@@ -78,6 +78,7 @@ from models import (
 )
 from routers.domain_errors import raise_domain_error
 from services import (
+    composite_values,
     context_operations,
     discovery_drafts,
     family_categories,
@@ -205,6 +206,8 @@ _STATUS_UNPROCESSABLE = frozenset(
         schema_edit.REFUSE_OFF_LIST_TARGET_INVALID,
         work_variants.REFUSE_MERGE_OTHER_PARAMETER,
         work_variants.REFUSE_MERGE_CYCLE,
+        composite_values.REFUSE_MERGE_COMPOSITE_MISMATCH,
+        composite_values.REFUSE_SCHEMA_COMPOSITE_TEXT,
         context_operations.REFUSE_DIFFERENT_BUCKET,
         context_operations.REFUSE_INVALID_MEMBERSHIP,
         context_operations.REFUSE_INVALID_NEW_DEFAULT,

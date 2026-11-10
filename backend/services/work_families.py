@@ -1214,6 +1214,7 @@ def merge_families(
             (`REFUSE_MERGE_SCHEMA_BUILDING`, называет `role`).
     """
     from services.family_change import PendingState, clear_pending, record_pending_outcome
+    from services.human_decisions import transfer_family
 
     if source_family_id == target_family_id:
         raise WorkFamilyError(
@@ -1297,6 +1298,8 @@ def merge_families(
         target_has_current=target_has_current,
     )
     db.flush()
+    # Решения человека записаны по семье и нормам: переезжают на цель вместе с версиями.
+    transfer_family(db, source_family_id=source_family_id, target_family_id=target_family_id)
 
     variant_ids = [
         row.id
