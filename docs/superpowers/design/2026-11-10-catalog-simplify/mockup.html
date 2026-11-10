@@ -124,6 +124,8 @@ tr.ln.np .num { color:var(--dear-text); }
 .lbl { font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--fg3); }
 .artchip { display:inline-block; background:var(--accent-soft); color:var(--accent-text); border-radius:6px; padding:2px 8px; font-size:12px; }
 .an { border-top:1px solid var(--border); padding-top:12px; display:grid; gap:6px; }
+.an[hidden] { display:none; }
+.anmore { justify-self:start; }
 .an-h { display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; font-size:13px; }
 .an-t { font-size:13.5px; }
 .an-w { display:grid; gap:4px; }
@@ -142,7 +144,7 @@ tr.ln.np .num { color:var(--dear-text); }
 <body>
 <div class="wrap">
 <div class="intro">
-  <div class="eyebrow">GCA · макет к дизайну «Упрощение управления каталогом» · ред. 5</div>
+  <div class="eyebrow">GCA · макет к дизайну «Упрощение управления каталогом» · ред. 6</div>
   <h1 class="serif">Строки КП по статьям и разделам сметы</h1>
   <p class="lead">Скелет — наш классификатор во всю глубину: <b>4 Конструктивные решения → 4.2 Надземная часть → 4.2.4 …</b>
   Суммы, ₽/м², вилки и выгрузки остаются по статьям, как сейчас. Внутри конечной статьи строки разложены по разделам
@@ -2025,6 +2027,7 @@ tr.ln.np .num { color:var(--dear-text); }
   <ul class="chg">
     <li>Сверху — <b>где строка</b>: её статья классификатора и путь в смете КП целым деревом с номерами.</li>
     <li>Цель — <b>пилюлями с цифрой</b>: самая низкая (авто) · самая свежая · с этим подрядчиком; нажатая — текущая. Рядом отметка класса объекта: «тот же класс» (ступени 1–2) или «другой класс» (3–4, когда в своём аналогов нет).</li>
+    <li>Аналогов в панели <b>не больше пяти</b>: сначала те, на ком стоят пилюли цели, затем самые дешёвые; остальные — кнопкой «показать ещё N».</li>
     <li>У каждого аналога — его статья и путь в смете договора целиком, без обрезки; аналоги карточками, вбок ничего не уезжает.</li>
   </ul>
   <div class="app"><div class="appbar"><span class="logo">База расценок ГП</span><nav><span class="on">Тендеры</span></nav></div>
@@ -2495,19 +2498,13 @@ tr.ln.np .num { color:var(--dear-text); }
         <p class="xs t3">«С этим подрядчиком» — самая свежая цена из нашего договора с этим же подрядчиком; пилюли нет, если такого договора нет (в макете — условно).
         «Выбранный аналог» появится пилюлей после «сделать целью» у аналога. «Договорились» — отдельное поле ниже, перекрывает любую цель.</p>
       </div>
-      <div class="eyebrow">Аналоги</div>
+      <div class="eyebrow">Аналоги · показаны 5 из 8</div>
+      <p class="xs t3">Сверху — те, на ком стоят пилюли цели (самая низкая, самая свежая, с этим подрядчиком, выбранный аналог), затем самые дешёвые; всего не больше пяти.</p>
       
 <div class="an">
   <div class="an-h"><div><b>Объект А, очередь 1</b><span class="t3 small"> · дог. А-2 · подрядчик 1</span></div>
     <div><span class="num">55 540,85</span> <span class="t3 xs">₽/м³ · 11.2024</span></div></div>
   <div class="an-t">Стены/простенки секции С1 с 2 по 4 этаж В40 W8 F150 <span class="badge">самая низкая</span></div>
-  <div class="an-w"><div class="lbl">статья</div><span class="artchip"><span class="num">4.2.4</span> Устройство вертикальных монолитных конструкций надземных этажей (кроме 1-го)</span><div class="lbl">в смете договора</div><ul class="path small"><li style="padding-left:0px">Возведение несущих конструкций здания</li><li style="padding-left:14px">Ж/Б конструкции надземной части</li><li style="padding-left:28px">Устройство вертикальных монолитных конструкций надземных этажей</li></ul></div>
-  <div class="an-a"><button class="btn sm" type="button">сделать целью</button></div>
-</div>
-<div class="an">
-  <div class="an-h"><div><b>Объект А, очередь 1</b><span class="t3 small"> · дог. А-2 · подрядчик 1</span></div>
-    <div><span class="num">57 514,01</span> <span class="t3 xs">₽/м³ · 11.2024</span></div></div>
-  <div class="an-t">Стены/простенки секции С2 и С3 с 10 этажа по кровле В40 W8 F150</div>
   <div class="an-w"><div class="lbl">статья</div><span class="artchip"><span class="num">4.2.4</span> Устройство вертикальных монолитных конструкций надземных этажей (кроме 1-го)</span><div class="lbl">в смете договора</div><ul class="path small"><li style="padding-left:0px">Возведение несущих конструкций здания</li><li style="padding-left:14px">Ж/Б конструкции надземной части</li><li style="padding-left:28px">Устройство вертикальных монолитных конструкций надземных этажей</li></ul></div>
   <div class="an-a"><button class="btn sm" type="button">сделать целью</button></div>
 </div>
@@ -2526,33 +2523,41 @@ tr.ln.np .num { color:var(--dear-text); }
   <div class="an-a"><button class="btn sm" type="button">сделать целью</button></div>
 </div>
 <div class="an">
+  <div class="an-h"><div><b>Объект А, очередь 1</b><span class="t3 small"> · дог. А-2 · подрядчик 1</span></div>
+    <div><span class="num">57 514,01</span> <span class="t3 xs">₽/м³ · 11.2024</span></div></div>
+  <div class="an-t">Стены/простенки секции С2 и С3 с 10 этажа по кровле В40 W8 F150</div>
+  <div class="an-w"><div class="lbl">статья</div><span class="artchip"><span class="num">4.2.4</span> Устройство вертикальных монолитных конструкций надземных этажей (кроме 1-го)</span><div class="lbl">в смете договора</div><ul class="path small"><li style="padding-left:0px">Возведение несущих конструкций здания</li><li style="padding-left:14px">Ж/Б конструкции надземной части</li><li style="padding-left:28px">Устройство вертикальных монолитных конструкций надземных этажей</li></ul></div>
+  <div class="an-a"><button class="btn sm" type="button">сделать целью</button></div>
+</div>
+<div class="an">
   <div class="an-h"><div><b>Объект Б</b><span class="t3 small"> · дог. Б-1 · подрядчик 1</span></div>
     <div><span class="num">57 855,46</span> <span class="t3 xs">₽/м³ · 02.2025</span></div></div>
   <div class="an-t">Стены B40</div>
   <div class="an-w"><div class="lbl">статья</div><span class="artchip"><span class="num">4.2.2</span> Устройство вертикальных монолитных конструкций 1-го этажа</span><div class="lbl">в смете договора</div><ul class="path small"><li style="padding-left:0px">Возведение несущих конструкций здания</li><li style="padding-left:14px">Ж/Б конструкции надземной части</li><li style="padding-left:28px">Корпус 1</li><li style="padding-left:42px">Устройство вертикальных монолитных конструкций 1-го этажа (отм. -3,900)</li></ul></div>
   <div class="an-a"><button class="btn sm" type="button">сделать целью</button></div>
 </div>
-<div class="an">
+<div class="an more" hidden>
   <div class="an-h"><div><b>Объект Б</b><span class="t3 small"> · дог. Б-1 · подрядчик 1</span></div>
     <div><span class="num">57 855,46</span> <span class="t3 xs">₽/м³ · 02.2025</span></div></div>
   <div class="an-t">Стены B40</div>
   <div class="an-w"><div class="lbl">статья</div><span class="artchip"><span class="num">4.2.4</span> Устройство вертикальных монолитных конструкций надземных этажей (кроме 1-го)</span><div class="lbl">в смете договора</div><ul class="path small"><li style="padding-left:0px">Возведение несущих конструкций здания</li><li style="padding-left:14px">Ж/Б конструкции надземной части</li><li style="padding-left:28px">Корпус 1</li><li style="padding-left:42px">Устройство вертикальных монолитных конструкций со 2-го этажа до кровли</li></ul></div>
   <div class="an-a"><button class="btn sm" type="button">сделать целью</button></div>
 </div>
-<div class="an">
+<div class="an more" hidden>
   <div class="an-h"><div><b>Объект В</b><span class="t3 small"> · дог. В-1 · подрядчик 1</span></div>
     <div><span class="num">69 533,31</span> <span class="t3 xs">₽/м³ · 05.2024</span></div></div>
   <div class="an-t">Стены В40</div>
   <div class="an-w"><div class="lbl">статья</div><span class="artchip"><span class="num">4.2.2</span> Устройство вертикальных монолитных конструкций 1-го этажа</span><div class="lbl">в смете договора</div><ul class="path small"><li style="padding-left:0px">Возведение несущих конструкций здания</li><li style="padding-left:14px">Ж/Б конструкции надземной части</li><li style="padding-left:28px">Вертикальные конструкции 1-го этажа</li><li style="padding-left:42px">Стены</li></ul></div>
   <div class="an-a"><button class="btn sm" type="button">сделать целью</button></div>
 </div>
-<div class="an">
+<div class="an more" hidden>
   <div class="an-h"><div><b>Объект В</b><span class="t3 small"> · дог. В-1 · подрядчик 1</span></div>
     <div><span class="num">70 189,06</span> <span class="t3 xs">₽/м³ · 05.2024</span></div></div>
   <div class="an-t">Стены В40</div>
   <div class="an-w"><div class="lbl">статья</div><span class="artchip"><span class="num">4.2.4</span> Устройство вертикальных монолитных конструкций надземных этажей (кроме 1-го)</span><div class="lbl">в смете договора</div><ul class="path small"><li style="padding-left:0px">Возведение несущих конструкций здания</li><li style="padding-left:14px">Ж/Б конструкции надземной части</li><li style="padding-left:28px">Устройство вертикальных монолитных конструкций надземных этажей (выше 1-го)</li><li style="padding-left:42px">Стены</li></ul></div>
   <div class="an-a"><button class="btn sm" type="button">сделать целью</button></div>
 </div>
+      <button type="button" class="btn sm anmore" aria-expanded="false" data-n="3">показать ещё 3</button>
     </aside>
   </div></div>
 </section>
@@ -2583,7 +2588,13 @@ function apply(tbody) {
     if (isCh) stack.push({ d, open: r.getAttribute('aria-expanded') === 'true' });
   }
 }
-document.querySelectorAll('.tp').forEach(b => b.addEventListener('click', () => document.querySelectorAll('.tp').forEach(x => x.setAttribute('aria-pressed', x === b))));
+document.querySelectorAll('.anmore').forEach(b => b.addEventListener('click', () => {
+  const open = b.getAttribute('aria-expanded') !== 'true';
+  b.setAttribute('aria-expanded', open);
+  b.closest('aside').querySelectorAll('.an.more').forEach(x => x.hidden = !open);
+  b.textContent = open ? 'свернуть' : 'показать ещё ' + b.dataset.n;
+}));
+document.querySelectorAll('.tp').forEach(b =>b.addEventListener('click', () => document.querySelectorAll('.tp').forEach(x => x.setAttribute('aria-pressed', x === b))));
 document.querySelectorAll('[data-np]').forEach(b => b.addEventListener('click', () => {
   npMode = b.dataset.np;
   document.querySelectorAll('[data-np]').forEach(x => x.setAttribute('aria-pressed', x === b));
