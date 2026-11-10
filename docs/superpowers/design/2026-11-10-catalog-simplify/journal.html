@@ -244,6 +244,12 @@ tr.je.off .what { color:var(--fg3); text-decoration:line-through; text-decoratio
 .part.new { border-color:var(--cheap); }
 .part.new small { color:var(--cheap-text); }
 .plus { color:var(--fg3); font-size:12px; }
+.ba { display:grid; gap:6px; padding:12px; border-radius:8px; background:var(--sunken); }
+.ba-arr { line-height:1; padding-left:14px; }
+.ba-col { display:grid; gap:6px; align-content:start; }
+.ba-arr { font-size:22px; color:var(--fg2); }
+.part { font-size:13.5px; font-weight:500; }
+.part.was { text-decoration:line-through; text-decoration-color:var(--fg3); color:var(--fg2); font-weight:400; width:fit-content; }
 .arrow { font-size:18px; color:var(--fg3); }
 .vals { display:flex; gap:5px; flex-wrap:wrap; }
 .vals span { font-size:12px; padding:2px 8px; border-radius:999px; background:var(--neutral-soft); color:var(--neutral-text); }
@@ -367,7 +373,7 @@ const q = s => '«' + esc(s) + '»';
 function line(e) {
   if (e.kind === 'split') return 'Контекст <b>' + q(e.ctx) + '</b> разделён по разделам сметы на ' + e.groups.length + ': ' +
     e.groups.map(g => esc(g.sec) + ' — ' + g.n).join(', ');
-  if (e.kind === 'comp') return '<b>' + q(e.value) + '</b> → набор из ' + e.parts.length + (e.alt ? ' (альтернатива «или»)' : '');
+  if (e.kind === 'comp') return q(e.value) + ' → ' + e.parts.map(([v]) => '<b>' + q(v) + '</b>').join(e.alt ? ' или ' : ' + ');
   if (e.kind === 'nv') return 'Добавлено <b>' + q(e.value) + '</b> в ' + q(e.param);
   return '<b>' + q(e.value) + '</b> = ' + q(e.to) + ' в ' + q(e.param);
 }
@@ -429,10 +435,13 @@ function detSplit(e) {
   return h + '<div class="acts"><button class="btn undo" type="button" id="undo">Отменить — вернуть как было</button><button class="btn" type="button" id="edit">Поправить</button><button class="btn link" type="button">Открыть контекст →</button></div>';
 }
 function detComp(e) {
-  let h = head(e) + '<h3>Склейка разложена в набор</h3>' +
-    '<dl class="kv"><dt>Семья · параметр</dt><dd>' + esc(e.fam) + ' · ' + q(e.param) + '</dd><dt>Было значение</dt><dd><b>' + q(e.value) + '</b></dd></dl>' +
-    '<div class="parts"><span class="arrow">→</span>' + e.parts.map(([v, s], i) => (i ? '<span class="plus">' + (e.alt ? 'или' : '+') + '</span>' : '') +
-      '<span class="part' + (s === 'new' ? ' new' : '') + '">' + esc(v) + '<small>' + (s === 'new' ? 'заведено новым' : 'уже было в списке') + '</small></span>').join('') + '</div>' +
+  let h = head(e) + '<h3>' + q(e.value) + ' разложено на ' + e.parts.length + ' значения</h3>' +
+    '<dl class="kv"><dt>Семья · параметр</dt><dd>' + esc(e.fam) + ' · ' + q(e.param) + '</dd></dl>' +
+    '<div class="ba"><div class="ba-col"><span class="lbl">Было — одно значение</span><span class="part was">' + esc(e.value) + '</span></div>' +
+    '<span class="ba-arr" aria-hidden="true">↓</span>' +
+    '<div class="ba-col"><span class="lbl">Стало — ' + (e.alt ? 'альтернатива из ' : 'набор из ') + e.parts.length + ' значений</span><div class="parts">' +
+    e.parts.map(([v, s], i) => (i ? '<span class="plus">' + (e.alt ? 'или' : '+') + '</span>' : '') +
+      '<span class="part' + (s === 'new' ? ' new' : '') + '">' + esc(v) + '<small>' + (s === 'new' ? 'заведено новым' : 'уже было в списке') + '</small></span>').join('') + '</div></div></div>' +
     (e.alt ? '<p class="small t2">«Или» — альтернатива: аналог — такая же альтернатива, части — для справки.</p>' : '<p class="small t2">Аналоги таких строк — строки с тем же набором; части — блоком «по частям, для справки».</p>') +
     '<div class="blk"><span class="lbl">Контексты с этим набором · ' + e.contexts + '</span><ul class="path">' + e.ctxs.map(c => '<li style="font-weight:400;color:var(--fg2)">' + esc(c) + '</li>').join('') + '</ul></div>';
   if (e.state === 'off') return h + offNote(e, 'Значение снова одно; контексты вернулись к нему.');
