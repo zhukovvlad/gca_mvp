@@ -38,6 +38,10 @@ HTTP-слой поверх готовых сервисов задач 4, 6-10 (`
 состояние мешает — `409`, неверный ввод — `422`, объекта нет — `404`; ни один
 код отказа не уходит `500`.
 
+**«Журнал ИИ»** (спека упрощения каталога §2.7): чтение списка и записи, отмена
+склейки и приравнивания, «вернуть автоматику» — `crud/ai_journal.py`; отказы несут код
+(`journal_*`) и статус в самой ошибке (`DomainError`).
+
 **Транзакция.** `_mutating(db)` — контекстный менеджер одной транзакции на
 маршрут: успешный выход коммитит, любое из трёх исключений сервисов
 откатывает и транслирует в `HTTPException`, любое другое исключение
@@ -58,6 +62,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy.orm import Session
 
+import crud.ai_journal as crud_ai_journal
 import crud.discovery as crud_discovery
 import crud.section_chains as crud_section_chains
 import crud.semantic as crud_semantic
@@ -316,6 +321,10 @@ def _mutating(db: Session):
         # сервера, а не ввод: оба `409`.
         db.rollback()
         raise_domain_error(DomainError(status.HTTP_409_CONFLICT, str(exc), code=exc.code))
+    except DomainError as exc:
+        # Кодированные отказы «Журнала ИИ» (`crud/ai_journal.py`): статус несёт сама ошибка.
+        db.rollback()
+        raise_domain_error(exc)
     except Exception:
         db.rollback()
         raise
@@ -2090,3 +2099,61 @@ def auto_accept_route(
     with _mutating(db):
         applied = family_change.apply_auto_accept(db, preview_hash=body.preview_hash)
     return {"applied": dict(applied)}
+
+
+# ---------------------------------------------------------------------------
+#  «Журнал ИИ» (спека упрощения каталога §2.7)
+# ---------------------------------------------------------------------------
+
+@router.get("/journal")
+def list_journal_route(
+    kind: Literal["split", "value_added", "composite", "equated"] | None = Query(default=None),
+    family_id: int | None = Query(default=None),
+    state: Literal["active", "undone", "locked"] | None = Query(default=None),
+    q: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=MAX_PAGE_SIZE),
+    offset: int = Query(default=0, ge=0),
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Страница журнала: `{items, total, counts}`; `counts` — по видам при всех отборах,
+    кроме вида."""
+    return crud_ai_journal.list_journal(
+        db, kind=kind, family_id=family_id, state=state, q=q or None, limit=limit, offset=offset
+    )
+
+
+@router.get("/journal/{item_id}")
+def journal_item_route(
+    item_id: int,
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    try:
+        return crud_ai_journal.get_journal_item(db, item_id)
+    except DomainError as exc:
+        raise_domain_error(exc)
+
+
+@router.post("/journal/{item_id}/undo")
+def journal_undo_route(
+    item_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Отмена склейки или приравнивания; ответ — обновлённая запись."""
+    with _mutating(db):
+        item = crud_ai_journal.undo_action(db, item_id, user_id=admin.id)
+    return item
+
+
+@router.post("/journal/{item_id}/restore-auto")
+def journal_restore_auto_route(
+    item_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """«Вернуть автоматику»: снимает решение, записанное отменой; ответ — запись."""
+    with _mutating(db):
+        item = crud_ai_journal.restore_auto(db, item_id, user_id=admin.id)
+    return item

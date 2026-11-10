@@ -485,6 +485,18 @@ LADDER_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
 )
 assert len(LADDER_ROUTE_TEMPLATES) == 6
 
+#: Маршруты «Журнала ИИ» (спека упрощения каталога §2.7): список, запись, отмена и
+#: «вернуть автоматику» — ШАБЛОНАМИ пути, независимо от `app.routes`.
+JOURNAL_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("GET", f"{BASE}/journal"),
+        ("GET", f"{BASE}/journal/{{item_id}}"),
+        ("POST", f"{BASE}/journal/{{item_id}}/undo"),
+        ("POST", f"{BASE}/journal/{{item_id}}/restore-auto"),
+    }
+)
+assert len(JOURNAL_ROUTE_TEMPLATES) == 4
+
 
 def test_route_set_under_prefix_equals_twenty_one_literal():
     """Множество путей под `/api/v1/semantic`, собранное из `app.routes`,
@@ -495,7 +507,7 @@ def test_route_set_under_prefix_equals_twenty_one_literal():
     добавленные им маршруты не должны красить проверку прежнего набора. Литералы
     не пересекаются; маршрута восстановления архивного контекста (`…/restore`)
     в наборе нет. Третий литерал — маршруты вариантов и промоушена, четвёртый —
-    справочник категорий семей; пятый — открытие семей, шестой — лестница аналогов."""
+    справочник категорий семей; пятый — открытие семей, шестой — лестница аналогов, седьмой — «Журнал ИИ»."""
     assert not TWENTY_ONE_ROUTE_TEMPLATES & SEMANTIC_QUEUE_ROUTE_TEMPLATES
     assert not WORK_VARIANT_ROUTE_TEMPLATES & (
         TWENTY_ONE_ROUTE_TEMPLATES | SEMANTIC_QUEUE_ROUTE_TEMPLATES
@@ -511,6 +523,7 @@ def test_route_set_under_prefix_equals_twenty_one_literal():
         | FAMILY_CATEGORY_ROUTE_TEMPLATES
         | DISCOVERY_ROUTE_TEMPLATES
         | LADDER_ROUTE_TEMPLATES
+        | JOURNAL_ROUTE_TEMPLATES
     )
     # Возврата семьи из архива нет; «Вернуть» бывает только у черновиков открытия.
     assert not any(
