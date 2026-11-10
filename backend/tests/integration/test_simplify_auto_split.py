@@ -267,6 +267,26 @@ def _new_member(db, factories, scene, heading) -> int:
     return route_position(db, position_item_id=position.id).context_id, position.id
 
 
+def _new_estimate_row(db, factories, scene, titles) -> tuple[int, int]:
+    """Строка НОВОЙ сметы КП: своё предложение и свои строки разделов с заголовками `titles`
+    (от корня), та же строка каталога. Маршрут — настоящий `route_position`."""
+    from tests.integration.test_work_variants_material import _proposal
+
+    template = db.get(PositionItem, _member_ids(db, scene.ctx)[0])
+    proposal = _proposal(factories)
+    parent_id = None
+    for title in titles:
+        parent_id = factories.PositionItemFactory.create(
+            proposal=proposal, is_chapter=True, job_title_in_proposal=title,
+            chapter_item_id=parent_id,
+        ).id
+    position = factories.PositionItemFactory.create(
+        proposal=proposal, is_chapter=False, job_title_in_proposal="Строка новой сметы",
+        chapter_item_id=parent_id, catalog_position_id=template.catalog_position_id,
+    )
+    return route_position(db, position_item_id=position.id).context_id, position.id
+
+
 # ---------------------------------------------------------------------------
 #  Постановка задания в apply_values
 # ---------------------------------------------------------------------------
@@ -301,6 +321,16 @@ class TestQueueing:
         assert _apply(db_session, scene, ValuesAnswer(items=(ValueItem(1, "value", "стены", "path"),))).applied
 
         assert _jobs(db_session, "auto_split") == []
+
+    def test_an_ordinary_answer_cancels_the_standing_job(self, db_session, factories):
+        scene = _scene(db_session, factories)
+
+        assert _apply(db_session, scene, ValuesAnswer(items=(ValueItem(1, "value", "стены", "path"),))).applied
+
+        job = _job(db_session, scene)
+        assert (job.status, job.cancel_reason, job.claim_token) == (
+            "cancelled", "not_applicable", None,
+        )
 
     def test_a_conflict_with_identical_paths_has_nothing_to_split_and_queues_nothing(
         self, db_session, factories
@@ -485,6 +515,46 @@ class TestSplit:
 
         assert _members(db_session, scene.ctx) == {"Стены": before["Стены"]}
         assert _members(db_session, new_ctx) == {"Колонны": before["Колонны"]}
+
+
+_WITH_REST = [
+    (("Смета", "Корпус 2", "Стены"), 1),
+    (("Смета", "Корпус 2", "Колонны"), 1),
+    (("Смета", "Корпус 2"), 1),
+]
+
+
+class TestRestGroup:
+    def test_the_rest_group_stays_in_the_source_and_its_later_rows_come_there(
+        self, db_session, factories
+    ):
+        # Член с короткой цепочкой («прочее») — не первый по id, но остаётся в исходном
+        # контексте: правила у «прочего» быть не может, а исходный — контекст по умолчанию,
+        # куда придут и его будущие строки (отчёт исполнителя Task 5, отступление).
+        scene = _scene(db_session, factories, _WITH_REST)
+        before = _members(db_session, scene.ctx)
+
+        outcome = _split(db_session, scene, {"": "балки", "Стены": "стены", "Колонны": "колонны"})
+
+        assert outcome.status == "split"
+        assert _members(db_session, scene.ctx) == {"Корпус 2": before["Корпус 2"]}
+        assert _values(db_session, scene.ctx) == [("балки", "path")]
+        rules = _rules(db_session, scene)
+        assert [r.predicate for r in rules] == [
+            {"kind": "nearest_chapter_equals", "value": "Стены"},
+            {"kind": "nearest_chapter_equals", "value": "Колонны"},
+        ]
+        part = {r.predicate["value"]: r.context_id for r in rules}
+        assert scene.ctx not in part.values()
+        assert _members(db_session, part["Стены"]) == {"Стены": before["Стены"]}
+        assert _members(db_session, part["Колонны"]) == {"Колонны": before["Колонны"]}
+
+        rest_ctx, _ = _new_estimate_row(db_session, factories, scene, ("Смета", "Корпус 2"))
+        walls_ctx, _ = _new_estimate_row(
+            db_session, factories, scene, ("Смета", "Корпус 2", "Стены")
+        )
+
+        assert (rest_ctx, walls_ctx) == (scene.ctx, part["Стены"])
 
 
 class TestResolved:
@@ -1088,6 +1158,34 @@ class TestUndo:
         }
         assert _member_ids(db_session, scene.new_ctx) == []
         assert _context(db_session, scene.new_ctx).archived_at is not None
+
+    def test_rows_of_a_new_estimate_go_to_their_parts_and_the_undo_takes_them(
+        self, db_session, factories
+    ):
+        # Review Focus п. 2: после деления пришла новая смета КП с теми же разделами —
+        # свои строки разделов, другие `chapter_item_id`, те же заголовки.
+        scene = _split_scene(db_session, factories)
+        before = _member_ids(db_session, scene.ctx) + _member_ids(db_session, scene.new_ctx)
+        walls_ctx, walls = _new_estimate_row(
+            db_session, factories, scene, ("Смета", "Корпус 2", "Стены")
+        )
+        columns_ctx, columns = _new_estimate_row(
+            db_session, factories, scene, ("Смета", "Корпус 2", "Колонны")
+        )
+        assert (walls_ctx, columns_ctx) == (scene.ctx, scene.new_ctx)
+        parts = journal.get_journal_item(db_session, scene.entry.id)["details"]["parts"]
+        assert [(p["members_now"], p["members_after"]) for p in parts] == [(3, 6), (3, 0)]
+
+        _undo(db_session, scene)
+
+        assert _member_ids(db_session, scene.ctx) == sorted(before + [walls, columns])
+        assert _member_ids(db_session, scene.new_ctx) == []
+        routed = db_session.execute(
+            sa.select(ContextMember.routed_by, ContextMember.routing_rule_id).where(
+                ContextMember.context_id == scene.ctx
+            )
+        ).all()
+        assert routed == [("default", None)] * 6
 
     def test_only_the_rules_of_the_record_are_removed_and_their_members_are_unpinned(
         self, db_session, factories
