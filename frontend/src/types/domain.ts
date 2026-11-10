@@ -3522,6 +3522,38 @@ export interface OurPriceAnalog {
   selectable: boolean;
 }
 
+/** Раздел на пути строки: ключ, название и номер раздела в файле участника. */
+export interface OurPriceChapterStep {
+  chapter_item_id: number;
+  title: string;
+  number: string | null;
+}
+
+/** Статья классификатора на пути строк участника (корень, промежуточные, конечная). */
+export interface OurPriceCategory {
+  id: number;
+  parent_id: number | null;
+  code: string | null;
+  title: string;
+  sort_order: number | null;
+}
+
+/**
+ * Итог узла дерева: все строки узла и его потомков. `kp_total` считает сервер
+ * (`null` - база НДС КП неизвестна), клиент деньги не складывает.
+ */
+export interface OurPriceNodeTotals {
+  lines: number;
+  no_price: number;
+  kp_total: MoneyPair | null;
+}
+
+/** Итоги узлов: ключ статьи - её id, «Нераспределённое» - строка `"null"`; разделы - по `chapter_item_id`. */
+export interface OurPriceNodeTotalsMap {
+  categories: Record<string, OurPriceNodeTotals>;
+  chapters: Record<string, OurPriceNodeTotals>;
+}
+
 export interface OurPriceLine {
   position_item_id: number;
   /** Контекст членства строки; `null` у строки без членства. */
@@ -3529,6 +3561,10 @@ export interface OurPriceLine {
   /** Единица каталожной строки контекста; `null` без членства или без единицы. */
   unit_id: number | null;
   article_id: number | null;
+  /** Статья раздела строки (`chapter.work_category_id`); `null` - «Нераспределённое». */
+  category_id: number | null;
+  /** Цепочка разделов сметы сверху вниз: корень сметы первым, раздел строки последним. */
+  chapter_path: OurPriceChapterStep[];
   title: string;
   unit: string | null;
   quantity: Decimal | null;
@@ -3644,6 +3680,9 @@ export interface OurPriceOffer {
   participants: OurPriceParticipant[];
   articles: OurPriceOfferArticle[];
   total: OurPriceArticleHead & OurPriceCell;
+  /** Статьи на путях строк участника, включая промежуточные. */
+  categories: OurPriceCategory[];
+  node_totals: OurPriceNodeTotalsMap;
   lines: OurPriceLine[];
 }
 

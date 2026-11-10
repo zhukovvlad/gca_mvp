@@ -35,12 +35,15 @@ import type {
   KpFilePreview,
   KpSentFileItem,
   OurPriceAnalog,
+  OurPriceCategory,
   OurPriceCell,
+  OurPriceChapterStep,
   OurPriceFork,
   OurPriceInflation,
   OurPriceLine,
   OurPriceLineState,
   OurPriceLineView,
+  OurPriceNodeTotals,
   OurPriceOffer,
   OurPriceProgress,
   OurPriceRound,
@@ -2883,6 +2886,18 @@ export function ourPriceRoundFixture(
   };
 }
 
+/** Корень сметы участника: первый шаг пути каждой строки, в дереве не показывается. */
+const OUR_PRICE_ESTIMATE_ROOT: OurPriceChapterStep = { chapter_item_id: 6000, title: "Смета КП", number: null };
+
+/** Итог узла по форме сервера: суммы округлены до копеек, база НДС известна. */
+export function nodeTotalsFixture(
+  lines: number,
+  noPrice: number,
+  kpTotal: MoneyPair | null = pair("1000000.00", "1220000.00")
+): OurPriceNodeTotals {
+  return { lines, no_price: noPrice, kp_total: kpTotal };
+}
+
 /** Строка разбора: по умолчанию сопоставимая работа на автоматической ступени. */
 export function ourPriceLineFixture(overrides: Partial<OurPriceLine> = {}): OurPriceLine {
   return {
@@ -2890,6 +2905,8 @@ export function ourPriceLineFixture(overrides: Partial<OurPriceLine> = {}): OurP
     context_id: 501,
     unit_id: 3,
     article_id: 11,
+    category_id: 11,
+    chapter_path: [OUR_PRICE_ESTIMATE_ROOT],
     title: "Работа 1",
     unit: "м2",
     quantity: "100",
@@ -2969,7 +2986,164 @@ export function ourPriceOfferFixture(
       sort_order: null,
       ...cell,
     },
+    categories: [{ id: 11, parent_id: null, code: "01", title: "Статья 1", sort_order: 1 }],
+    node_totals: {
+      categories: { "11": nodeTotalsFixture(1, opts.lineState === "no_price" ? 1 : 0) },
+      chapters: { "6000": nodeTotalsFixture(1, opts.lineState === "no_price" ? 1 : 0) },
+    },
     lines: [ourPriceLineFixture({ state: opts.lineState ?? "comparable" })],
+  };
+}
+
+const step = (chapter_item_id: number, title: string): OurPriceChapterStep => ({
+  chapter_item_id,
+  title,
+  number: null,
+});
+
+/**
+ * Разбор с деревом статей во всю глубину (форма ответа сервера): корень 11 → 21 → листья 31 и 32,
+ * корень 12 (лист), «Нераспределённое» (ключ `"null"`). Разделы сметы: «1 Этап ЖК» и «2 Этап БЦ»
+ * в статье 31, раздел-повтор названия статьи («Фундаментная плита:») и раздел-повтор с вложенным
+ * разделом; строки 2, 5 и 9 без цены.
+ */
+export function ourPriceTreeOfferFixture(): OurPriceOffer {
+  const base = ourPriceOfferFixture();
+  const cell = ourPriceCell(base.participants[0].per_sqm);
+  const root = OUR_PRICE_ESTIMATE_ROOT;
+  const stageA = step(6001, "1 Этап ЖК");
+  const stageB = step(6011, "2 Этап БЦ");
+  const lines: OurPriceLine[] = [
+    ourPriceLineFixture({
+      position_item_id: 1,
+      title: "Плита корпусов 1,6",
+      category_id: 31,
+      article_id: 11,
+      chapter_path: [root, stageA, step(6002, "Ж/Б конструкции подземной части")],
+    }),
+    ourPriceLineFixture({
+      position_item_id: 2,
+      title: "Плита корпуса 8",
+      state: "no_price",
+      category_id: 31,
+      article_id: 11,
+      chapter_path: [root, stageA, step(6002, "Ж/Б конструкции подземной части")],
+    }),
+    ourPriceLineFixture({
+      position_item_id: 3,
+      title: "Плита корпусов 2-5",
+      category_id: 31,
+      article_id: 11,
+      chapter_path: [root, stageB, step(6012, "Ж/Б конструкции подземной части")],
+    }),
+    ourPriceLineFixture({
+      position_item_id: 4,
+      title: "Плита парковки",
+      category_id: 31,
+      article_id: 11,
+      chapter_path: [root, step(6020, "Фундаментная плита:")],
+    }),
+    ourPriceLineFixture({
+      position_item_id: 5,
+      title: "Плита перекрытия",
+      state: "no_price",
+      category_id: 32,
+      article_id: 11,
+      chapter_path: [root, stageA, step(6030, "Монолитные плиты")],
+    }),
+    ourPriceLineFixture({
+      position_item_id: 6,
+      title: "Штукатурка стен",
+      category_id: 12,
+      article_id: 12,
+      chapter_path: [root, step(6040, "Отделка")],
+    }),
+    ourPriceLineFixture({
+      position_item_id: 7,
+      title: "Прочая работа",
+      category_id: null,
+      article_id: null,
+      chapter_path: [root, step(6050, "Прочее")],
+    }),
+    ourPriceLineFixture({
+      position_item_id: 8,
+      title: "Опалубка плиты",
+      category_id: 31,
+      article_id: 11,
+      chapter_path: [root, step(6021, "ФУНДАМЕНТНАЯ  плита"), step(6022, "Опалубка")],
+    }),
+    ourPriceLineFixture({
+      position_item_id: 9,
+      title: "Армирование",
+      state: "no_price",
+      category_id: 31,
+      article_id: 11,
+      chapter_path: [root, step(6021, "ФУНДАМЕНТНАЯ  плита"), step(6022, "Опалубка")],
+    }),
+  ];
+  const categories: OurPriceCategory[] = [
+    { id: 11, parent_id: null, code: "04", title: "Конструктивные решения", sort_order: 1 },
+    { id: 12, parent_id: null, code: "05", title: "Отделка", sort_order: 2 },
+    { id: 21, parent_id: 11, code: "4.1", title: "Подземная часть", sort_order: 1 },
+    { id: 31, parent_id: 21, code: "4.1.1", title: "Фундаментная плита", sort_order: 1 },
+    { id: 32, parent_id: 21, code: "4.1.2", title: "Горизонтальные конструкции", sort_order: 2 },
+  ];
+  const totals = (lines: number, noPrice: number, net: string, shown: string) =>
+    nodeTotalsFixture(lines, noPrice, pair(net, shown));
+  return {
+    ...base,
+    articles: [
+      {
+        work_category_id: 11,
+        code: "04",
+        title: "Конструктивные решения",
+        sort_order: 1,
+        ...cell,
+        lines_totals: ourPriceTotals(),
+      },
+      {
+        work_category_id: 12,
+        code: "05",
+        title: "Отделка",
+        sort_order: 2,
+        ...cell,
+        lines_totals: ourPriceTotals(),
+      },
+      {
+        work_category_id: null,
+        code: null,
+        title: "Нераспределённое",
+        sort_order: null,
+        ...cell,
+        lines_totals: ourPriceTotals(),
+      },
+    ],
+    categories,
+    node_totals: {
+      categories: {
+        "11": totals(7, 3, "4667321049.37", "5694131880.23"),
+        "12": totals(1, 0, "98765.40", "120493.79"),
+        "21": totals(7, 3, "4667321049.37", "5694131880.23"),
+        "31": totals(6, 2, "858354549.01", "1047192549.79"),
+        "32": totals(1, 1, "0.00", "0.00"),
+        // Python `None` в ключе словаря уходит в JSON строкой "null".
+        "null": totals(1, 0, "12233054.50", "14924326.49"),
+      },
+      chapters: {
+        "6000": totals(9, 3, "4778417869.28", "5829669080.52"),
+        "6001": totals(3, 2, "626723621.40", "764602817.10"),
+        "6002": totals(2, 1, "600000000.10", "732000000.12"),
+        "6011": totals(1, 0, "231630928.00", "282589732.16"),
+        "6012": totals(1, 0, "231630928.00", "282589732.16"),
+        "6020": totals(1, 0, "5000.00", "6100.00"),
+        "6021": totals(2, 1, "7000.00", "8540.00"),
+        "6022": totals(2, 1, "7000.00", "8540.00"),
+        "6030": totals(1, 1, "0.00", "0.00"),
+        "6040": totals(1, 0, "98765.40", "120493.79"),
+        "6050": totals(1, 0, "12233054.50", "14924326.49"),
+      },
+    },
+    lines,
   };
 }
 

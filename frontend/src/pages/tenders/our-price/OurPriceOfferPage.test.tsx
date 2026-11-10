@@ -11,8 +11,10 @@ import {
   OUR_PRICE_OFFER_ID,
   OUR_PRICE_ROUND_ID,
   OUR_PRICE_TENDER_ID,
+  nodeTotalsFixture,
   ourPriceLineFixture,
   ourPriceOfferFixture,
+  ourPriceTreeOfferFixture,
   sampleTenderCard,
 } from "@/test/fixtures";
 import { server } from "@/test/server";
@@ -99,11 +101,33 @@ async function loaded() {
 }
 
 function line(id: number, article: number | null, overrides: Partial<OurPriceLine> = {}): OurPriceLine {
-  return ourPriceLineFixture({ position_item_id: id, article_id: article, title: `Работа ${id}`, ...overrides });
+  return ourPriceLineFixture({
+    position_item_id: id,
+    article_id: article,
+    category_id: article,
+    title: `Работа ${id}`,
+    ...overrides,
+  });
+}
+
+/** Поля дерева ответа для набора строк: каждая статья — корень-лист, итоги — по числу строк. */
+function treeFieldsOf(lines: OurPriceLine[]): Pick<OurPriceOffer, "categories" | "node_totals"> {
+  const ids = [...new Set(lines.map((l) => l.category_id))];
+  const totalsOf = (own: OurPriceLine[]) =>
+    nodeTotalsFixture(own.length, own.filter((l) => l.state === "no_price").length);
+  return {
+    categories: ids
+      .filter((id): id is number => id !== null)
+      .map((id) => ({ id, parent_id: null, code: String(id), title: `Статья ${id}`, sort_order: id })),
+    node_totals: {
+      categories: Object.fromEntries(ids.map((id) => [String(id), totalsOf(lines.filter((l) => l.category_id === id))])),
+      chapters: { "6000": totalsOf(lines) },
+    },
+  };
 }
 
 function offerWith(lines: OurPriceLine[], patch: Partial<OurPriceOffer> = {}): OurPriceOffer {
-  return { ...ourPriceOfferFixture(), lines, ...patch };
+  return { ...ourPriceOfferFixture(), ...treeFieldsOf(lines), lines, ...patch };
 }
 
 function serve(offer: OurPriceOffer) {
@@ -159,26 +183,26 @@ afterEach(() => {
 });
 
 describe("состояния экрана", () => {
-  it("первая загрузка — скелет без чужих цифр, затем экран; корень — container-page", async () => {
+  it("первая загрузка — скелет без чужих цифр, затем экран; корень — container-wide", async () => {
     const hold = holdRequests("get", OFFER_PATH);
     const { container } = renderPage();
-    expect(container.querySelector(".container-page .animate-pulse")).not.toBeNull();
+    expect(container.querySelector(".container-wide .animate-pulse")).not.toBeNull();
     expect(screen.queryByTestId("tile-per_sqm")).not.toBeInTheDocument();
     hold.release();
     await loaded();
     expect(container.querySelector(".animate-pulse")).toBeNull();
-    expect(container.querySelector(".container-page [data-testid='round-header']")).not.toBeNull();
+    expect(container.querySelector(".container-wide [data-testid='round-header']")).not.toBeNull();
   });
 
   it.each([
     [404, errorLabel(404)],
     [500, errorLabel(500)],
-  ])("ответ %i: подпись причины, без скелета; корень — container-page", async (status, label) => {
+  ])("ответ %i: подпись причины, без скелета; корень — container-wide", async (status, label) => {
     server.use(http.get(OFFER_PATH, () => HttpResponse.json({ detail: "x" }, { status })));
     const { container } = renderPage();
     expect(await screen.findByText(label)).toBeInTheDocument();
     expect(container.querySelector(".animate-pulse")).toBeNull();
-    expect(screen.getByText(label).closest(".container-page")).not.toBeNull();
+    expect(screen.getByText(label).closest(".container-wide")).not.toBeNull();
   });
 
   it("шапка: участник, этап, дата, объект, класс и подпись цен", async () => {
@@ -976,7 +1000,7 @@ describe("прежние цифры под слоем — только свое�
     await waitFor(() => expect(hold.seen.count).toBe(1));
     expect(screen.queryByTestId("tile-per_sqm")).not.toBeInTheDocument();
     expect(screen.queryByTestId("recalc-overlay")).not.toBeInTheDocument();
-    expect(container.querySelector(".container-page .animate-pulse")).not.toBeNull();
+    expect(container.querySelector(".container-wide .animate-pulse")).not.toBeNull();
     hold.release();
   });
 });
@@ -1169,5 +1193,111 @@ describe("выгрузка файла подрядчику и база НДС", 
     await user.click(screen.getByRole("button", { name: VAT_BASE_SAVE_LABEL }));
     await waitFor(() => expect(exportLink()).toHaveAttribute("href", `${ROUTE}/file`));
     expect(screen.queryByRole("button", { name: VAT_BASE_ASSIGN_LABEL })).not.toBeInTheDocument();
+  });
+});
+
+describe("дерево статей и разделов", () => {
+  const modeButton = (name: string) => screen.getByRole("button", { name });
+  const rootToggle = (key: string) => screen.getByTestId(`article-toggle-${key}`);
+
+  it("корни — прежние строки статей с колонками ₽/м², вилка, «статья целиком»; нижних уровней в свёрнутом нет", async () => {
+    serve(ourPriceTreeOfferFixture());
+    renderPage();
+    await loaded();
+    expect(screen.getAllByTestId(/^article-(\d+|unallocated)$/)).toHaveLength(3);
+    expect(screen.getByTestId("art-persqm-11")).toHaveTextContent("110 000,00");
+    expect(screen.getByTestId("art-fork-11")).toHaveTextContent("90 000,00 – 130 000,00");
+    expect(screen.getByTestId("art-whole-11")).toHaveTextContent("+500 000,00");
+    expect(screen.queryByTestId(/^node-/)).toBeNull();
+    expect(lineRows()).toHaveLength(0);
+  });
+
+  it("раскрыть корень — виден первый уровень под ним, строки ещё скрыты", async () => {
+    serve(ourPriceTreeOfferFixture());
+    renderPage();
+    await loaded();
+    fireEvent.click(rootToggle("11"));
+    expect(screen.getByTestId("node-cat-21")).toBeInTheDocument();
+    expect(screen.queryByTestId("node-cat-31")).toBeNull();
+    expect(lineRows()).toHaveLength(0);
+  });
+
+  it("?article=11 раскрывает свою ветку целиком: строки видны; чужие корни свёрнуты", async () => {
+    serve(ourPriceTreeOfferFixture());
+    renderPage("?article=11");
+    await loaded();
+    expect(lineIds()).toEqual([1, 2, 3, 4, 5, 8, 9]);
+    expect(rootToggle("12")).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("?article=unallocated раскрывает ветку «Нераспределённого»", async () => {
+    serve(ourPriceTreeOfferFixture());
+    renderPage("?article=unallocated");
+    await loaded();
+    expect(lineIds()).toEqual([7]);
+    expect(screen.getByTestId("node-chap-6050")).toBeInTheDocument();
+  });
+
+  it("переключатель «показывать / скрыть / только они»: по умолчанию «показывать», счётчик строк без цены", async () => {
+    serve(ourPriceTreeOfferFixture());
+    renderPage();
+    await loaded();
+    expect(modeButton("показывать")).toHaveAttribute("aria-pressed", "true");
+    expect(modeButton("скрыть")).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByTestId("no-price-count")).toHaveTextContent("3");
+  });
+
+  it("«только они» раскрывает все статьи; видны только строки без цены; итоги прежние", async () => {
+    serve(ourPriceTreeOfferFixture());
+    renderPage();
+    await loaded();
+    fireEvent.click(modeButton("только они"));
+    expect(modeButton("только они")).toHaveAttribute("aria-pressed", "true");
+    expect(rootToggle("11")).toHaveAttribute("aria-expanded", "true");
+    expect(lineIds()).toEqual([2, 5, 9]);
+    expect(screen.getByTestId("node-lines-cat-21")).toHaveTextContent("7 строк");
+    expect(screen.getByTestId("node-no-price-cat-21")).toHaveTextContent("3 без цены");
+  });
+
+  it("«скрыть»: строк без цены нет, корни на месте, итоги прежние", async () => {
+    serve(ourPriceTreeOfferFixture());
+    renderPage("?article=11");
+    await loaded();
+    fireEvent.click(modeButton("скрыть"));
+    expect(lineIds()).toEqual([1, 3, 4, 8]);
+    expect(screen.getAllByTestId(/^article-(\d+|unallocated)$/)).toHaveLength(3);
+    expect(screen.getByTestId("node-lines-cat-21")).toHaveTextContent("7 строк");
+  });
+
+  it("возврат на «показывать» после «только они» не оставляет всё раскрытым", async () => {
+    serve(ourPriceTreeOfferFixture());
+    renderPage();
+    await loaded();
+    fireEvent.click(modeButton("только они"));
+    fireEvent.click(modeButton("показывать"));
+    expect(lineRows()).toHaveLength(0);
+    expect(rootToggle("11")).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByTestId(/^node-/)).toBeNull();
+    // Раскрытый вручную корень после «показывать» открывается на один уровень, а не целиком.
+    fireEvent.click(rootToggle("11"));
+    expect(screen.getByTestId("node-cat-21")).toBeInTheDocument();
+    expect(screen.queryByTestId("node-cat-31")).toBeNull();
+  });
+
+  it("корень без строк в режиме «только они» остаётся, раскрыт и честно пуст", async () => {
+    serve(ourPriceTreeOfferFixture());
+    renderPage();
+    await loaded();
+    fireEvent.click(modeButton("только они"));
+    expect(rootToggle("12")).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getAllByTestId("lines-empty").length).toBeGreaterThan(0);
+  });
+
+  it("клик по строке в дереве открывает панель строки", async () => {
+    serve(ourPriceTreeOfferFixture());
+    renderPage("?article=11");
+    await loaded();
+    fireEvent.click(screen.getByTestId("line-3"));
+    expect(screen.getByTestId("offer-page")).toHaveAttribute("data-open-line", "3");
   });
 });

@@ -40,3 +40,18 @@ export function matchesFilter(line: OurPriceLine, filter: OfferFilter): boolean 
       return line.state !== "comparable" && line.state !== "unit_mismatch";
   }
 }
+
+/** Строки без цены в КП на странице участника: показывать все, скрыть их или оставить только их. */
+export type NoPriceMode = "show" | "hide" | "only";
+
+/** Видимость строки при выбранном режиме; суммы уровней от режима не зависят. */
+export function matchesNoPriceMode(line: OurPriceLine, mode: NoPriceMode): boolean {
+  switch (mode) {
+    case "show":
+      return true;
+    case "hide":
+      return line.state !== "no_price";
+    case "only":
+      return line.state === "no_price";
+  }
+}

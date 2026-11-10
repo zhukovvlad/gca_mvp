@@ -41,6 +41,19 @@ describe("TopNav: ширина контейнера", () => {
     narrow.unmount();
   });
 
+  it("на странице участника «Против нашей цены» — container-wide; на экране этапа и файле — container-page", () => {
+    const offer = "/tenders/5/rounds/31/our-price/offers/7001";
+    const wide = renderWithProviders(<TopNav />, { initialRoute: offer });
+    expect(wrapper(wide.container)).toHaveClass("container-wide");
+    wide.unmount();
+
+    for (const route of ["/tenders/5/rounds/31/our-price", `${offer}/file`, "/tenders/5/rounds/31/our-price/offers/abc"]) {
+      const { container, unmount } = renderWithProviders(<TopNav />, { initialRoute: route });
+      expect(wrapper(container)).toHaveClass("container-page");
+      unmount();
+    }
+  });
+
   it("на других путях — container-page (в том числе на /families-x)", () => {
     for (const route of ["/", "/contracts", "/families-x"]) {
       const { container, unmount } = renderWithProviders(<TopNav />, { initialRoute: route });

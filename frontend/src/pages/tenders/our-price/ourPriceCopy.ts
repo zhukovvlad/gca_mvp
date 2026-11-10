@@ -292,6 +292,33 @@ export const LINE_COLUMN = {
 } as const;
 
 export const EMPTY_LINES_LABEL = "В этой статье строк под фильтр нет.";
+
+/** Название корня «Нераспределённое»: у него нет статьи в классификаторе, название то же, что отдаёт сервер. */
+export const UNALLOCATED_TITLE = "Нераспределённое";
+
+/** Дерево статей и разделов сметы на странице участника (спека упрощения каталога §2.10). */
+export const CHAPTER_MARK = "в смете";
+export const PATH_SEPARATOR = " › ";
+export const TREE_RESTORE_LABEL = "Вернуть дерево";
+export const NO_PRICE_FILTER_LABEL = "Строки без цены в КП";
+export const NO_PRICE_FILTER_HINT = "цена 0 или пусто — «цены нет»";
+export const NO_PRICE_MODE_LABEL: Record<"show" | "hide" | "only", string> = {
+  show: "показывать",
+  hide: "скрыть",
+  only: "только они",
+};
+
+/** «1 строка», «2 строки», «5 строк»: форма слова по числу. */
+export function rowsLabel(count: number): string {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  if (mod10 === 1 && mod100 !== 11) return `${count} строка`;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return `${count} строки`;
+  return `${count} строк`;
+}
+
+export const noPriceCountLabel = (count: number): string => `${count} без цены`;
+export const nodeKpLabel = (amount: string): string => `КП ${amount}`;
 export const ALL_CLASSES_LABEL = "все кл.";
 export const SECONDARY_MARK = "ⓘ";
 export const SUB_KOPECK_LABEL = "< 0,01";
