@@ -201,6 +201,22 @@ tr.ln.np .num { color:var(--dear-text); }
 .tp { border:1px solid var(--border2); background:var(--surface); color:var(--fg); font:inherit; font-size:12.5px; padding:5px 11px; border-radius:999px; cursor:pointer; }
 .tp[aria-pressed="true"] { background:var(--action); color:var(--action-text); border-color:transparent; }
 .tp .auto { font-size:10.5px; opacity:.75; margin-left:4px; }
+.tc .same { align-self:center; }
+.thm { top:auto; bottom:14px; }
+.exp-b.nothing { background:var(--neutral-soft); color:var(--fg2); border:1px dashed var(--neutral-border); }
+.k-comp { background:var(--warn-soft); color:var(--warn-text); border:1px solid var(--warn-border); font-weight:500; }
+.verdict.none { background:var(--neutral-soft); color:var(--fg2); border:1px dashed var(--neutral-border); }
+.why { background:var(--sunken); border-radius:8px; padding:12px; display:grid; gap:6px; font-size:13px; border-left:3px solid var(--neutral-border); }
+.part-b { border:1px solid var(--border); border-radius:8px; padding:10px 12px; display:grid; gap:8px; }
+.part-h { display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; font-size:13px; }
+.scale { position:relative; height:30px; margin:20px 0 2px; }
+.scale .rng { position:absolute; top:9px; height:12px; border-radius:6px; }
+.scale .rng.p1 { background:var(--cheap-soft); border:1px solid var(--cheap); }
+.scale .rng.p2 { background:var(--k-own-soft); border:1px solid var(--k-own); }
+.scale .kp { position:absolute; top:0; bottom:0; width:2px; background:var(--dear); }
+.scale .kp span { position:absolute; top:-18px; left:-30px; font-size:11px; color:var(--dear); white-space:nowrap; font-weight:600; }
+.legend { display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--fg2); }
+.legend i { display:inline-block; width:12px; height:8px; border-radius:3px; margin-right:5px; vertical-align:middle; }
 .chg { display:grid; gap:6px; max-width:96ch; font-size:13px; color:var(--fg2); margin:0 0 14px; padding-left:18px; }
 </style>
 </head>
@@ -208,7 +224,7 @@ tr.ln.np .num { color:var(--dear-text); }
 <div class="wrap">
 <div class="seg thm" role="group" aria-label="Тема"><button type="button" aria-pressed="true" data-th="light">светлая</button><button type="button" aria-pressed="false" data-th="dark">тёмная</button></div>
 <div class="intro">
-  <div class="eyebrow">GCA · макет к дизайну «Упрощение управления каталогом» · ред. 9</div>
+  <div class="eyebrow">GCA · макет к дизайну «Упрощение управления каталогом» · ред. 10</div>
   <h1 class="serif">Строки КП по статьям и разделам сметы</h1>
   <p class="lead">Скелет — наш классификатор во всю глубину: <b>4 Конструктивные решения → 4.2 Надземная часть → 4.2.4 …</b>
   Суммы, ₽/м², вилки и выгрузки остаются по статьям, как сейчас. Внутри конечной статьи строки разложены по разделам
@@ -220,6 +236,7 @@ tr.ln.np .num { color:var(--dear-text); }
 <div class="tabs" role="tablist">
   <button class="tab" role="tab" aria-selected="true" data-v="v1">Таблица строк</button>
   <button class="tab" role="tab" aria-selected="false" data-v="v2">Панель строки</button>
+  <button class="tab" role="tab" aria-selected="false" data-v="v3">Сборная строка</button>
 </div>
 
 <section class="view" id="v1">
@@ -2090,7 +2107,7 @@ tr.ln.np .num { color:var(--dear-text); }
 <section class="view" id="v2" hidden>
   <ul class="chg">
     <li>Панель повторяет текущую по составу и порядку: вердикт, <b>цены</b> (КП, объём — предлагаемое количество, сумма, второстепенные), <b>сравнение</b>, <b>аналоги</b>, <b>для выгрузки</b> (наша расценка, «Договорились», комментарий подрядчику по шаблону). Новое — «где строка» (статья и путь в смете КП), отметка класса объекта, не больше пяти аналогов.</li>
-    <li><b>Карточки сравнения и есть выбор цели</b>: нажатая — цель, расценка и комментарий меняются вслед. Отдельной кнопки «сделать целью самую свежую» больше нет.</li>
+    <li><b>Карточки сравнения и есть выбор цели</b>: нажатая — цель, расценка и комментарий меняются вслед. Отдельной кнопки «сделать целью самую свежую» больше нет. У каждой стратегии своя карточка, даже если две указывают на один договор (ред. 10, по ревью Codex).</li>
     <li>Метки цветные и сквозные: <span class="k k-low"><i>↓</i>самая низкая</span> <span class="k k-fresh"><i>◷</i>самая свежая</span> <span class="k k-own"><i>◆</i>с этим подрядчиком</span> <span class="k k-pick"><i>◎</i>цель</span> — тот же цвет на карточке и на аналоге, по нему видно, какой аналог за какой цифрой.</li>
     <li><b>«В файл подрядчику»</b> — итог панели: крупно число, которое уйдёт в выгрузку, и откуда оно (цель или «договорились»); число и метка меняются вслед за выбором цели и вводом. «Сделать целью» у аналога — кнопка-действие; «ещё N аналога» — пунктирная полоса раскрытия списка.</li>
     <li>Данные настоящие (обезличены), кроме строки «Второстепенные» — она для вида, как в текущей панели.</li>
@@ -2570,7 +2587,13 @@ tr.ln.np .num { color:var(--dear-text); }
   <span class="xs dear-t">КП выше на <span class="num">13 123,29</span> за м³ · <span class="num">+29 472 414,44</span> ₽</span>
   <span class="tc-f"><span class="on">✓ цель · авто</span><span class="off">сделать целью</span></span>
 </button><button type="button" class="tc tc-fresh" aria-pressed="false" data-t="fresh" data-an="25749" data-v="56 476,51" data-vat="68 901,34" data-o="Объект Б" data-y="2025">
-  <span class="ktags"><span class="k k-fresh"><i>◷</i>самая свежая</span><span class="k k-own"><i>◆</i>с этим подрядчиком</span></span>
+  <span class="ktags"><span class="k k-fresh"><i>◷</i>самая свежая</span></span>
+  <span class="tc-n"><span class="num">56 476,51</span> <span class="t3 xs">₽/м³</span></span>
+  <span class="xs t2">Объект Б · дог. Б-1 · 02.2025</span>
+  <span class="xs dear-t">КП выше на <span class="num">12 187,63</span> за м³ · <span class="num">+27 371 103,60</span> ₽</span>
+  <span class="tc-f"><span class="on">✓ цель</span><span class="off">сделать целью</span></span>
+</button><button type="button" class="tc tc-own" aria-pressed="false" data-t="own" data-an="25749" data-v="56 476,51" data-vat="68 901,34" data-o="Объект Б" data-y="2025">
+  <span class="ktags"><span class="k k-own"><i>◆</i>с этим подрядчиком</span><span class="xs t3 same">тот же договор, что «самая свежая»</span></span>
   <span class="tc-n"><span class="num">56 476,51</span> <span class="t3 xs">₽/м³</span></span>
   <span class="xs t2">Объект Б · дог. Б-1 · 02.2025</span>
   <span class="xs dear-t">КП выше на <span class="num">12 187,63</span> за м³ · <span class="num">+27 371 103,60</span> ₽</span>
@@ -2579,7 +2602,7 @@ tr.ln.np .num { color:var(--dear-text); }
           <button type="button" class="tc tc-pick" aria-pressed="false" hidden><span class="ktags"><span class="k k-pick"><i>◎</i>выбранный аналог</span></span>
             <span class="tc-n"><span class="num pv"></span> <span class="t3 xs">₽/м³</span></span><span class="xs t2 po"></span><span class="tc-f"><span class="on">✓ цель</span><span class="off">сделать целью</span></span></button>
         </div>
-        <p class="xs t3">Нажатая карточка — цель. Карточка «с этим подрядчиком» — самая свежая цена из нашего договора с тем же подрядчиком; если она совпадает с самой низкой или самой свежей, метка встаёт на ту же карточку, если такого договора нет — метки нет. «Выбранный аналог» — после «сделать целью» у аналога ниже.</p>
+        <p class="xs t3">Нажатая карточка — цель. Выбирается <b>стратегия</b>, а не договор: «самая свежая» и «с этим подрядчиком» сейчас указывают на один договор, но с новым договором другого подрядчика разойдутся — и цель останется той, что нажата. Если договора с этим подрядчиком среди аналогов нет — карточки нет. Закрепить конкретный договор — «сделать целью» у аналога ниже, появится карточка «выбранный аналог».</p>
       </section>
 
       <section class="blk"><div class="eyebrow">Аналоги · показаны 5 из 8</div>
@@ -2657,10 +2680,73 @@ tr.ln.np .num { color:var(--dear-text); }
         <div class="exp-n"><span class="num ours">55 540,85</span> <span class="t3 small">₽/м³ без НДС</span></div>
         <div class="exp-src"><span class="badge exp-b">наша расценка · цель: <span class="tgt-l">самая низкая</span></span> <span class="xs t3">считается из данных и следует за ними</span></div>
         <div class="fld"><label class="small" for="deal"><b>Договорились, ₽/м³, без НДС</b></label>
-          <div class="row"><input id="deal" class="inp" placeholder="не договаривались" inputmode="decimal"><button class="btn primary" type="button">Сохранить</button></div>
+          <div class="row"><input id="deal" class="inp deal-in" placeholder="не договаривались" inputmode="decimal"><button class="btn primary" type="button">Сохранить</button></div>
           <p class="xs t3">Вписываете вы, GCA это число не меняет. Если оно есть — в файл идёт оно, иначе наша расценка.</p></div>
         <div class="fld"><label class="small" for="cmt"><b>Комментарий для подрядчика</b> <span class="t3 xs">шаблон по цели</span></label>
           <textarea id="cmt" class="inp ta" rows="4">Ваша цена — 83 770,25 ₽ за м3 с НДС 22 %. В нашем договоре с вами по объекту Объект А, очередь 1, 2024 г., эта работа стоила 67 759,84 ₽ за м3 с НДС 22 %. Просим снизить до 67 759,84 ₽ или обосновать разницу.</textarea>
+          <div><button class="btn primary" type="button">Сохранить</button></div></div>
+      </section>
+    </aside>
+  </div></div>
+</section>
+<section class="view" id="v3" hidden>
+  <ul class="chg">
+    <li>Главный новый случай фичи (§3.3 дизайна): <b>строка КП — сборная</b> («плиты и балки» одной ценой), а <b>сборных аналогов</b> — строк наших договоров с тем же составом «плиты + балки» — <b>нет</b>.</li>
+    <li>Цели нет, и это сказано прямо: части — только для справки, целью не становятся, потому что в сборной строке другая доля каждой конструкции.</li>
+    <li>«В файл подрядчику» пусто — «в файл ничего не идёт». Число появится, только если вписать «Договорились»; шаблона комментария нет — цели нет.</li>
+    <li>Числа условные; название — по образцу реальных строк стенда.</li>
+  </ul>
+  <div class="app"><div class="appbar"><span class="logo">База расценок ГП</span><nav><span class="on">Тендеры</span></nav></div>
+  <div class="page grid2">
+    <div class="card scroller"><table class="tbl"><thead><tr><th>Работа в КП · вариант</th><th>Ед.</th><th class="r">Объём</th><th class="r">Цена КП</th><th class="r">Вилка, ₽</th><th class="r">Самая низкая</th><th class="r">К самой низкой</th></tr></thead><tbody>
+      <tr class="sec"><td colspan="7"><span class="eb">в смете</span><span class="cht">Корпус 2 · Плиты и балки перекрытий</span></td></tr>
+      <tr class="ln hl"><td class="work">Бетонирование плит и балок перекрытия В30 W6 F150<span class="cap">Тип конструкции: плиты + балки · B30 · W6</span></td><td>м³</td><td class="r num">312,40</td><td class="r num">44 000,00</td><td class="r t3 small">нет сборного аналога</td><td class="r t3">—</td><td class="r t3">—</td></tr>
+      <tr class="ln"><td class="work">Бетонирование плит покрытия В30 W6 F150<span class="cap">Тип конструкции: плиты · B30 · W6</span></td><td>м³</td><td class="r num">96,80</td><td class="r num">39 500,00</td><td class="r num">36 200 – 42 100</td><td class="r num">36 200,00</td><td class="r num dear-t">+3 300,00</td></tr>
+    </tbody></table></div>
+    <aside class="sheet" data-none="1">
+      <div class="sh-h"><div><h3>Бетонирование плит и балок перекрытия В30 W6 F150</h3><p class="small t3">Устройство жб конструкций · B30 · W6</p></div><span class="t3">✕</span></div>
+      <div class="chips"><span class="k k-comp">сборная строка · Тип конструкции: плиты + балки</span></div>
+      <div><span class="verdict none">нет сборного аналога</span></div>
+      <div class="where"><div class="lbl">статья</div><span class="artchip"><span class="num">4.2.4</span> Монолитные конструкции надземной части</span><div class="lbl">в смете КП</div><ul class="path small"><li><span class="num t3">п. 4</span> — Корпус 2</li><li style="padding-left:14px"><span class="num t3">п. 4.3</span> — Плиты и балки перекрытий</li></ul></div>
+
+      <section class="blk"><div class="eyebrow">Цены · без НДС</div>
+        <dl class="kv">
+          <dt>Цена КП</dt><dd><span class="num">44 000,00</span> ₽/м³</dd>
+          <dt>Объём</dt><dd><span class="num">312,40</span> м³ <span class="xs t3">предлагаемое количество</span></dd>
+          <dt>Сумма КП</dt><dd><span class="num">13 745 600,00</span> ₽</dd>
+          <dt>Второстепенные</dt><dd>Коэффициент армирования, кг/м³: не уточнено</dd>
+        </dl></section>
+
+      <section class="blk"><div class="eyebrow">Сравнение и цель для выгрузки</div>
+        <div class="why"><b>Цели нет: в наших договорах нет строки «плиты + балки» одной ценой.</b>
+          <span class="t2">Искали на всех ступенях — тот же вариант, без отпускаемых параметров, другой класс объекта. Плиты отдельно и балки отдельно — другая работа: в сборной строке своя доля каждой конструкции, поэтому сравнивать с ценой одной части нельзя.</span></div>
+      </section>
+
+      <section class="blk"><div class="eyebrow">По частям, для справки</div>
+        <p class="small">Ваша цена <b class="num">44 000</b> ₽/м³ — <b>между плитами (36,2–42,1 тыс.) и балками (45,3–50,8 тыс.)</b>.</p>
+        <div class="scale" aria-hidden="true"><span class="rng p1" style="left:11.6%;width:31.1%" title="плиты"></span><span class="rng p2" style="left:59.5%;width:28.9%" title="балки"></span><span class="kp" style="left:52.6%"><span>КП 44 000</span></span></div>
+        <div class="legend"><span><i style="background:var(--cheap-soft);border:1px solid var(--cheap)"></i>плиты</span><span><i style="background:var(--k-own-soft);border:1px solid var(--k-own)"></i>балки</span><span><i style="background:var(--dear)"></i>цена КП</span></div>
+        <div class="part-b">
+  <div class="part-h"><div><b>плиты</b> <span class="t3 small">· 6 аналогов в 3 договорах · тот же класс объекта</span></div>
+    <div><span class="num big2">36 200 – 42 100</span> <span class="t3 xs">₽/м³</span></div></div>
+  <div class="xs t2">самая низкая <span class="num">36 200</span> — Объект Б · дог. Б-1 · 03.2025</div>
+</div><div class="part-b">
+  <div class="part-h"><div><b>балки</b> <span class="t3 small">· 3 аналогов в 2 договорах · тот же класс объекта</span></div>
+    <div><span class="num big2">45 300 – 50 800</span> <span class="t3 xs">₽/м³</span></div></div>
+  <div class="xs t2">самая низкая <span class="num">45 300</span> — Объект В · дог. В-1 · 11.2024</div>
+</div>
+        <p class="xs t3">Целью части не становятся: кнопки «сделать целью» здесь нет.</p>
+      </section>
+
+      <section class="exp" aria-label="В файл подрядчику">
+        <div class="exp-h"><span class="exp-ic">⇩</span><div><div class="exp-t">В файл подрядчику</div><div class="xs t3">что уйдёт по этой строке в выгрузку</div></div></div>
+        <div class="exp-n"><span class="num ours">—</span> <span class="t3 small">₽/м³ без НДС</span></div>
+        <div class="exp-src"><span class="badge exp-b nothing">в файл ничего не идёт</span> <span class="xs t3">цели нет — сборных аналогов нет; число появится, если вписать «Договорились»</span></div>
+        <div class="fld"><label class="small" for="deal3"><b>Договорились, ₽/м³, без НДС</b></label>
+          <div class="row"><input id="deal3" class="inp deal-in" placeholder="не договаривались" inputmode="decimal"><button class="btn primary" type="button">Сохранить</button></div>
+          <p class="xs t3">Вписываете вы, если сочтёте нужным, — тогда в файл идёт это число.</p></div>
+        <div class="fld"><label class="small" for="cmt3"><b>Комментарий для подрядчика</b> <span class="t3 xs">шаблона нет — цели нет</span></label>
+          <textarea id="cmt3" class="inp ta" rows="3" placeholder="Напишите сами, если нужно"></textarea>
           <div><button class="btn primary" type="button">Сохранить</button></div></div>
       </section>
     </aside>
@@ -2716,13 +2802,16 @@ function setTarget(card) {
   sh.querySelector('.ta').value = `Ваша цена — ${KPV} ₽ за м3 с НДС 22 %. В нашем договоре с вами по объекту ${card.dataset.o}, ${card.dataset.y} г., эта работа стоила ${card.dataset.vat} ₽ за м3 с НДС 22 %. Просим снизить до ${card.dataset.vat} ₽ или обосновать разницу.`;
 }
 function showExport(sh) {
-  const d = sh.querySelector('#deal').value.trim(), b = sh.querySelector('.exp-b');
+  const d = sh.querySelector('.deal-in').value.trim(), b = sh.querySelector('.exp-b');
+  const none = sh.dataset.none === '1';
   sh.querySelector('.ours').textContent = d || sh.dataset.ours;
   b.classList.toggle('deal', !!d);
-  b.innerHTML = d ? 'договорились · перекрывает цель' : 'наша расценка · цель: <span class="tgt-l">' + sh.dataset.tl + '</span>';
+  b.classList.toggle('nothing', !d && none);
+  b.innerHTML = d ? (none ? 'договорились · вписано вручную' : 'договорились · перекрывает цель')
+                  : (none ? 'в файл ничего не идёт' : 'наша расценка · цель: <span class="tgt-l">' + sh.dataset.tl + '</span>');
   b.nextElementSibling.hidden = !!d;
 }
-document.querySelectorAll('#deal').forEach(i => i.addEventListener('input', () => showExport(i.closest('aside'))));
+document.querySelectorAll('.deal-in').forEach(i => i.addEventListener('input', () => showExport(i.closest('aside'))));
 document.querySelectorAll('aside.sheet').forEach(sh => { sh.dataset.ours = sh.querySelector('.ours').textContent; sh.dataset.tl = 'самая низкая'; });
 document.querySelectorAll('.tc').forEach(c => c.addEventListener('click', () => setTarget(c)));
 document.querySelectorAll('.mk').forEach(b => b.addEventListener('click', () => {

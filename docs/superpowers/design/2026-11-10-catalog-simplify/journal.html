@@ -349,9 +349,14 @@ const E = [
     existing:['решётка вентиляционная','решётка декоративная','диффузор','клапан обратный','воздуховод'], state:'on' },
   { id:91, day:'10 ноября 2026 · первый прогон', when:'10.11 03:12', kind:'split', fam:BETON,
     ctx:'Бетонирование стен и колонн В40', level:3, levels:{2:'Корпус 2 / Корпус 3 / Корпус 5 / Корпус 7 / Корпус 9', 3:'Стены / Колонны'},
-    groups:[ { sec:'Стены', val:'стены', n:14, lines:['Корпус 2 › Стены В40 толщ. 200','Корпус 3 › Стены В40 толщ. 250','Корпус 5 › Стены лифтовых шахт В40'] },
+    groups:[ { sec:'Стены', val:'стены', n:14, after:2, lines:['Корпус 2 › Стены В40 толщ. 200','Корпус 3 › Стены В40 толщ. 250','Корпус 5 › Стены лифтовых шахт В40'] },
              { sec:'Колонны', val:'колонны', n:9, lines:['Корпус 2 › Колонны 400×400 В40','Корпус 7 › Колонны 500×500 В40','Корпус 9 › Колонны 400×600 В40'] } ],
     state:'on' },
+  { id:97, day:'10 ноября 2026 · первый прогон', when:'10.11 03:13', kind:'split', fam:BETON,
+    ctx:'Бетонирование лестничных маршей и площадок В30', level:3, levels:{3:'Марши / Площадки'},
+    groups:[ { sec:'Марши', val:'лестничные марши', n:8, lines:['Корпус 1 › Марши В30'] },
+             { sec:'Площадки', val:'лестничные площадки', n:5, lines:['Корпус 1 › Площадки В30'] } ],
+    state:'locked', lockedBy:'«…Площадки» — администратор перенёс 2 строки, 10.11 12:05' },
   { id:92, day:'10 ноября 2026 · первый прогон', when:'10.11 03:12', kind:'split', fam:'Перегородки из газобетона',
     ctx:'Кладка перегородок из газобетона D500', level:3, levels:{3:'Перегородки 100 мм / Перегородки 200 мм'},
     groups:[ { sec:'Перегородки 100 мм', val:'100 мм', n:6, lines:['Типовой этаж › Перегородки 100 мм'] },
@@ -387,6 +392,7 @@ function line(e) {
 function stateChip(e) {
   if (e.state === 'off') return ' <span class="st off">отменено</span>';
   if (e.state === 'fix') return ' <span class="st fix">поправлено</span>';
+  if (e.state === 'locked') return ' <span class="st">правили вручную</span>';
   if (e.state === 'merged') return ' <span class="st fix">слито</span>';
   return '';
 }
@@ -414,6 +420,7 @@ function head(e) {
   return '<div class="meta"><span class="kd ' + KIND[e.kind][1] + '">' + KIND[e.kind][0] + '</span><span>запись ' + e.id +
     '</span><span>·</span><span class="num">' + esc(e.when) + '</span><span>·</span><span>система</span></div>';
 }
+function human() { return '<div class="acts"><button class="btn" type="button" title="снять пометку решения человека">Вернуть автоматику</button></div>'; }
 function offNote(e, text) { return '<div class="note off"><b>Отменено</b> · ' + esc(e.by) + '. ' + text + '</div>'; }
 
 function detSplit(e) {
@@ -422,6 +429,8 @@ function detSplit(e) {
     '<dt>Правила</dt><dd>' + e.groups.length + ' правила маршрутизации «ближайший раздел = …»: новые строки из этих разделов сразу идут в свой контекст</dd></dl>';
   if (e.state === 'off') return h + offNote(e, 'Контекст снова один, помечен «к делению», аналогов у строк нет. Автоматически система его больше не делит — разделить можно вручную на вкладке «Контексты».') +
     '<div class="acts"><button class="btn link" type="button" title="переход на вкладку «Контексты»">Открыть контекст →</button></div>';
+  if (e.state === 'locked') return h + '<div class="note off"><b>Отмена недоступна</b>: после деления часть правил человек — ' + esc(e.lockedBy) + '. Ручное решение отмена не стирает; дальше — вручную на вкладке «Контексты».</div>' +
+    '<div class="acts"><button class="btn undo" type="button" disabled style="opacity:.45;cursor:not-allowed">Отменить — вернуть как было</button><button class="btn link" type="button">Открыть контекст →</button></div>';
   if (editing) {
     h += '<div class="edit"><div class="row" style="align-items:center"><span class="small t2">Делить по разделам уровня</span><select class="sel">' +
       Object.entries(e.levels).map(([lv, t]) => '<option' + (+lv === e.level ? ' selected' : '') + '>' + lv + ' — ' + esc(t) + '</option>').join('') + '</select></div>';
@@ -456,7 +465,7 @@ function detComp(e) {
       '<dt>' + esc(e.param) + '</dt><dd><b>' + e.parts.map(([v]) => esc(v)).join(e.alt ? ' или ' : ' + ') + '</b> <span class="t3">— одно составное значение; было текстом ' + q(e.value) + '</span></dd>' +
       '<dt>Остальные</dt><dd class="t2">' + esc(c.other) + ' — без изменений</dd></dl></div>').join('') +
     (e.contexts > e.ctxs.length ? '<span class="t3 small">… ещё ' + (e.contexts - e.ctxs.length) + '</span>' : '') + '</div>';
-  if (e.state === 'off') return h + offNote(e, 'Значение снова простое, без частей; контексты его не меняли.');
+  if (e.state === 'off') return h + offNote(e, 'Значение снова простое, без частей; контексты его не меняли. Решение человека: фильтр склеек это значение больше не раскладывает.') + human();
   return h + '<div class="acts"><button class="btn undo" type="button" id="undo">Отменить — снова простое значение</button><button class="btn link" type="button">Открыть семью →</button></div>';
 }
 function detNv(e) {
@@ -473,11 +482,11 @@ function detEq(e) {
   let h = head(e) + '<h3>' + q(e.value) + ' приравнено к ' + q(e.to) + '</h3>' +
     '<dl class="kv"><dt>Семья · параметр</dt><dd>' + esc(e.fam) + ' · ' + q(e.param) + '</dd><dt>Откуда</dt><dd>' + esc(e.src) + '</dd>' +
     '<dt>Что сделано</dt><dd>новое значение не заведено; ' + e.contexts + ' контекста получили ' + q(e.to) + '</dd></dl>';
-  if (e.state === 'off') return h + offNote(e, q(e.value).replace(/&quot;/g,'') + ' заведено отдельным значением, контексты переведены на него.');
+  if (e.state === 'off') return h + offNote(e, q(e.value) + ' заведено отдельным значением, контексты переведены на него. Пара помечена «не дубль»: фильтр больше не приравняет этот текст к ' + q(e.to) + '.') + human();
   return h + '<div class="acts"><button class="btn undo" type="button" id="undo">Отвязать — завести отдельным значением</button><button class="btn link" type="button">Открыть семью →</button></div>';
 }
 const DIALOG = {
-  split: e => ['Вернуть как было?', '<ul><li>Части снова сольются в один контекст ' + q(e.ctx) + ', ' + e.groups.length + ' правила маршрутизации снимутся.</li><li>Контекст станет «к делению», у его строк не будет аналога.</li><li>Автоматически система его больше делить не будет — только вручную на вкладке «Контексты».</li></ul>', 'Вернуть как было'],
+  split: e => ['Вернуть как было?', '<ul><li>Сейчас в частях: ' + e.groups.map(g => q(g.sec) + ' — ' + (g.n + (g.after || 0)) + ' строк' + (g.after ? ' (из них ' + g.after + ' пришли после деления)' : '')).join(', ') + '. Все они вернутся в один контекст ' + q(e.ctx) + '.</li><li>Снимутся ' + e.groups.length + ' правила маршрутизации, заведённые этим делением.</li><li>Контекст станет «к делению», у его строк не будет аналога.</li><li>Автоматически система его больше делить не будет — только вручную на вкладке «Контексты».</li></ul>', 'Вернуть как было'],
   comp: e => ['Снова простое значение?', '<ul><li>' + q(e.value) + ' потеряет ссылки на части и станет обычным значением списка; ' + e.contexts + ' контекста остаются на нём.</li><li>Блок «по частям» у этих строк пропадёт.</li><li>Заведённые из склейки значения останутся в списке — слить их можно из их записей.</li></ul>', 'Снова простое значение'],
   eq: e => ['Отвязать значение?', '<ul><li>' + q(e.value) + ' будет заведено отдельным значением параметра ' + q(e.param) + '.</li><li>' + e.contexts + ' контекста перейдут с ' + q(e.to) + ' на него.</li></ul>', 'Отвязать'],
 };
