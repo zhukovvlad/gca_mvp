@@ -245,6 +245,64 @@ class TestVetoWins:
         assert _make(db_session, scene, "плиты", "балки") == scene.ids["плиты и балки"]
 
 
+class TestResolutionThroughMergedRows:
+    """Страховка разрешения (спека §2.6): норма решения, указывающая на слитую строку
+    текущей версии, разрешается через `canonical_value_id`. Решения заводятся прямо
+    ПОСЛЕ слияния, поэтому переписывание норм (`rewrite_after_merge`) их не касается —
+    держит только канонизация при разрешении (ревью задачи 2)."""
+
+    def _raw_veto(self, db, factories, scene, parts, value_norm):
+        veto = CompositeVeto(
+            family_id=scene.family.id, parameter_name_norm="тип конструкции", kind="all",
+            value_norm=value_norm, set_by=_user(factories),
+        )
+        db.add(veto)
+        db.flush()
+        db.add_all(CompositeVetoPart(veto_id=veto.id, part_norm=norm) for norm in parts)
+        db.flush()
+
+    def test_a_part_norm_of_a_merged_row_resolves_to_its_canonical_value(
+        self, db_session, factories
+    ):
+        scene = _scene(db_session, factories, NAMES)
+        _merge(db_session, scene, "плиты", "перекрытия")
+        self._raw_veto(db_session, factories, scene, ("плиты", "балки"), "плиты и балки")
+
+        value_id = _make(db_session, scene, "перекрытия", "балки")
+
+        assert value_id == scene.ids["плиты и балки"]
+        assert _composites(db_session) == 0
+
+    def test_a_value_norm_of_a_merged_row_gives_its_canonical_value(
+        self, db_session, factories
+    ):
+        scene = _scene(db_session, factories, (*NAMES, "плиты вместе с балками"))
+        _merge(db_session, scene, "плиты и балки", "плиты вместе с балками")
+        self._raw_veto(db_session, factories, scene, ("плиты", "балки"), "плиты и балки")
+
+        value_id = _make(db_session, scene, "плиты", "балки")
+
+        assert value_id == scene.ids["плиты вместе с балками"]
+
+    def test_a_not_duplicate_norm_of_a_merged_row_resolves_to_its_canonical_value(
+        self, db_session, factories
+    ):
+        scene = _scene(db_session, factories, NAMES)
+        _merge(db_session, scene, "плиты", "перекрытия")
+        db_session.add(
+            ValueNotDuplicate(
+                family_id=scene.family.id, parameter_name_norm="тип конструкции",
+                text_norm="плита", value_norm="плиты", set_by=_user(factories),
+            )
+        )
+        db_session.flush()
+
+        assert is_not_duplicate(
+            db_session, parameter_id=scene.parameter_id, text_norm="плита",
+            value_id=scene.ids["перекрытия"],
+        ) is True
+
+
 class TestVetoCollisions:
     def test_the_later_veto_wins_by_the_time_of_the_decision_not_by_the_id(
         self, db_session, factories
@@ -586,6 +644,30 @@ class TestMergeRewrite:
         _merge(db_session, scene, "плиты", "перекрытия")
 
         assert _part_norms(db_session, veto_id) == ["балки", "плиты"]
+
+    def test_the_decisions_of_another_parameter_of_the_family_are_not_rewritten(
+        self, db_session, factories
+    ):
+        # те же нормы у параметра «Материал» той же семьи: переписка держится за
+        # `name_norm` параметра слияния (ревью задачи 2)
+        scene = _scene(db_session, factories, NAMES)
+        other = _param(db_session, scene.schema, 2, "Материал")
+        ids = {name: _value(db_session, other, name).id for name in ("плиты", "балки", "плиты и балки")}
+        veto_id = add_veto(
+            db_session, parameter_id=other.id, kind="all",
+            part_ids=[ids["плиты"], ids["балки"]], value_id=ids["плиты и балки"],
+            user_id=_user(factories),
+        )
+        add_not_duplicate(
+            db_session, parameter_id=other.id, text_norm="плита", value_id=ids["плиты"],
+            user_id=_user(factories),
+        )
+
+        _merge(db_session, scene, "плиты", "перекрытия")
+
+        assert _part_norms(db_session, veto_id) == ["балки", "плиты"]
+        db_session.expire_all()
+        assert db_session.execute(sa.select(ValueNotDuplicate.value_norm)).scalar_one() == "плиты"
 
 
 class TestFamilyMerge:
