@@ -103,8 +103,20 @@ class NodeLine:
     chapters: tuple[int, ...]
 
 
-def node_totals(lines: Iterable[NodeLine], *, base: Decimal | None) -> dict[str, dict]:
-    """Итоги узлов дерева страницы участника: `{categories: {id | None: итог}, chapters: {id: итог}}`.
+@dataclass(frozen=True)
+class NodeAmount:
+    """Сумма вне строк позиций (дополнительная работа): валовая сумма и статьи пути (`None` —
+    «Нераспределённое»). Входит в статьи, не в разделы и не в счётчики строк."""
+
+    total: Decimal | None
+    categories: tuple[int | None, ...]
+
+
+def node_totals(
+    lines: Iterable[NodeLine], *, base: Decimal | None, amounts: Iterable[NodeAmount] = ()
+) -> dict[str, dict]:
+    """Итоги узлов дерева страницы участника: `{categories: {id | None: итог}, chapters: {статья | None: {id раздела: итог}}}`;
+    итог раздела — по каждой статье отдельно, только строки этой статьи в поддереве раздела.
 
     Узел получает каждую строку, у которой он на пути, — так итог узла равен сумме строк его
     поддерева. Итог узла — `{lines, no_price, kp_total}`: число строк, число строк в состоянии
@@ -112,29 +124,48 @@ def node_totals(lines: Iterable[NodeLine], *, base: Decimal | None) -> dict[str,
     все конечные суммы строк, отрицательные тоже, строка без цены входит со своей конечной суммой;
     предикат цены тут не применяется. Нетто — по базе НДС КП, `shown` — в той же ставке; база
     неизвестна — `kp_total = None`. Нулевая сумма остаётся парой нулей: «ноль» и «нет» разные
-    вещи, в отличие от `article_net` у корня статьи.
+    вещи, в отличие от `article_net` у корня статьи. Узел, где нет ни одной конечной суммы, —
+    `kp_total = None` («суммы нет»), как у корня.
+
+    `amounts` — суммы вне строк (дополнительные работы): они входят в свою статью и её предков
+    так же, как в корневые `articles`, но не в число строк, не в «без цены» и не в разделы.
     """
-    accumulated: dict[str, dict[int | None, list]] = {"categories": {}, "chapters": {}}
+    accumulated: dict[tuple, list] = {}
+
+    def add(key: tuple, total: Decimal | None, *, line: bool, no_price: bool = False) -> None:
+        node = accumulated.setdefault(key, [0, 0, _ZERO, False])
+        if line:
+            node[0] += 1
+            node[1] += 1 if no_price else 0
+        if total is not None and total.is_finite():
+            with localcontext(_CONTEXT):
+                node[2] = node[2] + total
+            node[3] = True
+
     for line in lines:
-        finite = line.total is not None and line.total.is_finite()
-        for kind, keys in (("categories", line.categories), ("chapters", line.chapters)):
-            for key in keys:
-                node = accumulated[kind].setdefault(key, [0, 0, _ZERO])
-                node[0] += 1
-                node[1] += 1 if line.no_price else 0
-                if finite:
-                    with localcontext(_CONTEXT):
-                        node[2] = node[2] + line.total
-    result: dict[str, dict] = {}
-    for kind, nodes in accumulated.items():
-        result[kind] = {
-            key: {
-                "lines": count,
-                "no_price": no_price,
-                "kp_total": None if base is None else money_pair(gross_to_net(gross, base), base, unit=False),
-            }
-            for key, (count, no_price, gross) in nodes.items()
+        for key in line.categories:
+            add(("categories", key), line.total, line=True, no_price=line.no_price)
+        # раздел считается отдельно по каждой статье: строки одного раздела бывают в разных статьях,
+        # а раздел показан внутри статьи — своя статья строки есть последний узел её цепочки
+        own = line.categories[-1]
+        for chapter in line.chapters:
+            add(("chapters", own, chapter), line.total, line=True, no_price=line.no_price)
+    for amount in amounts:
+        for key in amount.categories:
+            add(("categories", key), amount.total, line=False)
+    result: dict[str, dict] = {"categories": {}, "chapters": {}}
+    for key, (count, no_price, gross, has_amount) in accumulated.items():
+        node = {
+            "lines": count,
+            "no_price": no_price,
+            "kp_total": (
+                money_pair(gross_to_net(gross, base), base, unit=False) if base is not None and has_amount else None
+            ),
         }
+        if key[0] == "categories":
+            result["categories"][key[1]] = node
+        else:
+            result["chapters"].setdefault(key[1], {})[key[2]] = node
     return result
 
 

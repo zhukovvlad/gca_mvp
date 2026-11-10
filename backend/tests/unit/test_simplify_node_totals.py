@@ -9,7 +9,7 @@ from decimal import Decimal
 
 import pytest
 
-from services.our_price_money import NodeLine, node_totals
+from services.our_price_money import NodeAmount, NodeLine, node_totals
 
 D = Decimal
 
@@ -68,10 +68,39 @@ def test_simplify_node_totals_a_missing_or_nonfinite_total_adds_nothing_but_coun
     assert _cat(result, 1) == {"lines": 2, "no_price": 1, "kp_total": {"net": D("100.00"), "shown": D("100.00")}}
 
 
-def test_simplify_node_totals_a_node_of_unpriced_lines_only_is_zero():
-    result = node_totals([_line(None, no_price=True)], base=D("0"))
+@pytest.mark.parametrize("bad", [None, "NaN", "Infinity"])
+def test_simplify_node_totals_a_node_without_a_finite_amount_has_no_sum(bad):
+    """Ни одной конечной суммы — «суммы нет» (`None`), как у корня `articles`, а не ноль."""
+    result = node_totals([_line(bad, no_price=True)], base=D("0"))
 
-    assert _cat(result, 1) == {"lines": 1, "no_price": 1, "kp_total": {"net": D("0.00"), "shown": D("0.00")}}
+    assert _cat(result, 1) == {"lines": 1, "no_price": 1, "kp_total": None}
+
+
+def test_simplify_node_totals_finite_amounts_summing_to_zero_are_zero_not_none():
+    result = node_totals([_line("50"), _line("-50")], base=D("0"))
+
+    assert _cat(result, 1)["kp_total"] == {"net": D("0.00"), "shown": D("0.00")}
+
+
+def test_simplify_node_totals_additional_amounts_feed_articles_only_and_no_counters():
+    lines = [_line("10", categories=(1, 2), chapters=(7,))]
+    amounts = [NodeAmount(total=D("5"), categories=(1, 2)), NodeAmount(total=D("-2"), categories=(None,))]
+
+    result = node_totals(lines, base=D("0"), amounts=amounts)
+
+    assert _cat(result, 1) == {"lines": 1, "no_price": 0, "kp_total": {"net": D("15.00"), "shown": D("15.00")}}
+    assert _cat(result, 2)["kp_total"]["net"] == D("15.00")
+    assert _cat(result, None) == {"lines": 0, "no_price": 0, "kp_total": {"net": D("-2.00"), "shown": D("-2.00")}}
+    assert result["chapters"] == {2: {7: result["chapters"][2][7]}}
+    assert result["chapters"][2][7]["kp_total"]["net"] == D("10.00")  # допработа в раздел не идёт
+
+
+def test_simplify_node_totals_a_node_of_additional_amounts_only_exists():
+    result = node_totals([], base=D("20"), amounts=[NodeAmount(total=D("24"), categories=(1, 2))])
+
+    assert set(result["categories"]) == {1, 2}
+    assert _cat(result, 2) == {"lines": 0, "no_price": 0, "kp_total": {"net": D("20.00"), "shown": D("24.00")}}
+    assert result["chapters"] == {}
 
 
 def test_simplify_node_totals_a_line_feeds_every_node_of_its_path_and_no_other():
@@ -88,10 +117,13 @@ def test_simplify_node_totals_a_line_feeds_every_node_of_its_path_and_no_other()
         3: D("10.00"),
         4: D("5.00"),
     }
-    assert {key: node["kp_total"]["net"] for key, node in result["chapters"].items()} == {
-        7: D("15.00"),
-        8: D("10.00"),
-        9: D("5.00"),
+    # раздел считается отдельно по статье строки (последний узел её цепочки): раздел 7 — в двух статьях
+    assert {
+        category: {chapter: node["kp_total"]["net"] for chapter, node in chapters.items()}
+        for category, chapters in result["chapters"].items()
+    } == {
+        3: {7: D("10.00"), 8: D("10.00")},
+        4: {7: D("5.00"), 9: D("5.00")},
     }
     assert {key: node["lines"] for key, node in result["categories"].items()} == {1: 2, 2: 1, 3: 1, 4: 1}
 

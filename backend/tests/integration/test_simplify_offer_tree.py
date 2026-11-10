@@ -13,7 +13,7 @@ from decimal import Decimal
 import pytest
 import sqlalchemy as sa
 
-from models import SemanticJob
+from models import EstimateAdditionalWork, SemanticJob
 from tests.integration.test_our_price_load import World
 from tests.integration.test_our_price_offer_api import (
     _get,
@@ -213,7 +213,8 @@ class TestNodeTotals:
         for name in ("R", "C", "G"):
             assert body["node_totals"]["categories"][str(cats[name].id)] == expected, name
         for chapter in chapters:
-            assert body["node_totals"]["chapters"][str(chapter.id)] == expected, chapter.job_title_in_proposal
+            leaf_chapters = body["node_totals"]["chapters"][str(cats["G"].id)]
+            assert leaf_chapters[str(chapter.id)] == expected, chapter.job_title_in_proposal
         assert set(body["node_totals"]["categories"]) == {str(cats[name].id) for name in ("R", "C", "G")}
 
     def test_a_chapter_total_covers_its_subtree_and_not_its_siblings(self, member_client, stage):
@@ -229,13 +230,62 @@ class TestNodeTotals:
 
         body = _ok(member_client, stage.tender, rnd, part)
 
-        totals = body["node_totals"]["chapters"]
+        assert set(body["node_totals"]["chapters"]) == {"null"}
+        totals = body["node_totals"]["chapters"]["null"]
         assert {key: (node["lines"], node["kp_total"]["net"]) for key, node in totals.items()} == {
             str(root.id): (3, "113.00"),
             str(left.id): (2, "13.00"),
             str(deep.id): (1, "3.00"),
             str(right.id): (1, "100.00"),
         }
+
+    def test_a_parent_chapter_gives_a_separate_entry_per_category_of_its_children(self, member_client, stage):
+        """Раздел «1» держит подразделы двух статей: под каждой статьёй он есть отдельно и равен
+        только её строкам; общая сумма раздела по всем статьям нигде не показана."""
+        rnd = stage.round()
+        part = stage.participant(rnd, "Подрядчик А", vat=D("0"))
+        parent = _chapter(stage, part.proposal, "Раздел Р", "1")
+        child_g = _chapter(stage, part.proposal, "Подраздел Г", "1.1", parent=parent, cat="G")
+        child_r2 = _chapter(stage, part.proposal, "Подраздел Д", "1.2", parent=parent, cat="R2")
+        _line_in(stage, part.proposal, child_g, D("10"))
+        _line_in(stage, part.proposal, child_g, D("1"))
+        _line_in(stage, part.proposal, child_r2, D("200"))
+
+        body = _ok(member_client, stage.tender, rnd, part)
+
+        def brief(node):
+            return node["lines"], node["kp_total"]["net"]
+
+        chapters = body["node_totals"]["chapters"]
+        g, r2 = str(stage.cats["G"].id), str(stage.cats["R2"].id)
+        assert set(chapters) == {g, r2}
+        assert {k: brief(n) for k, n in chapters[g].items()} == {
+            str(parent.id): (2, "11.00"),
+            str(child_g.id): (2, "11.00"),
+        }
+        assert {k: brief(n) for k, n in chapters[r2].items()} == {
+            str(parent.id): (1, "200.00"),
+            str(child_r2.id): (1, "200.00"),
+        }
+
+    def test_chapter_totals_under_a_leaf_category_never_include_another_category(self, member_client, stage):
+        """Раздел, где лежат строки двух статей (свои строки в главе другой статьи): итог раздела
+        под статьёй G не видит строки R2, а под R2 — строки G."""
+        rnd = stage.round()
+        part = stage.participant(rnd, "Подрядчик А", vat=D("0"))
+        shared = _chapter(stage, part.proposal, "Раздел Ш", "1", cat="G")
+        other = _chapter(stage, part.proposal, "Подраздел Я", "1.1", parent=shared, cat="R2")
+        _line_in(stage, part.proposal, shared, D("7"))
+        _line_in(stage, part.proposal, other, D("500"))
+
+        body = _ok(member_client, stage.tender, rnd, part)
+
+        chapters = body["node_totals"]["chapters"]
+        under_g = chapters[str(stage.cats["G"].id)]
+        under_r2 = chapters[str(stage.cats["R2"].id)]
+        assert under_g == {str(shared.id): {"lines": 1, "no_price": 0, "kp_total": {"net": "7.00", "shown": "7.00"}}}
+        assert set(under_r2) == {str(shared.id), str(other.id)}
+        assert all(node["kp_total"]["net"] == "500.00" for node in under_r2.values())
 
     def test_the_root_total_equals_the_article_of_the_page_with_a_negative_and_an_unpriced_line(
         self, member_client, stage
@@ -268,6 +318,105 @@ class TestNodeTotals:
         }
         assert categories["null"] == {"lines": 1, "no_price": 0, "kp_total": {"net": "50.00", "shown": "60.00"}}
 
+    def test_an_additional_work_feeds_its_article_and_every_ancestor_like_the_root_of_articles(
+        self, member_client, stage, db_session
+    ):
+        """Допработы — второй источник сумм статей (`v_category_totals`, `source =
+        'additional_works'`, money-axes §7: «отрицательные и допработы тоже»). Позиция 120 в
+        разделе статьи G и допработа 24 в G при НДС 20 %: корневая `articles` R = (120 + 24) / 1,2
+        = 120 нетто; узлы G, C и R обязаны совпасть с ней (спека §2.10)."""
+        rnd = stage.round()
+        part = stage.participant(rnd, "Подрядчик А", vat=D("20"))
+        _line_in(stage, part.proposal, stage.chapter(part.proposal, "G"), D("120"))
+        db_session.add(
+            EstimateAdditionalWork(
+                proposal_id=part.proposal.id,
+                ordinal=1,
+                title="Допработа Т",
+                total_amount=D("24.00"),
+                chapter_ref_raw="1",
+                raw_line="строка сведений",
+                work_category_id=stage.cats["G"].id,
+            )
+        )
+        db_session.flush()
+
+        body = _ok(member_client, stage.tender, rnd, part)
+
+        (article,) = (a for a in body["articles"] if a["work_category_id"] == stage.cats["R"].id)
+        assert D(article["per_sqm"]["net"]) * D("1000") == D("120")  # корень articles видит допработу
+        categories = body["node_totals"]["categories"]
+        for name in ("R", "C", "G"):
+            assert categories[str(stage.cats[name].id)]["kp_total"] == {"net": "120.00", "shown": "144.00"}, name
+
+    def test_an_unallocated_additional_work_feeds_the_unallocated_node(self, member_client, stage, db_session):
+        """Нераспределённая запись допработ (`work_category_id IS NULL`) идёт в корень
+        «Нераспределённое» у `articles`; тот же ключ `null` у узлов: (60 + 12) / 1,2 = 60 нетто."""
+        rnd = stage.round()
+        part = stage.participant(rnd, "Подрядчик А", vat=D("20"))
+        _line_in(stage, part.proposal, stage.chapter(part.proposal, None), D("60"))
+        db_session.add(
+            EstimateAdditionalWork(
+                proposal_id=part.proposal.id, ordinal=1, title="Остаток Т", total_amount=D("12.00")
+            )
+        )
+        db_session.flush()
+
+        body = _ok(member_client, stage.tender, rnd, part)
+
+        (article,) = (a for a in body["articles"] if a["work_category_id"] is None)
+        assert D(article["per_sqm"]["net"]) * D("1000") == D("60")
+        assert body["node_totals"]["categories"]["null"]["kp_total"] == {"net": "60.00", "shown": "72.00"}
+
+    def test_an_article_with_only_additional_works_is_listed_with_its_ancestors(
+        self, member_client, stage, db_session
+    ):
+        """Статья, где есть только допработа (строк нет): она и её предки есть и в `categories`,
+        и в `node_totals`; допработа не считается строкой и в раздел не входит."""
+        rnd = stage.round()
+        part = stage.participant(rnd, "Подрядчик А", vat=D("20"))
+        _line_in(stage, part.proposal, stage.chapter(part.proposal, "R2"), D("12"))
+        db_session.add(
+            EstimateAdditionalWork(
+                proposal_id=part.proposal.id,
+                ordinal=1,
+                title="Допработа Т",
+                total_amount=D("24.00"),
+                chapter_ref_raw="1",
+                raw_line="строка сведений",
+                work_category_id=stage.cats["G"].id,
+            )
+        )
+        db_session.flush()
+
+        body = _ok(member_client, stage.tender, rnd, part)
+
+        cats = stage.cats
+        assert {c["id"] for c in body["categories"]} == {cats[n].id for n in ("R", "C", "G", "R2")}
+        for name in ("R", "C", "G"):
+            assert body["node_totals"]["categories"][str(cats[name].id)] == {
+                "lines": 0,
+                "no_price": 0,
+                "kp_total": {"net": "20.00", "shown": "24.00"},
+            }, name
+        assert all(
+            node["lines"] == 1 for chapters in body["node_totals"]["chapters"].values() for node in chapters.values()
+        )
+
+    def test_a_node_without_a_finite_amount_has_no_total(self, member_client, stage):
+        rnd = stage.round()
+        part = stage.participant(rnd, "Подрядчик А", vat=D("20"))
+        chapter = stage.chapter(part.proposal, "R")
+        _line_in(stage, part.proposal, chapter, None, unit_cost=D("0"))
+
+        body = _ok(member_client, stage.tender, rnd, part)
+
+        assert body["node_totals"]["categories"][str(stage.cats["R"].id)] == {
+            "lines": 1,
+            "no_price": 1,
+            "kp_total": None,
+        }
+
     def test_a_zero_sum_is_zero_not_null(self, member_client, stage):
         rnd = stage.round()
         part = stage.participant(rnd, "Подрядчик А", vat=D("20"))
@@ -296,7 +445,7 @@ class TestNodeTotals:
             "no_price": 0,
             "kp_total": None,
         }
-        assert body["node_totals"]["chapters"][str(chapter.id)]["kp_total"] is None
+        assert body["node_totals"]["chapters"][str(stage.cats["R"].id)][str(chapter.id)]["kp_total"] is None
 
     def test_an_in_progress_line_is_summed_and_not_counted_as_unpriced(self, member_client, stage, db_session):
         """Счётчик «без цены» — состояние строки `no_price`: строка, которую ещё разбирает каталог,
@@ -421,14 +570,52 @@ class TestPanelWhere:
         assert analog["article"] is None
         assert analog["chapter_path"] == []
 
-    def test_group_lines_of_the_panel_carry_the_path_too(self, member_client, stage):
-        rnd, part, chapters, (plus, _) = _tree_scene(stage)
+    def test_the_panel_line_carries_the_same_path_as_the_offer(self, member_client, stage):
+        rnd, part, _, (plus, _) = _tree_scene(stage)
 
         panel = _panel(member_client, stage.tender, rnd, part, plus)
         body = _ok(member_client, stage.tender, rnd, part)
 
         assert panel["line"]["chapter_path"] == _line_of(body, plus)["chapter_path"]
         assert panel["line"]["category_id"] == _line_of(body, plus)["category_id"]
+
+    def test_group_lines_of_the_panel_carry_the_path_too(self, member_client, stage):
+        """`group_lines` бывают только у систем. Строки группы лежат в РАЗНЫХ разделах: путь
+        второй строки панель может взять, только если её раздел вошёл в пакетный запрос путей."""
+        from tests.integration.test_our_price_offer_api import _history
+
+        for total in (100000, 140000):
+            _history(stage, D("1"), total=D(total), kind="SYSTEM")
+        rnd = stage.round()
+        part = stage.participant(rnd, "Подрядчик А", vat=D("0"))
+        root = _chapter(stage, part.proposal, "Смета Т", "1")
+        left = _chapter(stage, part.proposal, "Раздел Л", "1.1", parent=root, cat="G")
+        right = _chapter(stage, part.proposal, "Раздел П", "1.2", parent=root, cat="C")
+        mine, mate = (
+            stage.world.line(
+                part.proposal,
+                chapter=chapter,
+                unit_cost=D("1"),
+                total=D(total),
+                suggested=D("10"),
+                quantity=D("10"),
+                family=stage.family,
+                variant=stage.variant,
+                kind="SYSTEM",
+            )
+            for chapter, total in ((left, 30000), (right, 90000))
+        )
+        stage.db.execute(sa.delete(SemanticJob).where(SemanticJob.context_id.in_([mine.context_id, mate.context_id])))
+
+        panel = _panel(member_client, stage.tender, rnd, part, mine)
+        body = _ok(member_client, stage.tender, rnd, part)
+
+        by_id = {line["position_item_id"]: line for line in panel["group_lines"]}
+        assert set(by_id) == {mine.id, mate.id}
+        assert by_id[mate.id]["chapter_path"] == _steps(root, right) == _line_of(body, mate)["chapter_path"]
+        assert by_id[mate.id]["category_id"] == stage.cats["C"].id
+        assert by_id[mine.id]["chapter_path"] == _steps(root, left)
+        assert all("article" not in line for line in panel["group_lines"])
 
 
 # ---------------------------------------------------------------------------

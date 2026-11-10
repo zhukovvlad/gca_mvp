@@ -33,6 +33,7 @@ from models import (
     Contract,
     Contractor,
     Estimate,
+    EstimateAdditionalWork,
     FamilyParameter,
     FamilyParameterSchema,
     FamilyParameterValue,
@@ -981,6 +982,25 @@ def kp_vat_bases(db: Session, estimate_ids: Sequence[int]) -> dict[int, Decimal 
         else:
             bases[estimate_id] = None
     return bases
+
+
+def load_additional_works(db: Session, estimate_ids: Sequence[int]) -> dict[int, list[tuple[int | None, Decimal]]]:
+    """Дополнительные работы смет одним запросом: смета -> пары (статья или `None`, валовая сумма).
+    Это второй источник `v_category_totals`; строк позиций они не образуют и в разделы сметы не
+    входят (у них нет связи с разделом, только исходный текст)."""
+    result: dict[int, list[tuple[int | None, Decimal]]] = {estimate_id: [] for estimate_id in estimate_ids}
+    if not result:
+        return result
+    for estimate_id, category_id, amount in db.execute(
+        sa.select(Lot.estimate_id, EstimateAdditionalWork.work_category_id, EstimateAdditionalWork.total_amount)
+        .select_from(EstimateAdditionalWork)
+        .join(Proposal, Proposal.id == EstimateAdditionalWork.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .where(Lot.estimate_id.in_(list(estimate_ids)))
+        .order_by(Lot.estimate_id, EstimateAdditionalWork.id)
+    ).all():
+        result[estimate_id].append((category_id, amount))
+    return result
 
 
 def category_rows(db: Session, estimate_ids: Sequence[int]) -> list[CategoryRow]:

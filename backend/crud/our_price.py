@@ -38,6 +38,7 @@ from crud.our_price_load import (
     category_rows,
     category_tree,
     kp_vat_bases,
+    load_additional_works,
     load_analog_details,
     load_composites,
     load_history,
@@ -86,6 +87,7 @@ from services.our_price import (
 )
 from services.our_price_money import (
     UNALLOCATED,
+    NodeAmount,
     NodeLine,
     article_net,
     estimate_net_total,
@@ -1051,6 +1053,7 @@ def build_offer_view(
     view, kp_value = _participant_view(scene, participant, evaluation)
     steps = chapter_steps(db, {row.chapter_item_id for row in rows if row.chapter_item_id is not None})
     _, tree = category_tree(db)
+    extra = load_additional_works(db, [participant.estimate_id])[participant.estimate_id]
 
     def flat_cell(root: int | None, *, is_total: bool) -> dict:
         fork = scene.total_fork if is_total else _fork(scene.history.by_root.get(root, {}), scene.class_contracts)
@@ -1076,8 +1079,8 @@ def build_offer_view(
         "participants": [view],
         "articles": articles,
         "total": {**_TOTAL_HEAD, **flat_cell(None, is_total=True)},
-        "categories": _categories_view(tree, rows),
-        "node_totals": _node_totals_view(tree, rows, evaluation, steps, rate),
+        "categories": _categories_view(tree, rows, extra),
+        "node_totals": _node_totals_view(tree, rows, evaluation, steps, rate, extra),
         "lines": [
             _line_with_decisions(scene, participant, row, evaluation.lines[row.line.position_item_id], steps)
             for row in rows
@@ -1088,11 +1091,12 @@ def build_offer_view(
     return result
 
 
-def _categories_view(tree: Mapping[int, CategoryMeta], rows: Sequence[KpLineRow]) -> list[dict]:
-    """Статьи на путях строк, от корня до статьи раздела строки, без лишних; по номеру статьи."""
-    on_paths = {
-        node.id for row in rows if row.category_id is not None for node in _category_chain(tree, row.category_id)
-    }
+def _categories_view(
+    tree: Mapping[int, CategoryMeta], rows: Sequence[KpLineRow], extra: Sequence[tuple[int | None, Decimal]]
+) -> list[dict]:
+    """Статьи на путях строк и дополнительных работ, от корня до своей статьи, без лишних; по номеру."""
+    own = [row.category_id for row in rows] + [category_id for category_id, _ in extra]
+    on_paths = {node.id for category_id in own if category_id is not None for node in _category_chain(tree, category_id)}
     return [
         {
             "id": node.id,
@@ -1111,9 +1115,10 @@ def _node_totals_view(
     evaluation: OfferEvaluation,
     steps: Mapping[int, tuple[ChapterStep, ...]],
     base: Decimal | None,
+    extra: Sequence[tuple[int | None, Decimal]],
 ) -> dict:
-    """Итоги узлов дерева по всем строкам КП: статьи (ключ `None` — «Нераспределённое», как у
-    корневых `articles`) и разделы сметы."""
+    """Итоги узлов дерева по всем строкам КП и дополнительным работам: статьи (ключ `None` —
+    «Нераспределённое», как у корневых `articles`) и разделы сметы (допработы в них не входят)."""
     lines = [
         NodeLine(
             total=row.line.total,
@@ -1127,7 +1132,18 @@ def _node_totals_view(
         )
         for row in rows
     ]
-    return node_totals(lines, base=base)
+    amounts = [
+        NodeAmount(
+            total=amount,
+            categories=(
+                (None,)
+                if category_id is None
+                else tuple(node.id for node in _category_chain(tree, category_id))
+            ),
+        )
+        for category_id, amount in extra
+    ]
+    return node_totals(lines, base=base, amounts=amounts)
 
 
 def _rung_choice(level: str | None, scope: str | None, position_item_id: int, auto: LineResult) -> RungChoice | None:
