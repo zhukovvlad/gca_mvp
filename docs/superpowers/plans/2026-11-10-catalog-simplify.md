@@ -4,7 +4,11 @@
 **Дизайн:** `docs/superpowers/design/2026-11-10-catalog-simplify.md` (редакция 2), макеты — `.../2026-11-10-catalog-simplify/mockup.html` (ред. 10), `journal.html`
 **Стоит на:** спеки вариантов, 4а, 4б и лестницы аналогов — все в `main` (`97d5f4d`)
 **Ветка:** `feat/catalog-simplify`, черновой PR #75
-**Статус:** редакция 1, 10.11.2026, ждёт ревью гейта 3.
+**Статус:** редакция 2, 10.11.2026, ждёт ревью гейта 3. Круг 1 Codex (на
+`0e9cc83`): автоделение защищено владением попыткой (`JobGuard`) и полным
+отпечатком входа, «поправить» — заданием (решение 2, Task 5); статья и
+полный путь аналога договора и строки КП — Task 7 и Task 9; каждая строка
+§2.16 спеки — обязательное снятие в задаче-владельце, К1–К10 — сверх того.
 
 > Исполнителю: задачи идут по порядку; каждая — цикл TDD
 > (`superpowers:test-driven-development`: тесты первыми, красный прогон
@@ -24,8 +28,14 @@
   и «что сделало бы этот тест ложно-зелёным») — только у задач с пометкой
   **«ревью»**: 1, 2, 3, 5, 6, 7. Остальные принимает оркестратор: тесты
   задачи, `ruff`, `tsc`, `eslint`, у фронта — снимок стенда рядом с макетом.
-- **Снятия защит — только на критических свойствах** (список ниже), делает
-  оркестратор лично, в копии дерева (стенд отдаёт живое дерево).
+- **Снятия защит — каждая строка §2.16 спеки** (DoD спеки, п. 2;
+  `docs/process/implementation.md`): задача-владелец из таблицы
+  «Обязательные снятия» ниже предъявляет её — исполнитель показывает в
+  отчёте красный прогон теста при снятой защите и зелёный при
+  восстановленной, ревью задачи это проверяет. **Сверх того** оркестратор
+  лично, в копии дерева (стенд отдаёт живое дерево), повторяет снятия
+  критических свойств К1–К10 — это дополнительная перепроверка, а не замена
+  обязательного набора.
 - **Прогоны.** Исполнитель гоняет наборы затронутых модулей и их вызывающих;
   полный бэкенд и `just ci` локально не гоняются — проверяет GitHub Actions
   на PR (`gh pr checks 75`), красное чинится следующим коммитом.
@@ -77,6 +87,38 @@
 | К8 | «с этим подрядчиком» — только из остатка | 6 | искать по всем аналогам → тест «договор подрядчика — выброс → карточки нет, `PUT` 422» |
 | К9 | итоги узлов по правилу сумм статей и согласованы с корнем | 7 | суммировать предикатом цены → тест «+100 и −20 → 80, корень = `articles`» |
 | К10 | чтение не пишет | 4, 7 | — (тест счётчиков транзакции, как в 4а; снятие не нужно) |
+
+## Обязательные снятия (§2.16 спеки → задача-владелец)
+
+| Строка §2.16 | Задача |
+|---|---|
+| модель не видит составных (место 1) | 2 |
+| слияние части пересобирает составные (место 2) | 2 |
+| вывод части выводит составное (место 3) | 2 |
+| текст составного не правится (место 4) | 2 |
+| «вместе» ≠ «или» | 2 |
+| перенос составных в новую версию (место 5): перенос | 2 |
+| перенос составных в новую версию (место 5): заморозка без фильтра 1 | 3 |
+| решение человека сильнее всех путей составного: `find_or_create_composite` | 2 |
+| то же: ответ `several`, фильтр 1, заморозка | 3 |
+| то же: первый прогон | 11 |
+| вето переживает слияние части | 2 |
+| вето переживает новую версию схемы | 2 |
+| вето переживает слияние **и затем** новую версию | 2 |
+| коллизия вето | 2 |
+| «не дубль» переживает слияние и новую версию | 2 |
+| «не дубль» сильнее фильтра 2 | 3 |
+| фильтр 1 не режет «ГО и ЧС» | 3 |
+| схлопнувшиеся части | 3 |
+| правило деления покрывает свою группу и только её | 5 |
+| отмена деления недоступна после ручной правки | 5 |
+| отмена берёт нынешних членов | 5 |
+| форма значения на ступенях 2/4 | 6 |
+| «по частям» — по `value_id` части | 6 |
+| цель — стратегия, а не аналог: сервер (`PUT kind`) | 6 |
+| цель — стратегия, а не аналог: фронт (карточка шлёт вид, не аналог) | 9 |
+| «с этим подрядчиком» — только из остатка | 6 |
+| итоги уровней — по правилу сумм статей | 7 |
 
 ## Review Focus
 
@@ -153,10 +195,24 @@ docs/devlog/2026-11-10-catalog-simplify.md создаётся, docs/product-road
    субъект — `context_id`). `apply_values`, поставив `path_conflict`, ставит
    задание; воркер вызывает модель по группам **вне** транзакции (тот же
    рендер `render_values_request` на путях группы, `SEMANTIC_MODEL`, тарифы
-   `SEMANTIC_PRICE_*`), затем `auto_split_context` под замком корзины
-   сверяет отпечаток членов (`member_ids_hash`) — изменился → задание
-   `cancelled` по `input_changed`. Вызов модели внедряется параметром `ask`
-   (тесты подставляют ответы).
+   `SEMANTIC_PRICE_*`), затем `auto_split_context` применяет ответы под
+   замками. Защита от устаревшего ответа — по образцу `apply_values`
+   (`JobGuard`, `_owns`, `work_variants.py:650/757`), двумя проверками
+   **под замком корзины и строкой задания `FOR UPDATE`** перед любой
+   записью:
+   - **владение попыткой:** `_owns(job, guard)` ложно (задание перехвачено,
+     отменено, завершено) → `lost_claim`, ни домен, ни журнал не меняются;
+   - **полный отпечаток входа** `auto_split_fingerprint(db, context_id)` —
+     sha256 от: отсортированных id членов с `routed_by` и `routing_rule_id`;
+     нормализованной цепочки разделов каждого члена; `work_family_id`,
+     `work_variant_id`, `variant_split_hint`, `auto_split_blocked_at`,
+     `archived_at` контекста; id и `revision` действующей версии схемы
+     семьи; строк `context_parameter_values` контекста (`parameter_id`,
+     `value_id`, `source`, `off_list_text`); `request_hash` каждого
+     группового запроса. Снят при постановке ответа в работу и записан в
+     `guard.expected_request_hash`; под замками пересчитан — не совпал →
+     `input_changed`, ничего не записано.
+   Вызов модели внедряется параметром `ask` (тесты подставляют ответы).
 3. **Модули.** Чистые и без `db`: `value_filters.split_candidate`,
    `auto_split.plan_groups`. С `db`: `composite_values`, `human_decisions`,
    `ai_journal` (запись), `crud/ai_journal` (чтение и действия).
@@ -196,7 +252,7 @@ docs/devlog/2026-11-10-catalog-simplify.md создаётся, docs/product-road
 COMPOSITE_KINDS = ("all", "any")
 AUTO_ACTION_KINDS = ("split", "value_added", "composite", "equated")
 KP_TARGET_KINDS = ("freshest", "analog", "contractor")
-# SemanticJobKind: + auto_split  (субъект — context_id)
+# SemanticJobKind: + auto_split  (субъект — context_id); SemanticJob.split_level: int | None (только у auto_split)
 # FamilyParameterValue: composite_kind: str | None, composite_key: str | None
 class FamilyValuePart(Base):      # "family_value_parts": value_id, part_value_id, parameter_id
 class CompositeVeto(Base):        # "composite_vetoes": id, family_id, parameter_name_norm, kind, value_norm, set_by, set_at
@@ -216,6 +272,7 @@ class CatalogAutoAction(Base):    # "catalog_auto_actions": id, kind, family_id,
   (составной FK); `value_id = part_value_id`; `kind` автодействия вне
   четырёх; `kp_line_targets.kind = 'contractor'` с `analog_position_item_id`
   отказывает, без — проходит; задание `auto_split` без `context_id`;
+  `split_level` у задания другого вида; `split_level < 0`;
 - частичный уникальный индекс: два действующих составных с одним
   `composite_key` у параметра — отказ; то же при `merged_into_id` у одного —
   проходит;
@@ -449,11 +506,17 @@ def choose_rule(group: SplitGroup, others: Sequence[SplitGroup], chains: Mapping
 AskGroupValues = Callable[[int, SplitGroup], Mapping[int, "ValueAnswer"]]
 @dataclass(frozen=True)
 class AutoSplitOutcome:
-    status: Literal["split", "resolved", "not_split", "input_changed"]
+    status: Literal["split", "resolved", "not_split", "input_changed", "lost_claim"]
     action_id: int | None
     reason: str | None
-def auto_split_context(db: Session, *, context_id: int, ask: AskGroupValues,
-                       expected_members_hash: str, level: int | None = None) -> AutoSplitOutcome
+def auto_split_fingerprint(db: Session, context_id: int, *, group_request_hashes: Sequence[str]) -> str
+def auto_split_context(db: Session, *, context_id: int, answers: Mapping[int, Mapping[int, "ValueAnswer"]],
+                       plan: SplitPlan, guard: JobGuard) -> AutoSplitOutcome
+def run_auto_split_job(db: Session, *, claim: "Claim", ask: AskGroupValues) -> AutoSplitOutcome   # ветка воркера
+# уровень задания — semantic_jobs.split_level (NULL — уровень расхождения; Task 1)
+# «Поправить» (resplit): синхронно — отмена без пометки auto_split_blocked_at, затем постановка
+# задания auto_split с split_level; новое деление приходит отдельной записью журнала.
+# Синхронного пути записи без JobGuard нет.
 def undo_split(db: Session, action_id: int, *, user_id: int) -> None
 def split_lock(db: Session, action_id: int) -> dict | None   # {event_type, actor_email, at} | None
 # POST /semantic/journal/{id}/resplit {level}
@@ -476,15 +539,25 @@ REFUSE_JOURNAL_UNDO_LOCKED = "journal_undo_locked"
 - деление: части получают семью и значения своих групп без нового
   запроса, `variant_split_hint` снят у всех, правила `created_by = NULL`,
   события с `actor_id = NULL`, одна запись журнала `split` с группами;
-- отпечаток членов изменился между ответом модели и записью →
-  `input_changed`, ничего не записано;
+- **устаревший ответ не пишет ничего** (домен и журнал до и после равны),
+  по контрпримеру на каждый вход отпечатка — изменение между вызовом
+  модели и записью: (а) те же id членов, но у одного член **изменилась
+  цепочка разделов** — `input_changed` (одного хэша id недостаточно); (б)
+  человек поставил значение параметра контекста вручную — `input_changed`;
+  (в) у семьи заморожена новая версия схемы — `input_changed`; (г) член
+  перенесён вручную (`routed_by='manual'`) — `input_changed`; (д) контексту
+  поставлен `auto_split_blocked_at` — `input_changed`; (е) задание
+  перехвачено другой попыткой (сменился `claim_token`) или отменено —
+  `lost_claim`;
 - **К6:** `undo` берёт нынешних членов (строка, пришедшая по правилу после
   деления, — в общем контексте), снимает только свои правила, ставит
   `path_conflict` и `auto_split_blocked_at`; после ручного `members/move`
   в часть — 409 `journal_undo_locked` с `locked_by`; часть архивирована —
   409; `GET` записи отдаёт `parts: [{context_id, title, members_now,
   members_after}]`;
-- `resplit {level}` — отмена и деление на уровне в одной транзакции;
+- `resplit {level}` — отмена (без `auto_split_blocked_at`) и задание
+  `auto_split` с `split_level = level`; те же условия доступности, что у
+  отмены; задание делит на заданном уровне и пишет новую запись журнала;
 - `apply_values`, поставив `path_conflict`, ставит задание `auto_split`;
   у контекста с `auto_split_blocked_at` — не ставит, а уже стоящее —
   `cancelled` `not_applicable`; стоимость вызовов считается тарифами
@@ -492,7 +565,7 @@ REFUSE_JOURNAL_UNDO_LOCKED = "journal_undo_locked"
 
 **Имена**
 - Заводятся: модуль и имена выше, ветка воркера `auto_split`.
-- Существуют: `split_context`, `merge_contexts`, `chapter_paths`, `chapter_context`, `evaluate_predicate`, `RulePredicate`, `ChapterContext`, `render_values_request`, `SemanticCancelReason`.
+- Существуют: `split_context`, `merge_contexts`, `chapter_paths`, `chapter_context`, `evaluate_predicate`, `RulePredicate`, `ChapterContext`, `render_values_request`, `SemanticCancelReason`, `JobGuard`, `_owns` (`services/work_variants.py`).
 
 **Проверка**
 - `just test-unit-k test_simplify` — ДО ≥ 15, ПОСЛЕ ≥ 25.
@@ -552,10 +625,10 @@ CODE_NO_CONTRACTOR_ANALOG = "no_contractor_analog"
 - `just test-unit-k test_simplify` — ДО ≥ 25, ПОСЛЕ ≥ 37; `just test-int-local-k test_simplify` — ДО ≥ 115, ПОСЛЕ ≥ 125.
 - `just test-unit-k test_analog`, `just test-int-local-k test_analog`, `-k test_our_price`, `-k test_kp_file` — зелёные.
 
-### Task 7: страница участника на сервере — категории, цепочки, итоги узлов — **ревью**
+### Task 7: страница участника и панель на сервере — категории, цепочки, итоги узлов, «где строка» у КП и аналогов — **ревью**
 
 **Files**
-- Edit: `backend/crud/our_price_load.py` (`load_kp_lines`, `category_roots` → полное дерево), `backend/crud/our_price.py` (`build_offer_view`), `backend/services/our_price_money.py`
+- Edit: `backend/crud/our_price_load.py` (`load_kp_lines`, `category_roots` → полное дерево, `load_analog_details`), `backend/crud/our_price.py` (`build_offer_view`, `build_line_view`, `_analogs_view`), `backend/services/our_price_money.py`
 - Test: `backend/tests/integration/test_simplify_offer_tree.py`, `backend/tests/unit/test_simplify_node_totals.py`
 
 **Interfaces**
@@ -570,6 +643,13 @@ def category_tree(db: Session) -> tuple[dict[int, int], dict[int, CategoryMeta]]
 def node_totals(lines: Sequence[KpLineRow], *, base: Decimal | None) -> dict   # {categories: {id: NodeTotals}, chapters: {id: NodeTotals}}
 # NodeTotals = {lines: int, no_price: int, kp_total: {net, shown} | None}
 # ответ оффера: + categories, lines[].category_id, lines[].chapter_path [{chapter_item_id, title, number}], node_totals
+ArticleRef = TypedDict("ArticleRef", {"id": int, "code": str | None, "title": str,
+                                      "chain": list[dict]})   # chain — статьи от корня до этой: [{id, code, title}]
+# ответ панели (build_line_view):
+#   line: + "article": ArticleRef | None, + "chapter_path": [{chapter_item_id, title, number}]  (КП)
+#   analogs[]: + "article": ArticleRef | None  (статья раздела строки ДОГОВОРА, не КП),
+#              + "chapter_path": [{chapter_item_id, title, number}]  (полный путь в смете договора)
+# load_analog_details: + category_id раздела и chapter_item_id строки договора; цепочки — одним chapter_paths
 ```
 
 **Утверждения**
@@ -581,12 +661,20 @@ def node_totals(lines: Sequence[KpLineRow], *, base: Decimal | None) -> dict   #
   своим `total_cost_total`, если он конечен, и в `no_price`; база НДС
   неизвестна → `kp_total = null`; нулевая сумма — `"0.00"`, не `null`;
 - `chapter_path` — от корня сметы, `number` — номер раздела;
-- **К10:** `GET` оффера не пишет; число запросов к базе не растёт с числом
-  строк (цепочки — одним пакетным `chapter_paths`).
+- **панель, строка КП:** `article` — статья раздела строки с цепочкой от
+  корня; `chapter_path` — как в оффере; строка без статьи — `article =
+  null`;
+- **панель, аналог договора:** `article` — статья раздела **строки
+  договора** (у аналога из другой статьи, чем строка КП, — своя статья, тест
+  на это расхождение); `chapter_path` — полный путь в смете договора от
+  корня, с номерами; аналог без раздела — `[]`;
+- **К10:** `GET` оффера и панели не пишут; число запросов к базе не растёт с
+  числом строк и аналогов (цепочки — одним пакетным `chapter_paths` на
+  ответ).
 
 **Имена**
-- Заводятся: `CategoryMeta`, `category_tree`, `node_totals`, поля ответа.
-- Существуют: `load_kp_lines`, `category_roots`, `KpLineRow`, `build_offer_view`, `chapter_paths`.
+- Заводятся: `CategoryMeta`, `category_tree`, `node_totals`, `ArticleRef`, поля ответов.
+- Существуют: `load_kp_lines`, `category_roots`, `KpLineRow`, `build_offer_view`, `build_line_view`, `_analogs_view`, `load_analog_details`, `chapter_paths`.
 
 **Проверка**
 - `just test-int-local-k test_simplify` — ДО ≥ 125, ПОСЛЕ ≥ 135; `just test-unit-k test_simplify` — ДО ≥ 37, ПОСЛЕ ≥ 42.
@@ -641,8 +729,8 @@ type NoPriceMode = "show" | "hide" | "only";
 - Test: `TargetCards.test.tsx`, `PartsReference.test.tsx`, `LineSheet.test.tsx` (правка)
 
 **Interfaces**
-- Потребляет: `contractor`, `parts_reference`, `no_history_reason = 'composite'` (Task 6); `chapter_path` (Task 7).
-- Производит: `TargetCards({line, analogs, canEdit, onChoose})`, `PartsReference({groups, vat})`, `LineWhere({line, categories})`; копии `TARGET_CARD`, `EXPORT_SOURCE`, `COMPOSITE_NO_TARGET`.
+- Потребляет: `contractor`, `parts_reference`, `no_history_reason = 'composite'` (Task 6); `line.article`, `line.chapter_path`, `analogs[].article`, `analogs[].chapter_path` (Task 7).
+- Производит: `TargetCards({line, analogs, canEdit, onChoose})`, `PartsReference({groups, vat})`, `LineWhere({article, chapterPath})` (общий для строки КП и карточки аналога); копии `TARGET_CARD`, `EXPORT_SOURCE`, `COMPOSITE_NO_TARGET`.
 
 **Утверждения**
 - карточки по стратегиям («самая низкая», «самая свежая», «с этим
@@ -653,6 +741,11 @@ type NoPriceMode = "show" | "hide" | "only";
   скрыта только у закреплённого; скрытый аналог после выбора — в пятёрке;
 - аналогов не больше пяти: сначала с метками цели, затем по цене; «ещё N
   аналога из M»;
+- «где строка» КП: цепочка статей (код и название) и полный путь в смете
+  КП с номерами разделов; карточка аналога — статья **его** раздела и полный
+  путь в смете договора с номерами; аналог из другой статьи показывает
+  свою статью (тест на расхождение со статьёй строки КП); пустой путь — без
+  блока пути, без падения;
 - сборная строка без сборных аналогов: пояснение «цели нет», блок «по
   частям» без кнопок цели, «В файл подрядчику» — «—» и «в файл ничего не
   идёт», ввод «Договорились» даёт число и «договорились · вписано
