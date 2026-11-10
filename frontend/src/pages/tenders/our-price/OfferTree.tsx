@@ -5,7 +5,7 @@ import { TableCell, TableRow } from "@/components/ui/table";
 
 import { INDENT_REM, OfferLinesTable, type LayoutEntry } from "./OfferLinesTable";
 import { matchesFilter, matchesNoPriceMode, type NoPriceMode, type OfferFilter } from "./offerFilter";
-import { collectLines, pruneOfferTree, type OfferTreeNode } from "./offerTree.ts";
+import { collectLines, pruneOfferTree, type OfferTreeNode } from "./offerTreeModel";
 import { formatMoney, pick, type VatView } from "./money";
 import {
   CHAPTER_MARK,

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { nodeTotalsFixture, ourPriceOfferFixture, ourPriceTreeOfferFixture } from "@/test/fixtures";
 import type { OurPriceOffer } from "@/types/domain";
 
-import { buildOfferTree, pruneOfferTree, type OfferTreeNode } from "./offerTree.ts";
+import { buildOfferTree, pruneOfferTree, type OfferTreeNode } from "./offerTreeModel";
 
 type Group = Extract<OfferTreeNode, { kind: "category" | "chapter" }>;
 
@@ -119,7 +119,7 @@ describe("buildOfferTree: разделы сметы и строки", () => {
         ? { ...line, chapter_path: [line.chapter_path[0], { chapter_item_id: 6099, title: "Отделка", number: null }] }
         : line
     );
-    offer.node_totals.chapters["6099"] = nodeTotalsFixture(1, 0);
+    offer.node_totals.chapters["31"]["6099"] = nodeTotalsFixture(1, 0);
     const middle = groups(root(offer, 11).children)[0];
     const plate = groups(middle.children)[0];
     expect(titles(plate.children)).toContain("Отделка");
@@ -169,7 +169,7 @@ describe("buildOfferTree: итоги узлов — из ответа, текс�
     const plate = groups(middle.children)[0];
     const stage = groups(plate.children).find((node) => node.title === "1 Этап ЖК");
     expect(stage?.totals.kp_total).toEqual({ net: "626723621.40", shown: "764602817.10" });
-    expect(stage?.totals.no_price).toBe(2);
+    expect(stage?.totals.no_price).toBe(1);
   });
 
   it("итоги «Нераспределённого» берутся по ключу «null»", () => {
@@ -190,7 +190,26 @@ describe("buildOfferTree: итоги узлов — из ответа, текс�
 
   it("узел без итога в ответе — ошибка, а не молчаливый ноль", () => {
     const offer = ourPriceTreeOfferFixture();
-    delete offer.node_totals.chapters["6001"];
+    delete offer.node_totals.chapters["31"]["6001"];
+    expect(() => buildOfferTree(offer)).toThrow(/6001/);
+  });
+
+  it("раздел под разными статьями читает итог своей статьи: «1 Этап ЖК» в 31 и в 32", () => {
+    const offer = ourPriceTreeOfferFixture();
+    const middle = groups(root(offer, 11).children)[0];
+    const [plate, horizontal] = groups(middle.children);
+    const under = (leaf: Group) => groups(leaf.children).find((node) => node.title === "1 Этап ЖК");
+    expect(under(plate)?.totals).toEqual({
+      lines: 2,
+      no_price: 1,
+      kp_total: { net: "626723621.40", shown: "764602817.10" },
+    });
+    expect(under(horizontal)?.totals).toEqual({ lines: 1, no_price: 1, kp_total: { net: "0.00", shown: "0.00" } });
+  });
+
+  it("раздел без итога в разрезе своей статьи — ошибка, даже если под другой статьёй итог есть", () => {
+    const offer = ourPriceTreeOfferFixture();
+    delete offer.node_totals.chapters["32"]["6001"];
     expect(() => buildOfferTree(offer)).toThrow(/6001/);
   });
 });

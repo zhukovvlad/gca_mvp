@@ -8,9 +8,9 @@ import { compareDecimalStrings } from "@/lib/decimal";
 import { cn } from "@/lib/utils";
 import type { Decimal, MoneyPair, OurPriceLine, OurPriceOffer, OurPriceOfferArticle } from "@/types/domain";
 
-import { OfferTree } from "./OfferTree.tsx";
+import { OfferTree } from "./OfferTree";
 import { matchesFilter, type NoPriceMode, type OfferFilter } from "./offerFilter";
-import { buildOfferTree } from "./offerTree.ts";
+import { buildOfferTree } from "./offerTreeModel";
 import { absDecimal, formatBelow, formatMoney, formatSigned, pick, type VatView } from "./money";
 import {
   FORK_COLUMN_LABEL,

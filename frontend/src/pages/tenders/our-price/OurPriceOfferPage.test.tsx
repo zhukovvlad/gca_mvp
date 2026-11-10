@@ -121,7 +121,9 @@ function treeFieldsOf(lines: OurPriceLine[]): Pick<OurPriceOffer, "categories" |
       .map((id) => ({ id, parent_id: null, code: String(id), title: `Статья ${id}`, sort_order: id })),
     node_totals: {
       categories: Object.fromEntries(ids.map((id) => [String(id), totalsOf(lines.filter((l) => l.category_id === id))])),
-      chapters: { "6000": totalsOf(lines) },
+      chapters: Object.fromEntries(
+        ids.map((id) => [String(id), { "6000": totalsOf(lines.filter((l) => l.category_id === id)) }])
+      ),
     },
   };
 }

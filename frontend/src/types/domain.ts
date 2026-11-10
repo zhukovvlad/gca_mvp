@@ -3548,10 +3548,13 @@ export interface OurPriceNodeTotals {
   kp_total: MoneyPair | null;
 }
 
-/** Итоги узлов: ключ статьи - её id, «Нераспределённое» - строка `"null"`; разделы - по `chapter_item_id`. */
+/**
+ * Итоги узлов: ключ статьи - её id, «Нераспределённое» - строка `"null"`. Итог раздела считается
+ * в разрезе статьи: `chapters[<статья строки>][<chapter_item_id>]`, только строки этой статьи в поддереве раздела.
+ */
 export interface OurPriceNodeTotalsMap {
   categories: Record<string, OurPriceNodeTotals>;
-  chapters: Record<string, OurPriceNodeTotals>;
+  chapters: Record<string, Record<string, OurPriceNodeTotals>>;
 }
 
 export interface OurPriceLine {

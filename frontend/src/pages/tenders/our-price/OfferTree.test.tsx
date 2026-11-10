@@ -4,9 +4,9 @@ import { describe, expect, it, vi } from "vitest";
 import { ourPriceTreeOfferFixture } from "@/test/fixtures";
 import type { OurPriceOffer } from "@/types/domain";
 
-import { OfferTree } from "./OfferTree.tsx";
+import { OfferTree } from "./OfferTree";
 import type { NoPriceMode, OfferFilter } from "./offerFilter";
-import { buildOfferTree } from "./offerTree.ts";
+import { buildOfferTree } from "./offerTreeModel";
 
 interface Options {
   offer?: OurPriceOffer;
@@ -137,6 +137,23 @@ describe("итоги уровней — текстом из ответа", () =>
     expect(screen.getByTestId("node-lines-cat-21")).toHaveTextContent("7 строк");
   });
 
+  it("kp_total = null у раздела и у статьи — «КП —», не 0,00 ₽", () => {
+    const offer = ourPriceTreeOfferFixture();
+    offer.node_totals.chapters["31"]["6011"] = { lines: 1, no_price: 0, kp_total: null };
+    offer.node_totals.categories["32"] = { lines: 1, no_price: 1, kp_total: null };
+    renderTree({ offer, defaultOpen: true });
+    expect(screen.getByTestId("node-kp-chap-6011")).toHaveTextContent("КП —");
+    expect(screen.getByTestId("node-kp-chap-6011")).not.toHaveTextContent("0,00");
+    expect(screen.getByTestId("node-kp-cat-32")).toHaveTextContent("КП —");
+  });
+
+  it("раздел в двух статьях показывает у каждой свою сумму", () => {
+    renderTree({ defaultOpen: true });
+    const [inPlate, inHorizontal] = screen.getAllByTestId("node-kp-chap-6001");
+    expect(inPlate).toHaveTextContent("КП 626 723 621,40 ₽");
+    expect(inHorizontal).toHaveTextContent("КП 0,00 ₽");
+  });
+
   it("вид «с НДС» без ставки (shown = null) — тоже «—»", () => {
     const offer = ourPriceTreeOfferFixture();
     offer.node_totals.categories["21"] = {
@@ -169,9 +186,9 @@ describe("строки без цены", () => {
     expect(lineIds()).toEqual([1, 3, 4, 8]);
     expect(screen.queryByTestId("node-cat-32")).toBeNull();
     expect(screen.queryByTestId("node-chap-6030")).toBeNull();
-    // Раздел «1 Этап ЖК» потерял строку 5, но не 2: итог по-прежнему 3 строки, 2 без цены.
-    expect(screen.getAllByTestId("node-lines-chap-6001")[0]).toHaveTextContent("3 строки");
-    expect(screen.getAllByTestId("node-no-price-chap-6001")[0]).toHaveTextContent("2 без цены");
+    // Раздел «1 Этап ЖК» в статье 31 итог не меняет: 2 строки, 1 без цены.
+    expect(screen.getAllByTestId("node-lines-chap-6001")[0]).toHaveTextContent("2 строки");
+    expect(screen.getAllByTestId("node-no-price-chap-6001")[0]).toHaveTextContent("1 без цены");
     expect(screen.getByTestId("node-kp-cat-21")).toHaveTextContent("КП 4 667 321 049,37 ₽");
   });
 

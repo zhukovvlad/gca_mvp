@@ -134,7 +134,8 @@ export function buildOfferTree(offer: OurPriceOffer): OfferTreeNode[] {
     place.items.push(line);
   }
 
-  function itemNodes(items: Array<ChapterDraft | OurPriceLine>, depth: number): OfferTreeNode[] {
+  /** Раздел показан внутри статьи, и его итог берётся в разрезе этой статьи. */
+  function itemNodes(items: Array<ChapterDraft | OurPriceLine>, depth: number, categoryKey: string): OfferTreeNode[] {
     return items.map((item): OfferTreeNode => {
       if (!isChapter(item)) return { kind: "line", line: item, depth };
       return {
@@ -142,8 +143,12 @@ export function buildOfferTree(offer: OurPriceOffer): OfferTreeNode[] {
         id: item.step.chapter_item_id,
         depth,
         title: item.step.title,
-        totals: totalsOf(offer.node_totals.chapters, String(item.step.chapter_item_id), "раздела"),
-        children: itemNodes(item.items, depth + 1),
+        totals: totalsOf(
+          offer.node_totals.chapters[categoryKey] ?? {},
+          String(item.step.chapter_item_id),
+          "раздела"
+        ),
+        children: itemNodes(item.items, depth + 1, categoryKey),
       };
     });
   }
@@ -159,7 +164,7 @@ export function buildOfferTree(offer: OurPriceOffer): OfferTreeNode[] {
       totals: totalsOf(offer.node_totals.categories, key, "статьи"),
       children: [
         ...[...draft.children.values()].sort(compareCategories).map((child) => categoryNode(child, depth + 1)),
-        ...itemNodes(draft.items, depth + 1),
+        ...itemNodes(draft.items, depth + 1, key),
       ],
     };
   }
