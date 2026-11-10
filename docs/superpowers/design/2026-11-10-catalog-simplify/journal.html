@@ -281,7 +281,7 @@ tr.je.off .what { color:var(--fg3); text-decoration:line-through; text-decoratio
 <div class="intro">
   <div class="eyebrow">GCA · макет к дизайну «Упрощение управления каталогом» · журнал, ред. 1</div>
   <h1 class="serif">«Журнал ИИ» — четвёртая вкладка «Семей»</h1>
-  <p class="lead">Всё, что система сама сделала с каталогом в рамках этой фичи: <b>деления контекстов, разложенные склейки,
+  <p class="lead">Всё, что система сама сделала с каталогом в рамках этой фичи: <b>деления контекстов, склейки, ставшие составными значениями,
   новые значения и приравнивания</b>. Слева — лента записей с отборами, справа — карточка выбранной записи и то, что из неё
   можно исправить. Автоматические действия идут от имени «система», правки — от администратора. Записи, числа и строки
   условные.</p>
@@ -337,7 +337,7 @@ function setTheme(t) {
 document.querySelectorAll('[data-th]').forEach(b => b.addEventListener('click', () => setTheme(b.dataset.th)));
 try { const t = localStorage.getItem('mk-theme'); if (t === 'dark' || t === 'light') setTheme(t); } catch (e) {}
 
-const KIND = { split:['Деление','kd-split'], comp:['Склейка → набор','kd-comp'], nv:['Новое значение','kd-new'], eq:['Приравнено','kd-eq'] };
+const KIND = { split:['Деление','kd-split'], comp:['Склейка → составное','kd-comp'], nv:['Новое значение','kd-new'], eq:['Приравнено','kd-eq'] };
 const BETON = 'Устройство жб конструкций';
 const COLS = ['колонны','пилоны','трансферные конструкции'];
 const cp = (b, w, sec) => ({ name:'Корпус ' + sec + ' ' + b + (w ? ' ' + w + ' F150' : '') + ' арматурой класса А500С, А240', other:'класс бетона ' + b + ' · ' + (w ? 'водонепроницаемость ' + w : 'водонепроницаемость не указана') });
@@ -442,22 +442,22 @@ function detSplit(e) {
   return h + '<div class="acts"><button class="btn undo" type="button" id="undo">Отменить — вернуть как было</button><button class="btn" type="button" id="edit">Поправить</button><button class="btn link" type="button">Открыть контекст →</button></div>';
 }
 function detComp(e) {
-  let h = head(e) + '<h3>' + q(e.value) + ' разложено на ' + e.parts.length + ' значения</h3>' +
+  let h = head(e) + '<h3>' + q(e.value) + ' стало составным значением из ' + e.parts.length + ' частей</h3>' +
     '<dl class="kv"><dt>Семья · параметр</dt><dd>' + esc(e.fam) + ' · ' + q(e.param) + '</dd>' +
     (e.src ? '<dt>Откуда склейка</dt><dd>' + esc(e.src) + '</dd>' : '') + '</dl>' +
-    '<div class="ba"><div class="ba-col"><span class="lbl">Было — одно значение</span><span class="part was">' + esc(e.value) + '</span></div>' +
+    '<div class="ba"><div class="ba-col"><span class="lbl">Было — простое значение, склейка в тексте</span><span class="part was">' + esc(e.value) + '</span></div>' +
     '<span class="ba-arr" aria-hidden="true">↓</span>' +
-    '<div class="ba-col"><span class="lbl">Стало — ' + (e.alt ? 'альтернатива из ' : 'набор из ') + e.parts.length + ' значений</span><div class="parts">' +
+    '<div class="ba-col"><span class="lbl">Стало — то же значение, составное' + (e.alt ? ' (альтернатива)' : '') + ': части — ссылки на значения списка</span><div class="parts">' +
     e.parts.map(([v, s], i) => (i ? '<span class="plus">' + (e.alt ? 'или' : '+') + '</span>' : '') +
       '<span class="part' + (s === 'new' ? ' new' : '') + '">' + esc(v) + '<small>' + (s === 'new' ? 'заведено новым' : 'уже было в списке') + '</small></span>').join('') + '</div></div></div>' +
-    (e.alt ? '<p class="small t2">«Или» — альтернатива: аналог — такая же альтернатива, части — для справки.</p>' : '<p class="small t2">Аналоги таких строк — строки с тем же набором; части — блоком «по частям, для справки».</p>') +
-    '<div class="blk"><span class="lbl">Контексты · ' + e.contexts + ' — параметры после разложения</span>' +
+    (e.alt ? '<p class="small t2">«Или» — альтернатива: аналог — такая же альтернатива, части — для справки.</p>' : '<p class="small t2">Аналоги таких строк — строки с тем же составом частей; части — блоком «по частям, для справки».</p>') +
+    '<div class="blk"><span class="lbl">Контексты · ' + e.contexts + ' — значение то же, варианты не меняются</span>' +
     e.ctxs.map(c => '<div class="cx"><div class="cx-n">' + esc(c.name) + '</div><dl class="kv cx-kv">' +
-      '<dt>' + esc(e.param) + '</dt><dd><s class="t3">' + esc(e.value) + '</s> → <b>' + e.parts.map(([v]) => esc(v)).join(e.alt ? ' или ' : ' + ') + '</b></dd>' +
+      '<dt>' + esc(e.param) + '</dt><dd><b>' + e.parts.map(([v]) => esc(v)).join(e.alt ? ' или ' : ' + ') + '</b> <span class="t3">— одно составное значение; было текстом ' + q(e.value) + '</span></dd>' +
       '<dt>Остальные</dt><dd class="t2">' + esc(c.other) + ' — без изменений</dd></dl></div>').join('') +
     (e.contexts > e.ctxs.length ? '<span class="t3 small">… ещё ' + (e.contexts - e.ctxs.length) + '</span>' : '') + '</div>';
-  if (e.state === 'off') return h + offNote(e, 'Значение снова одно; контексты вернулись к нему.');
-  return h + '<div class="acts"><button class="btn undo" type="button" id="undo">Отменить — оставить одним значением</button><button class="btn link" type="button">Открыть семью →</button></div>';
+  if (e.state === 'off') return h + offNote(e, 'Значение снова простое, без частей; контексты его не меняли.');
+  return h + '<div class="acts"><button class="btn undo" type="button" id="undo">Отменить — снова простое значение</button><button class="btn link" type="button">Открыть семью →</button></div>';
 }
 function detNv(e) {
   let h = head(e) + '<h3>Добавлено значение ' + q(e.value) + '</h3>' +
@@ -478,7 +478,7 @@ function detEq(e) {
 }
 const DIALOG = {
   split: e => ['Вернуть как было?', '<ul><li>Части снова сольются в один контекст ' + q(e.ctx) + ', ' + e.groups.length + ' правила маршрутизации снимутся.</li><li>Контекст станет «к делению», у его строк не будет аналога.</li><li>Автоматически система его больше делить не будет — только вручную на вкладке «Контексты».</li></ul>', 'Вернуть как было'],
-  comp: e => ['Оставить одним значением?', '<ul><li>' + q(e.value) + ' снова станет одним значением списка, ' + e.contexts + ' контекста вернутся к нему.</li><li>Заведённые из склейки значения останутся в списке — слить их можно из их записей.</li></ul>', 'Оставить одним значением'],
+  comp: e => ['Снова простое значение?', '<ul><li>' + q(e.value) + ' потеряет ссылки на части и станет обычным значением списка; ' + e.contexts + ' контекста остаются на нём.</li><li>Блок «по частям» у этих строк пропадёт.</li><li>Заведённые из склейки значения останутся в списке — слить их можно из их записей.</li></ul>', 'Снова простое значение'],
   eq: e => ['Отвязать значение?', '<ul><li>' + q(e.value) + ' будет заведено отдельным значением параметра ' + q(e.param) + '.</li><li>' + e.contexts + ' контекста перейдут с ' + q(e.to) + ' на него.</li></ul>', 'Отвязать'],
 };
 function renderDet() {
