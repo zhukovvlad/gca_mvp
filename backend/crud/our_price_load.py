@@ -304,6 +304,10 @@ class KpLineRow:
     family_title: str | None
     variant_label: str | None
     secondary: tuple[tuple[str, str], ...]
+    #: Статья раздела строки (`chapter.work_category_id`); `None` — «Нераспределённое».
+    category_id: int | None = None
+    #: Раздел сметы, в котором лежит строка; `None` — строка вне разделов.
+    chapter_item_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -700,23 +704,32 @@ def load_composites(db: Session, line: KpLine) -> dict[int, CompositeValue]:
     }
 
 
-def load_analog_details(db: Session, position_item_ids: Sequence[int]) -> dict[int, tuple[str, str | None, list[str]]]:
-    """Наименование, единица и названия разделов строк договоров для справки панели: один запрос."""
+def load_analog_details(
+    db: Session, position_item_ids: Sequence[int]
+) -> dict[int, tuple[str, str | None, list[str], int | None, int | None]]:
+    """Справка панели по строкам договоров одним запросом: наименование, единица, названия
+    разделов цепочки, статья раздела строки договора (`None` — раздела нет или у него нет статьи)
+    и раздел сметы договора, в котором лежит строка (`None` — вне разделов)."""
     ids = sorted(set(position_item_ids))
     if not ids:
         return {}
+    chapter = aliased(PositionItem)
     return {
-        item_id: (title, unit, list(titles or []))
-        for item_id, title, unit, titles in db.execute(
+        item_id: (title, unit, list(titles or []), category_id, chapter_item_id)
+        for item_id, title, unit, titles, category_id, chapter_item_id in db.execute(
             sa.select(
                 PositionItem.id,
                 PositionItem.job_title_in_proposal,
                 UnitOfMeasure.symbol,
                 SectionChain.titles,
+                chapter.work_category_id,
+                PositionItem.chapter_item_id,
             )
             .select_from(PositionItem)
             .outerjoin(UnitOfMeasure, UnitOfMeasure.id == PositionItem.unit_id)
             .outerjoin(SectionChain, SectionChain.id == PositionItem.section_chain_id)
+            # составной FK держит главу и строку в одном предложении
+            .outerjoin(chapter, chapter.id == PositionItem.chapter_item_id)
             .where(PositionItem.id.in_(ids))
         ).all()
     }
@@ -810,6 +823,7 @@ def load_kp_lines(db: Session, estimate_ids: Sequence[int]) -> dict[int, list[Kp
             WorkFamily.title,
             CatalogPosition.unit_id,
             PositionItem.section_chain_id,
+            PositionItem.chapter_item_id,
         )
         .select_from(PositionItem)
         .join(Proposal, Proposal.id == PositionItem.proposal_id)
@@ -854,6 +868,7 @@ def load_kp_lines(db: Session, estimate_ids: Sequence[int]) -> dict[int, list[Kp
             family_title,
             unit_id,
             chain_id,
+            chapter_item_id,
         ) = row
         info = infos.get(variant_id) if variant_id is not None else None
         signal = signals.get(item_id, CatalogSignal(False, False))
@@ -905,6 +920,8 @@ def load_kp_lines(db: Session, estimate_ids: Sequence[int]) -> dict[int, list[Kp
                 family_title=family_title,
                 variant_label=info.label if info is not None else None,
                 secondary=secondary.get(context_id, ()) if context_id is not None else (),
+                category_id=category_id,
+                chapter_item_id=chapter_item_id,
             )
         )
     return result
@@ -990,9 +1007,20 @@ def category_rows(db: Session, estimate_ids: Sequence[int]) -> list[CategoryRow]
     return [CategoryRow(estimate_id=r[0], work_category_id=r[1], vat_base=r[2], amount=r[3]) for r in rows]
 
 
-def category_roots(db: Session) -> tuple[dict[int, int], dict[int, ArticleMeta]]:
-    """Корень каждой статьи классификатора (корень — сам себе) и описание корней.
-    Порядок статей экрана — `sort_order` корня. Дерево читается одним запросом."""
+@dataclass(frozen=True)
+class CategoryMeta:
+    """Статья классификатора на любом уровне дерева."""
+
+    id: int
+    parent_id: int | None
+    code: str | None
+    title: str
+    sort_order: int | None
+
+
+def category_tree(db: Session) -> tuple[dict[int, int], dict[int, CategoryMeta]]:
+    """Корень каждой статьи классификатора (корень — сам себе) и описание всех статей.
+    Дерево читается одним запросом; цикл в родителях — `ValueError`."""
     rows = db.execute(
         sa.select(
             WorkCategory.id,
@@ -1014,7 +1042,19 @@ def category_roots(db: Session) -> tuple[dict[int, int], dict[int, ArticleMeta]]
         return category_id
 
     root_of = {category_id: root(category_id) for category_id in parent}
+    tree = {
+        row[0]: CategoryMeta(id=row[0], parent_id=row[1], code=row[2], title=row[3], sort_order=row[4]) for row in rows
+    }
+    return root_of, tree
+
+
+def category_roots(db: Session) -> tuple[dict[int, int], dict[int, ArticleMeta]]:
+    """Корень каждой статьи классификатора (корень — сам себе) и описание корней.
+    Порядок статей экрана — `sort_order` корня. Дерево читается одним запросом."""
+    root_of, tree = category_tree(db)
     meta = {
-        row[0]: ArticleMeta(id=row[0], code=row[2], title=row[3], sort_order=row[4]) for row in rows if row[1] is None
+        category_id: ArticleMeta(id=category_id, code=node.code, title=node.title, sort_order=node.sort_order)
+        for category_id, node in tree.items()
+        if node.parent_id is None
     }
     return root_of, meta

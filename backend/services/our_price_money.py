@@ -92,6 +92,52 @@ def estimate_net_total(by_root: Mapping[int | None, Decimal | None]) -> Decimal 
     return total
 
 
+@dataclass(frozen=True)
+class NodeLine:
+    """Строка КП для итогов узлов дерева: валовая сумма строки (`total_cost_total`), признак
+    состояния «без цены» и узлы пути строки — статьи (`None` — «Нераспределённое») и разделы сметы."""
+
+    total: Decimal | None
+    no_price: bool
+    categories: tuple[int | None, ...]
+    chapters: tuple[int, ...]
+
+
+def node_totals(lines: Iterable[NodeLine], *, base: Decimal | None) -> dict[str, dict]:
+    """Итоги узлов дерева страницы участника: `{categories: {id | None: итог}, chapters: {id: итог}}`.
+
+    Узел получает каждую строку, у которой он на пути, — так итог узла равен сумме строк его
+    поддерева. Итог узла — `{lines, no_price, kp_total}`: число строк, число строк в состоянии
+    «без цены» и сумма КП `{net, shown}`. Сумма — по правилу сумм статей (см. модульную докстроку):
+    все конечные суммы строк, отрицательные тоже, строка без цены входит со своей конечной суммой;
+    предикат цены тут не применяется. Нетто — по базе НДС КП, `shown` — в той же ставке; база
+    неизвестна — `kp_total = None`. Нулевая сумма остаётся парой нулей: «ноль» и «нет» разные
+    вещи, в отличие от `article_net` у корня статьи.
+    """
+    accumulated: dict[str, dict[int | None, list]] = {"categories": {}, "chapters": {}}
+    for line in lines:
+        finite = line.total is not None and line.total.is_finite()
+        for kind, keys in (("categories", line.categories), ("chapters", line.chapters)):
+            for key in keys:
+                node = accumulated[kind].setdefault(key, [0, 0, _ZERO])
+                node[0] += 1
+                node[1] += 1 if line.no_price else 0
+                if finite:
+                    with localcontext(_CONTEXT):
+                        node[2] = node[2] + line.total
+    result: dict[str, dict] = {}
+    for kind, nodes in accumulated.items():
+        result[kind] = {
+            key: {
+                "lines": count,
+                "no_price": no_price,
+                "kp_total": None if base is None else money_pair(gross_to_net(gross, base), base, unit=False),
+            }
+            for key, (count, no_price, gross) in nodes.items()
+        }
+    return result
+
+
 def per_sqm(net: Decimal | None, area: Decimal | None) -> Decimal | None:
     """₽/м² без округления; `None`, если нетто нет или площадь не проходит `is_price`."""
     if net is None or not is_price(area):
