@@ -985,6 +985,26 @@ _SEED_ONE = {
 }
 
 
+#: Задание `auto_split` рядом с данными-блокером: это единственные строки, которые
+#: откат удаляет сам (до сужения CHECK вида). Отказ обязан оставить и их.
+_SEED_AUTO_SPLIT_JOB = (
+    "INSERT INTO semantic_jobs (kind, context_id, split_level, request_hash, status, "
+    "prompt_version, model_requested, place_dictionary_version, candidates_hash, prefix_hash, "
+    "input_hash, response_schema_version, serialization_version) VALUES ('auto_split', 1, 1, "
+    "'split-job', 'pending', '1', 'm', 1, 'c', 'p', 'i', '1', '1')"
+)
+
+
+def _data_state(conn) -> tuple:
+    """Данные, которые откат удалил бы: счётчики-блокеры и задания `auto_split`."""
+    return (
+        _migration_0025()._downgrade_blockers(conn),
+        conn.execute(
+            sa.text("SELECT count(*) FROM semantic_jobs WHERE kind = 'auto_split'")
+        ).scalar_one(),
+    )
+
+
 @pytest.mark.migration_roundtrip
 class TestDowngradeRefusedByEachKind:
     @pytest.mark.parametrize("name", list(_SEED_ONE))
@@ -997,7 +1017,14 @@ class TestDowngradeRefusedByEachKind:
                 with engine.begin() as conn:
                     conn.execute(sa.text("SET LOCAL session_replication_role = replica"))
                     conn.execute(sa.text(_SEED_ONE[name]))
-                    before = (_table_names(conn), _constraint_defs(conn), _columns(conn))
+                    conn.execute(sa.text(_SEED_AUTO_SPLIT_JOB))
+                    before = (
+                        _table_names(conn), _constraint_defs(conn), _index_defs(conn),
+                        _columns(conn),
+                    )
+                    data_before = _data_state(conn)
+                # Вход достигает ровно своего счётчика, и задание очереди есть.
+                assert data_before == ({**{n: 0 for n in _BLOCKER_NAMES}, name: 1}, 1)
 
                 with pytest.raises(RuntimeError, match="0025") as exc:
                     command.downgrade(cfg, "0024")
@@ -1005,8 +1032,12 @@ class TestDowngradeRefusedByEachKind:
                 assert f"{name} — 1" in str(exc.value)
                 with engine.connect() as conn:
                     assert _revision(conn) == "0025"
-                    assert (_table_names(conn), _constraint_defs(conn), _columns(conn)) == before
-                    assert conn.execute(sa.text("SELECT count(*) FROM semantic_jobs")).scalar_one() == 0
+                    assert (
+                        _table_names(conn), _constraint_defs(conn), _index_defs(conn),
+                        _columns(conn),
+                    ) == before
+                    # «Ничего не удалив» — по данным, а не по тексту сообщения.
+                    assert _data_state(conn) == data_before
             finally:
                 engine.dispose()
 
