@@ -67,6 +67,7 @@ from models import (
     WorkVariant,
     WorkVariantValue,
 )
+from services.ai_journal import record_action
 from services.context_routing import _NOT_APPLICABLE_CATALOG_KINDS
 from services.family_change import (
     FamilyLockMismatch,
@@ -975,6 +976,9 @@ def _write_frozen_schema(
     получают номера H+1..H+N (`origin = schema`), версия `building` -> `frozen`,
     прежняя текущая -> `superseded` (заморозка сохраняется), событие.
     Вызывающий уже взял блокировки и вынес вердикт."""
+    from services.composite_values import find_or_create_composite
+    from services.value_filters import glue_in_answer
+
     now = _now()
     described: list[dict[str, object]] = []
     carried = 0
@@ -995,16 +999,32 @@ def _write_frozen_schema(
         db.add(row)
         db.flush()
         seen: set[str] = set()
+        texts: list[str] = []
         for text in parameter.values:
             norm = normalize_value(text)
             if norm in seen:
                 continue  # дубль в ответе схлопывается: первое по порядку
             seen.add(norm)
-            value_row = FamilyParameterValue(
-                parameter_id=row.id, value=text.strip(), value_norm=norm,
+            texts.append(text.strip())
+        # Склейка, все части которой названы в этом же ответе, заводится составным
+        # значением (спека упрощения каталога §2.3, место 5), а не простым.
+        glue = glue_in_answer(texts)
+        simple_rows: dict[int, FamilyParameterValue] = {}
+        for index, text in enumerate(texts):
+            if index in glue:
+                continue
+            simple_rows[index] = FamilyParameterValue(
+                parameter_id=row.id, value=text, value_norm=normalize_value(text),
                 origin=ValueOrigin.schema.value,
             )
-            db.add(value_row)
+            db.add(simple_rows[index])
+        db.flush()
+        for index, (kind, part_indexes) in glue.items():
+            find_or_create_composite(
+                db, parameter_id=row.id, kind=kind,
+                part_ids=[simple_rows[part].id for part in part_indexes],
+                context_id=None, source_text=texts[index],
+            )
         described.append({"name": row.name, "values": len(seen)})
     db.flush()
 
@@ -1377,6 +1397,14 @@ def _extend_with_value(
                 "origin": ValueOrigin.extension.value, "context_id": context_id,
             },
         )
+        record_action(
+            db, kind="value_added", family_id=family_id, context_id=context_id,
+            parameter_id=parameter_id, value_id=value_id,
+            payload={
+                "text": text.strip(), "origin_context_id": context_id,
+                "from_composite_id": None,
+            },
+        )
     return value_id
 
 
@@ -1455,6 +1483,8 @@ def apply_values(
             записи; вызывающий откатывает транзакцию.
         ValueError: задание охраны не относится к контексту.
     """
+    from services.value_filters import assembled_text, resolve_new_value, resolve_several
+
     if guard is not None:
         subject = db.execute(
             sa.select(SemanticJob.kind, SemanticJob.context_id).where(
@@ -1525,6 +1555,10 @@ def apply_values(
             raise _schema_error(
                 "empty_value", f"ordinal {item.ordinal}: значение пусто после нормализации"
             )
+        if item.kind == "several" and not all(normalize_value(text) for text in item.values or ()):
+            raise _schema_error(
+                "empty_value", f"ordinal {item.ordinal}: значение пусто после нормализации"
+            )
         if item.kind == "value":
             listed[item.ordinal] = _listed_value_id(
                 db, parameter_id=parameter_ids[item.ordinal], text=item.value or ""
@@ -1542,28 +1576,44 @@ def apply_values(
         if item.kind == "value":
             value_ids[ordinal] = listed[ordinal]
             sources[ordinal] = item.source or ""
-        elif item.kind == "new":
-            text = (item.value or "").strip()
+        elif item.kind in ("new", "several"):
+            text = (
+                (item.value or "").strip() if item.kind == "new"
+                else assembled_text(item.combine or "all", item.values or ())
+            )
             if parameter.value_kind == ParameterValueKind.range.value:
                 # Параметр-диапазон: число в ответе система относит к диапазону
-                # сама; не число — значение не из списка.
-                range_value_id = _range_value_id(
-                    db, parameter_id=parameter_ids[ordinal], text=text
+                # сама; не число (и любое `several`) — значение не из списка.
+                range_value_id = (
+                    _range_value_id(db, parameter_id=parameter_ids[ordinal], text=text)
+                    if item.kind == "new" else None
                 )
                 if range_value_id is not None:
                     value_ids[ordinal] = range_value_id
                     sources[ordinal] = item.source or ""
                     continue
-            elif not parameter.closed:
-                added_before = len(added)
-                value_ids[ordinal] = _extend_with_value(
-                    db, parameter_id=parameter_ids[ordinal], schema_id=schema_id,
-                    family_id=family_id, context_id=context_id, text=text, added=added,
-                )
-                if len(added) > added_before:
+            else:
+                if item.kind == "new":
+                    resolved = resolve_new_value(
+                        db, parameter_id=parameter_ids[ordinal], text=text, context_id=context_id
+                    )
+                else:
+                    resolved = resolve_several(
+                        db, parameter_id=parameter_ids[ordinal], combine=item.combine or "all",
+                        texts=item.values or (), context_id=context_id,
+                    )
+                added.extend(resolved.added_ids)
+                if resolved.added_ids:
                     extended_parameter_ids.add(parameter_ids[ordinal])
-                sources[ordinal] = item.source or ""
-                continue
+                if resolved.action == "none":
+                    value_ids[ordinal] = None
+                    sources[ordinal] = ValueSource.none.value
+                    continue
+                if resolved.action != "off_list":
+                    value_ids[ordinal] = resolved.value_id
+                    sources[ordinal] = item.source or ""
+                    continue
+                text = resolved.text or text
             value_ids[ordinal] = None
             sources[ordinal] = ValueSource.off_list.value
             off_list_text[ordinal] = text
