@@ -159,7 +159,6 @@ tr.ln.np .num { color:var(--dear-text); }
 .inp { font:inherit; font-size:13px; color:var(--fg); background:var(--surface); border:1px solid var(--border2); border-radius:7px; padding:6px 10px; }
 .row { display:flex; gap:8px; } .row .inp { flex:1; }
 .ta { width:100%; box-sizing:border-box; resize:vertical; line-height:1.45; }
-.exp { background:var(--sunken); border-radius:10px; padding:12px; border-top:0; }
 /* Тема — как в приложении: по умолчанию светлая, системную не берём (ThemeProvider enableSystem=false);
    тёмные значения — из frontend/src/index.css [data-theme="dark"]. */
 :root[data-theme="dark"] {
@@ -177,7 +176,19 @@ tr.ln.np .num { color:var(--dear-text); }
 .thm { position:fixed; top:14px; right:16px; z-index:10; box-shadow:var(--shadow); background:var(--surface); }
 .an[hidden] { display:none; }
 .an.is-target .mk { display:none; }
-.anmore { justify-self:start; }
+.anmore { all:unset; box-sizing:border-box; cursor:pointer; width:100%; text-align:center; padding:9px; border:1px dashed var(--border2); border-radius:8px; color:var(--fg2); font-size:12.5px; }
+.anmore:hover { background:var(--hover); color:var(--fg); }
+.btn.tgt { border-color:var(--action); font-weight:600; } .btn.tgt i { font-style:normal; }
+.btn.tgt:hover { background:var(--action); color:var(--action-text); }
+.an-a { justify-content:flex-end; }
+.exp { display:grid; gap:12px; padding:16px; border-radius:12px; border:1px solid var(--action); border-top:5px solid var(--action); background:var(--surface); box-shadow:var(--shadow); }
+.exp-h { display:flex; gap:10px; align-items:center; }
+.exp-ic { width:32px; height:32px; border-radius:8px; display:grid; place-items:center; background:var(--action); color:var(--action-text); font-size:17px; }
+.exp-t { font-family:var(--font-serif); font-size:22px; font-weight:600; line-height:1.1; }
+.exp-n .num { font-size:30px; font-weight:600; }
+.exp-b { background:var(--accent-soft); color:var(--accent-text); border-color:transparent; font-size:12px; padding:5px 9px; }
+.exp-b.deal { background:var(--action); color:var(--action-text); }
+.fld { display:grid; gap:6px; padding-top:10px; border-top:1px solid var(--border); }
 .an-h { display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; font-size:13px; }
 .an-t { font-size:13.5px; }
 .an-w { display:grid; gap:4px; }
@@ -197,7 +208,7 @@ tr.ln.np .num { color:var(--dear-text); }
 <div class="wrap">
 <div class="seg thm" role="group" aria-label="Тема"><button type="button" aria-pressed="true" data-th="light">светлая</button><button type="button" aria-pressed="false" data-th="dark">тёмная</button></div>
 <div class="intro">
-  <div class="eyebrow">GCA · макет к дизайну «Упрощение управления каталогом» · ред. 8</div>
+  <div class="eyebrow">GCA · макет к дизайну «Упрощение управления каталогом» · ред. 9</div>
   <h1 class="serif">Строки КП по статьям и разделам сметы</h1>
   <p class="lead">Скелет — наш классификатор во всю глубину: <b>4 Конструктивные решения → 4.2 Надземная часть → 4.2.4 …</b>
   Суммы, ₽/м², вилки и выгрузки остаются по статьям, как сейчас. Внутри конечной статьи строки разложены по разделам
@@ -2081,6 +2092,7 @@ tr.ln.np .num { color:var(--dear-text); }
     <li>Панель повторяет текущую по составу и порядку: вердикт, <b>цены</b> (КП, объём — предлагаемое количество, сумма, второстепенные), <b>сравнение</b>, <b>аналоги</b>, <b>для выгрузки</b> (наша расценка, «Договорились», комментарий подрядчику по шаблону). Новое — «где строка» (статья и путь в смете КП), отметка класса объекта, не больше пяти аналогов.</li>
     <li><b>Карточки сравнения и есть выбор цели</b>: нажатая — цель, расценка и комментарий меняются вслед. Отдельной кнопки «сделать целью самую свежую» больше нет.</li>
     <li>Метки цветные и сквозные: <span class="k k-low"><i>↓</i>самая низкая</span> <span class="k k-fresh"><i>◷</i>самая свежая</span> <span class="k k-own"><i>◆</i>с этим подрядчиком</span> <span class="k k-pick"><i>◎</i>цель</span> — тот же цвет на карточке и на аналоге, по нему видно, какой аналог за какой цифрой.</li>
+    <li><b>«В файл подрядчику»</b> — итог панели: крупно число, которое уйдёт в выгрузку, и откуда оно (цель или «договорились»); число и метка меняются вслед за выбором цели и вводом. «Сделать целью» у аналога — кнопка-действие; «ещё N аналога» — пунктирная полоса раскрытия списка.</li>
     <li>Данные настоящие (обезличены), кроме строки «Второстепенные» — она для вида, как в текущей панели.</li>
   </ul>
   <div class="app"><div class="appbar"><span class="logo">База расценок ГП</span><nav><span class="on">Тендеры</span></nav></div>
@@ -2579,7 +2591,7 @@ tr.ln.np .num { color:var(--dear-text); }
   <div class="ktags"><span class="k k-low"><i>↓</i>самая низкая</span><span class="k k-target"><i>◎</i>цель</span></div>
   <div class="an-t">Стены/простенки секции С1 с 2 по 4 этаж В40 W8 F150</div>
   <div class="an-w"><div class="lbl">статья</div><span class="artchip"><span class="num">4.2.4</span> Устройство вертикальных монолитных конструкций надземных этажей (кроме 1-го)</span><div class="lbl">в смете договора</div><ul class="path small"><li style="padding-left:0px">Возведение несущих конструкций здания</li><li style="padding-left:14px">Ж/Б конструкции надземной части</li><li style="padding-left:28px">Устройство вертикальных монолитных конструкций надземных этажей</li></ul></div>
-  <div class="an-a"><button class="btn sm mk" type="button" data-t="an24232" data-v="55 540,85" data-vat="67 759,84" data-o="Объект А, очередь 1" data-y="2024">сделать целью</button></div>
+  <div class="an-a"><button class="btn sm mk tgt" type="button" data-t="an24232" data-v="55 540,85" data-vat="67 759,84" data-o="Объект А, очередь 1" data-y="2024"><i>◎</i>сделать целью</button></div>
 </div>
 <div class="an" data-an="25749">
   <div class="an-h"><div><b>Объект Б</b><span class="t3 small"> · дог. Б-1 · подрядчик 1</span> <span class="k k-own soft">договор с этим подрядчиком</span></div>
@@ -2587,7 +2599,7 @@ tr.ln.np .num { color:var(--dear-text); }
   <div class="ktags"><span class="k k-fresh"><i>◷</i>самая свежая</span><span class="k k-own"><i>◆</i>с этим подрядчиком</span><span class="k k-target"><i>◎</i>цель</span></div>
   <div class="an-t">Стены B40</div>
   <div class="an-w"><div class="lbl">статья</div><span class="artchip"><span class="num">4.2.4</span> Устройство вертикальных монолитных конструкций надземных этажей (кроме 1-го)</span><div class="lbl">в смете договора</div><ul class="path small"><li style="padding-left:0px">Возведение несущих конструкций здания</li><li style="padding-left:14px">Ж/Б конструкции надземной части</li><li style="padding-left:28px">Корпус 2</li><li style="padding-left:42px">Устройство вертикальных монолитных конструкций со 2-го этажа до кровли</li></ul></div>
-  <div class="an-a"><button class="btn sm mk" type="button" data-t="an25749" data-v="56 476,51" data-vat="68 901,34" data-o="Объект Б" data-y="2025">сделать целью</button></div>
+  <div class="an-a"><button class="btn sm mk tgt" type="button" data-t="an25749" data-v="56 476,51" data-vat="68 901,34" data-o="Объект Б" data-y="2025"><i>◎</i>сделать целью</button></div>
 </div>
 <div class="an" data-an="25766">
   <div class="an-h"><div><b>Объект Б</b><span class="t3 small"> · дог. Б-1 · подрядчик 1</span> <span class="k k-own soft">договор с этим подрядчиком</span></div>
@@ -2595,7 +2607,7 @@ tr.ln.np .num { color:var(--dear-text); }
   <div class="ktags"><span class="k k-target"><i>◎</i>цель</span></div>
   <div class="an-t">Стены B40</div>
   <div class="an-w"><div class="lbl">статья</div><span class="artchip"><span class="num">4.2.4</span> Устройство вертикальных монолитных конструкций надземных этажей (кроме 1-го)</span><div class="lbl">в смете договора</div><ul class="path small"><li style="padding-left:0px">Возведение несущих конструкций здания</li><li style="padding-left:14px">Ж/Б конструкции надземной части</li><li style="padding-left:28px">Корпус 3</li><li style="padding-left:42px">Устройство вертикальных монолитных конструкций со 2-го этажа до кровли</li></ul></div>
-  <div class="an-a"><button class="btn sm mk" type="button" data-t="an25766" data-v="56 476,51" data-vat="68 901,34" data-o="Объект Б" data-y="2025">сделать целью</button></div>
+  <div class="an-a"><button class="btn sm mk tgt" type="button" data-t="an25766" data-v="56 476,51" data-vat="68 901,34" data-o="Объект Б" data-y="2025"><i>◎</i>сделать целью</button></div>
 </div>
 <div class="an" data-an="24231">
   <div class="an-h"><div><b>Объект А, очередь 1</b><span class="t3 small"> · дог. А-2 · подрядчик 1</span> <span class="k k-own soft">договор с этим подрядчиком</span></div>
@@ -2603,7 +2615,7 @@ tr.ln.np .num { color:var(--dear-text); }
   <div class="ktags"><span class="k k-target"><i>◎</i>цель</span></div>
   <div class="an-t">Стены/простенки секции С2 и С3 с 10 этажа по кровле В40 W8 F150</div>
   <div class="an-w"><div class="lbl">статья</div><span class="artchip"><span class="num">4.2.4</span> Устройство вертикальных монолитных конструкций надземных этажей (кроме 1-го)</span><div class="lbl">в смете договора</div><ul class="path small"><li style="padding-left:0px">Возведение несущих конструкций здания</li><li style="padding-left:14px">Ж/Б конструкции надземной части</li><li style="padding-left:28px">Устройство вертикальных монолитных конструкций надземных этажей</li></ul></div>
-  <div class="an-a"><button class="btn sm mk" type="button" data-t="an24231" data-v="57 514,01" data-vat="70 167,09" data-o="Объект А, очередь 1" data-y="2024">сделать целью</button></div>
+  <div class="an-a"><button class="btn sm mk tgt" type="button" data-t="an24231" data-v="57 514,01" data-vat="70 167,09" data-o="Объект А, очередь 1" data-y="2024"><i>◎</i>сделать целью</button></div>
 </div>
 <div class="an" data-an="25722">
   <div class="an-h"><div><b>Объект Б</b><span class="t3 small"> · дог. Б-1 · подрядчик 1</span> <span class="k k-own soft">договор с этим подрядчиком</span></div>
@@ -2611,7 +2623,7 @@ tr.ln.np .num { color:var(--dear-text); }
   <div class="ktags"><span class="k k-target"><i>◎</i>цель</span></div>
   <div class="an-t">Стены B40</div>
   <div class="an-w"><div class="lbl">статья</div><span class="artchip"><span class="num">4.2.2</span> Устройство вертикальных монолитных конструкций 1-го этажа</span><div class="lbl">в смете договора</div><ul class="path small"><li style="padding-left:0px">Возведение несущих конструкций здания</li><li style="padding-left:14px">Ж/Б конструкции надземной части</li><li style="padding-left:28px">Корпус 1</li><li style="padding-left:42px">Устройство вертикальных монолитных конструкций 1-го этажа (отм. -3,900)</li></ul></div>
-  <div class="an-a"><button class="btn sm mk" type="button" data-t="an25722" data-v="57 855,46" data-vat="70 583,66" data-o="Объект Б" data-y="2025">сделать целью</button></div>
+  <div class="an-a"><button class="btn sm mk tgt" type="button" data-t="an25722" data-v="57 855,46" data-vat="70 583,66" data-o="Объект Б" data-y="2025"><i>◎</i>сделать целью</button></div>
 </div>
 <div class="an more" data-an="25730" hidden>
   <div class="an-h"><div><b>Объект Б</b><span class="t3 small"> · дог. Б-1 · подрядчик 1</span> <span class="k k-own soft">договор с этим подрядчиком</span></div>
@@ -2619,7 +2631,7 @@ tr.ln.np .num { color:var(--dear-text); }
   <div class="ktags"><span class="k k-target"><i>◎</i>цель</span></div>
   <div class="an-t">Стены B40</div>
   <div class="an-w"><div class="lbl">статья</div><span class="artchip"><span class="num">4.2.4</span> Устройство вертикальных монолитных конструкций надземных этажей (кроме 1-го)</span><div class="lbl">в смете договора</div><ul class="path small"><li style="padding-left:0px">Возведение несущих конструкций здания</li><li style="padding-left:14px">Ж/Б конструкции надземной части</li><li style="padding-left:28px">Корпус 1</li><li style="padding-left:42px">Устройство вертикальных монолитных конструкций со 2-го этажа до кровли</li></ul></div>
-  <div class="an-a"><button class="btn sm mk" type="button" data-t="an25730" data-v="57 855,46" data-vat="70 583,66" data-o="Объект Б" data-y="2025">сделать целью</button></div>
+  <div class="an-a"><button class="btn sm mk tgt" type="button" data-t="an25730" data-v="57 855,46" data-vat="70 583,66" data-o="Объект Б" data-y="2025"><i>◎</i>сделать целью</button></div>
 </div>
 <div class="an more" data-an="29890" hidden>
   <div class="an-h"><div><b>Объект В</b><span class="t3 small"> · дог. В-1 · подрядчик 2</span> </div>
@@ -2627,7 +2639,7 @@ tr.ln.np .num { color:var(--dear-text); }
   <div class="ktags"><span class="k k-target"><i>◎</i>цель</span></div>
   <div class="an-t">Стены В40</div>
   <div class="an-w"><div class="lbl">статья</div><span class="artchip"><span class="num">4.2.2</span> Устройство вертикальных монолитных конструкций 1-го этажа</span><div class="lbl">в смете договора</div><ul class="path small"><li style="padding-left:0px">Возведение несущих конструкций здания</li><li style="padding-left:14px">Ж/Б конструкции надземной части</li><li style="padding-left:28px">Вертикальные конструкции 1-го этажа</li><li style="padding-left:42px">Стены</li></ul></div>
-  <div class="an-a"><button class="btn sm mk" type="button" data-t="an29890" data-v="69 533,31" data-vat="84 830,64" data-o="Объект В" data-y="2024">сделать целью</button></div>
+  <div class="an-a"><button class="btn sm mk tgt" type="button" data-t="an29890" data-v="69 533,31" data-vat="84 830,64" data-o="Объект В" data-y="2024"><i>◎</i>сделать целью</button></div>
 </div>
 <div class="an more" data-an="29906" hidden>
   <div class="an-h"><div><b>Объект В</b><span class="t3 small"> · дог. В-1 · подрядчик 2</span> </div>
@@ -2635,19 +2647,21 @@ tr.ln.np .num { color:var(--dear-text); }
   <div class="ktags"><span class="k k-target"><i>◎</i>цель</span></div>
   <div class="an-t">Стены В40</div>
   <div class="an-w"><div class="lbl">статья</div><span class="artchip"><span class="num">4.2.4</span> Устройство вертикальных монолитных конструкций надземных этажей (кроме 1-го)</span><div class="lbl">в смете договора</div><ul class="path small"><li style="padding-left:0px">Возведение несущих конструкций здания</li><li style="padding-left:14px">Ж/Б конструкции надземной части</li><li style="padding-left:28px">Устройство вертикальных монолитных конструкций надземных этажей (выше 1-го)</li><li style="padding-left:42px">Стены</li></ul></div>
-  <div class="an-a"><button class="btn sm mk" type="button" data-t="an29906" data-v="70 189,06" data-vat="85 630,65" data-o="Объект В" data-y="2024">сделать целью</button></div>
+  <div class="an-a"><button class="btn sm mk tgt" type="button" data-t="an29906" data-v="70 189,06" data-vat="85 630,65" data-o="Объект В" data-y="2024"><i>◎</i>сделать целью</button></div>
 </div>
-        <button type="button" class="btn sm anmore" aria-expanded="false" data-n="3">показать ещё 3</button>
+        <button type="button" class="anmore" aria-expanded="false" data-n="3">▾ ещё 3 аналога из 8</button>
       </section>
 
-      <section class="blk exp"><div class="eyebrow">Для выгрузки</div>
-        <div class="small">Наша расценка <b class="num ours">55 540,85</b> ₽/м³ · <span class="t3">считается из данных и следует за ними</span></div>
-        <label class="small"><b>Договорились, ₽/м³, без НДС</b></label>
-        <div class="row"><input class="inp" placeholder="не договаривались"><button class="btn" type="button">Сохранить</button></div>
-        <p class="xs t3">Вписываете вы, GCA это число не меняет. В файл подрядчику идёт договорённое число, если оно есть, иначе наша расценка.</p>
-        <label class="small"><b>Комментарий для подрядчика</b> <span class="t3 xs">шаблон</span></label>
-        <textarea class="inp ta" rows="4">Ваша цена — 83 770,25 ₽ за м3 с НДС 22 %. В нашем договоре с вами по объекту Объект А, очередь 1, 2024 г., эта работа стоила 67 759,84 ₽ за м3 с НДС 22 %. Просим снизить до 67 759,84 ₽ или обосновать разницу.</textarea>
-        <div><button class="btn" type="button" disabled>Сохранить</button></div>
+      <section class="exp" aria-label="В файл подрядчику">
+        <div class="exp-h"><span class="exp-ic">⇩</span><div><div class="exp-t">В файл подрядчику</div><div class="xs t3">что уйдёт по этой строке в выгрузку</div></div></div>
+        <div class="exp-n"><span class="num ours">55 540,85</span> <span class="t3 small">₽/м³ без НДС</span></div>
+        <div class="exp-src"><span class="badge exp-b">наша расценка · цель: <span class="tgt-l">самая низкая</span></span> <span class="xs t3">считается из данных и следует за ними</span></div>
+        <div class="fld"><label class="small" for="deal"><b>Договорились, ₽/м³, без НДС</b></label>
+          <div class="row"><input id="deal" class="inp" placeholder="не договаривались" inputmode="decimal"><button class="btn primary" type="button">Сохранить</button></div>
+          <p class="xs t3">Вписываете вы, GCA это число не меняет. Если оно есть — в файл идёт оно, иначе наша расценка.</p></div>
+        <div class="fld"><label class="small" for="cmt"><b>Комментарий для подрядчика</b> <span class="t3 xs">шаблон по цели</span></label>
+          <textarea id="cmt" class="inp ta" rows="4">Ваша цена — 83 770,25 ₽ за м3 с НДС 22 %. В нашем договоре с вами по объекту Объект А, очередь 1, 2024 г., эта работа стоила 67 759,84 ₽ за м3 с НДС 22 %. Просим снизить до 67 759,84 ₽ или обосновать разницу.</textarea>
+          <div><button class="btn primary" type="button">Сохранить</button></div></div>
       </section>
     </aside>
   </div></div>
@@ -2690,16 +2704,26 @@ document.querySelectorAll('.anmore').forEach(b => b.addEventListener('click', ()
   const open = b.getAttribute('aria-expanded') !== 'true';
   b.setAttribute('aria-expanded', open);
   b.closest('aside').querySelectorAll('.an.more').forEach(x => x.hidden = !open);
-  b.textContent = open ? 'свернуть' : 'показать ещё ' + b.dataset.n;
+  b.textContent = open ? '▴ свернуть до пяти' : '▾ ещё ' + b.dataset.n + ' аналога из ' + b.closest('aside').querySelectorAll('.an').length;
 }));
 const KPV = '83 770,25';
 function setTarget(card) {
   const sh = card.closest('aside');
   sh.querySelectorAll('.tc').forEach(x => x.setAttribute('aria-pressed', x === card));
-  sh.querySelector('.ours').textContent = card.dataset.v;
+  sh.dataset.ours = card.dataset.v; sh.dataset.tl = card.querySelector('.ktags .k').textContent.replace(/^[^а-яё]+/i, '');
+  showExport(sh);
   sh.querySelectorAll('.an').forEach(x => x.classList.toggle('is-target', x.dataset.an === card.dataset.an));
   sh.querySelector('.ta').value = `Ваша цена — ${KPV} ₽ за м3 с НДС 22 %. В нашем договоре с вами по объекту ${card.dataset.o}, ${card.dataset.y} г., эта работа стоила ${card.dataset.vat} ₽ за м3 с НДС 22 %. Просим снизить до ${card.dataset.vat} ₽ или обосновать разницу.`;
 }
+function showExport(sh) {
+  const d = sh.querySelector('#deal').value.trim(), b = sh.querySelector('.exp-b');
+  sh.querySelector('.ours').textContent = d || sh.dataset.ours;
+  b.classList.toggle('deal', !!d);
+  b.innerHTML = d ? 'договорились · перекрывает цель' : 'наша расценка · цель: <span class="tgt-l">' + sh.dataset.tl + '</span>';
+  b.nextElementSibling.hidden = !!d;
+}
+document.querySelectorAll('#deal').forEach(i => i.addEventListener('input', () => showExport(i.closest('aside'))));
+document.querySelectorAll('aside.sheet').forEach(sh => { sh.dataset.ours = sh.querySelector('.ours').textContent; sh.dataset.tl = 'самая низкая'; });
 document.querySelectorAll('.tc').forEach(c => c.addEventListener('click', () => setTarget(c)));
 document.querySelectorAll('.mk').forEach(b => b.addEventListener('click', () => {
   const sh = b.closest('aside'), an = b.closest('.an');
