@@ -202,6 +202,7 @@ tr.ln.np .num { color:var(--dear-text); }
 .tp[aria-pressed="true"] { background:var(--action); color:var(--action-text); border-color:transparent; }
 .tp .auto { font-size:10.5px; opacity:.75; margin-left:4px; }
 .chg { display:grid; gap:6px; max-width:96ch; font-size:13px; color:var(--fg2); margin:0 0 14px; padding-left:18px; }
+.thm { top:auto; bottom:14px; }
 .jgrid { display:grid; grid-template-columns:minmax(0,1fr) 560px; gap:16px; align-items:start; }
 @media (max-width:1200px){ .jgrid{ grid-template-columns:1fr; } }
 .hd { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap; }
@@ -339,7 +340,7 @@ try { const t = localStorage.getItem('mk-theme'); if (t === 'dark' || t === 'lig
 const KIND = { split:['Деление','kd-split'], comp:['Склейка → набор','kd-comp'], nv:['Новое значение','kd-new'], eq:['Приравнено','kd-eq'] };
 const BETON = 'Устройство жб конструкций';
 const COLS = ['колонны','пилоны','трансферные конструкции'];
-const cp = (b, w, sec) => ({ name:'Корпус ' + sec + ' ' + b + (w ? ' ' + w + ' F150' : '') + ' арматурой класса А500С, А240', other:'класс бетона ' + b + ' · водонепроницаемость ' + (w || '—') });
+const cp = (b, w, sec) => ({ name:'Корпус ' + sec + ' ' + b + (w ? ' ' + w + ' F150' : '') + ' арматурой класса А500С, А240', other:'класс бетона ' + b + ' · ' + (w ? 'водонепроницаемость ' + w : 'водонепроницаемость не указана') });
 const E = [
   { id:102, day:'11 ноября 2026 · новая смета КП', when:'11.11 09:40', kind:'eq', fam:BETON, param:'Тип конструкции',
     value:'плиты покрытий', to:'перекрытия', contexts:3, src:'ответ модели по строке «Бетонирование плит покрытий В30 толщ. 220»', state:'on' },
