@@ -397,7 +397,6 @@ class TestItem:
 
         assert item["text"] is None
         assert item["summary_values"] == ["Колонны", "Стены"]
-        assert item["undo"]["available"] is False
 
     def test_a_subject_that_is_gone_leaves_empty_references(self, db_session, factories):
         scene = _scene(db_session, factories, ("плиты", "балки"))
@@ -623,7 +622,7 @@ class TestUndoComposite:
             lambda: journal.undo_action(db_session, 987654, user_id=_scene_user(factories))
         ) == (404, journal.REFUSE_JOURNAL_NOT_FOUND)
 
-    @pytest.mark.parametrize("kind", ["value_added", "split"])
+    @pytest.mark.parametrize("kind", ["value_added"])
     def test_the_kinds_without_an_undo_here_are_refused(self, db_session, factories, kind):
         scene = _scene(db_session, factories, ("плиты", "балки"))
         action_id = _record(db_session, scene, kind, _added("а"))

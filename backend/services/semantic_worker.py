@@ -50,6 +50,7 @@ from models import (
     SuggestionUnpublishedReason,
     WorkFamily,
 )
+from services.auto_split import prepare_auto_split, render_auto_split, run_auto_split_job
 from services.discovery_result import apply_discovery
 from services.family_change import apply_publication_rules, thresholds_from
 from services.family_discovery import (
@@ -268,7 +269,9 @@ def render_job_request(db: Session, job: SemanticJob, *, settings: Settings) -> 
 
     `family_schema`: семья `active` и версия задания в `building`;
     `context_values`: контекст применим по §2.5 без условия кандидатов, у него
-    есть схема, и она — версия задания."""
+    есть схема, и она — версия задания; `auto_split`: контекст «к делению» без
+    пометки «автоделение не трогает», его члены делятся по разделам (сводный запрос
+    всех групп, его `request_hash` — отпечаток входа)."""
     kind = job.kind
     if kind == SemanticJobKind.family_suggestion.value:
         # Контекст задания существует всегда (внешний ключ RESTRICT), а загрузчик
@@ -348,6 +351,11 @@ def render_job_request(db: Session, job: SemanticJob, *, settings: Settings) -> 
         return JobRender(
             rendered=render_zone_request(db, job.section_chain_id, settings=settings)
         )
+    if kind == SemanticJobKind.auto_split.value:
+        rendered = render_auto_split(db, job, settings=settings)
+        if rendered is None:
+            return _not_renderable(SemanticCancelReason.not_applicable)
+        return JobRender(rendered=rendered)
     if kind == SemanticJobKind.releasable_params.value:
         # Спрашивать нечего: версия не действующая, нет активных главных или все
         # главные уже размечены.
@@ -1422,6 +1430,9 @@ def _run_claim(
     if claim.kind == SemanticJobKind.family_discovery:
         _run_discovery_claim(session_factory, client, claim, settings=settings, clock=clock)
         return
+    if claim.kind == SemanticJobKind.auto_split:
+        _run_auto_split_claim(session_factory, client, claim, settings=settings, clock=clock)
+        return
 
     try:
         try:
@@ -1532,6 +1543,92 @@ def _run_discovery_claim(
                 record_result(db, claim, responses, now=clock(), settings=settings)
         except Exception as exc:  # noqa: BLE001 — запись не удалась: попытку закрыть
             logger.exception("Запись результата задания %s не удалась", claim.job_id)
+            _record_failure_in_new_session(
+                session_factory,
+                claim,
+                TransientModelError(str(exc), error_class=type(exc).__name__),
+                settings=settings,
+                clock=clock,
+                completed=responses,
+            )
+    except Exception:  # noqa: BLE001 — закрыть попытку не удалось: задание вернёт восстановление
+        logger.exception("Попытка задания %s осталась открытой", claim.job_id)
+
+
+def _run_auto_split_claim(
+    session_factory: Callable[[], Session],
+    client: ModelClient,
+    claim: Claim,
+    *,
+    settings: Settings,
+    clock: Callable[[], datetime],
+) -> None:
+    """Автоделение (спека упрощения каталога §2.5): по вызову модели на каждую группу путей
+    подряд внутри одного захвата, вне транзакции; ответы записывает `run_auto_split_job` одной
+    транзакцией, она же закрывает попытку (суммы по вызовам, как у открытия семей). Сбой
+    вызова — запись неудачи с ответами выполненных; схемная ошибка ответа — ошибка задания."""
+    responses: list[ModelResponse] = []
+    calls = 0
+    try:
+        with session_factory() as db:
+            subject = db.execute(
+                sa.select(SemanticJob.context_id, SemanticJob.split_level).where(
+                    SemanticJob.id == claim.job_id
+                )
+            ).one()
+            prepared = prepare_auto_split(
+                db, subject.context_id, level=subject.split_level, settings=settings
+            )
+        requests = (
+            {}
+            if prepared is None
+            else {group.member_ids: request
+                  for group, request in zip(prepared.plan.groups, prepared.requests, strict=True)}
+        )
+        calls = len(requests)
+
+        def ask(context_id, group):
+            request = requests.get(group.member_ids)
+            if request is None:
+                raise TransientModelError(
+                    "план деления изменился между чтениями", error_class="StalePlan"
+                )
+            response = client.complete(request.body, timeout_s=settings.SEMANTIC_CALL_TIMEOUT_S)
+            responses.append(response)
+            answer = parse_values_answer(response.content, prepared.parameters)
+            return {item.ordinal: item for item in answer.items}
+
+        def finish(db, outcome):
+            attempt = _load_attempt(db, claim.attempt_id)
+            result = (
+                SemanticAttemptOutcome.lost_claim
+                if outcome.status == "lost_claim"
+                else SemanticAttemptOutcome.ok
+            )
+            now = clock()
+            if responses:
+                _close_with_responses(attempt, responses, outcome=result, now=now, calls_total=calls)
+            else:
+                attempt.finished_at = now
+                attempt.outcome = result.value
+            db.flush()
+            _apply_fuse(db, attempt, now=now)
+
+        try:
+            with session_factory() as db:
+                run_auto_split_job(db, claim=claim, ask=ask, settings=settings, finish=finish)
+        except (TransientModelError, PermanentModelError) as exc:
+            _record_failure_in_new_session(
+                session_factory, claim, exc, settings=settings, clock=clock, completed=responses
+            )
+        except AnswerSchemaError as exc:
+            with session_factory() as db:
+                _record_schema_error(
+                    db, claim, responses[-1], exc, now=clock(), responses=responses,
+                    calls_total=max(calls, len(responses)),
+                )
+        except Exception as exc:  # noqa: BLE001 — любое исключение клиента или записи временное
+            logger.exception("Автоделение по заданию %s не удалось", claim.job_id)
             _record_failure_in_new_session(
                 session_factory,
                 claim,

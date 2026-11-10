@@ -485,17 +485,18 @@ LADDER_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
 )
 assert len(LADDER_ROUTE_TEMPLATES) == 6
 
-#: Маршруты «Журнала ИИ» (спека упрощения каталога §2.7): список, запись, отмена и
-#: «вернуть автоматику» — ШАБЛОНАМИ пути, независимо от `app.routes`.
+#: Маршруты «Журнала ИИ» (спека упрощения каталога §2.7): список, запись, отмена, «поправить»
+#: и «вернуть автоматику» — ШАБЛОНАМИ пути, независимо от `app.routes`.
 JOURNAL_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
     {
         ("GET", f"{BASE}/journal"),
         ("GET", f"{BASE}/journal/{{item_id}}"),
         ("POST", f"{BASE}/journal/{{item_id}}/undo"),
+        ("POST", f"{BASE}/journal/{{item_id}}/resplit"),
         ("POST", f"{BASE}/journal/{{item_id}}/restore-auto"),
     }
 )
-assert len(JOURNAL_ROUTE_TEMPLATES) == 4
+assert len(JOURNAL_ROUTE_TEMPLATES) == 5
 
 
 def test_route_set_under_prefix_equals_twenty_one_literal():

@@ -59,7 +59,7 @@ from typing import Literal
 
 import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy.orm import Session
 
 import crud.ai_journal as crud_ai_journal
@@ -132,6 +132,8 @@ _STATUS_NOT_FOUND = frozenset(
 
 _STATUS_CONFLICT = frozenset(
     {
+        # Текст занят другим значением параметра: состояние, а не ввод (как journal_undo_conflict).
+        schema_edit.REFUSE_VALUE_TEXT_TAKEN,
         work_families.REFUSE_UPDATE_ARCHIVED,
         work_families.REFUSE_ACTIVATE_NOT_DRAFT,
         work_families.REFUSE_ACTIVATE_WITHOUT_DEFINITION,
@@ -2141,9 +2143,30 @@ def journal_undo_route(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    """Отмена склейки или приравнивания; ответ — обновлённая запись."""
+    """Отмена склейки, приравнивания или автоделения; ответ — обновлённая запись."""
     with _mutating(db):
         item = crud_ai_journal.undo_action(db, item_id, user_id=admin.id)
+    return item
+
+
+class JournalResplitRequest(BaseModel):
+    """Уровень нового деления: индекс звена цепочки разделов от корня, с нуля."""
+    model_config = ConfigDict(extra="forbid")
+
+    level: int = Field(ge=0)
+
+
+@router.post("/journal/{item_id}/resplit")
+def journal_resplit_route(
+    item_id: int,
+    body: JournalResplitRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """«Поправить» деление: отмена без пометки и задание автоделения на заданном уровне;
+    ответ — отменённая запись, новая придёт отдельно."""
+    with _mutating(db):
+        item = crud_ai_journal.resplit_action(db, item_id, user_id=admin.id, level=body.level)
     return item
 
 

@@ -1540,6 +1540,8 @@ CK_CONTEXT_FAMILY_PROVENANCE = (
     "OR (work_family_id IS NOT NULL AND family_source IS NOT NULL AND family_at IS NOT NULL "
     "AND (family_by IS NOT NULL) = (family_source = 'manual'))"
 )
+#: Время и автор пометки «автоделение не трогает» пишутся вместе (миграция 0025).
+CK_CONTEXT_AUTO_SPLIT_BLOCKED_PAIR = "(auto_split_blocked_at IS NULL) = (auto_split_blocked_by IS NULL)"
 CK_CONTEXT_KIND_SOURCE_PAIR = "(semantic_kind_source = 'manual') = (semantic_kind_by IS NOT NULL)"
 CK_CONTEXT_NAME_ROLE_SOURCE_PAIR = "(name_role_source = 'manual') = (name_role_by IS NOT NULL)"
 CK_MEMBER_RULE_PAIR = "(routed_by = 'rule') = (routing_rule_id IS NOT NULL)"
@@ -2167,6 +2169,9 @@ class CatalogContext(Base):
             CK_CONTEXT_SPLIT_HINT_NEEDS_VARIANT, name="ck_catalog_contexts_split_hint_needs_variant"
         ),
         CheckConstraint(CK_CONTEXT_PENDING, name="ck_catalog_contexts_pending"),
+        CheckConstraint(
+            CK_CONTEXT_AUTO_SPLIT_BLOCKED_PAIR, name="ck_catalog_contexts_auto_split_blocked_pair"
+        ),
         # UNIQUE (bucket_id) WHERE is_default AND archived_at IS NULL — частичный
         # уникальный индекс, raw SQL в миграции 0017 (alembic/env.py
         # RAW_SQL_INDEXES: uq_catalog_contexts_default_per_bucket). Половина
@@ -3478,6 +3483,8 @@ AUTO_ACTION_KINDS = ("split", "value_added", "composite", "equated")
 CK_VALUE_PART_NOT_SELF = "value_id <> part_value_id"
 CK_COMPOSITE_VETO_KIND = "kind IN (" + ", ".join(f"'{v}'" for v in COMPOSITE_KINDS) + ")"
 CK_AUTO_ACTION_KIND = "kind IN (" + ", ".join(f"'{v}'" for v in AUTO_ACTION_KINDS) + ")"
+#: Время и автор отмены записи журнала пишутся вместе (миграция 0025).
+CK_AUTO_ACTION_UNDONE_PAIR = "(undone_at IS NULL) = (undone_by IS NULL)"
 
 
 class FamilyValuePart(Base):
@@ -3620,4 +3627,5 @@ class CatalogAutoAction(Base):
             name="fk_catalog_auto_actions_undone_by",
         ),
         CheckConstraint(CK_AUTO_ACTION_KIND, name="ck_catalog_auto_actions_kind"),
+        CheckConstraint(CK_AUTO_ACTION_UNDONE_PAIR, name="ck_catalog_auto_actions_undone_pair"),
     )

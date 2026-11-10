@@ -72,6 +72,8 @@ CK_PARAMETER_VALUE_COMPOSITE_PAIR = "(composite_kind IS NULL) = (composite_key I
 CK_VALUE_PART_NOT_SELF = "value_id <> part_value_id"
 CK_COMPOSITE_VETO_KIND = "kind IN ('all', 'any')"
 CK_AUTO_ACTION_KIND = "kind IN ('split', 'value_added', 'composite', 'equated')"
+CK_AUTO_ACTION_UNDONE_PAIR = "(undone_at IS NULL) = (undone_by IS NULL)"
+CK_CONTEXT_AUTO_SPLIT_BLOCKED_PAIR = "(auto_split_blocked_at IS NULL) = (auto_split_blocked_by IS NULL)"
 CK_KP_TARGET_KIND = "kind IN ('freshest', 'analog', 'contractor')"
 CK_KP_TARGET_ANALOG = "(kind = 'analog') = (analog_position_item_id IS NOT NULL)"
 CK_SEMANTIC_JOBS_CONTEXT_SUBJECT = (
@@ -192,6 +194,10 @@ def upgrade() -> None:
         "fk_catalog_contexts_auto_split_blocked_by", "catalog_contexts", "users",
         ["auto_split_blocked_by"], ["id"], ondelete="RESTRICT",
     )
+    op.create_check_constraint(
+        "ck_catalog_contexts_auto_split_blocked_pair", "catalog_contexts",
+        CK_CONTEXT_AUTO_SPLIT_BLOCKED_PAIR,
+    )
 
     # --- 6. Журнал ИИ ------------------------------------------------------------------------------------
     op.create_table(
@@ -232,6 +238,7 @@ def upgrade() -> None:
             name="fk_catalog_auto_actions_undone_by",
         ),
         sa.CheckConstraint(CK_AUTO_ACTION_KIND, name="ck_catalog_auto_actions_kind"),
+        sa.CheckConstraint(CK_AUTO_ACTION_UNDONE_PAIR, name="ck_catalog_auto_actions_undone_pair"),
     )
 
     # --- 7. Правило маршрутизации без автора ---------------------------------------------------------------
@@ -330,6 +337,9 @@ def downgrade() -> None:
     op.drop_table("catalog_auto_actions")
 
     # --- 5. Контекст ---------------------------------------------------------------------------------------
+    op.drop_constraint(
+        "ck_catalog_contexts_auto_split_blocked_pair", "catalog_contexts", type_="check"
+    )
     op.drop_constraint(
         "fk_catalog_contexts_auto_split_blocked_by", "catalog_contexts", type_="foreignkey"
     )

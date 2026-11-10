@@ -24,7 +24,9 @@ import sqlalchemy as sa
 from models import (
     AUTO_ACTION_KINDS,
     CK_AUTO_ACTION_KIND,
+    CK_AUTO_ACTION_UNDONE_PAIR,
     CK_COMPOSITE_VETO_KIND,
+    CK_CONTEXT_AUTO_SPLIT_BLOCKED_PAIR,
     CK_KP_TARGET_ANALOG,
     CK_KP_TARGET_KIND,
     CK_PARAMETER_VALUE_COMPOSITE_KIND,
@@ -180,7 +182,7 @@ _EXPECTED_CONSTRAINTS = {
         "pk_catalog_auto_actions", "fk_catalog_auto_actions_family",
         "fk_catalog_auto_actions_context", "fk_catalog_auto_actions_parameter",
         "fk_catalog_auto_actions_value", "fk_catalog_auto_actions_undone_by",
-        "ck_catalog_auto_actions_kind",
+        "ck_catalog_auto_actions_kind", "ck_catalog_auto_actions_undone_pair",
     },
 }
 
@@ -207,9 +209,10 @@ class TestTablesColumnsAndConstraintNames:
             "ck_family_parameter_values_composite_kind",
             "ck_family_parameter_values_composite_pair",
         } <= _live_constraints(db_session, "family_parameter_values")
-        assert "fk_catalog_contexts_auto_split_blocked_by" in _live_constraints(
-            db_session, "catalog_contexts"
-        )
+        assert {
+            "fk_catalog_contexts_auto_split_blocked_by",
+            "ck_catalog_contexts_auto_split_blocked_pair",
+        } <= _live_constraints(db_session, "catalog_contexts")
         assert "ck_semantic_jobs_split_level" in _live_constraints(db_session, "semantic_jobs")
 
     @pytest.mark.parametrize(
@@ -524,6 +527,14 @@ class TestAutoActions:
         assert row.payload == {"groups": [1, 2]}
         assert row.created_at is not None and row.created_at.tzinfo is not None
 
+    def test_the_undo_time_without_the_author_is_rejected(self, db_session):
+        with rejected_by(db_session, "ck_catalog_auto_actions_undone_pair"):
+            _action(db_session, undone_at=sa.func.now())
+
+    def test_the_undo_author_without_the_time_is_rejected(self, db_session, factories):
+        with rejected_by(db_session, "ck_catalog_auto_actions_undone_pair"):
+            _action(db_session, undone_by=_user_id(factories))
+
     def test_a_family_with_an_action_cannot_be_deleted(self, db_session):
         row = _action(db_session)
         with rejected_by(db_session, "fk_catalog_auto_actions_family"):
@@ -569,6 +580,14 @@ class TestContextAndRoutingRule:
     def test_a_context_without_the_mark_is_accepted(self, db_session, factories):
         context = _context(db_session, factories)
         assert (context.auto_split_blocked_at, context.auto_split_blocked_by) == (None, None)
+
+    def test_the_block_time_without_the_author_is_rejected(self, db_session, factories):
+        with rejected_by(db_session, "ck_catalog_contexts_auto_split_blocked_pair"):
+            _context(db_session, factories, auto_split_blocked_at=sa.func.now())
+
+    def test_the_block_author_without_the_time_is_rejected(self, db_session, factories):
+        with rejected_by(db_session, "ck_catalog_contexts_auto_split_blocked_pair"):
+            _context(db_session, factories, auto_split_blocked_by=_user_id(factories))
 
     def test_a_user_who_set_the_mark_cannot_be_deleted(self, db_session, factories):
         user_id = _user_id(factories)
@@ -676,6 +695,10 @@ class TestParityWithMigration:
         (CK_COMPOSITE_VETO_KIND, "CK_COMPOSITE_VETO_KIND", "kind IN ('all', 'any')"),
         (CK_AUTO_ACTION_KIND, "CK_AUTO_ACTION_KIND",
          "kind IN ('split', 'value_added', 'composite', 'equated')"),
+        (CK_AUTO_ACTION_UNDONE_PAIR, "CK_AUTO_ACTION_UNDONE_PAIR",
+         "(undone_at IS NULL) = (undone_by IS NULL)"),
+        (CK_CONTEXT_AUTO_SPLIT_BLOCKED_PAIR, "CK_CONTEXT_AUTO_SPLIT_BLOCKED_PAIR",
+         "(auto_split_blocked_at IS NULL) = (auto_split_blocked_by IS NULL)"),
         (CK_KP_TARGET_KIND, "CK_KP_TARGET_KIND", "kind IN ('freshest', 'analog', 'contractor')"),
         (CK_KP_TARGET_ANALOG, "CK_KP_TARGET_ANALOG",
          "(kind = 'analog') = (analog_position_item_id IS NOT NULL)"),
@@ -722,7 +745,13 @@ class TestParityWithMigration:
         },
         "family_value_parts": {"ck_family_value_parts_not_self": "CK_VALUE_PART_NOT_SELF"},
         "composite_vetoes": {"ck_composite_vetoes_kind": "CK_COMPOSITE_VETO_KIND"},
-        "catalog_auto_actions": {"ck_catalog_auto_actions_kind": "CK_AUTO_ACTION_KIND"},
+        "catalog_auto_actions": {
+            "ck_catalog_auto_actions_kind": "CK_AUTO_ACTION_KIND",
+            "ck_catalog_auto_actions_undone_pair": "CK_AUTO_ACTION_UNDONE_PAIR",
+        },
+        "catalog_contexts": {
+            "ck_catalog_contexts_auto_split_blocked_pair": "CK_CONTEXT_AUTO_SPLIT_BLOCKED_PAIR",
+        },
         "kp_line_targets": {
             "ck_kp_line_targets_kind": "CK_KP_TARGET_KIND",
             "ck_kp_line_targets_analog": "CK_KP_TARGET_ANALOG",

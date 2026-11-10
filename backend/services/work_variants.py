@@ -1453,6 +1453,7 @@ def apply_values(
     db: Session, *, context_id: int, schema_id: int, answer: ValuesAnswer, paths_hash: str,
     guard: JobGuard | None, settings: Settings,
     requested_ordinals: Sequence[int] | None = None,
+    queue_auto_split: bool = True,
 ) -> ApplyValuesOutcome:
     """Применяет результат `context_values` одной транзакцией (спека §2.6, шаги
     (0)-(8), 3в §2.4); коммит за вызывающим.
@@ -1476,6 +1477,11 @@ def apply_values(
     задания охраны (`NULL` у задания — все активные параметры), без задания —
     все активные; `()` — завершение без модели (ничего не запрошено, вариант
     назначается по сохранённым строкам).
+
+    `queue_auto_split` — после назначения варианта ставить (или, при пометке «автоделение не
+    трогает», снимать) задание автоделения контекста «к делению» (спека упрощения каталога
+    §2.5). Само автоделение и отмена деления применяют значения с `False`: задание они ведут
+    сами.
 
     Raises:
         AnswerSchemaError: ответ не согласуется со схемой (состав `ordinal`,
@@ -1750,6 +1756,10 @@ def apply_values(
         # аналогов §2.7): предложения и задание версии пересматриваются.
         refresh_inputs(db, [schema_id], settings=settings)
     reconcile_or_defer(db, [context_id])
+    if resolved is not None and queue_auto_split:
+        from services.auto_split import schedule_auto_split
+
+        schedule_auto_split(db, context_id=context_id, settings=settings)
 
     return ApplyValuesOutcome(
         applied=True, unapplied_reason=None, variant_id=variant_id,

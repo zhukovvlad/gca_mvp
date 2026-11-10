@@ -191,13 +191,12 @@ def test_work_variants_tariffs_each_kind_takes_its_own_four_fields():
 def test_work_variants_tariffs_every_kind_pairwise_distinct():
     s = _distinct_prices()
     # Семь видов, четыре тарифа: section_zone делит тариф с family_suggestion,
-    # releasable_params — с family_schema. auto_split модель вызывает (значения групп),
-    # но тарифа у него пока нет — его заводит ветка воркера автоделения; до неё
-    # tariffs_from отказывает, и это закреплено явно: появится тариф — тест покраснеет
-    # и потребует сравнить его с family_suggestion, а не молча исключит вид из перебора.
+    # releasable_params — с family_schema, auto_split — с context_values (тот же вызов
+    # модели о значениях, по группам путей).
     assert len(list(SemanticJobKind)) == 7
-    with pytest.raises(ValueError):
-        tariffs_from(s, SemanticJobKind.auto_split)
+    assert tariffs_from(s, SemanticJobKind.auto_split) == tariffs_from(
+        s, SemanticJobKind.context_values
+    )
     assert tariffs_from(s, SemanticJobKind.section_zone) == tariffs_from(
         s, SemanticJobKind.family_suggestion
     )

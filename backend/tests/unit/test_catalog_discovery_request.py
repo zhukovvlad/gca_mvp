@@ -180,8 +180,7 @@ class TestTariffs:
             SEMANTIC_DISCOVERY_PRICE_INPUT_PER_M=Decimal("4.1"),
         )
         # Четыре вида со своим тарифом; section_zone делит тариф с предложениями семей,
-        # releasable_params — со схемой семьи; у auto_split тарифа пока нет (заводит
-        # ветка воркера автоделения; отсутствие закреплено в test_work_variants_settings).
+        # releasable_params — со схемой семьи, auto_split — со значениями контекстов.
         # Попарно различны четыре вида со своим тарифом.
         own = [k for k in SemanticJobKind
                if k not in (

@@ -8,12 +8,16 @@
   текстом, контексты остаются на нём, пишется вето состава;
 - `undo` приравнивания (`equated`): заводится простое значение из текста, контексты записи
   переходят на него, пара «текст -> значение» пишется как «не дубль»;
+- `undo` автоделения (`split`): нынешние члены частей возвращаются в исходный контекст,
+  снимаются правила записи, контекст снова «к делению» и получает пометку «автоделение не
+  трогает»; недоступна после ручной правки частей (`journal_undo_locked`, в ответе `locked_by`);
+- `resplit`: та же отмена без пометки и задание автоделения с заданным уровнем;
 - `restore-auto`: снимает решение, которое записала отмена (`payload.undo_decision`) —
-  вето вместе с частями либо «не дубль», — и ставит `restored_at`. Исправление значения
-  он не откатывает: пометка снимается, а не исправление.
+  вето вместе с частями, «не дубль» либо пометку «автоделение не трогает», — и ставит
+  `restored_at`. Исправление значения он не откатывает: пометка снимается, а не исправление.
 
-`undo` записи `value_added` (слияние идёт через схему значений) и `split` (отдельная
-операция деления) здесь отказывает кодом `journal_undo_not_applicable`.
+`undo` записи `value_added` (слияние идёт через схему значений) здесь отказывает кодом
+`journal_undo_not_applicable`.
 
 Записи значений идут через `services/schema_edit.py` (правка схемы на месте), а не прямыми
 `UPDATE`: список значений, варианты и очередь заданий сверяются там. Отказ отмены ничего не
@@ -22,12 +26,14 @@
 """
 from __future__ import annotations
 
+from collections.abc import Collection
 from datetime import UTC, datetime
 from typing import Any, Literal, TypedDict
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
+from config import settings as app_settings
 from crud.common import DomainError, iso
 from models import (
     AUTO_ACTION_KINDS,
@@ -43,7 +49,8 @@ from models import (
     ValueNotDuplicate,
     WorkFamily,
 )
-from services import schema_edit
+from services import auto_split, schema_edit
+from services.context_operations import ContextOperationError
 from services.human_decisions import add_not_duplicate, add_veto
 from services.work_families import WorkFamilyError
 from services.work_variants import REFUSE_PARAMETER_NOT_FOUND, REFUSE_VALUE_NOT_FOUND, normalize_value
@@ -54,11 +61,13 @@ REFUSE_JOURNAL_UNDO_NOT_APPLICABLE = "journal_undo_not_applicable"
 REFUSE_JOURNAL_UNDO_CONFLICT = "journal_undo_conflict"
 REFUSE_JOURNAL_NOT_UNDONE = "journal_not_undone"
 REFUSE_JOURNAL_ALREADY_RESTORED = "journal_already_restored"
+REFUSE_JOURNAL_UNDO_LOCKED = "journal_undo_locked"
+REFUSE_JOURNAL_RESPLIT_NO_GROUPS = "journal_resplit_no_groups"
 
 JournalState = Literal["active", "undone", "locked"]
 
 #: Виды, чью отмену умеет этот модуль.
-_UNDOABLE = ("composite", "equated")
+_UNDOABLE = ("composite", "equated", "split")
 
 
 class JournalItem(TypedDict, total=False):
@@ -125,18 +134,34 @@ def _escape_ilike(text: str) -> str:
     return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-def _conditions(*, family_id: int | None, state: str | None, q: str | None) -> list:
-    """Отборы, общие для страницы и счётчиков (все, кроме вида)."""
+def _locked_ids(db: Session) -> dict[int, dict]:
+    """Замки отмены всех неотменённых записей `split`: `{id записи: locked_by}`."""
+    rows = db.execute(
+        sa.select(CatalogAutoAction.id, CatalogAutoAction.created_at, CatalogAutoAction.payload)
+        .where(CatalogAutoAction.kind == "split", CatalogAutoAction.undone_at.is_(None))
+    ).all()
+    return auto_split.split_locks(
+        db, [(row.id, row.created_at, auto_split._part_ids(row.payload)) for row in rows]
+    )
+
+
+def _conditions(
+    *, family_id: int | None, state: str | None, q: str | None,
+    locked: Collection[int] = (),
+) -> list:
+    """Отборы, общие для страницы и счётчиков (все, кроме вида). `locked` — записи с замком
+    отмены (нужны только отборам `active` и `locked`)."""
     conditions: list = []
     if family_id is not None:
         conditions.append(CatalogAutoAction.family_id == family_id)
     if state == "active":
         conditions.append(CatalogAutoAction.undone_at.is_(None))
+        conditions.append(CatalogAutoAction.id.not_in(list(locked)))
     elif state == "undone":
         conditions.append(CatalogAutoAction.undone_at.is_not(None))
     elif state == "locked":
-        # `locked` бывает только у `split`; записей этого вида с замком пока нет.
-        conditions.append(sa.false())
+        # `locked` бывает только у неотменённого `split` (спека §2.5).
+        conditions.append(CatalogAutoAction.id.in_(list(locked)))
     if q:
         pattern = f"%{_escape_ilike(q)}%"
         conditions.append(
@@ -160,14 +185,20 @@ def _summary_values(row: Any, part_texts: dict[int, str]) -> list[str]:
     return [group["title"] for group in payload.get("groups", [])]
 
 
-def _item(row: Any, part_texts: dict[int, str]) -> JournalItem:
+def _item(
+    row: Any, part_texts: dict[int, str], locks: dict[int, dict] | None = None
+) -> JournalItem:
     undone = row.undone_at is not None
-    undoable = (
-        row.kind in _UNDOABLE
-        and not undone
-        and row.parameter_id is not None
-        and row.value_id is not None
-    )
+    locked_by = None if undone else (locks or {}).get(row.id)
+    if row.kind == "split":
+        undoable = not undone and locked_by is None
+    else:
+        undoable = (
+            row.kind in _UNDOABLE
+            and not undone
+            and row.parameter_id is not None
+            and row.value_id is not None
+        )
     return {
         "id": row.id,
         "kind": row.kind,
@@ -183,8 +214,8 @@ def _item(row: Any, part_texts: dict[int, str]) -> JournalItem:
         ),
         "text": row.payload.get("text"),
         "summary_values": _summary_values(row, part_texts),
-        "state": "undone" if undone else "active",
-        "undo": {"available": undoable, "locked_by": None},
+        "state": "undone" if undone else ("locked" if locked_by is not None else "active"),
+        "undo": {"available": undoable, "locked_by": locked_by},
         "undone": (
             {"at": iso(row.undone_at), "by_email": row.undone_by_email} if undone else None
         ),
@@ -216,7 +247,8 @@ def list_journal(
 ) -> dict:
     """Страница журнала: `{items, total, counts}`. Порядок — `created_at DESC, id DESC`;
     `counts` — по четырём видам при всех отборах, кроме вида."""
-    conditions = _conditions(family_id=family_id, state=state, q=q)
+    locked = _locked_ids(db) if state in ("active", "locked") else {}
+    conditions = _conditions(family_id=family_id, state=state, q=q, locked=locked)
     selected = list(conditions)
     if kind is not None:
         selected.append(CatalogAutoAction.kind == kind)
@@ -245,8 +277,16 @@ def list_journal(
         ).all()
     )
     texts = _part_texts(db, rows)
+    locks = auto_split.split_locks(
+        db,
+        [
+            (row.id, row.created_at, auto_split._part_ids(row.payload))
+            for row in rows
+            if row.kind == "split" and row.undone_at is None
+        ],
+    )
     return {
-        "items": [_item(row, texts) for row in rows],
+        "items": [_item(row, texts, locks) for row in rows],
         "total": total,
         "counts": {name: counted.get(name, 0) for name in AUTO_ACTION_KINDS},
     }
@@ -292,8 +332,19 @@ def get_journal_item(db: Session, item_id: int) -> JournalItem:
     if not rows:
         raise _not_found(item_id)
     [row] = rows
-    item = _item(row, _part_texts(db, rows))
-    if row.kind in _UNDOABLE:
+    locks = auto_split.split_locks(
+        db,
+        [(row.id, row.created_at, auto_split._part_ids(row.payload))]
+        if row.kind == "split" and row.undone_at is None
+        else [],
+    )
+    item = _item(row, _part_texts(db, rows), locks)
+    if row.kind == "split":
+        item["details"] = {
+            "level": row.payload.get("level"),
+            "parts": auto_split.split_parts(db, row.payload),
+        }
+    elif row.kind in _UNDOABLE:
         item["details"] = _details(db, row)
     return item
 
@@ -357,20 +408,44 @@ def _translated(exc: WorkFamilyError) -> Exception:
     return exc
 
 
+def _undo_split(
+    db: Session, row: CatalogAutoAction, user_id: int, *, block: bool
+) -> dict:
+    """Отмена автоделения в savepoint: отказ ничего не оставляет."""
+    try:
+        with db.begin_nested():
+            auto_split.undo_split(db, row.id, user_id=user_id, block=block)
+    except auto_split.SplitUndoLocked as exc:
+        raise DomainError(
+            409, "части правили вручную после деления: отмена недоступна",
+            code=REFUSE_JOURNAL_UNDO_LOCKED, context={"locked_by": exc.locked_by},
+        ) from exc
+    except (auto_split.SplitUndoNotApplicable, ContextOperationError) as exc:
+        raise _refuse(
+            409, REFUSE_JOURNAL_UNDO_NOT_APPLICABLE,
+            f"запись {row.id} устарела: {exc}",
+        ) from exc
+    return {"blocked": block}
+
+
 def undo_action(db: Session, item_id: int, *, user_id: int) -> JournalItem:
-    """Отменяет склейку или приравнивание и возвращает обновлённую запись.
+    """Отменяет склейку, приравнивание или автоделение и возвращает обновлённую запись.
 
     Raises:
         DomainError: записи нет (`404 journal_not_found`); уже отменена
             (`409 journal_already_undone`); вид без отмены здесь либо запись устарела —
             параметр или значение ушли, схема перестроена (`409
             journal_undo_not_applicable`); исходный текст занят другим значением (`409
-            journal_undo_conflict`) — тогда ничего не изменено.
+            journal_undo_conflict`); части деления правили вручную (`409
+            journal_undo_locked`, в `context` — `locked_by`) — тогда ничего не изменено.
         WorkFamilyError: семья не активна, идёт пересборка схемы.
     """
     row = _locked_row(db, item_id)
     if row.undone_at is not None:
         raise _refuse(409, REFUSE_JOURNAL_UNDONE, f"запись {item_id} уже отменена")
+    if row.kind == "split":
+        decision = _undo_split(db, row, user_id, block=True)
+        return _mark_undone(db, row, user_id, decision)
     if row.kind not in _UNDOABLE or row.parameter_id is None or row.value_id is None:
         raise _refuse(
             409, REFUSE_JOURNAL_UNDO_NOT_APPLICABLE,
@@ -388,11 +463,53 @@ def undo_action(db: Session, item_id: int, *, user_id: int) -> JournalItem:
         if translated is exc:
             raise
         raise translated from exc
+    return _mark_undone(db, row, user_id, decision)
+
+
+def _mark_undone(
+    db: Session, row: CatalogAutoAction, user_id: int, decision: dict
+) -> JournalItem:
     row.payload = {**row.payload, "undo_decision": decision}
     row.undone_at = datetime.now(UTC)
     row.undone_by = user_id
     db.flush()
-    return get_journal_item(db, item_id)
+    return get_journal_item(db, row.id)
+
+
+def resplit_action(db: Session, item_id: int, *, user_id: int, level: int) -> JournalItem:
+    """«Поправить» деление: отмена без пометки «автоделение не трогает» и задание автоделения
+    с уровнем `level` (от корня, с нуля); новое деление придёт отдельной записью. Условия
+    доступности те же, что у отмены; уровень, который не даёт групп, отказывает до записи.
+
+    Raises:
+        DomainError: записи нет (`404`); отменена (`409 journal_already_undone`); не деление
+            (`409 journal_undo_not_applicable`); замок отмены (`409 journal_undo_locked`);
+            уровень без групп (`409 journal_resplit_no_groups`).
+    """
+    row = _locked_row(db, item_id)
+    if row.undone_at is not None:
+        raise _refuse(409, REFUSE_JOURNAL_UNDONE, f"запись {item_id} уже отменена")
+    if row.kind != "split":
+        raise _refuse(
+            409, REFUSE_JOURNAL_UNDO_NOT_APPLICABLE,
+            f"запись {item_id} вида «{row.kind}» не делится заново",
+        )
+    locked_by = auto_split.split_lock(db, item_id)
+    if locked_by is not None:
+        raise DomainError(
+            409, "части правили вручную после деления: отмена недоступна",
+            code=REFUSE_JOURNAL_UNDO_LOCKED, context={"locked_by": locked_by},
+        )
+    if not auto_split.resplit_has_groups(db, item_id, level):
+        raise _refuse(
+            409, REFUSE_JOURNAL_RESPLIT_NO_GROUPS,
+            f"на уровне {level} у членов нет разных заголовков: делить нечего",
+        )
+    decision = {**_undo_split(db, row, user_id, block=False), "resplit_level": level}
+    auto_split.enqueue_auto_split(
+        db, context_id=row.context_id, settings=app_settings, level=level, revive=True
+    )
+    return _mark_undone(db, row, user_id, decision)
 
 
 def restore_auto(db: Session, item_id: int, *, user_id: int) -> JournalItem:
@@ -410,6 +527,12 @@ def restore_auto(db: Session, item_id: int, *, user_id: int) -> JournalItem:
     if row.restored_at is not None:
         raise _refuse(409, REFUSE_JOURNAL_ALREADY_RESTORED, f"запись {item_id} уже возвращена")
     decision = row.payload.get("undo_decision", {})
+    if decision.get("blocked"):
+        db.execute(
+            sa.update(CatalogContext)
+            .where(CatalogContext.id == row.context_id)
+            .values(auto_split_blocked_at=None, auto_split_blocked_by=None)
+        )
     if "veto_id" in decision:
         db.execute(sa.delete(CompositeVeto).where(CompositeVeto.id == decision["veto_id"]))
     if "not_duplicate_id" in decision:
