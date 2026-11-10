@@ -829,3 +829,180 @@ class TestFreezeSchema:
         assert {row.composite_kind for row in frozen.rows.values()} == {None}
         assert composite_parts(db_session, [row.id for row in frozen.rows.values()]) == {}
         assert _journal(db_session, scene, "composite") == []
+
+
+# ---------------------------------------------------------------------------
+#  Исправления первого круга ревью
+# ---------------------------------------------------------------------------
+
+def _retire(db, *value_ids):
+    db.execute(
+        sa.update(FamilyParameterValue)
+        .where(FamilyParameterValue.id.in_(value_ids))
+        .values(retired_at=sa.func.now())
+    )
+    db.flush()
+
+
+class TestRetiredComposite:
+    """Точная норма выведенного составного: воскрешается, только когда все его части
+    действующие простые; иначе ответ по параметру `none`. Ничего не бросается."""
+
+    def _retired_composite(self, db, factories):
+        scene = _scene(db, factories, ("балки", "плиты", "колонны"))
+        _run(db, scene, _several("all", "балки", "плиты"))
+        composite_id = _row_of(db, scene)[0]
+        _retire(db, composite_id)
+        return scene, composite_id
+
+    def test_new_text_of_a_retired_composite_with_active_parts_revives_it_quietly(
+        self, db_session, factories
+    ):
+        scene, composite_id = self._retired_composite(db_session, factories)
+        journal_before = len(_journal(db_session, scene))
+
+        outcome = _run(db_session, scene, _new("балки + плиты"))
+
+        assert _row_of(db_session, scene) == (composite_id, "name", None)
+        assert _value(db_session, composite_id).retired_at is None
+        assert outcome.values_added == ()
+        assert len(_journal(db_session, scene)) == journal_before
+        assert _journal(db_session, scene, "value_added") == []
+
+    def test_a_several_element_that_is_a_retired_composite_with_active_parts_is_expanded(
+        self, db_session, factories
+    ):
+        scene, composite_id = self._retired_composite(db_session, factories)
+
+        outcome = _run(db_session, scene, _several("all", "балки + плиты", "колонны"))
+
+        value_id, _source, _off_list = _row_of(db_session, scene)
+        assert _parts_of(db_session, value_id) == _ids(scene, "балки", "плиты", "колонны")
+        assert _value(db_session, composite_id).retired_at is None
+        assert outcome.values_added == ()
+        assert _journal(db_session, scene, "value_added") == []
+
+    def test_new_text_of_a_retired_composite_with_a_retired_part_is_none(
+        self, db_session, factories, caplog
+    ):
+        scene, composite_id = self._retired_composite(db_session, factories)
+        _retire(db_session, scene.ids["балки"])
+
+        with caplog.at_level(logging.INFO, logger="services.value_filters"):
+            outcome = _run(db_session, scene, _new("балки + плиты"))
+
+        assert _row_of(db_session, scene) == (None, "none", None)
+        assert _value(db_session, composite_id).retired_at is not None
+        assert outcome.values_added == ()
+        assert [r.name for r in caplog.records if r.name == "services.value_filters"] != []
+
+    def test_a_several_element_that_is_a_retired_composite_with_a_retired_part_is_none(
+        self, db_session, factories
+    ):
+        scene, composite_id = self._retired_composite(db_session, factories)
+        _retire(db_session, scene.ids["балки"])
+        composites_before = len(_composites(db_session, scene))
+
+        _run(db_session, scene, _several("all", "балки + плиты", "колонны"))
+
+        assert _row_of(db_session, scene) == (None, "none", None)
+        assert _value(db_session, composite_id).retired_at is not None
+        assert len(_composites(db_session, scene)) == composites_before
+
+
+class TestSeveralElementIsAGlue:
+    """Элемент `several`, разрезанный фильтром 1, отдаёт части; составное создаёт
+    только итог ответа."""
+
+    NAMES = ("балки", "плиты", "колонны")
+
+    def test_a_glue_element_of_the_same_kind_makes_one_composite_and_one_entry(
+        self, db_session, factories
+    ):
+        scene = _scene(db_session, factories, self.NAMES)
+
+        _run(db_session, scene, _several("all", "балки и плиты", "колонны"))
+
+        value_id, _source, _off_list = _row_of(db_session, scene)
+        assert _composites(db_session, scene) == [_value(db_session, value_id)]
+        assert _parts_of(db_session, value_id) == _ids(scene, "балки", "плиты", "колонны")
+        assert [entry.value_id for entry in _journal(db_session, scene, "composite")] == [value_id]
+
+    def test_an_or_glue_element_under_any_makes_one_composite_and_one_entry(
+        self, db_session, factories
+    ):
+        scene = _scene(db_session, factories, self.NAMES)
+
+        _run(db_session, scene, _several("any", "балки или плиты", "колонны"))
+
+        value_id, _source, _off_list = _row_of(db_session, scene)
+        assert _composites(db_session, scene) == [_value(db_session, value_id)]
+        assert _value(db_session, value_id).composite_kind == "any"
+        assert len(_journal(db_session, scene, "composite")) == 1
+
+    @pytest.mark.parametrize(
+        ("combine", "element"), [("any", "балки и плиты"), ("all", "балки или плиты")]
+    )
+    def test_a_glue_element_of_another_kind_makes_the_answer_none_and_no_composite(
+        self, db_session, factories, combine, element
+    ):
+        scene = _scene(db_session, factories, self.NAMES)
+
+        _run(db_session, scene, _several(combine, element, "колонны"))
+
+        assert _row_of(db_session, scene) == (None, "none", None)
+        assert _composites(db_session, scene) == []
+        assert _journal(db_session, scene) == []
+
+
+class TestClosedParameterListMeansActiveSimple:
+    def test_the_exact_text_of_a_composite_is_off_list(self, db_session, factories):
+        scene = _scene(db_session, factories, ("бетон", "кирпич"), closed=True)
+        _run(db_session, scene, _several("all", "бетон", "кирпич"))
+
+        _run(db_session, scene, _new("бетон + кирпич"))
+
+        assert _row_of(db_session, scene) == (None, "off_list", "бетон + кирпич")
+
+    def test_a_several_element_that_is_the_text_of_a_composite_is_off_list(
+        self, db_session, factories
+    ):
+        scene = _scene(db_session, factories, ("бетон", "кирпич", "дерево"), closed=True)
+        _run(db_session, scene, _several("all", "бетон", "кирпич"))
+
+        _run(db_session, scene, _several("all", "бетон + кирпич", "дерево"))
+
+        assert _row_of(db_session, scene) == (None, "off_list", "бетон + кирпич + дерево")
+
+
+class TestPartLinkTouchesOnlyThisCall:
+    def test_an_older_entry_of_a_revived_part_keeps_its_reference(self, db_session, factories):
+        scene = _scene(db_session, factories, ("балки", "плиты"))
+        _run(db_session, scene, _new("капители"))
+        part_id = _row_of(db_session, scene)[0]
+        _retire(db_session, part_id)
+
+        _run(db_session, scene, _several("all", "балки", "капители"))
+
+        composite_id = _row_of(db_session, scene)[0]
+        old, new = _journal(db_session, scene, "value_added")
+        assert (old.value_id, old.payload["from_composite_id"]) == (part_id, None)
+        assert (new.value_id, new.payload["from_composite_id"]) == (part_id, composite_id)
+
+
+class TestLemmaCountBeforeNotDuplicate:
+    def test_a_marked_pair_among_two_lemma_matches_makes_a_new_value(
+        self, db_session, factories
+    ):
+        scene = _scene(db_session, factories, ("плита перекрытий", "плиты перекрытия", "балки"))
+        add_not_duplicate(
+            db_session, parameter_id=scene.parameter_id, text_norm="плита перекрытие",
+            value_id=scene.ids["плита перекрытий"], user_id=scene.actor,
+        )
+
+        _run(db_session, scene, _new("плита перекрытие"))
+
+        value_id, _source, _off_list = _row_of(db_session, scene)
+        assert value_id not in scene.ids.values()
+        assert _value(db_session, value_id).value == "плита перекрытие"
+        assert [entry.kind for entry in _journal(db_session, scene)] == ["value_added"]
