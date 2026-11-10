@@ -190,9 +190,9 @@ def test_work_variants_tariffs_each_kind_takes_its_own_four_fields():
 
 def test_work_variants_tariffs_every_kind_pairwise_distinct():
     s = _distinct_prices()
-    # Шесть видов, четыре тарифа (решение 11 плана лестницы аналогов): section_zone
-    # делит тариф с family_suggestion, releasable_params — с family_schema.
-    assert len(list(SemanticJobKind)) == 6
+    # Семь видов, четыре тарифа: section_zone делит тариф с family_suggestion,
+    # releasable_params — с family_schema, а у auto_split модели нет и тарифа нет.
+    assert len(list(SemanticJobKind)) == 7
     assert tariffs_from(s, SemanticJobKind.section_zone) == tariffs_from(
         s, SemanticJobKind.family_suggestion
     )
@@ -200,7 +200,10 @@ def test_work_variants_tariffs_every_kind_pairwise_distinct():
         s, SemanticJobKind.family_schema
     )
     own = [k for k in SemanticJobKind
-           if k not in (SemanticJobKind.section_zone, SemanticJobKind.releasable_params)]
+           if k not in (
+               SemanticJobKind.section_zone, SemanticJobKind.releasable_params,
+               SemanticJobKind.auto_split,
+           )]
     got = [tariffs_from(s, k) for k in own]
     assert len(got) == 4
     assert len(set(got)) == 4

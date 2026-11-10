@@ -845,6 +845,8 @@ class TestParityWithMigration:
             "ck_family_parameter_values_not_self_merged",
             "ck_family_parameter_values_range_order",
             "ck_family_parameter_values_retired_not_merged",
+            "ck_family_parameter_values_composite_kind",  # миграция 0025
+            "ck_family_parameter_values_composite_pair",  # миграция 0025
         },
         "context_parameter_values": {
             "ck_context_parameter_values_source",

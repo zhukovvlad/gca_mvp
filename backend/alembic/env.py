@@ -90,6 +90,10 @@ RAW_SQL_INDEXES = {
     "uq_semantic_jobs_discovery_live",
     # UNIQUE (job_id) WHERE grp = 'not_work' — 0021, одна группа «не работа» на открытие.
     "uq_family_drafts_not_work_per_job",
+    # UNIQUE (parameter_id, composite_key) WHERE composite_key IS NOT NULL AND
+    # merged_into_id IS NULL AND retired_at IS NULL — 0025, одно действующее
+    # составное значение на (параметр, вид, состав).
+    "uq_family_parameter_values_composite_key",
 }
 
 
