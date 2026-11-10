@@ -11,8 +11,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 from decimal import Decimal, localcontext
 from typing import Literal
 
@@ -26,7 +26,10 @@ from services.zone_rules import Zone
 MIN_NOMINAL: Decimal = Decimal(1)
 
 RungNo = Literal[1, 2, 3, 4]
-NoHistoryReason = Literal["no_family", "path_conflict", "no_params", "no_zone_match"]
+NoHistoryReason = Literal["no_family", "path_conflict", "composite", "no_params", "no_zone_match"]
+#: Форма значения контекста (спека упрощения каталога §2.2): id составного значения либо `"simple"`
+#: (простое, «не уточнено» и конфликт).
+Form = Literal["simple"] | int
 
 _RUNGS: tuple[RungNo, ...] = (1, 2, 3, 4)
 
@@ -50,6 +53,8 @@ class KpWork:
     #: Главные параметры контекста строки с `source = 'path_conflict'` (на версии схемы варианта):
     #: конфликт — не значение и не совпадает ни с чем (спека §2.8).
     conflicted: frozenset[int] = frozenset()
+    #: parameter_id -> форма значения; составные значения — только у варианта на действующей версии.
+    forms: Mapping[int, Form] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -71,6 +76,8 @@ class WorkHistoryLine:
     vat_base: Decimal | None
     #: Главные параметры контекста строки с `source = 'path_conflict'` (на версии схемы варианта).
     conflicted: frozenset[int] = frozenset()
+    #: parameter_id -> форма значения, как у строки КП.
+    forms: Mapping[int, Form] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -121,6 +128,34 @@ class WorkLadder:
     kp_ratio: Decimal | None
     no_history_reason: NoHistoryReason | None
     vat_dropped: tuple[int, ...]
+    #: Самая свежая расценка среди аналогов остатка с подрядчиком участника КП (спека упрощения §2.9).
+    contractor: Figure | None = None
+
+
+@dataclass(frozen=True)
+class CompositeValue:
+    """Составное значение строки КП: вид (`all` | `any`) и части (id, текст) по возрастанию id."""
+
+    kind: str
+    parts: tuple[tuple[int, str], ...]
+
+
+@dataclass(frozen=True)
+class PartReference:
+    """Справка по одной части составного значения (спека упрощения каталога §2.8)."""
+
+    value_id: int
+    value: str
+    #: Все кандидаты части выбранного класса, включая выбросы.
+    analogs: int
+    contracts: int
+    #: Вилка остатка (без выбросов); `None` — остатка нет.
+    min: Decimal | None
+    max: Decimal | None
+    lowest_analog_id: int | None
+    lowest_contract_id: int | None
+    #: Кандидатов класса тендера нет, взяты из другого класса.
+    other_class: bool
 
 
 @dataclass(frozen=True)
@@ -151,12 +186,36 @@ def _required_ids(info: FamilyLadderInfo | None) -> tuple[int, ...]:
     return tuple(p for p in info.main_parameter_ids if p not in info.releasable_ids)
 
 
-def _values_key(main_values: Mapping[int, int | None], required: Sequence[int]) -> tuple[int | None, ...]:
-    """Значения неотпускаемых главных параметров: равенство ключей — совпадение по всем им."""
-    return tuple(main_values.get(p) for p in required)
+def _releasable_ids(info: FamilyLadderInfo | None) -> tuple[int, ...]:
+    """Главные параметры, которые ступени 2 и 4 отпускают, по порядку `ordinal`."""
+    if info is None:
+        return ()
+    return tuple(p for p in info.main_parameter_ids if p in info.releasable_ids)
 
 
-_ValuesKey = tuple[int | None, ...]
+def _form(forms: Mapping[int, Form], conflicted: frozenset[int], parameter_id: int) -> Form:
+    """Форма значения (спека упрощения §2.2): составное — свой id, остальное и конфликт — простое."""
+    if parameter_id in conflicted:
+        return "simple"
+    return forms.get(parameter_id, "simple")
+
+
+def _values_key(
+    main_values: Mapping[int, int | None],
+    forms: Mapping[int, Form],
+    conflicted: frozenset[int],
+    required: Sequence[int],
+    releasable: Sequence[int],
+) -> tuple[int | str | None, ...]:
+    """Ключ ступеней 2 и 4 (спека упрощения §2.8): значения неотпускаемых главных параметров, затем
+    формы отпускаемых. Равенство ключей — совпадение по всем им."""
+    return (
+        *(main_values.get(p) for p in required),
+        *(_form(forms, conflicted, p) for p in releasable),
+    )
+
+
+_ValuesKey = tuple[int | str | None, ...]
 _Unknown = tuple[WorkHistoryLine, HistoryContract]
 
 
@@ -237,13 +296,14 @@ class WorkHistory:
 
         info = self.families.get(family_id)
         required = _required_ids(info)
+        releasable = _releasable_ids(info)
 
         def values_key(line: WorkHistoryLine) -> _ValuesKey | None:
             """Ключ значений строки на действующей версии схемы семьи; иначе `None`. Конфликт по
             неотпускаемому параметру — не значение: ключа нет (спека §2.8)."""
             if info is None or line.schema_id != info.schema_id or line.conflicted & set(required):
                 return None
-            return _values_key(line.main_values, required)
+            return _values_key(line.main_values, line.forms, line.conflicted, required, releasable)
 
         by_variant: dict[tuple[Zone, int], list[_Candidate]] = {}
         by_values: dict[tuple[Zone, _ValuesKey], list[_Candidate]] = {}
@@ -318,7 +378,7 @@ def ladder_for(
         and any(p in info.releasable_ids for p in info.main_parameter_ids)
     )
     required = _required_ids(info)
-    kp_values = _values_key(kp.main_values, required)
+    kp_values = _values_key(kp.main_values, kp.forms, kp.conflicted, required, _releasable_ids(info))
     # Конфликт строки КП: ступени 1 и 3 не берут её вовсе; 2 и 4 — только если конфликт по
     # неотпускаемому параметру (отпускаемый и так отпущен).
     by_variant_blocked = bool(kp.conflicted)
@@ -380,52 +440,37 @@ def ladder_for(
                 kp.variant_id,
                 kp_values if releasable_ladder and not by_values_blocked else None,
                 conflicted=by_variant_blocked and (by_values_blocked or not releasable_ladder),
+                composite=any(form != "simple" and p not in kp.conflicted for p, form in kp.forms.items()),
             ),
             vat_dropped=_dropped_on_first_rung(),
         )
 
-    with localcontext(_CONTEXT):
-        outlier_ratio: dict[int, Decimal | None] = {}
-        for index, cand in enumerate(picked):
-            ratio: Decimal | None = None
-            if len(picked) >= 2:
-                others = [c.net for i, c in enumerate(picked) if i != index]
-                candidate_ratio = cand.net / median(others)
-                if outside(candidate_ratio):
-                    ratio = candidate_ratio
-            outlier_ratio[cand.line.position_item_id] = ratio
-
-        remainder = [c for c in picked if outlier_ratio[c.line.position_item_id] is None]
-        all_outliers = not remainder
-        kp_ratio: Decimal | None = None
-        if remainder:
+    outlier_ratio = _outlier_ratios(picked)
+    remainder = [c for c in picked if outlier_ratio[c.line.position_item_id] is None]
+    all_outliers = not remainder
+    kp_ratio: Decimal | None = None
+    if remainder:
+        with localcontext(_CONTEXT):
             ratio = kp.net / median([c.net for c in remainder])
             kp_ratio = ratio if outside(ratio) else None
-
-    def rank(c: _Candidate) -> tuple[tuple[int, int], int]:
-        return date_rank(c.contract.period, target_month), c.line.position_item_id
 
     def place(c: _Candidate) -> int:
         return len(kp.chain_titles & c.line.chain_titles)
 
-    lowest = freshest = None
+    lowest = freshest = contractor = None
     if remainder:
-        low = min(
-            remainder,
-            key=lambda c: (
-                c.net,
-                0 if c.contract.contractor_id == tender_contractor_id else 1,
-                *rank(c),
-            ),
-        )
+        low = _lowest_of(remainder, contractor_id=tender_contractor_id, target_month=target_month)
         lowest = Figure(low.net, low.line.position_item_id, low.contract.contract_id)
-        dated = [c for c in remainder if c.contract.period is not None]
-        if dated:
-            fresh = min(
-                dated,
-                key=lambda c: (date_rank(c.contract.period, target_month), -place(c), c.net, c.line.position_item_id),
-            )
+        fresh = _freshest_of(remainder, place=place, target_month=target_month)
+        if fresh is not None:
             freshest = Figure(fresh.net, fresh.line.position_item_id, fresh.contract.contract_id)
+        mine = _freshest_of(
+            [c for c in remainder if c.contract.contractor_id == tender_contractor_id],
+            place=place,
+            target_month=target_month,
+        )
+        if mine is not None:
+            contractor = Figure(mine.net, mine.line.position_item_id, mine.contract.contract_id)
 
     reference = sorted(
         picked,
@@ -459,7 +504,130 @@ def ladder_for(
         kp_ratio=kp_ratio,
         no_history_reason=None,
         vat_dropped=tuple(sorted(dropped)),
+        contractor=contractor,
     )
+
+
+def _outlier_ratios(picked: Sequence[_Candidate]) -> dict[int, Decimal | None]:
+    """position_item_id -> отношение цены кандидата к медиане цен остальных, если оно за границами
+    (выброс); иначе `None`. Один кандидат выбросом не бывает."""
+    ratios: dict[int, Decimal | None] = {}
+    with localcontext(_CONTEXT):
+        for index, cand in enumerate(picked):
+            ratio: Decimal | None = None
+            if len(picked) >= 2:
+                others = [c.net for i, c in enumerate(picked) if i != index]
+                candidate_ratio = cand.net / median(others)
+                if outside(candidate_ratio):
+                    ratio = candidate_ratio
+            ratios[cand.line.position_item_id] = ratio
+    return ratios
+
+
+def _lowest_of(
+    remainder: Sequence[_Candidate], *, contractor_id: int | None, target_month: YearMonth | None
+) -> _Candidate:
+    """Самая низкая цена; ничьи — договор подрядчика КП, ближе к дате КП, меньший id строки."""
+    return min(
+        remainder,
+        key=lambda c: (
+            c.net,
+            0 if c.contract.contractor_id == contractor_id else 1,
+            date_rank(c.contract.period, target_month),
+            c.line.position_item_id,
+        ),
+    )
+
+
+def _freshest_of(
+    candidates: Sequence[_Candidate], *, place: Callable[[_Candidate], int], target_month: YearMonth | None
+) -> _Candidate | None:
+    """Самая свежая: договор с периодом, ближайшим к дате КП; ничьи — ближе место, ниже цена, меньший id."""
+    dated = [c for c in candidates if c.contract.period is not None]
+    if not dated:
+        return None
+    return min(
+        dated,
+        key=lambda c: (date_rank(c.contract.period, target_month), -place(c), c.net, c.line.position_item_id),
+    )
+
+
+def parts_reference(
+    kp: KpWork,
+    history: WorkHistory,
+    *,
+    tender_class_id: int | None,
+    composites: Mapping[int, CompositeValue],
+    tender_contractor_id: int | None = None,
+    target_month: YearMonth | None = None,
+) -> list[dict]:
+    """Справка «по частям» для сборной строки КП (спека упрощения каталога §2.8); на цифры строки не влияет.
+
+    Для каждого составного главного параметра строки (`composites`: parameter_id -> значение) и каждой его
+    части `p` — кандидаты той же семьи, версии схемы и зоны, у которых этот параметр равен `p` по `value_id`,
+    даже если он отпускаемый; остальные главные параметры — по ключу ступени 2. Сначала класс тендера,
+    пусто — другой класс. Выбросы — как в лестнице, отдельно по каждой части. Части целью не становятся.
+    """
+    info = history.families.get(kp.family_id)
+    if info is None:
+        return []
+    required = _required_ids(info)
+    releasable = _releasable_ids(info)
+    blocked = bool(kp.conflicted & set(required))
+    candidates = history.pool(kp.family_id).candidates
+    result: list[dict] = []
+    for parameter_id in info.main_parameter_ids:
+        composite = composites.get(parameter_id)
+        if composite is None or _form(kp.forms, kp.conflicted, parameter_id) == "simple":
+            continue
+        rest_required = tuple(p for p in required if p != parameter_id)
+        rest_releasable = tuple(p for p in releasable if p != parameter_id)
+        kp_rest = _values_key(kp.main_values, kp.forms, kp.conflicted, rest_required, rest_releasable)
+        unusable = {parameter_id, *required}
+        matching = [
+            c
+            for c in candidates
+            if not blocked
+            and c.line.zone == kp.zone
+            and c.line.schema_id == info.schema_id
+            and not c.line.conflicted & unusable
+            and _values_key(c.line.main_values, c.line.forms, c.line.conflicted, rest_required, rest_releasable)
+            == kp_rest
+        ]
+        parts = []
+        for value_id, text in composite.parts:
+            matched = [c for c in matching if c.line.main_values.get(parameter_id) == value_id]
+            in_class = [c for c in matched if c.contract.rate_class_id == tender_class_id]
+            picked = in_class or matched
+            ratios = _outlier_ratios(picked)
+            remainder = [c for c in picked if ratios[c.line.position_item_id] is None]
+            low = (
+                _lowest_of(remainder, contractor_id=tender_contractor_id, target_month=target_month)
+                if remainder
+                else None
+            )
+            parts.append(
+                PartReference(
+                    value_id=value_id,
+                    value=text,
+                    analogs=len(picked),
+                    contracts=len({c.contract.contract_id for c in picked}),
+                    min=min((c.net for c in remainder), default=None),
+                    max=max((c.net for c in remainder), default=None),
+                    lowest_analog_id=None if low is None else low.line.position_item_id,
+                    lowest_contract_id=None if low is None else low.contract.contract_id,
+                    other_class=bool(matched) and not in_class,
+                )
+            )
+        result.append(
+            {
+                "parameter_id": parameter_id,
+                "parameter_name": info.names[parameter_id],
+                "kind": composite.kind,
+                "parts": parts,
+            }
+        )
+    return result
 
 
 def _released_names(rung_no: RungNo, info: FamilyLadderInfo | None) -> tuple[str, ...]:
@@ -471,18 +639,22 @@ def _released_names(rung_no: RungNo, info: FamilyLadderInfo | None) -> tuple[str
 def _no_history_reason(
     pool: _FamilyPool,
     variant_id: int,
-    values_key: tuple[int | None, ...] | None,
+    values_key: _ValuesKey | None,
     *,
     conflicted: bool = False,
+    composite: bool = False,
 ) -> NoHistoryReason:
     """Первая причина по кандидатам семьи любого класса и любой зоны (§2.10). Параметры совпали —
-    у кандидата тот же вариант либо (ступени 2 и 4 доступны, `values_key` задан) те же значения
-    неотпускаемых главных параметров на действующей версии схемы. `conflicted` — у строки КП есть
-    конфликтный главный параметр, мешающий на всех ступенях: причина раньше `no_params`."""
+    у кандидата тот же вариант либо (ступени 2 и 4 доступны, `values_key` задан) тот же ключ ступеней
+    2 и 4. `conflicted` — у строки КП есть конфликтный главный параметр, мешающий на всех ступенях:
+    причина раньше `no_params`. `composite` — у строки составное главное значение (спека упрощения
+    каталога §2.8): причина раньше `no_params` и `no_zone_match`."""
     if not pool.candidates:
         return "no_family"
     if conflicted:
         return "path_conflict"
+    if composite:
+        return "composite"
     if variant_id not in pool.variant_ids and (values_key is None or values_key not in pool.values_keys):
         return "no_params"
     return "no_zone_match"

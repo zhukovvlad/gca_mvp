@@ -28,6 +28,7 @@ from services.analog_ladder import (
     Analog,
     FamilyLadderInfo,
     Figure,
+    Form,
     KpWork,
     WorkHistory,
     WorkHistoryLine,
@@ -157,6 +158,8 @@ class KpLine:
     zone_waiting: bool = False
     #: Главные параметры контекста строки со значением `path_conflict` (версия схемы варианта).
     conflicted: frozenset[int] = frozenset()
+    #: parameter_id -> форма значения (id составного либо `"simple"`); только у варианта на действующей версии.
+    forms: Mapping[int, Form] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -213,8 +216,10 @@ class ManualRung:
     reset_reason: ResetReason | None
 
 
-TargetKind = Literal["freshest", "analog"]
-TargetResetReason = Literal["kind_changed", "not_comparable", "analog_unavailable", "no_freshest"]
+TargetKind = Literal["freshest", "analog", "contractor"]
+TargetResetReason = Literal[
+    "kind_changed", "not_comparable", "analog_unavailable", "no_freshest", "no_contractor"
+]
 #: Сохранённый выбор цели: вид и аналог (`position_item_id` строки договора; у «самой свежей» — `None`).
 SavedTarget = tuple[TargetKind, int | None]
 
@@ -249,6 +254,8 @@ def resolve_target(
         reason = "analog_unavailable"
     elif kind == "freshest" and result.freshest is None:
         reason = "no_freshest"
+    elif kind == "contractor" and result.ladder.contractor is None:
+        reason = "no_contractor"
     return TargetChoice(kind, analog_id, reason is None, reason)
 
 
@@ -258,7 +265,12 @@ def target_analog(result: LineResult, choice: TargetChoice | None) -> Analog | N
     if ladder is None or result.state is not LineState.comparable:
         return None
     if choice is not None and choice.active:
-        analog_id = choice.analog_id if choice.kind == "analog" else result.freshest.analog_id
+        if choice.kind == "analog":
+            analog_id = choice.analog_id
+        elif choice.kind == "contractor":
+            analog_id = ladder.contractor.analog_id
+        else:
+            analog_id = result.freshest.analog_id
     else:
         analog_id = ladder.lowest.analog_id
     return next(a for a in ladder.analogs if a.position_item_id == analog_id)
@@ -665,6 +677,24 @@ def _compare(
     )
 
 
+def kp_work_of(line: KpLine, net: Decimal) -> KpWork:
+    """Строка КП-работа для лестницы: `net` — нетто цены за единицу."""
+    key = line.key
+    assert key is not None
+    return KpWork(
+        position_item_id=line.position_item_id,
+        family_id=key.family_id,
+        variant_id=key.variant_id,
+        schema_id=line.schema_id,
+        main_values=line.main_values,
+        zone=line.zone,
+        chain_titles=line.chain_titles,
+        net=net,
+        conflicted=line.conflicted,
+        forms=line.forms,
+    )
+
+
 def _evaluate_work(
     line: KpLine,
     *,
@@ -679,17 +709,7 @@ def _evaluate_work(
     key = line.key
     assert key is not None and line.weight is not None
     ladder = ladder_for(
-        KpWork(
-            position_item_id=line.position_item_id,
-            family_id=key.family_id,
-            variant_id=key.variant_id,
-            schema_id=line.schema_id,
-            main_values=line.main_values,
-            zone=line.zone,
-            chain_titles=line.chain_titles,
-            net=kp_unit_net,
-            conflicted=line.conflicted,
-        ),
+        kp_work_of(line, kp_unit_net),
         work_history,
         tender_class_id=tender_class_id,
         tender_contractor_id=tender_contractor_id,

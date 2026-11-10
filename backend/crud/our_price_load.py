@@ -57,7 +57,8 @@ from models import (
     WorkVariant,
     WorkVariantValue,
 )
-from services.analog_ladder import FamilyLadderInfo, WorkHistoryLine
+from services.analog_ladder import CompositeValue, FamilyLadderInfo, Form, WorkHistoryLine
+from services.composite_values import composite_parts
 from services.our_price import HistoryContract, HistoryLine, KpLine, LineKey
 from services.our_price_money import CategoryRow
 from services.zone_rules import Zone, normalize_title
@@ -325,12 +326,15 @@ class _VariantInfo:
     #: parameter_id -> value_id | `None` по активным главным параметрам; только у варианта
     #: на действующей версии (у варианта на замещённой версии значения несопоставимы).
     main_values: Mapping[int, int | None] = field(default_factory=dict)
+    #: parameter_id -> форма значения: id составного значения либо `"simple"`; ключи те же, что у `main_values`.
+    forms: Mapping[int, Form] = field(default_factory=dict)
 
 
 def _variant_infos(db: Session, variant_ids: Sequence[int]) -> dict[int, _VariantInfo]:
-    """Ключ и подпись каждого варианта тремя запросами, сколько бы вариантов ни
+    """Ключ и подпись каждого варианта четырьмя запросами, сколько бы вариантов ни
     было: заголовки (семья, версия схемы варианта, действующая версия семьи),
-    активные главные параметры версий и значения вариантов.
+    активные главные параметры версий, значения вариантов и составные среди них
+    (форма значения, спека упрощения каталога §2.2).
 
     Первый главный параметр — у варианта на действующей (`frozen`) версии, чьих
     активных главных параметров два и больше; у варианта на замещённой версии
@@ -384,6 +388,9 @@ def _variant_infos(db: Session, variant_ids: Sequence[int]) -> dict[int, _Varian
         .where(WorkVariantValue.variant_id.in_(ids))
     ).all():
         values[variant_id][parameter_id] = (value_id, text)
+    composite_of = composite_parts(
+        db, {value_id for own in values.values() for value_id, _ in own.values() if value_id is not None}
+    )
 
     infos: dict[int, _VariantInfo] = {}
     for head in heads:
@@ -394,6 +401,9 @@ def _variant_infos(db: Session, variant_ids: Sequence[int]) -> dict[int, _Varian
         if on_current and len(parameters) >= 2:
             first_main = (parameters[0], own.get(parameters[0], (None, None))[0])
         parts = [head.title] + [own.get(parameter_id, (None, None))[1] or _UNKNOWN_LABEL for parameter_id in parameters]
+        main_values = (
+            {parameter_id: own.get(parameter_id, (None, None))[0] for parameter_id in parameters} if on_current else {}
+        )
         infos[head.id] = _VariantInfo(
             family_id=head.family_id,
             family_title=head.title,
@@ -401,11 +411,11 @@ def _variant_infos(db: Session, variant_ids: Sequence[int]) -> dict[int, _Varian
             label=_LABEL_SEPARATOR.join(parts),
             schema_id=head.schema_id,
             current_schema_id=head.current_schema_id,
-            main_values=(
-                {parameter_id: own.get(parameter_id, (None, None))[0] for parameter_id in parameters}
-                if on_current
-                else {}
-            ),
+            main_values=main_values,
+            forms={
+                parameter_id: value_id if value_id in composite_of else "simple"
+                for parameter_id, value_id in main_values.items()
+            },
         )
     return infos
 
@@ -659,9 +669,35 @@ def load_work_history(
                 weight=weight,
                 vat_base=vat_base,
                 conflicted=_conflicts_of(conflicts, context_id, info.schema_id),
+                forms=info.forms,
             )
         )
     return lines, _family_ladder_infos(db)
+
+
+def load_composites(db: Session, line: KpLine) -> dict[int, CompositeValue]:
+    """Составные значения главных параметров одной строки КП: parameter_id -> вид и части (id, текст).
+    У строки без составных значений запросов нет; иначе два запроса, сколько бы частей ни было."""
+    composite_ids = {parameter_id: form for parameter_id, form in line.forms.items() if form != "simple"}
+    parts_of = composite_parts(db, composite_ids.values())
+    part_ids = {part for _, parts in parts_of.values() for part in parts}
+    texts = (
+        dict(
+            db.execute(
+                sa.select(FamilyParameterValue.id, FamilyParameterValue.value).where(
+                    FamilyParameterValue.id.in_(part_ids)
+                )
+            ).all()
+        )
+        if part_ids
+        else {}
+    )
+    return {
+        parameter_id: CompositeValue(
+            kind=parts_of[value_id][0], parts=tuple((part, texts[part]) for part in parts_of[value_id][1])
+        )
+        for parameter_id, value_id in composite_ids.items()
+    }
 
 
 def load_analog_details(db: Session, position_item_ids: Sequence[int]) -> dict[int, tuple[str, str | None, list[str]]]:
@@ -851,6 +887,7 @@ def load_kp_lines(db: Session, estimate_ids: Sequence[int]) -> dict[int, list[Kp
                     chain_titles=chain.titles if chain is not None else frozenset(),
                     schema_id=info.schema_id if info is not None else None,
                     main_values=info.main_values if info is not None else {},
+                    forms=info.forms if info is not None else {},
                     conflicted=_conflicts_of(conflicts, context_id, info.schema_id if info else None),
                     zone_waiting=chain is not None
                     and chain.zone is None

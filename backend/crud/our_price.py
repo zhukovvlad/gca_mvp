@@ -37,6 +37,7 @@ from crud.our_price_load import (
     category_rows,
     kp_vat_bases,
     load_analog_details,
+    load_composites,
     load_history,
     load_kp_lines,
     load_work_history,
@@ -55,7 +56,7 @@ from models import (
 )
 from money.inflation import YearMonth, adjust_amount
 from money.price import is_price
-from services.analog_ladder import FamilyLadderInfo, Figure, WorkHistory
+from services.analog_ladder import FamilyLadderInfo, Figure, WorkHistory, parts_reference
 from services.excel import iso_date_to_ru
 from services.kp_comment import CommentInputs, InflationLabel, target_net, template_text
 from services.kp_file import FileContext, KpSourceLine, line_comment_inputs
@@ -75,6 +76,7 @@ from services.our_price import (
     SavedTarget,
     available_rungs,
     evaluate_offer,
+    kp_work_of,
     lines_totals,
     offer_totals,
     resolve_target,
@@ -741,7 +743,25 @@ def _waiting_admin(line: KpLine, result: LineResult | None) -> bool:
     )
 
 
-def _line_view(row: KpLineRow, result: LineResult, rate: Decimal | None, history: HistoryIndex) -> dict:
+def _composite_parameter(line: KpLine, families: Mapping[int, FamilyLadderInfo]) -> dict | None:
+    """Первый по порядку главный параметр строки с составным значением: `{id, name}`; иначе `None`.
+    Берётся из форм, загруженных вместе с вариантом, запросов не делает."""
+    info = families.get(line.key.family_id) if line.key is not None else None
+    if info is None:
+        return None
+    for parameter_id in info.main_parameter_ids:
+        if line.forms.get(parameter_id, "simple") != "simple" and parameter_id not in line.conflicted:
+            return {"id": parameter_id, "name": info.names[parameter_id]}
+    return None
+
+
+def _line_view(
+    row: KpLineRow,
+    result: LineResult,
+    rate: Decimal | None,
+    history: HistoryIndex,
+    families: Mapping[int, FamilyLadderInfo],
+) -> dict:
     """Строка КП: у работы — на лестнице аналогов, у системы — на ступени, которую выбрало ядро.
 
     Имена ядра 4а (`ours`, `to_ours`, `bargain`) на границе ответа названы по смыслу:
@@ -810,6 +830,7 @@ def _line_view(row: KpLineRow, result: LineResult, rate: Decimal | None, history
         "section_chain_id": None if line.is_system else line.section_chain_id,
         "lowest": _lowest_view(result, rate),
         "freshest": _freshest_view(result.freshest, history, rate),
+        "contractor": _freshest_view(None if ladder is None else ladder.contractor, history, rate),
         "range": _range_view(result.range, rate),
         "position": result.position,
         "to_lowest": money_pair(result.to_ours, rate, unit=False),
@@ -821,6 +842,7 @@ def _line_view(row: KpLineRow, result: LineResult, rate: Decimal | None, history
         "below": money_pair(result.below, rate, unit=False),
         "analogs_count": len(ladder.analogs) if ladder is not None else 0,
         "no_history_reason": ladder.no_history_reason if ladder is not None else None,
+        "composite_parameter": _composite_parameter(line, families),
         "group": group,
         "unit_mismatch": _mismatch_view(result),
     }
@@ -962,7 +984,7 @@ def _line_with_decisions(scene: _Scene, participant: _Participant, row: KpLineRo
     # единицу КП не читаем: вид от неё не зависит.
     template = _template_text(scene, participant, row, result, "")
     return {
-        **_line_view(row, result, participant.base, scene.index),
+        **_line_view(row, result, participant.base, scene.index, scene.families),
         **_decision_fields(scene, participant, row, result, template),
     }
 
@@ -1131,6 +1153,52 @@ def _analogs_view(db: Session, scene: _Scene, participant: _Participant, result:
     return view
 
 
+def _parts_reference_view(
+    db: Session, scene: _Scene, participant: _Participant, row: KpLineRow, result: LineResult
+) -> list[dict]:
+    """Справка «по частям» сборной строки (спека упрощения каталога §2.8): только панель. У системы
+    и у работы, не дошедшей до лестницы, справки нет; на суммы и цель она не влияет."""
+    if result.ladder is None:
+        return []
+    groups = parts_reference(
+        kp_work_of(row.line, result.kp_unit_net),
+        scene.work_history,
+        tender_class_id=scene.head.rate_class_id,
+        composites=load_composites(db, row.line),
+        tender_contractor_id=participant.contractor_id,
+        target_month=scene.target_month,
+    )
+    rate = participant.base
+    view = []
+    for group in groups:
+        parts = []
+        for part in group["parts"]:
+            lowest = None
+            if part.lowest_analog_id is not None:
+                contract = scene.index.contract(part.lowest_contract_id)
+                lowest = {
+                    "value": money_pair(part.min, rate, unit=True),
+                    "analog_id": part.lowest_analog_id,
+                    "object_title": contract.object_title,
+                    "contract_number": contract.number,
+                    "period": _period_text(contract.period),
+                }
+            parts.append(
+                {
+                    "value_id": part.value_id,
+                    "value": part.value,
+                    "analogs": part.analogs,
+                    "contracts": part.contracts,
+                    "min": money_pair(part.min, rate, unit=True),
+                    "max": money_pair(part.max, rate, unit=True),
+                    "lowest": lowest,
+                    "other_class": part.other_class,
+                }
+            )
+        view.append({**group, "parts": parts})
+    return view
+
+
 def build_line_view(
     db: Session,
     tender_id: int,
@@ -1204,7 +1272,7 @@ def build_line_view(
     template = _template_text(scene, participant, row, result, unit_texts[position_item_id])
     own_comment = scene.decisions[participant.estimate_id].comments.get(position_item_id)
     line = {
-        **_line_view(row, result, rate, scene.index),
+        **_line_view(row, result, rate, scene.index, scene.families),
         **_decision_fields(scene, participant, row, result, template),
         "file_ours": _file_ours(scene, participant, row, result, unit_texts[position_item_id]),
     }
@@ -1213,6 +1281,7 @@ def build_line_view(
         "group_lines": group_lines,
         "contracts": contracts,
         "analogs": analogs,
+        "parts_reference": _parts_reference_view(db, scene, participant, row, result),
         "vat_dropped": vat_dropped,
         "comment": {
             "kind": line["comment_kind"],

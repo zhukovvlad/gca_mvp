@@ -66,6 +66,8 @@ LINE_KEYS = {
     "section_chain_id",
     "lowest",
     "freshest",
+    "contractor",
+    "composite_parameter",
     "range",
     "position",
     "to_lowest",
@@ -85,7 +87,7 @@ LINE_KEYS = {
     "comment_kind",
     "manual_rung",
 }
-PANEL_KEYS = {"line", "group_lines", "contracts", "analogs", "vat_dropped", "comment"}
+PANEL_KEYS = {"line", "group_lines", "contracts", "analogs", "parts_reference", "vat_dropped", "comment"}
 TOLERANCE = D("1e-20")
 
 

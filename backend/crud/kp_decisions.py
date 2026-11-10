@@ -64,6 +64,7 @@ CODE_TARGET_NOT_APPLICABLE = "target_not_applicable"
 CODE_ANALOG_UNAVAILABLE = "analog_unavailable"
 #: Код отказа `PUT …/target` «самая свежая»: самой свежей у строки нет.
 CODE_NO_FRESHEST = "no_freshest"
+CODE_NO_CONTRACTOR_ANALOG = "no_contractor_analog"
 
 
 @dataclass(frozen=True)
@@ -474,13 +475,14 @@ def put_target(
     inflation_series_id: int | None,
     actor_id: int,
 ) -> None:
-    """Сохранить выбор цели строки-работы: «самая свежая» или конкретный аналог остатка.
+    """Сохранить выбор цели строки-работы: «самая свежая», «с этим подрядчиком» или конкретный аналог остатка.
 
     Строка проверяется той же сценой, что чтение, и с тем же рядом ИПЦ: остаток от приведения зависит
     от ряда в обе стороны (спека лестницы аналогов §2.17), поэтому `selectable` панели и исход записи
     считаются одинаково. Ряд в записи не хранится. Отказы по порядку: ряд и принадлежность (как у
     чтения), система или не `comparable` (`target_not_applicable`), аналога нет в остатке
-    (`analog_unavailable`), самой свежей нет (`no_freshest`).
+    (`analog_unavailable`), самой свежей нет (`no_freshest`), аналога подрядчика КП в остатке нет
+    (`no_contractor_analog`).
     """
     from crud.our_price import line_for_rung_check  # crud.our_price читает решения из этого модуля
 
@@ -497,6 +499,10 @@ def put_target(
         )
     if kind == "freshest" and result.freshest is None:
         raise DomainError(422, "У строки нет самой свежей расценки.", code=CODE_NO_FRESHEST)
+    if kind == "contractor" and result.ladder.contractor is None:
+        raise DomainError(
+            422, "Среди аналогов строки нет договора подрядчика этого КП.", code=CODE_NO_CONTRACTOR_ANALOG
+        )
 
     stmt = pg_insert(KpLineTarget).values(
         position_item_id=pid,
