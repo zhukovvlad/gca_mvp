@@ -88,11 +88,36 @@ def _checked_parts(db: Session, parameter_id: int, part_ids: Sequence[int]) -> l
     return canonical
 
 
+def _extend_list(
+    db: Session, *, parameter_id: int, value_id: int, text: str, origin: ValueOrigin,
+    context_id: int | None,
+) -> int:
+    """Новое значение расширяет список параметра: `revision` версии растёт, пишется
+    событие `family_schema_value_added` (как у `work_variants._extend_with_value`).
+    Возвращает `family_id`."""
+    schema_id, family_id = db.execute(
+        sa.select(FamilyParameter.schema_id, FamilyParameterSchema.family_id)
+        .join(FamilyParameterSchema, FamilyParameterSchema.id == FamilyParameter.schema_id)
+        .where(FamilyParameter.id == parameter_id)
+    ).one()
+    bump_revision(db, schema_id)
+    record_event(
+        db, event_type="family_schema_value_added", family_id=family_id,
+        payload={
+            "parameter_id": parameter_id, "value_id": value_id, "value": text,
+            "origin": origin.value, "context_id": context_id,
+        },
+    )
+    return family_id
+
+
 def _create_veto_value(
-    db: Session, parameter_id: int, value_norm: str, source_text: str | None
+    db: Session, parameter_id: int, value_norm: str, source_text: str | None,
+    context_id: int | None,
 ) -> int:
     """Значение-замена вето, которого в параметре ещё нет: простое, `origin = 'manual'`,
-    с исходным текстом, если его норма равна норме значения, иначе с самой нормой."""
+    с исходным текстом, если его норма равна норме значения, иначе с самой нормой.
+    Модель видит его в списке, поэтому список считается расширенным."""
     text = (
         source_text.strip()
         if source_text is not None and normalize_value(source_text) == value_norm
@@ -104,12 +129,17 @@ def _create_veto_value(
     )
     db.add(row)
     db.flush()
+    _extend_list(
+        db, parameter_id=parameter_id, value_id=row.id, text=text, origin=ValueOrigin.manual,
+        context_id=context_id,
+    )
     return row.id
 
 
 def find_or_create_composite(
     db: Session, *, parameter_id: int, kind: str, part_ids: Sequence[int],
     context_id: int | None, source_text: str | None, new_part_ids: Sequence[int] = (),
+    added: list[int] | None = None,
 ) -> int:
     """Значение для состава `part_ids` вида `kind`: id простого значения-вето, либо
     действующего составного, либо только что созданного.
@@ -122,6 +152,10 @@ def find_or_create_composite(
     исходный текст склейки. Текст составного совпал с нормой уже существующего
     простого действующего значения — возвращается оно (точное совпадение).
 
+    Значение-замена вето, которого в параметре не было, создаётся простым и расширяет
+    список (`revision`, событие); его id добавляется в `added` — только тогда: составных
+    модель не видит, существующее значение список не меняет.
+
     Raises:
         ValueError: неизвестный вид; часть чужого параметра, составная или
             выведенная; различных частей меньше двух; норма текста занята значением,
@@ -132,9 +166,12 @@ def find_or_create_composite(
     parts = _checked_parts(db, parameter_id, part_ids)
     match = match_veto(db, parameter_id=parameter_id, kind=kind, part_ids=frozenset(parts))
     if match is not None:
-        return match.value_id if match.value_id is not None else _create_veto_value(
-            db, parameter_id, match.value_norm, source_text
-        )
+        if match.value_id is not None:
+            return match.value_id
+        created = _create_veto_value(db, parameter_id, match.value_norm, source_text, context_id)
+        if added is not None:
+            added.append(created)
+        return created
     key = composite_key(kind, parts)
     existing = _active_composite_id(db, parameter_id, key)
     if existing is not None:
@@ -177,18 +214,9 @@ def find_or_create_composite(
         for part_id in parts
     )
     db.flush()
-    schema_id, family_id = db.execute(
-        sa.select(FamilyParameter.schema_id, FamilyParameterSchema.family_id)
-        .join(FamilyParameterSchema, FamilyParameterSchema.id == FamilyParameter.schema_id)
-        .where(FamilyParameter.id == parameter_id)
-    ).one()
-    bump_revision(db, schema_id)
-    record_event(
-        db, event_type="family_schema_value_added", family_id=family_id,
-        payload={
-            "parameter_id": parameter_id, "value_id": row.id, "value": text,
-            "origin": ValueOrigin.extension.value, "context_id": context_id,
-        },
+    family_id = _extend_list(
+        db, parameter_id=parameter_id, value_id=row.id, text=text,
+        origin=ValueOrigin.extension, context_id=context_id,
     )
     record_action(
         db, kind="composite", family_id=family_id, context_id=context_id,

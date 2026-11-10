@@ -885,3 +885,75 @@ class TestNewSchemaVersion:
 
         _parameter, values = self._carried(db_session, new.id)
         assert set(values) == {"а"}
+
+
+# ---------------------------------------------------------------------------
+#  Значение-замена вето расширяет список
+# ---------------------------------------------------------------------------
+
+class TestVetoValueExtendsTheList:
+    def _vetoed_scene(self, db, factories, *, drop_value):
+        from services.human_decisions import add_veto
+
+        scene = _scene(db, factories, ("плиты", "балки", "плиты и балки"))
+        add_veto(
+            db, parameter_id=scene.parameter_id, kind="all",
+            part_ids=[scene.ids["плиты"], scene.ids["балки"]],
+            value_id=scene.ids["плиты и балки"], user_id=factories.UserFactory.create().id,
+        )
+        if drop_value:
+            db.execute(
+                sa.delete(FamilyParameterValue).where(
+                    FamilyParameterValue.id == scene.ids["плиты и балки"]
+                )
+            )
+        return scene
+
+    def test_a_value_created_through_the_veto_bumps_the_revision_writes_one_event_and_is_listed(
+        self, db_session, factories
+    ):
+        scene = self._vetoed_scene(db_session, factories, drop_value=True)
+        revision = _revision(db_session, scene.schema.id)
+        events = _event_count(db_session, scene.family.id)
+        added: list[int] = []
+
+        created = find_or_create_composite(
+            db_session, parameter_id=scene.parameter_id, kind="all",
+            part_ids=[scene.ids["плиты"], scene.ids["балки"]], context_id=None,
+            source_text="плиты и балки", added=added,
+        )
+
+        assert added == [created]
+        assert _revision(db_session, scene.schema.id) == revision + 1
+        assert _event_count(db_session, scene.family.id) == events + 1
+        assert _journal(db_session, scene.family.id) == []
+
+    def test_a_normal_composite_is_not_listed(self, db_session, factories):
+        scene = _scene(db_session, factories, ("плиты", "балки"))
+        added: list[int] = []
+
+        find_or_create_composite(
+            db_session, parameter_id=scene.parameter_id, kind="all",
+            part_ids=list(scene.ids.values()), context_id=None, source_text=None, added=added,
+        )
+
+        assert added == []
+
+    def test_an_existing_value_of_the_veto_is_not_listed_and_does_not_bump(
+        self, db_session, factories
+    ):
+        scene = self._vetoed_scene(db_session, factories, drop_value=False)
+        revision = _revision(db_session, scene.schema.id)
+        events = _event_count(db_session, scene.family.id)
+        added: list[int] = []
+
+        value_id = find_or_create_composite(
+            db_session, parameter_id=scene.parameter_id, kind="all",
+            part_ids=[scene.ids["плиты"], scene.ids["балки"]], context_id=None,
+            source_text=None, added=added,
+        )
+
+        assert value_id == scene.ids["плиты и балки"]
+        assert added == []
+        assert _revision(db_session, scene.schema.id) == revision
+        assert _event_count(db_session, scene.family.id) == events
