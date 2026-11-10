@@ -32,7 +32,12 @@ from models import (
 )
 from parser.sanitize_text import normalize_job_title_with_lemmatization
 from services.ai_journal import record_action
-from services.composite_values import COMPOSITE_JOIN, composite_parts, find_or_create_composite
+from services.composite_values import (
+    COMPOSITE_JOIN,
+    composite_parts,
+    find_or_create_composite,
+    revive_composite,
+)
 from services.human_decisions import is_not_duplicate
 from services.work_variants import _extend_with_value, canonical_value_id, normalize_value
 
@@ -279,12 +284,7 @@ def _revive_composite(db: Session, composite_id: int) -> ResolvedValue:
             composite_id, list(parts),
         )
         return ResolvedValue(None, "none")
-    db.execute(
-        sa.update(FamilyParameterValue)
-        .where(FamilyParameterValue.id == composite_id)
-        .values(retired_at=None)
-        .execution_options(synchronize_session=False)
-    )
+    revive_composite(db, composite_id)
     return ResolvedValue(composite_id, "existing")
 
 

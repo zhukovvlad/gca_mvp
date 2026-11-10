@@ -230,6 +230,18 @@ def find_or_create_composite(
     return row.id
 
 
+def revive_composite(db: Session, composite_id: int) -> None:
+    """Возвращает выведенное составное из истории (`retired_at = NULL`). Годность
+    частей проверяет вызывающий: модель составных не видит, список для неё не
+    меняется."""
+    db.execute(
+        sa.update(FamilyParameterValue)
+        .where(FamilyParameterValue.id == composite_id)
+        .values(retired_at=None)
+        .execution_options(synchronize_session=False)
+    )
+
+
 def composite_parts(
     db: Session, value_ids: Iterable[int]
 ) -> dict[int, tuple[str, tuple[int, ...]]]:
