@@ -152,7 +152,9 @@ describe("buildOfferTree: разделы сметы и строки", () => {
   });
 
   it("пустой ответ — пустое дерево", () => {
-    expect(buildOfferTree({ ...ourPriceTreeOfferFixture(), lines: [] })).toEqual([]);
+    // Без строк и без денег в итогах: итоги с деньгами при пустых строках — это статья с доп. работами.
+    const empty = { ...ourPriceTreeOfferFixture(), lines: [], node_totals: { categories: {}, chapters: {} } };
+    expect(buildOfferTree(empty)).toEqual([]);
   });
 });
 
@@ -211,6 +213,93 @@ describe("buildOfferTree: итоги узлов — из ответа, текс�
     const offer = ourPriceTreeOfferFixture();
     delete offer.node_totals.chapters["32"]["6001"];
     expect(() => buildOfferTree(offer)).toThrow(/6001/);
+  });
+});
+
+/** Статья только с дополнительными работами: в `categories` и итогах есть, строк у неё нет. */
+function additionalOnlyOffer(): OurPriceOffer {
+  const offer = ourPriceTreeOfferFixture();
+  offer.categories = [
+    ...offer.categories,
+    { id: 61, parent_id: null, code: "08", title: "Благоустройство", sort_order: 80 },
+    { id: 62, parent_id: 61, code: "08.1", title: "Малые формы", sort_order: 81 },
+    { id: 63, parent_id: 62, code: "08.1.1", title: "Скамьи", sort_order: 82 },
+  ];
+  offer.node_totals.categories["61"] = nodeTotalsFixture(0, 0, { net: "300.00", shown: "366.00" });
+  offer.node_totals.categories["62"] = nodeTotalsFixture(0, 0, { net: "300.00", shown: "366.00" });
+  offer.node_totals.categories["63"] = nodeTotalsFixture(0, 0, { net: "100.00", shown: "122.00" });
+  return offer;
+}
+
+describe("buildOfferTree: статьи только с дополнительными работами", () => {
+  it("статья без строк, но с итогом в ответе, стоит под своим корнем с итогом из node_totals", () => {
+    const offer = ourPriceTreeOfferFixture();
+    offer.categories = [...offer.categories, { id: 60, parent_id: 11, code: "04.9", title: "Доп. статья", sort_order: 99 }];
+    offer.node_totals.categories["60"] = nodeTotalsFixture(0, 0, { net: "100.00", shown: "122.00" });
+    const extra = groups(root(offer, 11).children).find((node) => node.title === "Доп. статья");
+    expect(extra?.kind).toBe("category");
+    expect(extra?.depth).toBe(1);
+    expect(extra?.totals).toEqual({ lines: 0, no_price: 0, kp_total: { net: "100.00", shown: "122.00" } });
+    expect(extra?.children).toEqual([]);
+  });
+
+  it("вложенный случай: корень, промежуточная и лист без строк", () => {
+    const top = root(additionalOnlyOffer(), 61);
+    expect(top.depth).toBe(0);
+    const middle = groups(top.children)[0];
+    expect(middle.title).toBe("Малые формы");
+    expect(middle.depth).toBe(1);
+    const leaf = groups(middle.children)[0];
+    expect(leaf.title).toBe("Скамьи");
+    expect(leaf.depth).toBe(2);
+    expect(leaf.totals.kp_total).toEqual({ net: "100.00", shown: "122.00" });
+    expect(leaf.children).toEqual([]);
+  });
+
+  it("статья без итога с деньгами (kp_total = null) без строк узлом не становится", () => {
+    const offer = additionalOnlyOffer();
+    offer.node_totals.categories["63"] = nodeTotalsFixture(0, 0, null);
+    offer.node_totals.categories["62"] = nodeTotalsFixture(0, 0, null);
+    offer.node_totals.categories["61"] = nodeTotalsFixture(0, 0, null);
+    expect(titles(buildOfferTree(offer))).not.toContain("Благоустройство");
+  });
+
+  it("статья без записи в node_totals без строк узлом не становится", () => {
+    const offer = additionalOnlyOffer();
+    delete offer.node_totals.categories["63"];
+    delete offer.node_totals.categories["62"];
+    delete offer.node_totals.categories["61"];
+    expect(titles(buildOfferTree(offer))).not.toContain("Благоустройство");
+  });
+});
+
+describe("pruneOfferTree: статьи только с дополнительными работами", () => {
+  const offer = additionalOnlyOffer();
+  const tree = buildOfferTree(offer);
+  const noPrice = (line: { state: string }) => line.state === "no_price";
+  const names = (nodes: OfferTreeNode[]) => titles(nodes);
+
+  it("показать все: статья на месте", () => {
+    expect(names(pruneOfferTree(tree, () => true, true))).toContain("Благоустройство");
+  });
+
+  it("скрыть строки без цены: статья с деньгами и без строк остаётся, вместе с вложенными", () => {
+    const hidden = pruneOfferTree(tree, (line) => !noPrice(line), true);
+    const top = groups(hidden).find((node) => node.title === "Благоустройство");
+    expect(top).toBeDefined();
+    expect(titles(groups(top?.children ?? [])[0].children)).toEqual(["Скамьи"]);
+  });
+
+  it("только строки без цены: статья без строк уходит", () => {
+    const only = pruneOfferTree(tree, (line) => noPrice(line), false);
+    expect(names(only)).not.toContain("Благоустройство");
+    expect(titles(only)).toEqual(["Конструктивные решения"]);
+  });
+
+  it("узел, у которого строки есть, но все скрыты, по-прежнему уходит и при keepMoneyOnly", () => {
+    const hidden = pruneOfferTree(buildOfferTree(ourPriceTreeOfferFixture()), (line) => !noPrice(line), true);
+    const rest = groups(groups(groups(hidden)[0].children)[0].children);
+    expect(rest.map((node) => node.title)).toEqual(["Фундаментная плита"]);
   });
 });
 

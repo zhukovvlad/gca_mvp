@@ -118,7 +118,12 @@ export function OfferTree({
   onOpenLine,
 }: OfferTreeProps) {
   const visible = useMemo(
-    () => pruneOfferTree(nodes, (line) => matchesFilter(line, filter) && matchesNoPriceMode(line, mode)),
+    () =>
+      pruneOfferTree(
+        nodes,
+        (line) => matchesFilter(line, filter) && matchesNoPriceMode(line, mode),
+        filter === "all" && mode !== "only"
+      ),
     [nodes, filter, mode]
   );
   const lines = useMemo(() => collectLines(visible), [visible]);

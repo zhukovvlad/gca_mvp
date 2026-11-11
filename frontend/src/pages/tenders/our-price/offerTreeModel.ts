@@ -111,6 +111,13 @@ export function buildOfferTree(offer: OurPriceOffer): OfferTreeNode[] {
     return draft;
   }
 
+  // Статья, где есть только дополнительные работы, строк не имеет, но деньги в итогах у неё есть:
+  // узел заводится и без строк (спека упрощения каталога §2.10, §2.17).
+  for (const category of offer.categories) {
+    if (offer.node_totals.categories[String(category.id)]?.kp_total != null) categoryDraft(category.id);
+  }
+  if (offer.node_totals.categories[UNALLOCATED_TOTALS_KEY]?.kp_total != null) unallocated = draftOf(null);
+
   for (const line of offer.lines) {
     let container: CategoryDraft;
     if (line.category_id === null) {
@@ -175,13 +182,20 @@ export function buildOfferTree(offer: OurPriceOffer): OfferTreeNode[] {
 
 /**
  * Оставляет строки, для которых `keep` истинно, и уровни, в которых что-то осталось. Итоги уровней — те же
- * объекты ответа: видимость строк на них не влияет. Исходное дерево не меняется.
+ * объекты ответа: видимость строк на них не влияет. Статья, у которой в дереве нет ни одной строки, но есть
+ * деньги в итоге (только дополнительные работы), остаётся при `keepMoneyOnly`; вызывающий выключает его там, где
+ * видны только строки без цены. Исходное дерево не меняется.
  */
-export function pruneOfferTree(nodes: OfferTreeNode[], keep: (line: OurPriceLine) => boolean): OfferTreeNode[] {
+export function pruneOfferTree(
+  nodes: OfferTreeNode[],
+  keep: (line: OurPriceLine) => boolean,
+  keepMoneyOnly = false
+): OfferTreeNode[] {
   return nodes.flatMap((node): OfferTreeNode[] => {
     if (node.kind === "line") return keep(node.line) ? [node] : [];
-    const children = pruneOfferTree(node.children, keep);
-    return children.length === 0 ? [] : [{ ...node, children }];
+    const children = pruneOfferTree(node.children, keep, keepMoneyOnly);
+    const moneyOnly = keepMoneyOnly && node.totals.kp_total !== null && collectLines(node.children).length === 0;
+    return children.length === 0 && !moneyOnly ? [] : [{ ...node, children }];
   });
 }
 
