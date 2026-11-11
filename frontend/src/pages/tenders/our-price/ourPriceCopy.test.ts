@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { ourPriceLineFixture } from "@/test/fixtures";
 
-import { formatRatio, linesCount, offerSubtitle, progressCaption, roundSubtitle, variantCaption, priceBasisLabel,VAT_NET_LABEL, VAT_UNKNOWN_LABEL, inflationCaptionOf, KP_NOT_ADJUSTED_NOTE, groupLinesCaption, ratioNote, unitWarnContracts, unitWarnKp, isWaitingAdminLine, LINE_STATE_LABEL, lineStateLabel, periodRu, targetInactiveNote, WAITING_ADMIN_LABEL, workRungCaption, workRungLabel } from "./ourPriceCopy";
+import { formatRatio, linesCount, offerSubtitle, progressCaption, roundSubtitle, variantCaption, priceBasisLabel,VAT_NET_LABEL, VAT_UNKNOWN_LABEL, inflationCaptionOf, KP_NOT_ADJUSTED_NOTE, groupLinesCaption, ratioNote, unitWarnContracts, unitWarnKp, isWaitingAdminLine, LINE_STATE_LABEL, lineStateLabel, periodRu, targetInactiveNote, WAITING_ADMIN_LABEL, workRungCaption, workRungLabel, analogsMore, COMPOSITE_NO_TARGET, EXPORT_SOURCE, TARGET_CARD, TARGET_MARK, targetSameContract } from "./ourPriceCopy";
 
 describe("groupLinesCaption", () => {
   it.each([
@@ -186,5 +186,54 @@ describe("лестница аналогов: подписи", () => {
     expect(targetInactiveNote("analog_unavailable")).toBe("Выбор не действует: аналога больше нет на ступени — цель: самая низкая");
     expect(targetInactiveNote("no_freshest")).toContain("самой свежей расценки больше нет");
     expect(targetInactiveNote(null)).toBe("Выбор не действует — цель: самая низкая");
+  });
+});
+
+describe("тексты панели строки: сборная строка, карточки цели, источник числа", () => {
+  const composite = { state: "no_history", no_history_reason: "composite", zone: null, composite_parameter: { id: 1, name: "Тип конструкции" } } as const;
+
+  it("состояние composite называет параметр", () => {
+    expect(lineStateLabel(ourPriceLineFixture(composite))).toBe("нет аналога: в строке несколько значений параметра «Тип конструкции»");
+  });
+
+  it("состояние composite без имени параметра не печатает «null»", () => {
+    const text = lineStateLabel(ourPriceLineFixture({ ...composite, composite_parameter: null }));
+    expect(text).toBe("нет аналога: в строке несколько значений параметра");
+    expect(text).not.toContain("null");
+  });
+
+  it("«цели нет» называет параметр и объясняет причину", () => {
+    const text = COMPOSITE_NO_TARGET("Тип конструкции");
+    expect(text).toContain("Цели нет");
+    expect(text).toContain("«Тип конструкции»");
+  });
+
+  it("«ещё N аналога из M»: склонение по N", () => {
+    expect(analogsMore(1, 6)).toBe("ещё 1 аналог из 6");
+    expect(analogsMore(3, 8)).toBe("ещё 3 аналога из 8");
+    expect(analogsMore(5, 10)).toBe("ещё 5 аналогов из 10");
+    expect(analogsMore(11, 16)).toBe("ещё 11 аналогов из 16");
+  });
+
+  it("подписи карточек цели и «тот же договор, что …»", () => {
+    expect(TARGET_CARD.lowest).toBe("самая низкая");
+    expect(TARGET_CARD.freshest).toBe("самая свежая");
+    expect(TARGET_CARD.contractor).toBe("с этим подрядчиком");
+    expect(targetSameContract(TARGET_CARD.freshest)).toBe("тот же договор, что «самая свежая»");
+  });
+
+  it("источник числа в файл: четыре формулировки", () => {
+    expect(EXPORT_SOURCE.target("самая низкая")).toBe("наша расценка · цель: самая низкая");
+    expect(EXPORT_SOURCE.agreedOverTarget).toBe("договорились · перекрывает цель");
+    expect(EXPORT_SOURCE.agreedManual).toBe("договорились · вписано вручную");
+    expect(EXPORT_SOURCE.nothing).toBe("в файл ничего не идёт");
+  });
+
+  it("метка цели в таблице строк: «с этим подрядчиком» названа", () => {
+    expect(TARGET_MARK.contractor).toBe("цель: с этим подрядчиком");
+  });
+
+  it("причина сброса выбора «нет договора с этим подрядчиком» названа", () => {
+    expect(targetInactiveNote("no_contractor")).toContain("Выбор не действует:");
   });
 });

@@ -3462,7 +3462,7 @@ export interface WorkRung {
   other_class: boolean;
 }
 
-export type NoHistoryReason = "no_family" | "path_conflict" | "no_params" | "no_zone_match";
+export type NoHistoryReason = "no_family" | "path_conflict" | "composite" | "no_params" | "no_zone_match";
 
 export interface LowestFigure {
   value: MoneyPair;
@@ -3480,13 +3480,18 @@ export interface FreshestFigure {
   period: string | null;
 }
 
-export type TargetKind = "agreed" | "lowest" | "freshest" | "analog";
+export type TargetKind = "agreed" | "lowest" | "freshest" | "analog" | "contractor";
 
-/** Почему выбор цели перестал действовать (спека лестницы аналогов §2.14). */
-export type TargetResetReason = "kind_changed" | "not_comparable" | "analog_unavailable" | "no_freshest";
+/** Почему выбор цели перестал действовать (спека лестницы аналогов §2.14, упрощения каталога §2.9). */
+export type TargetResetReason =
+  | "kind_changed"
+  | "not_comparable"
+  | "analog_unavailable"
+  | "no_freshest"
+  | "no_contractor";
 
 export interface TargetChoice {
-  kind: "freshest" | "analog";
+  kind: "freshest" | "analog" | "contractor";
   analog_id: number | null;
   /** `false` - выбор сохранён, но не действует (см. `reset_reason`). */
   active: boolean;
@@ -3520,6 +3525,46 @@ export interface OurPriceAnalog {
   place_match: number;
   /** Аналог остатка (не выброс): его можно сделать целью. */
   selectable: boolean;
+  /** Статья раздела строки ДОГОВОРА (не статья строки КП); `null` - раздел без статьи. */
+  article: OurPriceArticleRef | null;
+  /** Путь по смете договора от её корня; может быть пустым. */
+  chapter_path: OurPriceChapterStep[];
+}
+
+/** Статья со своей цепочкой от корня классификатора; `chain` кончается самой статьёй. */
+export interface OurPriceArticleRef {
+  id: number;
+  code: string | null;
+  title: string;
+  chain: Array<{ id: number; code: string | null; title: string }>;
+}
+
+/** Часть составного значения в справке «по частям» (спека упрощения каталога §2.8). */
+export interface OurPricePartReference {
+  value_id: number;
+  value: string;
+  /** Все кандидаты части выбранного класса, включая выбросы. */
+  analogs: number;
+  contracts: number;
+  /** Вилка остатка без выбросов; `null` - остатка нет. */
+  min: MoneyPair | null;
+  max: MoneyPair | null;
+  lowest: {
+    value: MoneyPair;
+    analog_id: number;
+    object_title: string;
+    contract_number: string;
+    period: string | null;
+  } | null;
+  /** Кандидатов класса тендера нет, взяты из другого класса. */
+  other_class: boolean;
+}
+
+export interface OurPricePartsGroup {
+  parameter_id: number;
+  parameter_name: string;
+  kind: string;
+  parts: OurPricePartReference[];
 }
 
 /** Раздел на пути строки: ключ, название и номер раздела в файле участника. */
@@ -3595,6 +3640,8 @@ export interface OurPriceLine {
   lowest: LowestFigure | null;
   /** Самая свежая расценка; `null` - её нет (нет аналогов с датой цены или строка - система). */
   freshest: FreshestFigure | null;
+  /** Самая свежая расценка среди аналогов остатка с этим подрядчиком; `null` - таких нет. */
+  contractor: FreshestFigure | null;
   position: "above" | "in" | "below" | null;
   to_lowest: MoneyPair | null;
   to_freshest: MoneyPair | null;
@@ -3607,6 +3654,8 @@ export interface OurPriceLine {
   /** Аналогов на ступени, с выбросами; у системы 0. */
   analogs_count: number;
   no_history_reason: NoHistoryReason | null;
+  /** Первый главный параметр строки с составным значением; `null` - строка не сборная. */
+  composite_parameter: { id: number; name: string } | null;
   group: { lines: number; share: Decimal; kp_per_sqm: MoneyPair | null } | null;
   unit_mismatch: {
     kp_ratio: Decimal | null;
@@ -3628,6 +3677,8 @@ export interface OurPriceLine {
   manual_rung: ManualRung | null;
   /** Цена за единицу строки КП, как её поставит файл без договорённости; `null` - цены в файле не будет. */
   file_ours: MoneyPair | null;
+  /** Статья раздела строки со своей цепочкой; есть только в ответе панели, `null` - «Нераспределённое». */
+  article?: OurPriceArticleRef | null;
 }
 
 /** Автор решения: `id` и почта пользователя. */
@@ -3717,6 +3768,8 @@ export interface OurPriceLineView {
   contracts: OurPriceRungContract[];
   /** Справка работы в порядке §2.11; у системы пусто. */
   analogs: OurPriceAnalog[];
+  /** Справка «по частям» сборной строки; пусто у остальных. На цель и итоги не влияет. */
+  parts_reference: OurPricePartsGroup[];
   vat_dropped: OurPriceVatDropped[];
   /**
    * Комментарий строки: `text` - свой, если задан, иначе шаблонный; `template_text` -

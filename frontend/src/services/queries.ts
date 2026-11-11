@@ -2965,7 +2965,7 @@ export function useDeleteRung(tenderId: number, roundId: number, offerId: number
 export const ANALOG_UNAVAILABLE_TOAST = "Аналог больше не в остатке — обновите панель.";
 
 export type PutTargetInput =
-  | { positionItemId: number; kind: "freshest" }
+  | { positionItemId: number; kind: "freshest" | "contractor" }
   | { positionItemId: number; kind: "analog"; analogId: number };
 
 /**
@@ -2983,7 +2983,7 @@ export function usePutTarget(tenderId: number, roundId: number, offerId: number,
         roundId,
         offerId,
         input.positionItemId,
-        input.kind === "freshest" ? { kind: "freshest" } : { kind: "analog", analog_id: input.analogId },
+        input.kind === "analog" ? { kind: "analog", analog_id: input.analogId } : { kind: input.kind },
         seriesId
       ),
     onSuccess: () => invalidateAfterDecision(qc, tenderId, roundId, offerId),

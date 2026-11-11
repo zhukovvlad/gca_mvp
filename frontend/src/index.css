@@ -90,6 +90,16 @@
   --chart-7:    #4a3aa7;
   --chart-8:    #e34948;
   --chart-rest: #898781;
+
+  /* Метки цели строки-работы (спека упрощения каталога §2.11; сверка с макетом `.k-low/.k-fresh/.k-own`):
+     «самая низкая» — синяя, «самая свежая» — бирюзовая, «с этим подрядчиком» — фиолетовая; один цвет
+     на карточке цели и на аналоге. `--mark-on` — цвет текста на заливке метки: белый на светлой теме,
+     тёмный на тёмной. Пара светлая/тёмная обязательна. */
+  --mark-lowest:         #2563A8;
+  --mark-freshest:       #0E7C7B;
+  --mark-contractor:     #7A4FB5;
+  --mark-contractor-soft: #EEE6F8;
+  --mark-on:             #FFFFFF;
 }
 
 [data-theme="dark"] {
@@ -158,6 +168,13 @@
   --chart-7:    #9085e9;
   --chart-8:    #e66767;
   --chart-rest: #898781;
+
+  /* Метки цели — тёмная половина пары (см. светлые значения выше). */
+  --mark-lowest:         #6DA7EC;
+  --mark-freshest:       #4FC3C1;
+  --mark-contractor:     #9085E9;
+  --mark-contractor-soft: #2E2A45;
+  --mark-on:             #1A1D24;
 }
 
 :root {
@@ -227,6 +244,12 @@
   --color-source-classifier-soft:   var(--source-classifier-soft);
   --color-source-classifier-border: var(--source-classifier-border);
   --color-source-classifier-text:   var(--source-classifier-text);
+
+  --color-mark-lowest:          var(--mark-lowest);
+  --color-mark-freshest:        var(--mark-freshest);
+  --color-mark-contractor:      var(--mark-contractor);
+  --color-mark-contractor-soft: var(--mark-contractor-soft);
+  --color-mark-on:              var(--mark-on);
 
   /* shadcn-совместимые алиасы — поддержать готовые примитивы из ui/ */
   --color-background:           var(--bg-page);

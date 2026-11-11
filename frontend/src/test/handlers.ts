@@ -507,7 +507,13 @@ interface HandlerState {
    * `refused` - решение отвергнуто кодом `unknown_rung` (422); `invalid_agreed` и
    * `comment_too_long` - отказы уровня поля с текстом сервера.
    */
-  kpFileDecisionOutcome: "ok" | "refused" | "invalid_agreed" | "comment_too_long" | "analog_unavailable";
+  kpFileDecisionOutcome:
+    | "ok"
+    | "refused"
+    | "invalid_agreed"
+    | "comment_too_long"
+    | "analog_unavailable"
+    | "no_contractor_analog";
   /** `unknown_vat_base` - выгрузка отвечает кодированным 422 с текстом сервера. */
   kpFileExportOutcome: "ok" | "unknown_vat_base";
   /** `missing` - 404, `gone` - 410 (файл пропал из хранилища, запись жива). */
@@ -2058,6 +2064,10 @@ async function kpDecision({ request }: { request: Request }): Promise<Response> 
     analog_unavailable: {
       code: "analog_unavailable",
       message: "Этот аналог не входит в остаток ступени строки: выбрать его нельзя.",
+    },
+    no_contractor_analog: {
+      code: "no_contractor_analog",
+      message: "Среди аналогов остатка нет договора с этим подрядчиком.",
     },
   } as const;
   const outcome = handlerState.kpFileDecisionOutcome;

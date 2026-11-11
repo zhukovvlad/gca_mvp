@@ -35,6 +35,7 @@ import type {
   KpFilePreview,
   KpSentFileItem,
   OurPriceAnalog,
+  OurPriceArticleRef,
   OurPriceCategory,
   OurPriceCell,
   OurPriceChapterStep,
@@ -2934,6 +2935,7 @@ export function ourPriceLineFixture(overrides: Partial<OurPriceLine> = {}): OurP
     range: { min: pair("900", "1098"), max: pair("1300", "1586"), median: pair("1100", "1342") },
     lowest: { value: pair("1000", "1220"), analog_id: null, contract_id: null, from_all_classes: false },
     freshest: null,
+    contractor: null,
     position: "in",
     to_lowest: pair("20000.00", "24400.00"),
     to_freshest: null,
@@ -2944,6 +2946,7 @@ export function ourPriceLineFixture(overrides: Partial<OurPriceLine> = {}): OurP
     below: null,
     analogs_count: 0,
     no_history_reason: null,
+    composite_parameter: null,
     group: null,
     unit_mismatch: null,
     target_kind: "lowest",
@@ -3193,9 +3196,33 @@ export function ourPriceLineViewFixture(
       },
     ],
     analogs: [],
+    parts_reference: [],
     vat_dropped: [],
     comment: { kind: "template", text: KP_FILE_TEMPLATE_TEXT, template_text: KP_FILE_TEMPLATE_TEXT },
   };
+}
+
+/** Статья 4.2.4 с цепочкой от корня: форма `article` провода (строки КП и аналога). */
+export function articleRefFixture(overrides: Partial<OurPriceArticleRef> = {}): OurPriceArticleRef {
+  return {
+    id: 31,
+    code: "4.2.4",
+    title: "Вертикальные конструкции",
+    chain: [
+      { id: 11, code: "4", title: "Несущие конструкции" },
+      { id: 31, code: "4.2.4", title: "Вертикальные конструкции" },
+    ],
+    ...overrides,
+  };
+}
+
+/** Путь по смете: корень первым; номера разделов строками, как их отдаёт сервер. */
+export function chapterPathFixture(...titles: string[]): OurPriceChapterStep[] {
+  return titles.map((title, i) => ({
+    chapter_item_id: 7000 + i,
+    title,
+    number: ["4", "4.1", "4.1.2", "4.1.2.4"][i] ?? null,
+  }));
 }
 
 /** Аналог справки: по умолчанию аналог остатка (`selectable`), без меток. */
@@ -3221,6 +3248,8 @@ export function ourPriceAnalogFixture(overrides: Partial<OurPriceAnalog> = {}): 
     with_this_contractor: false,
     place_match: 2,
     selectable: true,
+    article: articleRefFixture(),
+    chapter_path: chapterPathFixture("Корпус 1", "Надземная часть"),
     ...overrides,
   };
 }
@@ -3253,7 +3282,7 @@ export function workLineViewFixture(
   const base = ourPriceLineViewFixture();
   return {
     ...base,
-    line: workLineFixture(opts.line),
+    line: workLineFixture({ article: articleRefFixture(), ...opts.line }),
     contracts: [],
     analogs: opts.analogs ?? [
       ourPriceAnalogFixture({ analog_id: 8001, is_lowest: true, with_this_contractor: true }),
@@ -3269,6 +3298,96 @@ export function workLineViewFixture(
         nominal: pair("1100", "1342"),
         is_freshest: true,
       }),
+    ],
+  };
+}
+
+/** Самая свежая расценка среди аналогов с этим подрядчиком (поле `contractor` строки). */
+export function contractorFigureFixture(overrides: Partial<NonNullable<OurPriceLine["contractor"]>> = {}) {
+  return {
+    value: pair("1050", "1281"),
+    analog_id: 8001,
+    contract_id: 101,
+    period: "2026-01",
+    ...overrides,
+  };
+}
+
+/**
+ * Панель сборной строки («плиты + балки» одной ценой): сборных аналогов нет, цели нет, файл без
+ * числа; справка «по частям» с двумя частями. Деньги - строки с длинным хвостом, как на проводе.
+ */
+export function compositeLineViewFixture(
+  opts: { line?: Partial<OurPriceLine>; parts?: OurPriceLineView["parts_reference"] } = {}
+): OurPriceLineView {
+  const base = workLineViewFixture({
+    line: {
+      state: "no_history",
+      no_history_reason: "composite",
+      composite_parameter: { id: 41, name: "Тип конструкции" },
+      work_rung: null,
+      zone: null,
+      lowest: null,
+      freshest: null,
+      contractor: null,
+      range: null,
+      position: null,
+      to_lowest: null,
+      to_freshest: null,
+      to_lowest_unit: null,
+      to_freshest_unit: null,
+      over_lowest: null,
+      over_freshest: null,
+      target_kind: null,
+      analogs_count: 0,
+      file_ours: null,
+      ...opts.line,
+    },
+    analogs: [],
+  });
+  return {
+    ...base,
+    comment: { kind: null, text: null, template_text: null },
+    parts_reference: opts.parts ?? [
+      {
+        parameter_id: 41,
+        parameter_name: "Тип конструкции",
+        kind: "all",
+        parts: [
+          {
+            value_id: 501,
+            value: "плиты",
+            analogs: 6,
+            contracts: 3,
+            min: pair("36200.123456789012345678", "44164.15"),
+            max: pair("42100", "51362"),
+            lowest: {
+              value: pair("36200.123456789012345678", "44164.15"),
+              analog_id: 9101,
+              object_title: "Объект Б",
+              contract_number: "Б-1",
+              period: "2025-03",
+            },
+            other_class: false,
+          },
+          {
+            value_id: 502,
+            value: "балки",
+            analogs: 3,
+            contracts: 2,
+            min: pair("45300", "55266"),
+            max: pair("50800", "61976"),
+            lowest: {
+              value: pair("45300", "55266"),
+              analog_id: 9102,
+              object_title: "Объект В",
+              contract_number: "В-1",
+              period: "2024-11",
+            },
+            other_class: true,
+          },
+        ],
+      },
     ],
   };
 }

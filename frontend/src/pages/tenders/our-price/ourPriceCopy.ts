@@ -340,11 +340,17 @@ export const ZONE_CAPTION: Record<SectionZone, string> = {
 };
 
 /** Причина `no_history` у работы (спека лестницы аналогов §2.10): текстом, а не кодом. */
-export const NO_HISTORY_REASON_LABEL: Record<Exclude<NoHistoryReason, "no_zone_match">, string> = {
+export const NO_HISTORY_REASON_LABEL: Record<Exclude<NoHistoryReason, "no_zone_match" | "composite">, string> = {
   no_family: "в договорах нет работ этой семьи",
   path_conflict: "нет аналога: параметры расходятся по разделам сметы",
   no_params: "нет аналога с этими параметрами",
 };
+
+/** Сборная строка без сборных аналогов (спека упрощения каталога §2.8): имя параметра — из ответа строки. */
+export function compositeNoHistoryLabel(parameterName: string | null): string {
+  const base = "нет аналога: в строке несколько значений параметра";
+  return parameterName === null ? base : `${base} «${parameterName}»`;
+}
 
 export function noZoneMatchLabel(zone: SectionZone | null): string {
   return zone === null ? "нет аналога в зоне строки" : `нет аналога в зоне «${ZONE_CAPTION[zone]}»`;
@@ -360,9 +366,9 @@ export function lineStateLabel(line: OurPriceLine): string | null {
   if (line.state === "comparable") return line.position === null ? null : POSITION_LABEL[line.position];
   if (isWaitingAdminLine(line)) return WAITING_ADMIN_LABEL;
   if (line.state === "no_history" && line.no_history_reason !== null) {
-    return line.no_history_reason === "no_zone_match"
-      ? noZoneMatchLabel(line.zone)
-      : NO_HISTORY_REASON_LABEL[line.no_history_reason];
+    if (line.no_history_reason === "no_zone_match") return noZoneMatchLabel(line.zone);
+    if (line.no_history_reason === "composite") return compositeNoHistoryLabel(line.composite_parameter?.name ?? null);
+    return NO_HISTORY_REASON_LABEL[line.no_history_reason];
   }
   return LINE_STATE_LABEL[line.state];
 }
@@ -386,6 +392,7 @@ export function workRungCaption(line: Pick<OurPriceLine, "work_rung" | "analogs_
 /** Метка цели в таблице строк, если цель — не самая низкая и не «договорились». */
 export const TARGET_MARK: Partial<Record<NonNullable<OurPriceLine["target_kind"]>, string>> = {
   freshest: "цель: самая свежая",
+  contractor: "цель: с этим подрядчиком",
   analog: "цель: аналог",
 };
 
@@ -404,6 +411,7 @@ export const SHEET_TITLE = "Строка КП";
 export const SHEET_ERROR_LABEL = "Не удалось открыть строку";
 export const SHEET_DESCRIPTION = "Сравнение строки КП с нашими договорами";
 export const SHEET_SECTION = {
+  where: "Где строка",
   prices: "Цены",
   comparison: "Сравнение",
   analogs: "Аналоги",
@@ -411,7 +419,8 @@ export const SHEET_SECTION = {
   family: "Вся семья в этом КП",
   contracts: "Договоры на этой ступени",
   vatDropped: "Договоры, не попавшие в сравнение",
-  export: "Для выгрузки",
+  parts: "По частям, для справки",
+  export: "В файл подрядчику",
 } as const;
 export const SHEET_FIELD = {
   kpPrice: "Цена КП",
@@ -429,23 +438,14 @@ export const FIGURE_KP_ABOVE = "КП выше";
 export const FIGURE_KP_BELOW = "КП ниже";
 export const FIGURE_KP_EQUAL = "КП на уровне расценки";
 
-/** Справка аналогов. */
-export const ANALOGS_COLUMN = {
-  contract: "Объект, договор",
-  line: "Строка договора",
-  date: "Дата",
-  price: "Цена за ед.",
-} as const;
+/** Справка аналогов: не больше пяти, остальные за «ещё N аналога из M». */
 export const ANALOG_FIRST = 5;
-export function analogsMore(n: number): string {
-  return `ещё ${formatNumber(n)} ${pluralForm(n, "аналог", "аналога", "аналогов")}`;
+export function analogsMore(hidden: number, total: number): string {
+  return `ещё ${formatNumber(hidden)} ${pluralForm(hidden, "аналог", "аналога", "аналогов")} из ${formatNumber(total)}`;
 }
 export const ANALOGS_LESS = "свернуть";
-export const ANALOG_LOWEST = "самая низкая";
-export const ANALOG_FRESHEST = "свежая";
 export const ANALOG_THIS_CONTRACTOR = "договор с этим подрядчиком";
-export const ANALOG_MAKE_TARGET = "целью";
-export const ANALOG_IS_TARGET = "цель";
+export const ANALOG_MAKE_TARGET = "сделать целью";
 export const ANALOGS_EMPTY = "Аналогов на этой ступени нет.";
 export const ANALOGS_NOMINAL_TITLE = "номинал в договоре";
 
@@ -455,32 +455,64 @@ export function analogOutlierNote(ratio: Decimal): string {
   return `${smaller ? `в ${text} раз меньше остальных` : `×${text} к остальным`} — проверьте единицу учёта`;
 }
 
-/** Блок «Для выгрузки»: цель строки-работы (спека лестницы аналогов §2.14, §2.20). */
-export const TARGET_LABEL = "Цель";
+/** Карточки цели строки-работы (спека упрощения каталога §2.9, §2.11): по стратегии, без объединения. */
 export const TARGET_TEXT = {
   agreed: "договорённая цена",
   lowest: "самая низкая расценка",
   freshest: "самая свежая расценка",
-  analog: "аналог",
+  contractor: "расценка с этим подрядчиком",
+  analog: "выбранный аналог",
 } as const;
-export const TARGET_AUTO_TAG = "авто";
-export const TARGET_MAKE_FRESHEST = "Сделать целью самую свежую";
-export const TARGET_BACK_TO_LOWEST = "Вернуть к самой низкой";
-export const TARGET_HINT = "или «сделать целью» у аналога в справке";
-export function targetAnalogText(objectTitle: string | null, number: string | null): string {
-  const named = [objectTitle, number === null ? null : `дог. ${number}`].filter((p): p is string => p !== null);
-  return named.length === 0 ? TARGET_TEXT.analog : `${TARGET_TEXT.analog} — ${named.join(", ")}`;
+export const TARGET_CARD = {
+  lowest: "самая низкая",
+  freshest: "самая свежая",
+  contractor: "с этим подрядчиком",
+  pinned: "выбранный аналог",
+  target: "цель",
+  targetAuto: "цель · авто",
+  choose: "сделать целью",
+} as const;
+export function targetSameContract(label: string): string {
+  return `тот же договор, что «${label}»`;
 }
 export const TARGET_RESET_REASON: Record<TargetResetReason, string> = {
   kind_changed: "строка стала системой",
   not_comparable: "строка перестала быть сравнимой",
   analog_unavailable: "аналога больше нет на ступени",
   no_freshest: "самой свежей расценки больше нет",
+  no_contractor: "среди аналогов больше нет договора с этим подрядчиком",
 };
 export function targetInactiveNote(reason: TargetResetReason | null): string {
   const why = reason === null ? "" : `: ${TARGET_RESET_REASON[reason]}`;
   return `Выбор не действует${why} — цель: самая низкая`;
 }
+
+/** Сборная строка без сборных аналогов (спека упрощения каталога §2.8, §2.11). */
+export function COMPOSITE_NO_TARGET(parameterName: string | null): string {
+  const param = parameterName === null ? "параметра" : `параметра «${parameterName}»`;
+  return `Цели нет: в строке несколько значений ${param}, а строки с таким же набором одной ценой в наших договорах нет. Части — только справкой: в сборной строке своя доля каждой части, сравнивать с ценой одной из них нельзя.`;
+}
+
+/** «Где строка»: подписи блоков (спека упрощения каталога §2.11). */
+export const WHERE_ARTICLE = "статья";
+export const WHERE_PATH = { kp: "в смете КП", contract: "в смете договора" } as const;
+
+/** Справка «по частям» сборной строки. */
+export const PARTS_NOTE = "Целью части не становятся: кнопки «сделать целью» здесь нет.";
+export const PARTS_NO_ANALOGS = "аналогов нет";
+export const PARTS_NO_RANGE = "вилки нет: аналоги расходятся между собой";
+export const PARTS_LOWEST = "самая низкая";
+export const PARTS_SAME_CLASS = "тот же класс объекта";
+export const PARTS_OTHER_CLASS = "другой класс объекта";
+
+/** Блок «В файл подрядчику»: откуда число (спека упрощения каталога §2.11). */
+export const EXPORT_SOURCE = {
+  ours: "наша расценка",
+  target: (label: string) => `наша расценка · цель: ${label}`,
+  agreedOverTarget: "договорились · перекрывает цель",
+  agreedManual: "договорились · вписано вручную",
+  nothing: "в файл ничего не идёт",
+} as const;
 
 /** Плашка «Разные единицы учёта?» работы: все аналоги расходятся между собой. */
 export const UNIT_WARN_ALL_OUTLIERS = "Аналоги расходятся между собой — самой низкой и самой свежей расценки нет.";
@@ -503,9 +535,8 @@ export const RUNG_SCOPE_LABEL = { cls: "класс объекта", all: "все
 export const RUNG_AUTO_TAG = "авто";
 
 /** Решения человека по строке: блок «Для выгрузки» и сохраняемая ступень (спека 4б §2.3–§2.6, §2.14). */
-export const EXPORT_OURS_LABEL = "Наша расценка";
 export const EXPORT_OURS_NOTE = "считается из данных и следует за ними";
-export const EXPORT_OURS_NONE_NOTE = "цены за единицу в файле не будет";
+export const EXPORT_NOTHING_NOTE = "число появится, если вписать «Договорились»";
 export const SAVE_LABEL = "Сохранить";
 export const SAVING_LABEL = "Сохраняем…";
 

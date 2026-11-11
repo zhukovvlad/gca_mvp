@@ -509,7 +509,7 @@ export const tendersApi = {
     roundId: number,
     offerId: number,
     positionItemId: number,
-    body: { kind: "freshest" } | { kind: "analog"; analog_id: number },
+    body: { kind: "freshest" | "contractor" } | { kind: "analog"; analog_id: number },
     seriesId: number | null
   ): Promise<void> =>
     api

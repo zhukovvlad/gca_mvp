@@ -744,10 +744,10 @@ describe("панель как окно", () => {
     expect(screen.queryByTestId("recalc-overlay")).not.toBeInTheDocument();
   });
 
-  it("ширина — тем же вариантным префиксом, что у базового Sheet", async () => {
+  it("ширина 680 px — тем же вариантным префиксом, что у базового Sheet", async () => {
     serveView(() => view());
     renderSheet();
-    expect((await opened()).className).toContain("data-[side=right]:sm:max-w-lg");
+    expect((await opened()).className).toContain("data-[side=right]:sm:max-w-[680px]");
   });
 
   it("отказ сервера — подпись отказа, а не пустая панель", async () => {

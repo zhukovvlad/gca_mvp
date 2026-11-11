@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import {
   agreedFixture,
   KP_FILE_AGREED_NET,
+  KP_FILE_AUTHOR,
   KP_FILE_TEMPLATE_TEXT,
   OUR_PRICE_LINE_ID,
   OUR_PRICE_OFFER_ID,
@@ -26,8 +27,8 @@ import {
   COMMENT_TAG,
   COMMENT_TAG_EMPTY,
   COMMENT_TO_TEMPLATE,
-  EXPORT_OURS_NONE_NOTE,
   EXPORT_OURS_NOTE,
+  EXPORT_SOURCE,
 } from "./ourPriceCopy";
 
 type Comment = OurPriceLineView["comment"];
@@ -84,21 +85,21 @@ describe("наша расценка справкой и подписи поля"
     expect(ours).toHaveTextContent("500,00");
     expect(ours).toHaveTextContent("₽/компл");
     expect(ours).not.toHaveTextContent("10,00");
-    expect(ours).toHaveTextContent(EXPORT_OURS_NOTE);
+    expect(screen.getByTestId("export-source")).toHaveTextContent(EXPORT_OURS_NOTE);
   });
 
-  it("file_ours: null - прочерк и подпись, что цены за единицу в файле не будет", () => {
+  it("file_ours: null - прочерк и «в файл ничего не идёт»", () => {
     renderBlock({ line: { kind: "system", unit: "компл", file_ours: null } });
-    const ours = screen.getByTestId("export-ours");
-    expect(ours).toHaveTextContent("—");
-    expect(ours).toHaveTextContent(EXPORT_OURS_NONE_NOTE);
-    expect(ours).not.toHaveTextContent(EXPORT_OURS_NOTE);
+    expect(screen.getByTestId("export-ours")).toHaveTextContent("—");
+    const source = screen.getByTestId("export-source");
+    expect(source).toHaveTextContent(EXPORT_SOURCE.nothing);
+    expect(source).not.toHaveTextContent(EXPORT_OURS_NOTE);
   });
 
   it("наша расценка с подписью, что она считается из данных; заглушка и подсказка договорённости", () => {
     renderBlock();
     expect(screen.getByTestId("export-ours")).toHaveTextContent("1 000,00");
-    expect(screen.getByTestId("export-ours")).toHaveTextContent(EXPORT_OURS_NOTE);
+    expect(screen.getByTestId("export-source")).toHaveTextContent(EXPORT_OURS_NOTE);
     expect(agreedField()).toHaveValue("");
     expect(agreedField()).toHaveAttribute("placeholder", AGREED_PLACEHOLDER);
     expect(screen.getByText(AGREED_HINT)).toBeInTheDocument();
@@ -119,6 +120,56 @@ describe("наша расценка справкой и подписи поля"
     await userEvent.click(screen.getByTestId("agreed-save"));
     await waitFor(() => expect(decisions()).toHaveLength(1));
     expect(decisions()[0].body).toEqual({ value: "10", basis: "net" });
+  });
+});
+
+describe("«В файл подрядчику»: откуда число", () => {
+  const choice = (kind: "freshest" | "contractor" | "analog", active = true) => ({
+    kind,
+    analog_id: kind === "analog" ? 8002 : null,
+    active,
+    reset_reason: active ? null : ("no_contractor" as const),
+    set_by: KP_FILE_AUTHOR,
+    set_at: "2026-03-14T09:30:00+00:00",
+  });
+  const source = () => screen.getByTestId("export-source");
+
+  it("цели нет, самая низкая по умолчанию: «наша расценка · цель: самая низкая»", () => {
+    renderBlock();
+    expect(source()).toHaveTextContent("наша расценка · цель: самая низкая");
+  });
+
+  it.each([
+    ["freshest", "самая свежая"],
+    ["contractor", "с этим подрядчиком"],
+    ["analog", "выбранный аналог"],
+  ] as const)("действующий выбор %s: «цель: %s»", (kind, label) => {
+    renderBlock({ line: { target_kind: kind, choice: choice(kind) } });
+    expect(source()).toHaveTextContent(`наша расценка · цель: ${label}`);
+  });
+
+  it("выбор не действует: цель — самая низкая", () => {
+    renderBlock({ line: { target_kind: "lowest", choice: choice("contractor", false) } });
+    expect(source()).toHaveTextContent("наша расценка · цель: самая низкая");
+  });
+
+  it("«Договорились» поверх цели: «договорились · перекрывает цель», в файл идёт договорённое число", () => {
+    renderBlock({ line: { target_kind: "agreed", agreed: agreedFixture(), choice: choice("freshest") } });
+    expect(source()).toHaveTextContent("договорились · перекрывает цель");
+    expect(source()).not.toHaveTextContent("наша расценка");
+    expect(screen.getByTestId("export-ours")).toHaveTextContent("1 234,57");
+    expect(screen.getByTestId("export-ours")).not.toHaveTextContent("1 000,00");
+  });
+
+  it("«Договорились» без цели (file_ours = null): «договорились · вписано вручную»", () => {
+    renderBlock({ line: { target_kind: "agreed", agreed: agreedFixture(), file_ours: null } });
+    expect(source()).toHaveTextContent("договорились · вписано вручную");
+    expect(source()).not.toHaveTextContent("перекрывает цель");
+  });
+
+  it("вид «с НДС»: договорённое число — из shown", () => {
+    renderBlock({ line: { target_kind: "agreed", agreed: agreedFixture() }, vatView: "shown" });
+    expect(screen.getByTestId("export-ours")).toHaveTextContent("1 506,17");
   });
 });
 
