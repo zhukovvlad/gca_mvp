@@ -224,6 +224,29 @@ def test_the_values_prompt_states_the_several_and_conflict_rule():
     assert "только когда разные строки" in VALUES_PROMPT
 
 
+def test_the_values_prompt_makes_the_source_mandatory_for_several():
+    several_rules = [
+        line for line in VALUES_PROMPT.splitlines() if line.startswith('- если в строке названо НЕСКОЛЬКО')
+        or line.startswith('- если в строке названо несколько значений')
+    ]
+
+    assert len(several_rules) == 2
+    for rule in several_rules:
+        assert '"source" обязателен' in rule
+
+
+def test_the_format_describes_when_the_source_is_required_and_stays_nullable():
+    source = _item_schema()["properties"]["source"]
+
+    assert source["anyOf"] == [{"type": "string", "enum": ["name", "path"]}, {"type": "null"}]
+    assert "value, new и several" in source["description"]
+    assert "none и conflict" in source["description"]
+
+
+def test_a_several_item_without_the_source_is_still_refused_by_the_parser():
+    _fails(_raw(source=None), "bad_kind")
+
+
 def test_the_paths_hash_of_a_context_does_not_depend_on_the_prompt_or_the_format(monkeypatch):
     # Контексты не перезапрашиваются из-за смены промпта: отпечаток путей зависит
     # только от путей.

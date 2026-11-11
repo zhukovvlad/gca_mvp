@@ -87,6 +87,10 @@ VALUES_RESPONSE_FORMAT: Final = {
                                     {"type": "string", "enum": ["name", "path"]},
                                     {"type": "null"},
                                 ],
+                                "description": (
+                                    "Обязателен (name или path) при kind value, new и several; "
+                                    "null только при none и conflict."
+                                ),
                             },
                             "values": {
                                 "anyOf": [

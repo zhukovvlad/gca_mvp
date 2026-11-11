@@ -58,7 +58,7 @@ def _schema_material() -> SchemaRequestMaterial:
 
 
 # Эталон сдвинут вместе с промптом значений v2 и форматом ответа `several` (спека упрощения каталога §2.4).
-VALUES_REQUEST_HASH = "723aa845c66a143f026c9649e4beefa6c9d0b0ff602fcf1917f21b5c12a3b645"
+VALUES_REQUEST_HASH = "1d312aa4e8dfb5cbdf385489c769da7a7ac7116123b3d8954fba097db5635605"
 SCHEMA_REQUEST_HASH = "399aed346028e2c173c6107dc0114fc0ecbf649fc675f3cacc798c491cbce685"
 
 
