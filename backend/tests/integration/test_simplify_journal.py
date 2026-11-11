@@ -354,7 +354,40 @@ class TestItem:
                 "parameter_value": "плиты + балки",
             }],
             "undo_text": "балки + плиты",
+            "composite_kind": "all",
         }
+        composite_id = _context_value(db_session, scene)
+        assert item["value"] == {"id": composite_id, "text": "плиты + балки"}
+
+    def test_an_any_composite_names_its_kind(self, db_session, factories):
+        scene = _scene(db_session, factories, ("плиты", "балки"))
+        _apply(db_session, scene, _several("any", "плиты", "балки"))
+        [entry] = _journal(db_session, scene.family.id)
+
+        item = journal.get_journal_item(db_session, entry.id)
+
+        assert item["details"]["composite_kind"] == "any"
+
+    def test_a_value_added_record_names_the_added_value(self, db_session, factories):
+        scene = _scene(db_session, factories, ("плиты", "балки"))
+        action_id = _record(
+            db_session, scene, "value_added", _added("балки"),
+            value_id=scene.ids["балки"], parameter_id=scene.parameter_id,
+        )
+
+        item = journal.get_journal_item(db_session, action_id)
+        listed = _list(db_session)["items"][0]
+
+        assert item["value"] == {"id": scene.ids["балки"], "text": "балки"}
+        assert listed["value"] == item["value"]
+
+    def test_a_record_whose_value_is_gone_has_no_value(self, db_session, factories):
+        scene = _scene(db_session, factories, ("плиты", "балки"))
+        action_id = _record(
+            db_session, scene, "value_added", _added("балки"), parameter_id=scene.parameter_id,
+        )
+
+        assert journal.get_journal_item(db_session, action_id)["value"] is None
 
     def test_an_equated_record_shows_the_text_and_the_value_it_was_given(
         self, db_session, factories

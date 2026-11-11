@@ -34,6 +34,10 @@ describe("parseEntry: вход в журнал", () => {
     expect(parseEntry(new URLSearchParams("tab=journal&entry=105"))).toEqual({ tab: "journal", entryId: 105 });
   });
 
+  it("tab=journal без entry — вход в журнал без выбранной записи", () => {
+    expect(parseEntry(new URLSearchParams("tab=journal"))).toEqual({ tab: "journal", entryId: null });
+  });
+
   it.each(["", "abc", "0", "-3", "1e2", "1.0", " 7"])("entry=%j — не вход", (raw) => {
     expect(parseEntry(new URLSearchParams({ tab: "journal", entry: raw }))).toBeNull();
   });
@@ -79,6 +83,15 @@ describe("FamiliesPage: вкладка «Журнал ИИ»", () => {
     await user.click(screen.getByRole("tab", { name: "Контексты" }));
     await waitFor(() => expect(screen.getByTestId("loc").textContent).not.toContain("entry="), LATER);
     expect(screen.getByTestId("loc").textContent).not.toContain("tab=journal");
+  });
+
+  it("?tab=journal без entry открывает вкладку и ленту, карточка не выбрана", async () => {
+    renderAt("/families?tab=journal");
+
+    expect(screen.getByRole("tab", { name: /^Журнал ИИ/ })).toHaveAttribute("aria-selected", "true");
+    await waitFor(() => expect(document.querySelector("[data-journal-id]")).not.toBeNull(), LATER);
+    expect(document.querySelector('[aria-selected="true"][data-journal-id]')).toBeNull();
+    expect(screen.getByText("Выберите запись слева.")).toBeInTheDocument();
   });
 
   it("некорректная запись в адресе вкладку не открывает", () => {

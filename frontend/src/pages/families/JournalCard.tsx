@@ -56,24 +56,16 @@ function splitParts(item: JournalItemDetail): { level: number | null; parts: Jou
   return item.details !== undefined && "parts" in item.details ? item.details : null;
 }
 
-function contextDetails(item: JournalItemDetail): { contexts: JournalContextDetail[]; undo_text: string } | null {
+function contextDetails(
+  item: JournalItemDetail
+): { contexts: JournalContextDetail[]; undo_text: string; composite_kind?: "all" | "any" | null } | null {
   return item.details !== undefined && "contexts" in item.details ? item.details : null;
 }
 
-/**
- * Знак между частями составного. Вид составного записи не несёт, но текст значения собран по его
- * виду («A + B» или «A или B»), а его показывают контексты записи; нет ни того, ни другого —
- * нейтральная точка.
- */
-function partsSeparator(contexts: JournalContextDetail[]): string {
-  const values = contexts.map((context) => context.parameter_value ?? "");
-  if (values.length > 0 && values.every((value) => value.includes(" или "))) return "или";
-  if (values.length > 0 && values.every((value) => value.includes(" + "))) return "+";
-  return "·";
-}
-
-function normText(text: string): string {
-  return text.trim().toLowerCase();
+/** Знак между частями составного по его виду: `all` — «+», `any` — «или». */
+function partsSeparator(kind: "all" | "any" | null | undefined): string {
+  if (kind === "any") return "или";
+  return "+";
 }
 
 function levelLabel(level: number, current: number | null): string {
@@ -189,7 +181,7 @@ function CardBody({ item }: { item: JournalItemDetail }) {
       </dl>
 
       {item.kind === "split" && split && <SplitParts parts={split.parts} undone={undone} />}
-      {item.kind === "composite" && <CompositeBlock item={item} contexts={contexts} undoText={withContexts?.undo_text ?? item.text ?? ""} />}
+      {item.kind === "composite" && <CompositeBlock item={item} contexts={contexts} compositeKind={withContexts?.composite_kind} undoText={withContexts?.undo_text ?? item.text ?? ""} />}
       {item.kind === "equated" && (
         <ContextsBlock item={item} contexts={contexts} undoText={withContexts?.undo_text ?? item.text ?? ""} />
       )}
@@ -420,13 +412,15 @@ function SplitParts({ parts, undone }: { parts: JournalSplitPart[]; undone: bool
 function CompositeBlock({
   item,
   contexts,
+  compositeKind,
   undoText,
 }: {
   item: JournalItemDetail;
   contexts: JournalContextDetail[];
+  compositeKind: "all" | "any" | null | undefined;
   undoText: string;
 }) {
-  const separator = partsSeparator(contexts);
+  const separator = partsSeparator(compositeKind);
   return (
     <>
       <div className="grid gap-2 rounded-lg bg-surface-sunken p-3">
@@ -503,7 +497,7 @@ function MergeAction({
   const schemaQ = useFamilySchema(item.family.id);
   const schema = schemaQ.data;
   const parameter = schema?.parameters.find((candidate) => candidate.id === item.parameter?.id);
-  const value = parameter?.values.find((candidate) => normText(candidate.value) === normText(item.text ?? ""));
+  const value = item.value === null ? undefined : parameter?.values.find((candidate) => candidate.id === item.value?.id);
   const mergedInto = value && value.merged_into_id !== null ? parameter?.values.find((v) => v.id === value.merged_into_id) : undefined;
 
   let reason: ReactNode = null;

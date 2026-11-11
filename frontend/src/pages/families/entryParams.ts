@@ -14,7 +14,7 @@ import type { SuggestionUnitFilter } from "@/types/domain";
  *   разделов `<id>` (ссылка с подписи «ждёт решения администратора» строки-работы;
  *   `queue` можно опустить).
  *
- * - `/families?tab=journal&entry=<id>` — вкладка «Журнал ИИ» с карточкой записи.
+ * - `/families?tab=journal[&entry=<id>]` — вкладка «Журнал ИИ» с карточкой записи, если она названа.
  *
  * Вход действует, только когда названное корректно (целые положительные id,
  * единица — ещё и `none`, очередь — `list` или `new`); иначе страница
@@ -29,7 +29,7 @@ export type Entry =
       unit: SuggestionUnitFilter | undefined;
     }
   | { tab: "suggestions"; queue: "zones"; chainId: number }
-  | { tab: "journal"; entryId: number };
+  | { tab: "journal"; entryId: number | null };
 
 /** Параметры адреса, которыми страница принимает вход. */
 export const ENTRY_PARAMS = ["tab", "queue", "unit", "context", "chain", "entry"] as const;
@@ -44,6 +44,8 @@ function unitOf(raw: string | null): { ok: true; value: SuggestionUnitFilter | u
 
 export function parseEntry(params: URLSearchParams): Entry | null {
   if (params.get("tab") === "journal") {
+    // Без `entry` журнал открывается без выбранной записи; названная, но некорректная — не вход.
+    if (!params.has("entry")) return { tab: "journal", entryId: null };
     const entryId = parseId(params.get("entry"));
     return entryId === null ? null : { tab: "journal", entryId };
   }

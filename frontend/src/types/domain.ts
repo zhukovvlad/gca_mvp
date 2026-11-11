@@ -3965,6 +3965,8 @@ export interface JournalItem {
   family: { id: number; title: string };
   context: { id: number; title: string } | null;
   parameter: { id: number; name: string } | null;
+  /** Значение записи (id и текст сейчас); `null` — у деления и когда значения уже нет. */
+  value: { id: number; text: string } | null;
   text: string | null;
   /** Значения записи: части деления, части склейки, «текст, значение» приравнивания, текст нового значения. */
   summary_values: string[];
@@ -3991,7 +3993,12 @@ export interface JournalContextDetail {
 
 export type JournalDetails =
   | { level: number | null; parts: JournalSplitPart[] }
-  | { contexts: JournalContextDetail[]; undo_text: string };
+  | {
+      contexts: JournalContextDetail[];
+      undo_text: string;
+      /** Вид составного (`all` — «+», `any` — «или»); только у склейки. */
+      composite_kind?: "all" | "any" | null;
+    };
 
 /** `GET /semantic/journal/:id`: запись с подробностями (у нового значения их нет). */
 export interface JournalItemDetail extends JournalItem {

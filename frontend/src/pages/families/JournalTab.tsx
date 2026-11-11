@@ -198,7 +198,7 @@ export function JournalTab({ onViewed }: JournalTabProps = {}) {
                 setPage(1);
               }}
             >
-              <SelectTrigger id="journal-state" className="w-48">
+              <SelectTrigger id="journal-state" className="w-60">
                 <SelectValue>
                   {(raw) => (!raw || raw === ANY ? "Действуют и отменённые" : JOURNAL_STATE_FILTER_LABEL[raw as JournalState])}
                 </SelectValue>

@@ -320,6 +320,22 @@ describe("JournalTab: склейка, новое значение, прирав�
     expect(contexts[0]).toHaveTextContent("профнастил + металлочерепица");
   });
 
+  it("знак между частями берётся из вида составного, а не из текста контекстов", async () => {
+    const user = userEvent.setup();
+    const item = handlerState.journal.find((entry) => entry.id === JOURNAL_COMPOSITE_ID)!;
+    item.details = {
+      contexts: [{ id: 621, title: "Устройство кровли, скат", parameter_value: "профнастил" }],
+      undo_text: "профнастил, металлочерепица",
+      composite_kind: "any",
+    };
+    renderTab();
+    const card = await open(user, JOURNAL_COMPOSITE_ID);
+
+    const now = await within(card).findByTestId("journal-now", {}, LATER);
+    expect(now).toHaveTextContent("или");
+    expect(now).not.toHaveTextContent("+");
+  });
+
   it("склейка: отмена — снова простое значение, с подтверждением", async () => {
     const user = userEvent.setup();
     renderTab();
@@ -372,6 +388,23 @@ describe("JournalTab: склейка, новое значение, прирав�
 
     expect(await within(card).findByText(/в списке параметра его больше нет/, {}, LATER)).toBeInTheDocument();
     expect(within(card).getByRole("button", { name: /^Слить с/ })).toBeDisabled();
+  });
+
+  it("новое значение, у которого value null: «Слить с…» недоступно", async () => {
+    const user = userEvent.setup();
+    handlerState.journal.find((entry) => entry.id === JOURNAL_VALUE_ADDED_ID)!.value = null;
+    renderTab();
+    const card = await open(user, JOURNAL_VALUE_ADDED_ID);
+
+    expect(await within(card).findByText(/в списке параметра его больше нет/, {}, LATER)).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: /^Слить с/ })).toBeDisabled();
+  });
+
+  it("состояние: триггер выбора достаточно широк для самого длинного названия", async () => {
+    renderTab();
+    await listed();
+
+    expect(screen.getByRole("combobox", { name: "Состояние" }).className).toContain("w-60");
   });
 
   it("приравнивание: «Отвязать» — это отмена, с подтверждением", async () => {

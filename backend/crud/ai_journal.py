@@ -78,6 +78,7 @@ class JournalItem(TypedDict, total=False):
     family: dict
     context: dict | None
     parameter: dict | None
+    value: dict | None
     text: str | None
     summary_values: list[str]
     state: JournalState
@@ -213,6 +214,10 @@ def _item(
             None if row.parameter_id is None
             else {"id": row.parameter_id, "name": row.parameter_name}
         ),
+        "value": (
+            None if row.value_id is None or row.value_text is None
+            else {"id": row.value_id, "text": row.value_text}
+        ),
         "text": row.payload.get("text"),
         "summary_values": _summary_values(row, part_texts),
         "state": "undone" if undone else ("locked" if locked_by is not None else "active"),
@@ -317,13 +322,16 @@ def _details(db: Session, row: Any) -> dict:
         .where(CatalogContext.id.in_(ids))
         .order_by(CatalogContext.id)
     ).all()
-    return {
+    details = {
         "contexts": [
             {"id": context_id, "title": title, "parameter_value": value}
             for context_id, title, value in contexts
         ],
         "undo_text": row.payload["text"],
     }
+    if row.kind == "composite":
+        details["composite_kind"] = row.payload.get("kind")
+    return details
 
 
 def get_journal_item(db: Session, item_id: int) -> JournalItem:
