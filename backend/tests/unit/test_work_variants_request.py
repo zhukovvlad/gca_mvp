@@ -185,6 +185,10 @@ def test_values_response_format_is_the_documented_literal():
                                         {"type": "string", "enum": ["name", "path"]},
                                         {"type": "null"},
                                     ],
+                                    "description": (
+                                        "Обязателен (name или path) при kind value, new и several; "
+                                        "null только при none и conflict."
+                                    ),
                                 },
                                 "values": {
                                     "anyOf": [

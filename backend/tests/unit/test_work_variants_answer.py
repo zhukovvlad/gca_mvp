@@ -141,7 +141,11 @@ class TestResponseFormats:
             "properties"
         ]["source"]
         assert source == {
-            "anyOf": [{"type": "string", "enum": ["name", "path"]}, {"type": "null"}]
+            "anyOf": [{"type": "string", "enum": ["name", "path"]}, {"type": "null"}],
+            "description": (
+                "Обязателен (name или path) при kind value, new и several; "
+                "null только при none и conflict."
+            ),
         }
 
     def test_checker_rejects_extra_key_and_wrong_type(self):
