@@ -23,7 +23,7 @@ from models import (
     FamilyParameterValue,
     FamilyValuePart,
 )
-from services.composite_values import composite_parts
+from services.composite_values import composite_parts, find_or_create_composite
 from services.human_decisions import add_not_duplicate, add_veto
 from services.semantic_reconcile import NO_CAP, reconcile_context_values
 from services.variant_answer import ValueItem, ValuesAnswer
@@ -1006,3 +1006,68 @@ class TestLemmaCountBeforeNotDuplicate:
         assert value_id not in scene.ids.values()
         assert _value(db_session, value_id).value == "плита перекрытие"
         assert [entry.kind for entry in _journal(db_session, scene)] == ["value_added"]
+
+
+# ---------------------------------------------------------------------------
+#  Выведенное составное, названное заново
+# ---------------------------------------------------------------------------
+
+def _retire(db, *value_ids):
+    db.execute(
+        sa.update(FamilyParameterValue)
+        .where(FamilyParameterValue.id.in_(value_ids))
+        .values(retired_at=sa.func.now())
+    )
+    db.flush()
+
+
+class TestRetiredCompositeNamedAgain:
+    @pytest.mark.parametrize("item", [_several("all", "плиты", "балки"), _new("балки + плиты")])
+    def test_the_same_composition_revives_the_retired_composite_in_place(
+        self, db_session, factories, item
+    ):
+        scene = _scene(db_session, factories, ("балки", "плиты"))
+        _run(db_session, scene, _several("all", "балки", "плиты"))
+        composite_id = _row_of(db_session, scene)[0]
+        _retire(db_session, composite_id)
+        journal_before = len(_journal(db_session, scene))
+
+        outcome = _run(db_session, scene, item)
+
+        assert outcome.applied
+        assert _row_of(db_session, scene)[0] == composite_id
+        revived = _value(db_session, composite_id)
+        assert (revived.retired_at, revived.value, revived.composite_kind) == (
+            None, "балки + плиты", "all",
+        )
+        assert len(_composites(db_session, scene)) == 1
+        assert outcome.values_added == ()
+        assert len(_journal(db_session, scene)) == journal_before
+
+    def test_a_retired_composite_of_another_kind_is_not_revived(self, db_session, factories):
+        scene = _scene(db_session, factories, ("балки", "плиты"))
+        _run(db_session, scene, _several("any", "балки", "плиты"))
+        any_id = _row_of(db_session, scene)[0]
+        _retire(db_session, any_id)
+
+        _run(db_session, scene, _several("all", "балки", "плиты"))
+
+        all_id = _row_of(db_session, scene)[0]
+        assert all_id != any_id
+        assert _value(db_session, any_id).retired_at is not None
+        assert _value(db_session, all_id).composite_kind == "all"
+
+    def test_a_retired_composite_with_a_retired_part_is_not_revived(self, db_session, factories):
+        scene = _scene(db_session, factories, ("балки", "плиты"))
+        _run(db_session, scene, _several("all", "балки", "плиты"))
+        composite_id = _row_of(db_session, scene)[0]
+        _retire(db_session, composite_id, scene.ids["балки"])
+
+        with pytest.raises(ValueError):
+            find_or_create_composite(
+                db_session, parameter_id=scene.parameter_id, kind="all",
+                part_ids=[scene.ids["балки"], scene.ids["плиты"]], context_id=scene.context_id,
+                source_text=None,
+            )
+
+        assert _value(db_session, composite_id).retired_at is not None

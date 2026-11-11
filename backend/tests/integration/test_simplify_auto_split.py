@@ -2068,3 +2068,80 @@ class TestTheSplitIsNotLostWhenTheInputChanged:
 
         assert outcome.status == "input_changed"
         assert [job.status for job in _split_jobs(db_session, scene)] == ["cancelled", "pending"]
+
+
+# ---------------------------------------------------------------------------
+#  Ответ группы остался конфликтом: подсказка не снимается
+# ---------------------------------------------------------------------------
+
+_DEEPER_COLUMNS = [
+    (("Смета", "Корпус 2", "Стены"), 2),
+    (("Смета", "Корпус 2", "Колонны", "Блок А"), 1),
+    (("Смета", "Корпус 2", "Колонны", "Блок Б"), 1),
+]
+_COLUMNS_FIRST = [_DEEPER_COLUMNS[1], _DEEPER_COLUMNS[2], _DEEPER_COLUMNS[0]]
+
+
+def _answers_with_conflict(plan, conflicting_titles):
+    """Ответы по группам: у групп из `conflicting_titles` конфликт, у прочих — значение."""
+    return {
+        index: {
+            1: (
+                ValueItem(1, "conflict", None, None)
+                if group.title in conflicting_titles
+                else ValueItem(1, "value", "стены", "name")
+            )
+        }
+        for index, group in enumerate(plan.groups)
+    }
+
+
+class TestConflictPersists:
+    def test_one_group_with_a_conflict_answer_keeps_the_hint_and_queues_nothing(
+        self, db_session, factories
+    ):
+        scene = _scene(db_session, factories)
+        guard, plan, _ = _prepared(db_session, scene)
+        answers = _answers_with_conflict(plan, {"Стены", "Колонны"})
+        before = _state(db_session)
+
+        outcome = _write(db_session, scene, (guard, plan, answers))
+
+        assert (outcome.status, outcome.action_id, outcome.reason) == (
+            "not_split", None, "conflict_persists",
+        )
+        assert _context(db_session, scene.ctx).variant_split_hint == "path_conflict"
+        assert _values(db_session, scene.ctx) == [(None, "path_conflict")]
+        assert _journal_rows(db_session) == []
+        assert _rules(db_session, scene) == []
+        assert _all_contexts(db_session, scene) == [scene.ctx]
+        assert _state(db_session)["context_members"] == before["context_members"]
+        [only] = _split_jobs(db_session, scene)
+        assert (only.status, only.claim_token) == ("done", None)
+
+    @pytest.mark.parametrize("specs", [_DEEPER_COLUMNS, _COLUMNS_FIRST])
+    def test_a_part_that_stays_in_conflict_keeps_the_hint_and_queues_nothing(
+        self, db_session, factories, specs
+    ):
+        scene = _scene(db_session, factories, specs)
+        guard, plan, _ = _prepared(db_session, scene)
+        answers = _answers_with_conflict(plan, {"Колонны"})
+
+        outcome = _write(db_session, scene, (guard, plan, answers))
+
+        assert (outcome.status, outcome.reason) == ("split", None)
+        parts = _all_contexts(db_session, scene)
+        assert len(parts) == 2
+        columns = next(c for c in parts if "Блок А" in _members(db_session, c))
+        walls = next(c for c in parts if c != columns)
+        assert _members(db_session, walls).keys() == {"Стены"}
+        assert _values(db_session, walls) == [("стены", "path")]
+        assert _context(db_session, walls).variant_split_hint is None
+        assert _values(db_session, columns) == [(None, "path_conflict")]
+        assert _context(db_session, columns).variant_split_hint == "path_conflict"
+        assert [job.status for job in _jobs(db_session, "auto_split", context_id=walls)] == (
+            ["done"] if walls == scene.ctx else []
+        )
+        assert [job.status for job in _jobs(db_session, "auto_split", context_id=columns)] == (
+            ["done"] if columns == scene.ctx else []
+        )

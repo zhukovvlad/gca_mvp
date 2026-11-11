@@ -60,6 +60,7 @@ from models import (
     SemanticJobKind,
     SemanticJobStatus,
     User,
+    ValueSource,
 )
 from parser.sanitize_text import normalize_job_title_with_lemmatization
 from services.ai_journal import record_action
@@ -621,7 +622,9 @@ def schedule_auto_split(db: Session, *, context_id: int, settings: Settings) -> 
 class AutoSplitOutcome:
     """`split` — контекст поделён, `action_id` — запись журнала; `resolved` — после слияния
     групп осталась одна, значения поставлены, делить не пришлось; `not_split` — правила хоть
-    одной группы нет (`reason`), контекст остался «к делению»; `input_changed` — вход
+    одной группы нет (`reason = no_rule`) либо после слияния осталась одна группа, но ответ
+    по ней — конфликт (`reason = conflict_persists`: подсказка остаётся, новое задание не
+    ставится), контекст остался «к делению»; `input_changed` — вход
     изменился после вызова модели; `lost_claim` — задание уже не наше. Два последних ничего не
     записали."""
 
@@ -843,7 +846,14 @@ def auto_split_context(
             db, context_id=context_id, schema_id=schema_id,
             answer=_answer_for(answers[0], active), settings=settings,
         )
-        _clear_hint(db, [context_id])
+        if _in_path_conflict(db, [context_id], schema_id):
+            # Одна группа с ответом «конфликт»: те же пути дали бы те же группы, повторное
+            # задание было бы платным кругом.
+            _set_hints(db, cleared=[], kept=[context_id])
+            _close_job(job, SemanticJobStatus.done)  # type: ignore[arg-type]
+            db.flush()
+            return AutoSplitOutcome("not_split", None, "conflict_persists")
+        _set_hints(db, cleared=[context_id], kept=[])
         _close_job(job, SemanticJobStatus.done)  # type: ignore[arg-type]
         db.flush()
         return AutoSplitOutcome("resolved", None, None)
@@ -883,7 +893,12 @@ def auto_split_context(
                 db, context_id=part_id, schema_id=schema_id,
                 answer=_answer_for(answers[cluster[0]], active), settings=settings,
             )
-        _clear_hint(db, [part_id for part_id, _ in parts])
+        part_ids = [part_id for part_id, _ in parts]
+        conflicting = _in_path_conflict(db, part_ids, schema_id)
+        _set_hints(
+            db, cleared=[p for p in part_ids if p not in conflicting],
+            kept=[p for p in part_ids if p in conflicting],
+        )
         groups = [
             {
                 "context_id": part_id,
@@ -936,6 +951,41 @@ def _cancel_part_suggestions(db: Session, part_ids: Sequence[int]) -> None:
             )
         )
         db.flush()
+
+
+def _in_path_conflict(db: Session, context_ids: Sequence[int], schema_id: int) -> set[int]:
+    """Контексты из `context_ids`, у которых хоть один главный параметр схемы остался со
+    значением `path_conflict` (после применения ответа группы)."""
+    main = list(active_main_ordinals(db, schema_id))
+    if not main or not context_ids:
+        return set()
+    return set(
+        db.execute(
+            sa.select(ContextParameterValue.context_id)
+            .join(FamilyParameter, FamilyParameter.id == ContextParameterValue.parameter_id)
+            .where(
+                ContextParameterValue.context_id.in_(list(context_ids)),
+                ContextParameterValue.source == ValueSource.path_conflict.value,
+                FamilyParameter.schema_id == schema_id,
+                FamilyParameter.ordinal.in_(main),
+            )
+        ).scalars()
+    )
+
+
+def _set_hints(db: Session, *, cleared: Sequence[int], kept: Sequence[int]) -> None:
+    """Подсказка «к делению» снимается с разрешённых частей и остаётся у тех, где конфликт
+    путей сохранился."""
+    if kept:
+        db.execute(
+            sa.update(CatalogContext)
+            .where(CatalogContext.id.in_(list(kept)))
+            .values(variant_split_hint="path_conflict")
+        )
+    if cleared:
+        _clear_hint(db, cleared)
+    db.flush()
+    db.expire_all()
 
 
 def _clear_hint(db: Session, context_ids: Sequence[int]) -> None:

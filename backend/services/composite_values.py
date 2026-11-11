@@ -146,7 +146,8 @@ def find_or_create_composite(
 
     Порядок: инварианты частей; вето состава (спека §2.6) — оно сильнее всего,
     составное тогда не создаётся и журнал не пишется; существующее составное по
-    ключу; иначе создание (`origin = 'extension'`), расширение списка
+    ключу, а выведенное из списка с тем же ключом возвращается на месте (тот же id, без
+    журнала); иначе создание (`origin = 'extension'`), расширение списка
     (`revision` версии, событие `family_schema_value_added`) и одна запись журнала
     `composite`. `new_part_ids` — части, заведённые тем же ответом, `source_text` —
     исходный текст склейки. Текст составного совпал с нормой уже существующего
@@ -176,6 +177,19 @@ def find_or_create_composite(
     existing = _active_composite_id(db, parameter_id, key)
     if existing is not None:
         return existing
+    retired = db.execute(
+        sa.select(FamilyParameterValue.id).where(
+            FamilyParameterValue.parameter_id == parameter_id,
+            FamilyParameterValue.composite_key == key,
+            FamilyParameterValue.merged_into_id.is_(None),
+            FamilyParameterValue.retired_at.is_not(None),
+        )
+    ).scalar_one_or_none()
+    if retired is not None:
+        # Тот же состав выведен из списка: возвращается на месте, это не новое значение
+        # (журнал и `added` не трогаются). Части уже проверены `_checked_parts`.
+        revive_composite(db, retired)
+        return retired
 
     texts = dict(
         db.execute(
