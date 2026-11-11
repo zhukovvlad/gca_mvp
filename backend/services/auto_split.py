@@ -76,7 +76,12 @@ from services.context_routing import (
     lock_buckets,
 )
 from services.semantic_answer import AnswerSchemaError
-from services.semantic_reconcile import Fingerprint, _job_conflict_arbiter, _job_row
+from services.semantic_reconcile import (
+    Fingerprint,
+    _job_conflict_arbiter,
+    _job_row,
+    deferred_reconcile,
+)
 from services.semantic_request import RenderedRequest
 from services.variant_answer import ValueItem, ValuesAnswer
 from services.variant_request import (
@@ -570,6 +575,30 @@ def enqueue_auto_split(
     return existing.id
 
 
+def split_job_to_queue(
+    db: Session, *, context_id: int, settings: Settings
+) -> RenderedRequest | None:
+    """Сводный запрос задания, которое `enqueue_auto_split` поставило бы контексту сейчас;
+    `None` — предмет неприменим или задание этого отпечатка уже есть (в любом состоянии).
+    Только читает: так первый прогон печатает то же, что поставит."""
+    prepared = prepare_auto_split(db, context_id, level=None, settings=settings)
+    if prepared is None:
+        return None
+    exists = db.execute(
+        sa.select(
+            sa.exists().where(
+                SemanticJob.kind == SemanticJobKind.auto_split.value,
+                SemanticJob.context_id == context_id,
+                SemanticJob.family_id.is_(None),
+                SemanticJob.schema_id.is_(None),
+                SemanticJob.section_chain_id.is_(None),
+                SemanticJob.request_hash == prepared.rendered.request_hash,
+            )
+        )
+    ).scalar_one()
+    return None if exists else prepared.rendered
+
+
 def schedule_auto_split(db: Session, *, context_id: int, settings: Settings) -> None:
     """Вызывается `apply_values` после того, как контексту поставлен вариант и пересчитана
     подсказка: «к делению» без пометки «автоделение не трогает» — ставит задание; с пометкой
@@ -721,6 +750,16 @@ def _value_ids(db: Session, context_id: int) -> list[int]:
     )
 
 
+def _requeue_after_input_changed(db: Session, context_id: int, settings: Settings) -> None:
+    """Задание отменено как устаревшее: если контекст всё ещё предмет автоделения, в той же
+    транзакции ставится одно новое задание со свежим отпечатком (иначе работа теряется: ставит
+    задание только `apply_values`). Применимость — та же, что у постановки: подсказка «к
+    делению», не архивирован, нет пометки «автоделение не трогает», у семьи есть действующая
+    схема, нет членов, перенесённых вручную. Цикла нет: новое задание живёт, пока вход не
+    изменится снова, и тогда его отменит уже его собственный захват."""
+    enqueue_auto_split(db, context_id=context_id, settings=settings)
+
+
 def auto_split_context(
     db: Session, *, context_id: int, answers: Mapping[int, Mapping[int, ValueAnswer]],
     plan: SplitPlan, guard: JobGuard, settings: Settings | None = None,
@@ -773,6 +812,7 @@ def auto_split_context(
     ):
         _close_job(job, SemanticJobStatus.cancelled, SemanticCancelReason.input_changed)  # type: ignore[arg-type]
         db.flush()
+        _requeue_after_input_changed(db, context_id, settings)
         return AutoSplitOutcome("input_changed", None, "input_changed")
     if not _is_applicable(db, locked):
         _close_job(job, SemanticJobStatus.cancelled, SemanticCancelReason.not_applicable)  # type: ignore[arg-type]
@@ -815,7 +855,10 @@ def auto_split_context(
         db.flush()
         return AutoSplitOutcome("not_split", None, "no_rule")
 
-    with db.begin_nested():
+    # Очередь сверяется один раз, когда у каждой части уже есть семья и значения её группы:
+    # сверка посреди деления увидела бы новую часть без семьи и поставила бы платное
+    # предложение семьи тому, что семью уже наследует.
+    with db.begin_nested(), deferred_reconcile(db):
         parts: list[tuple[int, list[int]]] = [(context_id, merged[0])]
         rule_ids: list[int] = []
         for cluster in merged[1:]:
@@ -858,10 +901,41 @@ def auto_split_context(
             db, kind="split", family_id=subject.family_id, context_id=context_id,
             payload={"level": plan.level, "groups": groups, "rule_ids": rule_ids},
         )
+    _cancel_part_suggestions(db, [part_id for part_id, _ in parts[1:]])
     job = db.execute(_lock_job_statement(guard.job_id)).scalar_one()
     _close_job(job, SemanticJobStatus.done)
     db.flush()
     return AutoSplitOutcome("split", action_id, None)
+
+
+def _cancel_part_suggestions(db: Session, part_ids: Sequence[int]) -> None:
+    """Новые части наследуют семью исходного контекста, решение уже принято: сверка очереди
+    поставила бы им платное предложение семьи (применимость от семьи не зависит), и живые
+    задания `family_suggestion` частей закрываются как неприменимые. Задания исходного
+    контекста и чужих контекстов не трогаются."""
+    job_ids = db.execute(
+        sa.select(SemanticJob.id)
+        .where(
+            SemanticJob.kind == SemanticJobKind.family_suggestion.value,
+            SemanticJob.context_id.in_(list(part_ids)),
+            SemanticJob.status.in_(
+                (SemanticJobStatus.pending.value, SemanticJobStatus.privacy_hold.value)
+            ),
+        )
+        .order_by(SemanticJob.id)
+        .with_for_update()
+    ).scalars().all()
+    if job_ids:
+        db.execute(
+            sa.update(SemanticJob)
+            .where(SemanticJob.id.in_(job_ids))
+            .values(
+                status=SemanticJobStatus.cancelled.value,
+                cancel_reason=SemanticCancelReason.not_applicable.value,
+                claim_token=None,
+            )
+        )
+        db.flush()
 
 
 def _clear_hint(db: Session, context_ids: Sequence[int]) -> None:
@@ -945,13 +1019,29 @@ def run_auto_split_job(
 def close_auto_split_job(
     db: Session, guard: JobGuard,
     reason: SemanticCancelReason = SemanticCancelReason.not_applicable,
+    *, settings: Settings | None = None,
 ) -> AutoSplitOutcome:
-    """Закрывает своё задание отменой без записи в домен; чужое (`lost_claim`) не трогает."""
+    """Закрывает своё задание отменой без записи в домен; чужое (`lost_claim`) не трогает.
+    Отмена `input_changed` ставит новое задание, если контекст всё ещё применим
+    (`_requeue_after_input_changed`); замки для этого берутся до строки задания, в порядке
+    записи деления."""
+    requeue = reason == SemanticCancelReason.input_changed
+    if requeue:
+        bucket_id = db.execute(
+            sa.select(CatalogContext.bucket_id)
+            .join(SemanticJob, SemanticJob.context_id == CatalogContext.id)
+            .where(SemanticJob.id == guard.job_id)
+        ).scalar_one()
+        _lock_catalog_then_bucket(db, bucket_id)
     job = db.execute(_lock_job_statement(guard.job_id)).scalar_one()
     if not _owns(job, guard):
         return AutoSplitOutcome("lost_claim", None, None)
     _close_job(job, SemanticJobStatus.cancelled, reason)
     db.flush()
+    if requeue:
+        _requeue_after_input_changed(
+            db, job.context_id, settings if settings is not None else app_settings
+        )
     return AutoSplitOutcome("input_changed", None, reason.value)
 
 

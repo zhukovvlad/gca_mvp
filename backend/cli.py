@@ -328,7 +328,9 @@ def catalog_simplify_backfill(dry_run: bool, family_id: int | None, limit: int |
         )
         click.echo(_ids_line("step2 queued_context_ids", step2.queued))
         click.echo(f"step2 reserve_usd={step2.reserve_usd:.4f} cached_usd={step2.cached_usd:.4f}")
-        total = step1.reserve_usd + step2.reserve_usd
+        click.echo(_ids_line("step2 auto_split_queued", step2.auto_split_queued))
+        click.echo(f"step2 auto_split_reserve_usd={step2.auto_split_reserve_usd:.4f}")
+        total = step1.reserve_usd + step2.reserve_usd + step2.auto_split_reserve_usd
         click.echo(f"total reserve_usd={total:.4f}")
     finally:
         db.close()

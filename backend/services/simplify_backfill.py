@@ -14,8 +14,11 @@
 «автоделение не трогает», с действующей версией схемы семьи): строки, на которых путь разошёлся,
 помечаются «уточняется», а сверка заданий значений ставит (или возвращает из выполненных)
 `context_values` тем же путём, что и правка схемы: один отпечаток запроса, один резерв, одна
-проверка приватности захватом. Ответ `conflict` сам ставит автоделение (`apply_values`):
-здесь автоделение не ставится.
+проверка приватности захватом. Ответ `conflict` сам ставит автоделение (`apply_values`): для таких контекстов оно здесь не
+ставится. Контекст, уже отвеченный текущим промптом (шаг его пропускает), но оставшийся «к
+делению» без живого задания автоделения, получает его здесь (`enqueue_auto_split`): так
+возвращается деление, потерянное при гонке отпечатка. Задание этого же отпечатка, пусть и
+выполненное без деления, заново не ставится.
 
 Обе половины считают план читающими запросами; запись идёт теми же действиями, что план, поэтому
 `apply=False` печатает то же, что сделает `apply=True`. Функции коммитят не сами: транзакцией
@@ -30,6 +33,7 @@ from decimal import Decimal
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
+from config import Settings
 from config import settings as app_settings
 from models import (
     CatalogContext,
@@ -47,6 +51,7 @@ from models import (
     WorkFamily,
 )
 from services.ai_journal import record_action
+from services.auto_split import enqueue_auto_split, split_job_to_queue
 from services.composite_values import COMPOSITE_JOIN, _active_composite_id, composite_key
 from services.human_decisions import match_veto
 from services.releasable import _UNFINISHED, load_releasable_material, render_releasable_material
@@ -332,6 +337,8 @@ class Step2Report:
     free: int = 0
     reserve_usd: Decimal = Decimal("0")
     cached_usd: Decimal = Decimal("0")
+    auto_split_queued: list[int] = field(default_factory=list)
+    auto_split_reserve_usd: Decimal = Decimal("0")
 
 
 def _candidate_contexts(db: Session, family_id: int | None) -> list[int]:
@@ -395,18 +402,66 @@ def _answered_with_current_prompt(db: Session, material: dict) -> set[int]:
     return {cid for cid, version in latest.items() if version == str(VALUES_PROMPT_VERSION)}
 
 
+def _return_lost_splits(
+    db: Session, answered: set[int], report: Step2Report, *, limit: int | None, apply: bool,
+    settings: Settings,
+) -> None:
+    """Отвеченные контексты «к делению» без живого задания автоделения: каждому, чей предмет
+    применим, ставится задание (`enqueue_auto_split`); резерв — по тарифам `context_values`,
+    как у задания автоделения в воркере. Без `apply` только считает то же самое."""
+    if not answered:
+        return
+    live = set(
+        db.execute(
+            sa.select(SemanticJob.context_id).where(
+                SemanticJob.kind == SemanticJobKind.auto_split.value,
+                SemanticJob.context_id.in_(sorted(answered)),
+                SemanticJob.status.in_(
+                    (
+                        SemanticJobStatus.pending.value, SemanticJobStatus.running.value,
+                        SemanticJobStatus.privacy_hold.value,
+                    )
+                ),
+            )
+        ).scalars()
+    )
+    planned = []
+    for context_id in sorted(answered - live):
+        rendered = split_job_to_queue(db, context_id=context_id, settings=settings)
+        if rendered is not None:
+            planned.append((context_id, rendered))
+    if limit is not None:
+        planned = planned[:limit]
+    if apply and planned:
+        db.execute(_lock_contexts_statement([context_id for context_id, _ in planned])).all()
+        planned = [
+            (context_id, rendered)
+            for context_id, rendered in planned
+            if enqueue_auto_split(db, context_id=context_id, settings=settings) is not None
+        ]
+    tariffs = tariffs_from(settings, SemanticJobKind.context_values)
+    report.auto_split_queued = [context_id for context_id, _ in planned]
+    report.auto_split_reserve_usd = sum(
+        (reserve_for(db, rendered, tariffs, rendered.body["max_tokens"]) for _, rendered in planned),
+        Decimal("0"),
+    )
+
+
 def backfill_path_conflicts(
-    db: Session, *, family_id: int | None, limit: int | None, apply: bool
+    db: Session, *, family_id: int | None, limit: int | None, apply: bool,
+    settings: Settings | None = None,
 ) -> Step2Report:
     """Шаг 2: перезапрос значений у контекстов «к делению». `limit` ограничивает число
     контекстов, которым ставится задание, — по возрастанию `id`; контекст, у которого
     задание текущего отпечатка уже ждёт или идёт, в набор не входит. Без `apply` — только
-    план и оценка."""
+    план и оценка. `limit` действует и на возвращаемые автоделения, отдельным счётом."""
+    settings = settings if settings is not None else app_settings
     report = Step2Report()
     material = load_values_material(db, _candidate_contexts(db, family_id))
     report.candidates = len(material)
     answered = _answered_with_current_prompt(db, material)
     report.already_asked = len(answered)
+    _return_lost_splits(db, answered, report, limit=limit, apply=apply, settings=settings)
     material = {cid: values for cid, values in material.items() if cid not in answered}
     if not material:
         return report

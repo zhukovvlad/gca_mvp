@@ -26,9 +26,11 @@ from models import (
     ContextMember,
     ContextParameterValue,
     ContextRoutingRule,
+    FamilyParameterSchema,
     FamilyParameterValue,
     PositionItem,
     Proposal,
+    SemanticCancelReason,
     SemanticEvent,
     SemanticJob,
     SemanticJobAttempt,
@@ -41,6 +43,7 @@ from services.auto_split import (
     auto_split_fingerprint,
     current_fingerprint,
     plan_for_context,
+    prepare_auto_split,
     run_auto_split_job,
 )
 from services.context_operations import move_members
@@ -55,7 +58,12 @@ from services.work_variants import (
     values_key_of,
 )
 from tests.integration.test_work_variants_core import _parameter_in, _schema_answer, _table_rows, _world
-from tests.integration.test_work_variants_schema_life import _claim, _jobs, _paths_hash
+from tests.integration.test_work_variants_schema_life import (
+    _claim,
+    _jobs,
+    _paths_hash,
+    _second_context,
+)
 from tests.integration.test_work_variants_worker import (
     NOW,
     S,
@@ -725,7 +733,16 @@ def _new_arrival(db, scene, heading):
     assert ctx == scene.ctx
 
 
+def _bump_revision_by_a_values_answer(db, scene, heading):
+    """(ж) Другой контекст той же семьи получил ответ значений с новым значением списка: он
+    дописывает значение в версию схемы и повышает её `revision`."""
+    other = _second_context(db, scene.factories, scene.world)
+    answer = ValuesAnswer(items=(ValueItem(1, "new", "перегородки", "name"),))
+    assert _apply(db, scene, answer, context_id=other).applied
+
+
 _CHANGES = {
+    "values_answer_bumped_revision": _bump_revision_by_a_values_answer,
     "chain_changed": _rename_chapter,
     "value_set_by_hand": _set_value_by_hand,
     "new_schema_version": _freeze_new_schema,
@@ -754,7 +771,7 @@ class TestStaleAnswer:
 
         assert (outcome.status, outcome.action_id) == ("input_changed", None)
         assert _state(db_session) == before
-        job = _job(db_session, scene)
+        job = _job(db_session, scene, status="cancelled")
         assert (job.status, job.cancel_reason, job.claim_token) == (
             "cancelled", "input_changed", None,
         )
@@ -1739,10 +1756,13 @@ class TestPrivacyOfSentBodies:
         )
 
         assert calls == []
-        job = _job(committing_db, scene)
+        job = _job(committing_db, scene, status="cancelled")
         assert (job.status, job.cancel_reason, job.claim_token) == (
             "cancelled", "input_changed", None,
         )
+        assert [j.status for j in _jobs(committing_db, "auto_split", context_id=scene.ctx)] == [
+            "cancelled", "pending",
+        ]
         assert _state(committing_db) == before
         committing_db.expire_all()
         [attempt] = committing_db.execute(
@@ -1821,3 +1841,230 @@ class TestRestoreQueuesTheSplit:
         journal.restore_auto(db_session, scene.entry.id, user_id=scene.actor)
 
         assert [j.status for j in _jobs(db_session, "auto_split", context_id=scene.ctx)] == ["done"]
+
+
+# ---------------------------------------------------------------------------
+#  Части деления несут семью к моменту сверки очереди
+# ---------------------------------------------------------------------------
+
+class TestPartsCarryTheFamilyBeforeTheQueueIsReconciled:
+    def test_an_auto_split_queues_no_family_suggestion_job_and_the_parts_have_the_family(
+        self, db_session, factories
+    ):
+        scene = _scene(db_session, factories)
+        # Семья контекста принята: часть наследует и это состояние, и ей предложение не нужно.
+        _context(db_session, scene.ctx).semantic_state = "CONFIRMED"
+        db_session.flush()
+
+        assert _split(db_session, scene).status == "split"
+
+        parts = _all_contexts(db_session, scene)
+        assert len(parts) == 2
+        for part in parts:
+            assert _context(db_session, part).work_family_id == scene.family.id
+        new_ctx = [c for c in parts if c != scene.ctx][0]
+        assert [
+            (job.status, job.cancel_reason)
+            for job in _jobs(db_session, "family_suggestion", context_id=new_ctx)
+        ] == [("cancelled", "not_applicable")]
+
+    def test_a_suggestion_job_of_another_context_stays_live(self, db_session, factories):
+        scene = _scene(db_session, factories)
+        other = _second_context(db_session, factories, scene.world)
+        from services.semantic_reconcile import NO_CAP, reconcile_semantic_jobs
+
+        reconcile_semantic_jobs(db_session, [other], cap=NO_CAP, source="operation")
+        live_before = [
+            job.id for job in _jobs(db_session, "family_suggestion", context_id=other)
+            if job.status == "pending"
+        ]
+        assert live_before, "у другого контекста есть живое задание предложения"
+
+        assert _split(db_session, scene).status == "split"
+
+        assert [
+            job.id for job in _jobs(db_session, "family_suggestion", context_id=other)
+            if job.status == "pending"
+        ] == live_before
+
+    def test_the_values_of_the_group_are_set_when_the_queue_is_reconciled(
+        self, db_session, factories, monkeypatch
+    ):
+        import services.semantic_reconcile as reconcile_module
+
+        seen: list[tuple] = []
+        real = reconcile_module.reconcile_semantic_jobs
+
+        def spy(db, context_ids, **kwargs):
+            for context_id in context_ids:
+                values = db.execute(
+                    sa.select(FamilyParameterValue.value, ContextParameterValue.source)
+                    .select_from(ContextParameterValue)
+                    .outerjoin(
+                        FamilyParameterValue, FamilyParameterValue.id == ContextParameterValue.value_id
+                    )
+                    .where(ContextParameterValue.context_id == context_id)
+                ).all()
+                family = db.execute(
+                    sa.select(CatalogContext.work_family_id).where(CatalogContext.id == context_id)
+                ).scalar_one()
+                seen.append((context_id, values, family))
+            return real(db, context_ids, **kwargs)
+
+        monkeypatch.setattr(reconcile_module, "reconcile_semantic_jobs", spy)
+        scene = _scene(db_session, factories)
+        seen.clear()
+
+        assert _split(db_session, scene).status == "split"
+
+        by_context: dict[int, tuple] = {}
+        for context_id, values, family in seen:
+            by_context.setdefault(context_id, (values, family))  # первая сверка контекста
+        new_ctx = [c for c in _all_contexts(db_session, scene) if c != scene.ctx][-1]
+        assert by_context[new_ctx] == ([("колонны", "path")], scene.family.id)
+
+    def test_a_manual_split_of_a_context_without_a_family_still_queues_a_suggestion(
+        self, db_session, factories
+    ):
+        from tests.integration import test_semantic_queue_hooks_ops as ops
+
+        scene = ops._scene(db_session, factories, [("Стены", 2), ("Пол", 1)])
+        ops._settle(db_session, scene.context_id)
+
+        new_context_id = ops._split_out(db_session, scene, "Стены")
+
+        assert _context(db_session, new_context_id).work_family_id is None
+        [job] = ops._jobs(db_session, new_context_id)
+        assert (job.kind, job.status) == ("family_suggestion", "pending")
+
+
+# ---------------------------------------------------------------------------
+#  Потерянное деление: после input_changed ставится одно новое задание
+# ---------------------------------------------------------------------------
+
+_STILL_ELIGIBLE = (
+    "values_answer_bumped_revision", "chain_changed", "value_set_by_hand",
+    "new_schema_version", "member_arrived",
+)
+_NO_LONGER_ELIGIBLE = ("member_moved_by_hand", "split_blocked")
+
+
+def _split_jobs(db, scene):
+    return _jobs(db, "auto_split", context_id=scene.ctx)
+
+
+class TestTheSplitIsNotLostWhenTheInputChanged:
+    def test_a_values_answer_of_another_context_bumps_the_revision_and_stales_the_write(
+        self, db_session, factories
+    ):
+        scene = _scene(db_session, factories)
+        guard, plan, answers = _prepared(db_session, scene)
+        revision = db_session.get(FamilyParameterSchema, scene.schema.id).revision
+
+        _bump_revision_by_a_values_answer(db_session, scene, "Колонны")
+
+        db_session.expire_all()
+        assert db_session.get(FamilyParameterSchema, scene.schema.id).revision == revision + 1
+        assert current_fingerprint(db_session, scene.ctx, plan, settings=S) != guard.expected_request_hash
+        outcome = _write(db_session, scene, (guard, plan, answers))
+        assert (outcome.status, outcome.reason) == ("input_changed", "input_changed")
+
+    @pytest.mark.parametrize("change", _STILL_ELIGIBLE)
+    def test_an_eligible_context_gets_one_new_job_with_the_fresh_fingerprint(
+        self, db_session, factories, change
+    ):
+        scene = _scene(db_session, factories)
+        prepared = _prepared(db_session, scene)
+        old_hash = prepared[0].expected_request_hash
+        _CHANGES[change](db_session, scene, "Колонны")
+
+        outcome = _write(db_session, scene, prepared)
+
+        assert outcome.status == "input_changed"
+        old, new = _split_jobs(db_session, scene)
+        assert (old.status, old.cancel_reason, old.claim_token) == ("cancelled", "input_changed", None)
+        assert (new.status, new.cancel_reason, new.claim_token) == ("pending", None, None)
+        current = prepare_auto_split(db_session, scene.ctx, level=None, settings=S)
+        assert new.request_hash == current.rendered.request_hash != old_hash
+
+    def test_the_new_job_is_taken_and_splits_the_context(self, db_session, factories):
+        scene = _scene(db_session, factories)
+        prepared = _prepared(db_session, scene)
+        _bump_revision_by_a_values_answer(db_session, scene, "Колонны")
+        assert _write(db_session, scene, prepared).status == "input_changed"
+        _only_auto_split(db_session)
+
+        claim = worker.claim_next(db_session, settings=S, now=NOW)
+        outcome = run_auto_split_job(db_session, claim=claim, ask=_ask(), settings=S)
+
+        assert outcome.status == "split"
+        assert [job.status for job in _split_jobs(db_session, scene)] == ["cancelled", "done"]
+
+    @pytest.mark.parametrize("change", _NO_LONGER_ELIGIBLE)
+    def test_a_context_that_is_no_longer_eligible_gets_no_new_job(
+        self, db_session, factories, change
+    ):
+        scene = _scene(db_session, factories)
+        prepared = _prepared(db_session, scene)
+        _CHANGES[change](db_session, scene, "Колонны")
+
+        outcome = _write(db_session, scene, prepared)
+
+        assert outcome.status == "input_changed"
+        [only] = _split_jobs(db_session, scene)
+        assert (only.status, only.cancel_reason) == ("cancelled", "input_changed")
+
+    def test_an_archived_context_gets_no_new_job(self, db_session, factories):
+        scene = _scene(db_session, factories)
+        prepared = _prepared(db_session, scene)
+        _context(db_session, scene.ctx).archived_at = dt.datetime.now(dt.UTC)
+        db_session.flush()
+
+        outcome = _write(db_session, scene, prepared)
+
+        assert outcome.status == "input_changed"
+        assert [job.status for job in _split_jobs(db_session, scene)] == ["cancelled"]
+
+    def test_a_lost_claim_queues_nothing(self, db_session, factories):
+        scene = _scene(db_session, factories)
+        prepared = _prepared(db_session, scene)
+        _bump_revision_by_a_values_answer(db_session, scene, "Колонны")
+        _job(db_session, scene).claim_token = uuid.uuid4()
+        db_session.flush()
+
+        outcome = _write(db_session, scene, prepared)
+
+        assert outcome.status == "lost_claim"
+        assert [job.status for job in _split_jobs(db_session, scene)] == ["running"]
+
+    def test_a_context_that_became_not_a_work_gets_no_new_job(self, db_session, factories):
+        scene = _scene(db_session, factories)
+        prepared = _prepared(db_session, scene)
+        _context(db_session, scene.ctx).semantic_state = "NOT_APPLICABLE"
+        db_session.flush()
+
+        outcome = _write(db_session, scene, prepared)
+
+        assert (outcome.status, outcome.reason) == ("input_changed", "not_applicable")
+        assert [job.status for job in _split_jobs(db_session, scene)] == ["cancelled"]
+
+    def test_the_worker_close_of_a_drifted_job_queues_the_new_one_too(self, db_session, factories):
+        from services.auto_split import close_auto_split_job
+        from services.work_variants import JobGuard
+
+        scene = _scene(db_session, factories)
+        guard, _plan, _answers = _prepared(db_session, scene)
+        _bump_revision_by_a_values_answer(db_session, scene, "Колонны")
+
+        outcome = close_auto_split_job(
+            db_session,
+            JobGuard(
+                job_id=guard.job_id, claim_token=guard.claim_token,
+                expected_request_hash=guard.expected_request_hash,
+            ),
+            SemanticCancelReason.input_changed,
+            settings=S,
+        )
+
+        assert outcome.status == "input_changed"
+        assert [job.status for job in _split_jobs(db_session, scene)] == ["cancelled", "pending"]

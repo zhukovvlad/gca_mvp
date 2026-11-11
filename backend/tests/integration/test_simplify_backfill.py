@@ -815,3 +815,207 @@ class TestBackfillCommand:
         assert isinstance(result.exception, RuntimeError)
         assert "APP_ENV=dev" in str(result.exception)
 
+
+
+
+# ---------------------------------------------------------------------------
+#  Шаг 2: возврат потерянного автоделения
+# ---------------------------------------------------------------------------
+
+def _answered_context(db, factories, *, split_job="stale"):
+    """Контекст «к делению», уже отвеченный текущим промптом. `split_job` — что стало с его
+    заданием автоделения: `stale` — отменено по `input_changed` с устаревшим отпечатком
+    (так оно теряется при гонке), `live` — ждёт, `done_same` — выполнено на том же входе
+    (деление не вышло), `none` — задания нет."""
+    scene = split._scene(db, factories)
+    [job] = _split_jobs(db, scene.ctx)
+    if split_job == "stale":
+        job.status, job.cancel_reason, job.request_hash = "cancelled", "input_changed", "0" * 64
+    elif split_job == "done_same":
+        job.status = "done"
+    elif split_job == "none":
+        db.delete(job)
+    db.flush()
+    _run2(db, settings=S, family_id=scene.family.id)
+    (values_job,) = _pending(db, scene.ctx)
+    _finish(db, values_job.id, prompt_version="2")
+    return scene
+
+
+def _split_jobs(db, context_id):
+    db.expire_all()
+    return list(
+        db.execute(
+            sa.select(SemanticJob)
+            .where(
+                SemanticJob.kind == SemanticJobKind.auto_split.value,
+                SemanticJob.context_id == context_id,
+            )
+            .order_by(SemanticJob.id)
+        ).scalars()
+    )
+
+
+def _live_split_jobs(db, context_id):
+    return [j for j in _split_jobs(db, context_id) if j.status in ("pending", "running")]
+
+
+class TestStepTwoReturnsTheLostSplit:
+    def test_an_answered_context_in_conflict_without_a_live_job_gets_the_split_queued(
+        self, db_session, factories
+    ):
+        from services.auto_split import prepare_auto_split
+
+        scene = _answered_context(db_session, factories)
+
+        report = _run2(db_session, settings=S)
+
+        assert report.already_asked == 1 and report.queued == []
+        assert report.auto_split_queued == [scene.ctx]
+        (job,) = _live_split_jobs(db_session, scene.ctx)
+        current = prepare_auto_split(db_session, scene.ctx, level=None, settings=S)
+        assert job.request_hash == current.rendered.request_hash != "0" * 64
+
+    def test_the_reserve_is_priced_by_the_values_tariffs_per_queued_split(
+        self, db_session, factories
+    ):
+        from services.auto_split import prepare_auto_split
+
+        scene = _answered_context(db_session, factories)
+        rendered = prepare_auto_split(db_session, scene.ctx, level=None, settings=S).rendered
+
+        report = _run2(db_session, settings=S)
+
+        expected = reserve_for(
+            db_session, rendered, tariffs_from(S, SemanticJobKind.context_values),
+            rendered.body["max_tokens"],
+        )
+        assert report.auto_split_reserve_usd == expected > Decimal("0")
+
+    def test_a_context_with_a_live_split_job_is_left_alone(self, db_session, factories):
+        scene = _answered_context(db_session, factories, split_job="live")
+        before = [(j.id, j.status) for j in _split_jobs(db_session, scene.ctx)]
+
+        report = _run2(db_session, settings=S)
+
+        assert report.auto_split_queued == [] and report.auto_split_reserve_usd == Decimal("0")
+        assert [(j.id, j.status) for j in _split_jobs(db_session, scene.ctx)] == before
+
+    def test_a_context_whose_split_ended_on_the_same_input_is_not_asked_again(
+        self, db_session, factories
+    ):
+        scene = _answered_context(db_session, factories, split_job="done_same")
+
+        report = _run2(db_session, settings=S)
+
+        assert report.auto_split_queued == []
+        assert [j.status for j in _split_jobs(db_session, scene.ctx)] == ["done"]
+
+    def test_a_context_without_any_split_job_gets_it(self, db_session, factories):
+        scene = _answered_context(db_session, factories, split_job="none")
+
+        report = _run2(db_session, settings=S)
+
+        assert report.auto_split_queued == [scene.ctx]
+
+    def test_a_context_asked_with_the_old_prompt_is_asked_for_values_not_split(
+        self, db_session, factories
+    ):
+        scene = split._scene(db_session, factories)
+        _run2(db_session, settings=S)
+        (job,) = _pending(db_session, scene.ctx)
+        _finish(db_session, job.id, prompt_version="1")
+        before = len(_split_jobs(db_session, scene.ctx))
+
+        report = _run2(db_session, settings=S)
+
+        assert report.queued == [scene.ctx] and report.auto_split_queued == []
+        assert len(_split_jobs(db_session, scene.ctx)) == before
+
+    def test_a_context_with_a_manual_member_is_not_queued(self, db_session, factories):
+        scene = _answered_context(db_session, factories)
+        split._move_by_hand(db_session, scene, "Колонны")
+
+        report = _run2(db_session, settings=S)
+
+        assert report.auto_split_queued == []
+        assert _live_split_jobs(db_session, scene.ctx) == []
+
+    def test_the_second_run_queues_no_duplicates(self, db_session, factories):
+        scene = _answered_context(db_session, factories)
+        _run2(db_session, settings=S)
+        ids = [j.id for j in _split_jobs(db_session, scene.ctx)]
+
+        report = _run2(db_session, settings=S)
+
+        assert report.auto_split_queued == [] and report.auto_split_reserve_usd == Decimal("0")
+        assert [j.id for j in _split_jobs(db_session, scene.ctx)] == ids
+
+    def test_the_limit_and_the_family_option_bound_the_returned_splits(
+        self, db_session, factories
+    ):
+        one = _answered_context(db_session, factories)
+        two = _answered_context(db_session, factories)
+
+        assert _run2(db_session, settings=S, limit=0).auto_split_queued == []
+        limited = _run2(db_session, settings=S, limit=1)
+        assert limited.auto_split_queued == [min(one.ctx, two.ctx)]
+        scoped = _run2(db_session, settings=S, family_id=max(one, two, key=lambda s: s.ctx).family.id)
+        assert scoped.auto_split_queued == [max(one.ctx, two.ctx)]
+
+    def test_dry_run_writes_nothing_and_prices_what_the_real_run_queues(
+        self, db_session, factories
+    ):
+        scene = _answered_context(db_session, factories)
+        before = [(j.id, j.status) for j in _split_jobs(db_session, scene.ctx)]
+
+        with _statements(db_session) as seen:
+            dry = _run2(db_session, settings=S, apply=False)
+
+        assert seen and _writes(seen) == []
+        assert [(j.id, j.status) for j in _split_jobs(db_session, scene.ctx)] == before
+        real = _run2(db_session, settings=S)
+        assert dry.auto_split_queued == real.auto_split_queued == [scene.ctx]
+        assert dry.auto_split_reserve_usd == real.auto_split_reserve_usd > Decimal("0")
+
+
+class TestStepTwoCommandPrintsTheReturnedSplits:
+    def _run(self, committing_session_factory, monkeypatch, *args):
+        monkeypatch.setenv("APP_ENV", "prod")
+        monkeypatch.setattr(cli, "SessionLocal", committing_session_factory)
+        return CliRunner().invoke(cli.cli, ["catalog-simplify-backfill", *args])
+
+    def _seed(self, committing_db, committing_factories):
+        scene = _answered_context(committing_db, committing_factories)
+        committing_db.commit()
+        return scene
+
+    def test_the_report_names_the_contexts_and_the_reserve_and_the_dry_run_prints_the_same(
+        self, committing_db, committing_factories, committing_session_factory, monkeypatch
+    ):
+        scene = self._seed(committing_db, committing_factories)
+
+        dry = self._run(committing_session_factory, monkeypatch, "--dry-run")
+        real = self._run(committing_session_factory, monkeypatch)
+
+        for result in (dry, real):
+            assert result.exit_code == 0, f"{result.output}\n{result.exception!r}"
+            assert result.output.isascii()
+            assert f"step2 auto_split_queued={scene.ctx}\n" in result.output
+            assert "step2 auto_split_reserve_usd=" in result.output
+        assert [line for line in dry.output.splitlines() if "auto_split_" in line] == [
+            line for line in real.output.splitlines() if "auto_split_" in line
+        ]
+        assert "dry_run=1" in dry.output and "dry_run=0" in real.output
+        committing_db.expire_all()
+        assert len(_live_split_jobs(committing_db, scene.ctx)) == 1
+
+    def test_without_a_lost_split_the_ids_line_is_a_dash(
+        self, committing_db, committing_factories, committing_session_factory, monkeypatch
+    ):
+        self._seed(committing_db, committing_factories)
+        self._run(committing_session_factory, monkeypatch)
+
+        result = self._run(committing_session_factory, monkeypatch)
+
+        assert "step2 auto_split_queued=-\n" in result.output

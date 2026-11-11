@@ -1630,6 +1630,7 @@ def _run_auto_split_claim(
                         expected_request_hash=claim.rendered.request_hash,
                     ),
                     SemanticCancelReason.input_changed,
+                    settings=settings,
                 )
                 finish(db, stale)
                 db.commit()
