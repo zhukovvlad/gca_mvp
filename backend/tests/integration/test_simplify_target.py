@@ -105,6 +105,37 @@ class TestContractorFigure:
             assert line["contractor"]["period"] == "2026-04"
         assert row["contractor"] == panel["contractor"]
 
+    def test_the_kp_above_the_contractor_gives_a_positive_difference_per_unit_and_in_total(
+        self, admin_client, stage, world
+    ):
+        scene = _contractor_scene(stage, world, kp=D("160"))  # свой 130, количество 10
+
+        row = _line_of(_ok(admin_client, stage.tender, scene.rnd, scene.part), scene.item)
+        panel = _panel(admin_client, stage.tender, scene.rnd, scene.part, scene.item)["line"]
+
+        for line in (row, panel):
+            assert _pair(line["to_contractor_unit"]) == (D("30"), D("30"))
+            assert _pair(line["to_contractor"]) == (D("300"), D("300"))
+            # соседнее число свежей (150): разница к ней своя, а не к подрядчику
+            assert _pair(line["to_freshest_unit"]) == (D("10"), D("10"))
+
+    def test_the_kp_below_the_contractor_gives_a_negative_difference(self, admin_client, stage, world):
+        scene = _contractor_scene(stage, world, kp=D("120"))
+
+        line = _line_of(_ok(admin_client, stage.tender, scene.rnd, scene.part), scene.item)
+
+        assert _pair(line["to_contractor_unit"]) == (D("-10"), D("-10"))
+        assert _pair(line["to_contractor"]) == (D("-100"), D("-100"))
+
+    def test_without_a_contractor_figure_the_difference_is_null(self, admin_client, stage, world):
+        scene = _contractor_scene(stage, world, mine_cost=D("900"))  # выброс: цифры подрядчика нет
+
+        line = _line_of(_ok(admin_client, stage.tender, scene.rnd, scene.part), scene.item)
+
+        assert line["contractor"] is None
+        assert line["to_contractor"] is None and line["to_contractor_unit"] is None
+        assert line["to_freshest"] is not None  # у свежей разница есть: null не общий
+
     def test_without_an_analog_of_the_contractor_there_is_no_figure(self, admin_client, stage, world):
         chain = world.chain(("Раздел А",), "whole")
         rnd, part = _kp_part(stage)

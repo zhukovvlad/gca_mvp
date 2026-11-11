@@ -875,6 +875,8 @@ def _line_view(
         "to_freshest": money_pair(result.to_freshest, rate, unit=False),
         "to_lowest_unit": money_pair(result.to_ours_unit, rate, unit=True),
         "to_freshest_unit": money_pair(result.to_freshest_unit, rate, unit=True),
+        "to_contractor": money_pair(result.to_contractor, rate, unit=False),
+        "to_contractor_unit": money_pair(result.to_contractor_unit, rate, unit=True),
         "over_lowest": money_pair(result.bargain, rate, unit=False),
         "over_freshest": money_pair(over_freshest, rate, unit=False),
         "below": money_pair(result.below, rate, unit=False),

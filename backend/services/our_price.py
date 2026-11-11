@@ -318,6 +318,9 @@ class LineResult:
     to_ours_unit: Decimal | None = None
     #: То же к самой свежей (в ответе — `to_freshest_unit`).
     to_freshest_unit: Decimal | None = None
+    #: Разница к цифре подрядчика участника (у работы; в ответе — `to_contractor`, `to_contractor_unit`).
+    to_contractor: Decimal | None = None
+    to_contractor_unit: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -743,6 +746,9 @@ def _evaluate_work(
         to_freshest_unit = None if ladder.freshest is None else kp_unit_net - ladder.freshest.value
         to_ours = to_ours_unit * line.weight
         to_freshest = None if to_freshest_unit is None else to_freshest_unit * line.weight
+        contractor = ladder.contractor
+        to_contractor_unit = None if contractor is None else kp_unit_net - contractor.value
+        to_contractor = None if to_contractor_unit is None else to_contractor_unit * line.weight
         bargain = max(_ZERO, to_ours) if comparable else None
         below = (kp_unit_net - price_range.min) * line.weight if comparable and position == "below" else None
     return _result(
@@ -763,6 +769,8 @@ def _evaluate_work(
         to_freshest=to_freshest,
         to_ours_unit=to_ours_unit,
         to_freshest_unit=to_freshest_unit,
+        to_contractor=to_contractor,
+        to_contractor_unit=to_contractor_unit,
     )
 
 

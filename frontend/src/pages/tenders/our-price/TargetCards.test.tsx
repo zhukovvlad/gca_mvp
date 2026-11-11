@@ -82,6 +82,36 @@ describe("карточки цели: состав", () => {
     expect(card("contractor")).toHaveTextContent("1 050,00");
   });
 
+  it("«с этим подрядчиком»: та же строка «КП выше / ниже», что у «самой свежей», текст из ответа", () => {
+    renderCards(
+      workLineFixture({
+        unit: "м3",
+        contractor: contractorFigureFixture(),
+        to_contractor: pair("300.00", "366.00"),
+        to_contractor_unit: pair("30", "36.6"),
+      })
+    );
+    expect(screen.getByTestId("figure-contractor-diff")).toHaveTextContent(/^КП выше на 30,00 за м3 · \+300,00/);
+    expect(screen.getByTestId("figure-freshest-diff")).toHaveTextContent(/^КП выше на 100,00 за м3 · \+10 000,00/);
+  });
+
+  it("«с этим подрядчиком»: КП ниже — минус в итоге, без знака у единицы; разницы нет — прочерк", () => {
+    renderCards(
+      workLineFixture({
+        unit: "м3",
+        contractor: contractorFigureFixture(),
+        to_contractor: pair("-100.00"),
+        to_contractor_unit: pair("-10"),
+      })
+    );
+    expect(screen.getByTestId("figure-contractor-diff")).toHaveTextContent(/^КП ниже на 10,00 за м3 · −100,00/);
+  });
+
+  it("«с этим подрядчиком»: разницы нет (null) — прочерк", () => {
+    renderCards(workLineFixture({ contractor: contractorFigureFixture() }));
+    expect(screen.getByTestId("figure-contractor-diff")).toHaveTextContent("—");
+  });
+
   it("договора с этим подрядчиком среди аналогов нет — карточки нет", () => {
     renderCards(workLineFixture({ contractor: null }));
     expect(screen.queryByTestId("figure-contractor")).not.toBeInTheDocument();

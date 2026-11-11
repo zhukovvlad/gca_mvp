@@ -76,6 +76,8 @@ LINE_KEYS = {
     "to_freshest",
     "to_lowest_unit",
     "to_freshest_unit",
+    "to_contractor",
+    "to_contractor_unit",
     "over_lowest",
     "over_freshest",
     "below",

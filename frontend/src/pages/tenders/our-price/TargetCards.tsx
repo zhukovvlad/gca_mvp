@@ -160,6 +160,7 @@ export function TargetCards({ line, analogs, vat, canEdit, busy = false, onChoos
         analog: analogOf(analogs, contractor.analog_id),
         period: contractor.period,
         contractId: contractor.contract_id,
+        diff: { total: line.to_contractor, unit: line.to_contractor_unit },
       });
     }
     if (selected === "analog") {

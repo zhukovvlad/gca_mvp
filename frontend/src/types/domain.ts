@@ -3648,6 +3648,9 @@ export interface OurPriceLine {
   /** Разница цены КП за единицу к самой низкой / свежей (₽ за единицу строки, без округления). */
   to_lowest_unit: MoneyPair | null;
   to_freshest_unit: MoneyPair | null;
+  /** То же к цифре подрядчика участника (`contractor`); `null` - цифры подрядчика нет. */
+  to_contractor: MoneyPair | null;
+  to_contractor_unit: MoneyPair | null;
   over_lowest: MoneyPair | null;
   over_freshest: MoneyPair | null;
   below: MoneyPair | null;
