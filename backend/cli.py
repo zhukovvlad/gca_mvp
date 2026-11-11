@@ -15,6 +15,12 @@ from services.catalog_backfill import etc_category_share, run_backfill
 from services.family_change import AutoAcceptError, apply_auto_accept, preview_auto_accept
 from services.releasable import enqueue_all_releasable
 from services.semantic_decisions import backfill_family_schemas, enqueue_all
+from services.simplify_backfill import (
+    Step1Report,
+    backfill_family_values,
+    backfill_path_conflicts,
+    families_for_backfill,
+)
 from services.work_families import load_seed
 
 
@@ -255,6 +261,75 @@ def releasable_enqueue_all() -> None:
 
         report = enqueue_all_releasable(db, before_enqueue=_announce)
         click.echo(f"Заданий поставлено={report.enqueued}")
+    finally:
+        db.close()
+
+
+def _ids_line(label: str, ids) -> str:
+    return f"{label}=" + (",".join(str(i) for i in ids) if ids else "-")
+
+
+@cli.command("catalog-simplify-backfill")
+@click.option("--dry-run", is_flag=True, help="Ничего не писать, напечатать, что было бы сделано")
+@click.option("--family", "family_id", type=int, default=None, help="Только эта семья (оба шага)")
+@click.option(
+    "--limit", type=click.IntRange(min=0), default=None,
+    help="Не больше N контекстов «к делению» в шаге 2",
+)
+def catalog_simplify_backfill(dry_run: bool, family_id: int | None, limit: int | None) -> None:
+    """Первый прогон упрощения каталога на накопленных данных (`services/simplify_backfill`,
+    спека упрощения каталога §2.12). Шаг 1: склейки в списках значений становятся составными
+    на месте, совпавшие по составу сливаются, состав под вето и склейки с частью не из списка
+    остаются целыми. Шаг 2: контексты «к делению» получают задание значений заново (промпт v2);
+    резерв стоимости печатается по тарифам `context_values`. Платные вызовы — только по явному
+    запуску: без `--dry-run` задания ставятся, и их выполняет обычная очередь.
+
+    Печать — только латиница, числа и id. Идемпотентна: повторный запуск шаг 1 не меняет, а
+    задания, уже ждущие или идущие, не дублирует."""
+    _guard("catalog-simplify-backfill")
+    db = SessionLocal()
+    try:
+        step1 = Step1Report()
+        for family in families_for_backfill(db, family_id):
+            step1.extend(backfill_family_values(db, family, apply=not dry_run))
+            if dry_run:
+                db.rollback()
+            else:
+                db.commit()
+        step2 = backfill_path_conflicts(db, family_id=family_id, limit=limit, apply=not dry_run)
+        if dry_run:
+            db.rollback()
+        else:
+            db.commit()
+        click.echo(f"dry_run={int(dry_run)}")
+        click.echo(
+            f"step1 converted={len(step1.converted)} "
+            f"merged_into_composite={len(step1.merged_into_composite)} "
+            f"collapsed={len(step1.collapsed)} under_veto={len(step1.under_veto)} "
+            f"kept_whole={len(step1.kept_whole)} text_kept={len(step1.text_kept)} "
+            f"skipped_families={len(step1.skipped_families)}"
+        )
+        click.echo(
+            f"step1 jobs_queued={step1.jobs_queued} reserve_usd={step1.reserve_usd:.4f}"
+        )
+        for label, ids in (
+            ("converted_ids", step1.converted),
+            ("merged_into_composite_ids", step1.merged_into_composite),
+            ("collapsed_ids", step1.collapsed),
+            ("under_veto_ids", step1.under_veto),
+            ("kept_whole_ids", step1.kept_whole),
+            ("text_kept_ids", step1.text_kept),
+        ):
+            click.echo(_ids_line(f"step1 {label}", ids))
+        click.echo(
+            f"step2 candidates={step2.candidates} already_asked={step2.already_asked} queued={len(step2.queued)} "
+            f"jobs_created={step2.jobs_created} jobs_revived={step2.jobs_revived} "
+            f"without_model={step2.free}"
+        )
+        click.echo(_ids_line("step2 queued_context_ids", step2.queued))
+        click.echo(f"step2 reserve_usd={step2.reserve_usd:.4f} cached_usd={step2.cached_usd:.4f}")
+        total = step1.reserve_usd + step2.reserve_usd
+        click.echo(f"total reserve_usd={total:.4f}")
     finally:
         db.close()
 

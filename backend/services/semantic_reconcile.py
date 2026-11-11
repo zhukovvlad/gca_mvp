@@ -1535,6 +1535,22 @@ def _revive_jobs(db: Session, job_ids: list[int]) -> int:
     return result.rowcount
 
 
+def _stamp_values_prompt(db: Session, job_ids: list[int]) -> None:
+    """Возвращённое задание значений перерендерится текущим промптом: версия промпта в
+    строке задания должна быть той, которой его спросят (по ней первый прогон упрощения
+    каталога отличает «уже спрашивали»)."""
+    if not job_ids:
+        return
+    db.execute(
+        sa.update(SemanticJob)
+        .where(
+            SemanticJob.id.in_(job_ids),
+            SemanticJob.status == SemanticJobStatus.pending.value,
+        )
+        .values(prompt_version=str(VALUES_PROMPT_VERSION))
+    )
+
+
 #: Терминальные для отпечатка решения: после них возврат в разбор вызов заново не
 #: ставит. Остальные решения (в том числе будущие значения перечисления) оживляют:
 #: семью, которую дало решение, снимала «Не работа». Отклонение семьи не давало —
@@ -1851,8 +1867,15 @@ def _execute_plan(
 
     if proceed:
         created_count = _create_jobs(db, full)
-        revived_count = _revive_jobs(
-            db, [revival.job_id for plan in full.plans() for revival in plan.revivals]
+        revivals = [revival for plan in full.plans() for revival in plan.revivals]
+        revived_count = _revive_jobs(db, [revival.job_id for revival in revivals])
+        _stamp_values_prompt(
+            db,
+            [
+                revival.job_id
+                for revival in revivals
+                if revival.fingerprint.kind == SemanticJobKind.context_values
+            ],
         )
     else:
         held_batch_id = get_or_create_held_batch(

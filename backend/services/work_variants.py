@@ -2135,7 +2135,7 @@ def _lock_contexts_statement(context_ids: Sequence[int]):
 
 def merge_parameter_values(
     db: Session, *, parameter_id: int, source_value_id: int, target_value_id: int,
-    actor_id: int | None, cascade: bool = False,
+    actor_id: int | None, cascade: bool = False, keep_origin: bool = False,
 ) -> Mapping[int, int]:
     """Слияние синонимов значений одного параметра (спека §2.8): источник
     становится синонимом цели. Возвращает отображение «вариант-источник ->
@@ -2148,7 +2148,8 @@ def merge_parameter_values(
     с `merged_into_id`, его ключ и построчные значения остаются историей;
     архивный вариант-цель с пришедшими контекстами возвращается в `active`.
     Без такого набора ключ и строки варианта переписываются, он остаётся тем
-    же. Варианты, уже слитые раньше, — история и не трогаются.
+    же. Варианты, уже слитые раньше, — история и не трогаются. `keep_origin` —
+    системное слияние: происхождение параметра остаётся прежним (человек слияние не делал).
 
     Raises:
         WorkFamilyError: параметра нет или он архивный; значения нет; значения разных
@@ -2368,12 +2369,14 @@ def merge_parameter_values(
     )
     source_value.merged_into_id = canonical_id
     # Правка значений человеком делает параметр модели параметром человека
-    # (спека 3в §2.5): пересборка такой параметр сохраняет (§2.8).
-    db.execute(
-        sa.update(FamilyParameter)
-        .where(FamilyParameter.id == parameter_id)
-        .values(origin=ParameterOrigin.human.value)
-    )
+    # (спека 3в §2.5): пересборка такой параметр сохраняет (§2.8). Системное слияние
+    # (`keep_origin`, первый прогон упрощения каталога) происхождения не меняет.
+    if not keep_origin:
+        db.execute(
+            sa.update(FamilyParameter)
+            .where(FamilyParameter.id == parameter_id)
+            .values(origin=ParameterOrigin.human.value)
+        )
     db.flush()
     # Решения человека и составные значения следуют за слиянием в той же транзакции
     # (спека упрощения каталога §2.3 место 2, §2.6).
