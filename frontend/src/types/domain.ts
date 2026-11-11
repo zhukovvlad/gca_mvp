@@ -2911,6 +2911,12 @@ export interface FamilySchemaValue {
   /** Границы значения диапазона, строками; `null` — «до …» и «… и более», а у точного значения обе. */
   range_lo: string | null;
   range_hi: string | null;
+  /**
+   * Составное значение (спека упрощения каталога §2.3): вид (`all` — «+», `any` — «или») и id
+   * частей, значений того же параметра; `null` — простое значение. Текст составного собирает
+   * сервер из частей, править его нельзя.
+   */
+  composite: SchemaComposite | null;
   /** Выведенные значения в схеме не отдаются, поэтому у отданных всегда `false`. */
   retired: boolean;
   /** Живые контексты со значением и их строки каталога. */
@@ -3924,4 +3930,86 @@ export interface ReleasableProposalRow {
 export interface ReleasableProposalList {
   items: ReleasableProposalRow[];
   total: number;
+}
+
+/** Состав составного значения схемы: вид и id частей (значения того же параметра). */
+export interface SchemaComposite {
+  kind: "all" | "any";
+  part_ids: number[];
+}
+
+// ---------------------------------------------------------------------------
+//  «Журнал ИИ» (спека упрощения каталога §2.7; `backend/crud/ai_journal.py`)
+// ---------------------------------------------------------------------------
+
+/** Вид записи журнала: деление контекста, новое значение, склейка в составное, приравнивание. */
+export type JournalKind = "split" | "value_added" | "composite" | "equated";
+
+/** Состояние записи: действует, отменена, отмена недоступна (`locked` — только у деления). */
+export type JournalState = "active" | "undone" | "locked";
+
+/**
+ * Почему отмена деления недоступна: событие человека после записи. У замка без события (член
+ * перенесён вручную, часть архивирована) все три поля `null`.
+ */
+export interface JournalLockedBy {
+  event_type: string | null;
+  actor_email: string | null;
+  at: string | null;
+}
+
+export interface JournalItem {
+  id: number;
+  kind: JournalKind;
+  created_at: string;
+  family: { id: number; title: string };
+  context: { id: number; title: string } | null;
+  parameter: { id: number; name: string } | null;
+  text: string | null;
+  /** Значения записи: части деления, части склейки, «текст, значение» приравнивания, текст нового значения. */
+  summary_values: string[];
+  state: JournalState;
+  undo: { available: boolean; locked_by: JournalLockedBy | null };
+  undone: { at: string; by_email: string | null } | null;
+  restored_at: string | null;
+}
+
+/** Часть деления с нынешним числом строк и числом после отмены. */
+export interface JournalSplitPart {
+  context_id: number;
+  title: string;
+  members_now: number;
+  members_after: number;
+}
+
+/** Контекст записи склейки или приравнивания и значение параметра на нём сейчас. */
+export interface JournalContextDetail {
+  id: number;
+  title: string;
+  parameter_value: string | null;
+}
+
+export type JournalDetails =
+  | { level: number | null; parts: JournalSplitPart[] }
+  | { contexts: JournalContextDetail[]; undo_text: string };
+
+/** `GET /semantic/journal/:id`: запись с подробностями (у нового значения их нет). */
+export interface JournalItemDetail extends JournalItem {
+  details?: JournalDetails;
+}
+
+export interface JournalPage {
+  items: JournalItem[];
+  total: number;
+  /** Числа по видам при всех отборах, кроме вида. */
+  counts: Record<JournalKind, number>;
+}
+
+export interface JournalParams {
+  kind?: JournalKind;
+  family_id?: number;
+  state?: JournalState;
+  q?: string;
+  limit?: number;
+  offset?: number;
 }

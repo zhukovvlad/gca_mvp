@@ -304,6 +304,8 @@ describe("подписи схемы и вариантов", () => {
         "family_not_found",
         "family_not_active",
         "preview_changed",
+        "merge_values_composite_mismatch",
+        "schema_composite_text",
       ].sort()
     );
   });

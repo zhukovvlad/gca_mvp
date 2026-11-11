@@ -123,7 +123,8 @@ describe("FamiliesPage", () => {
     renderWithProviders(<FamiliesPage />);
 
     const tabs = await screen.findAllByRole("tab");
-    expect(tabs.map((t) => t.textContent)).toEqual(["Семьи", "Контексты", "Предложения"]);
+    // Четвёртая вкладка — «Журнал ИИ» (`FamiliesPage.journalLink.test.tsx`).
+    expect(tabs.map((t) => t.textContent).slice(0, 3)).toEqual(["Семьи", "Контексты", "Предложения"]);
     // Прежние вкладки не менялись: «Семьи» по-прежнему выбрана, очередь предложений не монтируется.
     expect(screen.getByRole("tab", { name: "Семьи" })).toHaveAttribute("aria-selected", "true");
     expect(screen.queryByTestId("suggestion-group")).not.toBeInTheDocument();

@@ -63,6 +63,8 @@ import type {
   MoveMembersInput,
   CreateFamilyFromSuggestionInput,
   JobsStatus,
+  JournalItem,
+  JournalParams,
   MergeValuesInput,
   PositionMarkKind,
   PreviewTarget,
@@ -2422,6 +2424,8 @@ function invalidateSchema(qc: ReturnType<typeof useQueryClient>, familyId: numbe
   qc.invalidateQueries({ queryKey: qk.workFamilies.schema(familyId) });
   qc.invalidateQueries({ queryKey: qk.workFamilies.variants(familyId) });
   qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
+  // Журнал показывает нынешний текст значений и состояние записей: правка схемы меняет и то, и другое.
+  qc.invalidateQueries({ queryKey: qk.journal.all });
   invalidateQueueAndStatus(qc);
 }
 
@@ -2520,6 +2524,59 @@ export function useMergeValues() {
       toast.success("Значения слиты.");
     },
   });
+}
+
+/** Страница ленты «Журнала ИИ» (спека упрощения каталога §2.7). */
+export function useJournal(params: JournalParams) {
+  return useQuery({
+    queryKey: qk.journal.list(params),
+    queryFn: () => semanticApi.listJournal(params),
+  });
+}
+
+/** Запись с подробностями; грузится по id, а не из страницы ленты: записи из адреса может не быть на странице. */
+export function useJournalItem(id: number | null) {
+  return useQuery({
+    enabled: id !== null,
+    queryKey: qk.journal.item(id ?? -1),
+    queryFn: () => semanticApi.journalItem(id as number),
+  });
+}
+
+/**
+ * Действия над записью журнала. Отказ показывает карточка подписью по коду; запись при отказе
+ * перечитывается — состояние могло уйти вперёд (замок, чужая отмена).
+ */
+function useJournalAction<TVariables>(
+  run: (variables: TVariables) => Promise<JournalItem>,
+  successMessage?: string
+) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: run,
+    onSuccess: (item) => {
+      invalidateSchema(qc, item.family.id);
+      if (successMessage) toast.success(successMessage);
+    },
+    onError: () => {
+      qc.invalidateQueries({ queryKey: qk.journal.all });
+    },
+  });
+}
+
+export function useJournalUndo() {
+  return useJournalAction((id: number) => semanticApi.undoJournal(id));
+}
+
+export function useJournalResplit() {
+  return useJournalAction(
+    ({ id, level }: { id: number; level: number }) => semanticApi.resplitJournal(id, level),
+    "Деление отменено, новое поставлено в очередь: оно придёт отдельной записью журнала."
+  );
+}
+
+export function useJournalRestore() {
+  return useJournalAction((id: number) => semanticApi.restoreJournal(id));
 }
 
 export function useDiscardBatch() {

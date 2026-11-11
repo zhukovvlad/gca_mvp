@@ -7,9 +7,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ContextsTab } from "./ContextsTab";
 import { ENTRY_PARAMS, parseEntry, type Entry } from "./entryParams";
 import { FamiliesTab } from "./FamiliesTab";
+import { JournalTab } from "./JournalTab";
 import { SOURCE_EXPLANATION } from "./labels";
 import { SourceChip } from "./SourceChip";
 import { SuggestionsTab, type SuggestionTarget } from "./SuggestionsTab";
+import { JOURNAL_NEW_LIMIT, useJournalSeen } from "./useJournalSeen";
 
 function suggestionTargetOf(entry: Entry | null): SuggestionTarget | null {
   return entry?.tab === "suggestions" && entry.queue !== "zones"
@@ -27,11 +29,12 @@ function chainTargetOf(entry: Entry | null): number | null {
  * §2.1), маршрут `/families`, право `admin` — обёрнут `RequireAdmin` в
  * `App.tsx`, тем же входом, что и `/standards`.
  *
- * Три вкладки: «Семьи» (жизненный цикл семей работ, панель правки справа от
+ * Четыре вкладки: «Семьи» (жизненный цикл семей работ, панель правки справа от
  * списка), «Контексты» (очередь, поиск и карточка выбранного контекста
  * панелью справа от списка, той же вкладкой — переключаться некуда) и
  * «Предложения» (ответы модели о семье контекстов и очередь заданий, спека
- * `2026-09-28-semantic-suggestions-design.md` §2.12).
+ * `2026-09-28-semantic-suggestions-design.md` §2.12) и «Журнал ИИ» (автодействия с каталогом и их
+ * исправление, спека упрощения каталога §2.7; число новых записей — на самой вкладке).
  * Вкладка «Операции» фичи 1 упразднена (спека §2.1): карточка встала рядом со
  * списком внутри {@link ContextsTab}, а не отдельной областью экрана.
  */
@@ -43,6 +46,8 @@ export default function FamiliesPage() {
   // Предложение, к которому привела ссылка: вкладка «Предложения» подсвечивает его.
   const [suggestionTarget, setSuggestionTarget] = useState(() => suggestionTargetOf(parseEntry(searchParams)));
   const [chainTarget, setChainTarget] = useState(() => chainTargetOf(parseEntry(searchParams)));
+  // Новые записи журнала с последнего просмотра: число на вкладке, пока она не открыта.
+  const { count: journalNew, markSeen: markJournalSeen } = useJournalSeen();
 
   // Ссылка на эту же страницу, пока она открыта, ведёт на вкладку входа. Правка состояния во
   // время рендера — приём `FamiliesTab`; запись адреса самой вкладкой «Контексты» сюда же
@@ -61,6 +66,8 @@ export default function FamiliesPage() {
 
   // Вкладка, выбранная вручную или переходом внутри страницы, вход из адреса отменяет.
   function goTab(next: string) {
+    // Уходя с журнала, записи, пришедшие за время просмотра, тоже считаются увиденными.
+    if (tab === "journal" && next !== "journal") markJournalSeen();
     setTab(next);
     setSuggestionTarget(null);
     setChainTarget(null);
@@ -116,6 +123,20 @@ export default function FamiliesPage() {
               <TabsTrigger value="suggestions" className="rounded-md px-3.5 py-1.5 text-sm text-fg-secondary data-active:bg-background data-active:font-medium data-active:text-foreground data-active:shadow-sm">
                 Предложения
               </TabsTrigger>
+              <TabsTrigger value="journal" className="rounded-md px-3.5 py-1.5 text-sm text-fg-secondary data-active:bg-background data-active:font-medium data-active:text-foreground data-active:shadow-sm">
+                Журнал ИИ
+                {tab !== "journal" && journalNew !== null && journalNew > 0 && (
+                  <>
+                    {" "}
+                    <span
+                      title="новых с последнего просмотра"
+                      className="ml-1 inline-block min-w-[18px] rounded-full bg-primary px-1.5 text-center text-[11px] leading-[18px] text-primary-foreground"
+                    >
+                      {journalNew >= JOURNAL_NEW_LIMIT ? `${JOURNAL_NEW_LIMIT}+` : journalNew}
+                    </span>
+                  </>
+                )}
+              </TabsTrigger>
             </TabsList>
           }
         />
@@ -151,6 +172,10 @@ export default function FamiliesPage() {
 
         <TabsContent value="suggestions" className="mt-6">
           <SuggestionsTab key={chainTarget ?? "none"} onOpenFamily={openFamily} target={suggestionTarget} chainId={chainTarget} />
+        </TabsContent>
+
+        <TabsContent value="journal" className="mt-6">
+          <JournalTab onViewed={markJournalSeen} />
         </TabsContent>
       </Tabs>
     </div>

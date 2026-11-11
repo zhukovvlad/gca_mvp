@@ -940,3 +940,59 @@ describe("SchemaBlock: окно пересборки читает схему б�
     expect(schemaGets).toBe(1);
   });
 });
+
+describe("SchemaBlock: составные значения", () => {
+  /** Значение «профнастил + металлочерепица»: составное из двух значений списка (спека упрощения каталога §2.3). */
+  function withComposite(kind: "all" | "any" = "all") {
+    const material = handlerState.familySchemas[SCHEMA_FAMILY_ID].parameters[0];
+    material.values.push(
+      schemaValue(1006, kind === "all" ? "профнастил + металлочерепица" : "профнастил или металлочерепица", "extension", {
+        composite: { kind, part_ids: [1001, 1002] },
+      })
+    );
+  }
+
+  it("в списке значений составное помечено словом и называет части", async () => {
+    withComposite();
+    renderBlock();
+    await shown();
+
+    const item = screen.getByText("профнастил + металлочерепица").closest("li")!;
+    expect(item).toHaveTextContent("составное");
+    expect(item).toHaveTextContent("части: профнастил, металлочерепица");
+    // Простое значение пометки не получает.
+    expect(screen.getByText("0,7 мм").closest("li")).not.toHaveTextContent("составное");
+  });
+
+  it("части называются текстами значений того же параметра, а не номерами", async () => {
+    withComposite("any");
+    renderBlock();
+    await shown();
+
+    const item = screen.getByText("профнастил или металлочерепица").closest("li")!;
+    expect(item.textContent).not.toMatch(/1001|1002/);
+    expect(item).toHaveTextContent("части: профнастил, металлочерепица");
+  });
+
+  it("в окне правки у составного пометка и части, а меню действий и поля текста нет", async () => {
+    const user = userEvent.setup();
+    withComposite();
+    renderBlock();
+    await shown();
+
+    await user.click(screen.getByRole("button", { name: "Править схему…" }));
+    const dialog = await screen.findByRole("dialog");
+    await waitForDialogFocus();
+    const editor = within(dialog).getByRole("group", { name: "Редактор параметра" });
+
+    const chip = within(editor).getByText("профнастил + металлочерепица").closest("[data-composite]") as HTMLElement;
+    expect(chip).not.toBeNull();
+    expect(chip).toHaveTextContent("составное");
+    expect(chip).toHaveTextContent("профнастил, металлочерепица");
+    expect(within(chip).queryByRole("button")).not.toBeInTheDocument();
+    expect(within(chip).queryByRole("textbox")).not.toBeInTheDocument();
+    // У простого значения меню действий по-прежнему есть.
+    expect(within(editor).getByRole("button", { name: "Действия со значением «профнастил»" })).toBeInTheDocument();
+    expect(within(editor).queryByRole("button", { name: /Действия со значением «профнастил \+ металлочерепица»/ })).not.toBeInTheDocument();
+  });
+});

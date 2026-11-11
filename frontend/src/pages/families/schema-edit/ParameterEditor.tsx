@@ -34,6 +34,7 @@ import {
 import { OffListBlock } from "./OffListBlock";
 import { RangeFields } from "./RangeFields";
 import { ValueChip } from "./ValueChip";
+import { compositePartTexts } from "./composite";
 import { liveValueTexts, normText } from "./drafts";
 
 const ROLES: ParameterRole[] = ["main", "secondary"];
@@ -184,9 +185,16 @@ export function ParameterEditor({ schema, draft, saved, edited, moves, onChange,
             <div className="flex flex-wrap items-center gap-1.5">
               {draft.values.map((text) => {
                 const value = savedLive.find((candidate) => candidate.value === text);
+                const parts = saved !== undefined && value !== undefined ? compositePartTexts(saved, value) : null;
                 return (
-                  <ValueChip key={text} text={text} rows={value === undefined ? null : value.rows} extension={value?.origin === "extension"}>
-                    {value !== undefined && canMerge && saved !== undefined ? (
+                  <ValueChip
+                    key={text}
+                    text={text}
+                    rows={value === undefined ? null : value.rows}
+                    extension={value?.origin === "extension"}
+                    composite={parts === null ? null : { parts }}
+                  >
+                    {parts !== null ? null : value !== undefined && canMerge && saved !== undefined ? (
                       <DropdownMenu>
                         <DropdownMenuTrigger
                           type="button"

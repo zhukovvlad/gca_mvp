@@ -16,6 +16,7 @@ import { formatConfidence } from "@/lib/format";
 import { MergeValuesDialog } from "./MergeValuesDialog";
 import { ListSkeleton } from "./pending";
 import { PreviewDialog } from "./PreviewDialog";
+import { compositePartTexts } from "./schema-edit/composite";
 import { SchemaEditDialog } from "./SchemaEditDialog";
 import {
   PARAMETER_KIND_LABEL,
@@ -59,12 +60,14 @@ function ParameterValues({ parameter }: { parameter: FamilySchemaParameter }) {
         <ul className="grid gap-0.5 text-sm text-fg-secondary">
           {parameter.values.map((value) => {
             const target = value.merged_into_id === null ? undefined : byId.get(value.merged_into_id);
+            const parts = compositePartTexts(parameter, value);
             return (
               <li key={value.id}>
                 {value.value}
                 <span className="text-xs text-fg-tertiary">
                   {" · "}
                   {SCHEMA_VALUE_ORIGIN_LABEL[value.origin]}
+                  {parts !== null && ` · составное · части: ${parts.join(", ")}`}
                   {value.merged_into_id !== null &&
                     ` · синоним${target ? ` «${target.value}»` : ""}`}
                 </span>

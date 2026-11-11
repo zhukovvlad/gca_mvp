@@ -8,6 +8,9 @@ import type {
   FamilyChangeKind,
   FamilySource,
   FamilyVariantStatus,
+  JournalKind,
+  JournalLockedBy,
+  JournalState,
   NameRole,
   ParameterOrigin,
   ParameterRole,
@@ -284,11 +287,94 @@ export const SCHEMA_REFUSAL_LABEL: Record<string, string> = {
   family_not_found: "Семья не найдена: обновите экран.",
   family_not_active: "Семья не активна: схему можно менять только у активной семьи.",
   preview_changed: "Состояние изменилось, откройте предпросмотр заново.",
+  merge_values_composite_mismatch:
+    "Составное значение можно слить только с составным того же вида, простое — только с простым.",
+  schema_composite_text: "Текст составного значения собирается из его частей: править его нельзя.",
 };
 
 export function schemaRefusalLabel(code: string | undefined): string {
   return (code !== undefined && SCHEMA_REFUSAL_LABEL[code]) || SCHEMA_REFUSAL_FALLBACK;
 }
+
+/** Вид записи «Журнала ИИ»: метка в ленте и в шапке карточки. */
+export const JOURNAL_KIND_LABEL: Record<JournalKind, string> = {
+  split: "Деление",
+  composite: "Склейка → составное",
+  value_added: "Новое значение",
+  equated: "Приравнено",
+};
+
+/** Те же виды во множественном числе: подписи переключателя отбора, где рядом стоит число записей. */
+export const JOURNAL_KIND_FILTER_LABEL: Record<JournalKind, string> = {
+  split: "Деления",
+  composite: "Склейки",
+  value_added: "Новые значения",
+  equated: "Приравнено",
+};
+
+export const JOURNAL_KIND_ORDER: JournalKind[] = ["split", "composite", "value_added", "equated"];
+
+/** Состояние записи, когда его выбирают в отборе. */
+export const JOURNAL_STATE_FILTER_LABEL: Record<JournalState, string> = {
+  active: "Действуют",
+  undone: "Отменённые",
+  locked: "Правили вручную",
+};
+
+/** Цвета меток вида: пары светлая/тёмная живут в токенах темы (`index.css`). */
+export const JOURNAL_KIND_TINT: Record<JournalKind, string> = {
+  split: "bg-accent-soft text-accent-text",
+  composite: "bg-warning-soft text-warning-text",
+  value_added: "bg-info-soft text-info-text",
+  equated: "bg-source-classifier-soft text-source-classifier-text",
+};
+
+/** Что сделал человек после деления (`semantic_events.event_type` из замка отмены). */
+const JOURNAL_LOCK_EVENT_LABEL: Record<string, string> = {
+  members_moved: "перенос строк",
+  context_split: "деление контекста",
+  context_merged: "слияние контекстов",
+  context_archived: "архивация контекста",
+  context_variant_assigned: "назначение варианта",
+  context_family_assigned: "назначение семьи",
+};
+
+/**
+ * Причина недоступности отмены деления: кто, что и когда. У замка без события (строки перенесены
+ * вручную, часть в архиве) поля пусты — подпись нейтральная, без пропусков.
+ */
+export function journalLockedLabel(lockedBy: JournalLockedBy | null, whenLabel: string | null): string {
+  const event = lockedBy?.event_type ? JOURNAL_LOCK_EVENT_LABEL[lockedBy.event_type] : undefined;
+  const details = [event, lockedBy?.actor_email, whenLabel].filter(Boolean);
+  const tail = details.length > 0 ? ` — ${details.join(", ")}` : "";
+  return `Отмена недоступна: после деления контекст правили вручную${tail}.`;
+}
+
+const JOURNAL_REFUSAL_FALLBACK = "Не удалось выполнить действие. Обновите экран и повторите.";
+
+/**
+ * Отказы действий «Журнала ИИ» (`crud/ai_journal.py`): код ответа превращается в подпись, сам код
+ * и текст сервера на экран не выходят. `journal_undo_locked` подписывает карточка (с `locked_by`).
+ */
+export const JOURNAL_REFUSAL_LABEL: Record<string, string> = {
+  journal_not_found: "Записи больше нет: обновите экран.",
+  journal_already_undone: "Запись уже отменена: обновите экран.",
+  journal_undo_not_applicable: "Эту запись отменить нельзя: значение сливают кнопкой «Слить с…».",
+  journal_undo_conflict: "Исходный текст уже занят другим значением: отмена невозможна.",
+  value_text_taken: "Исходный текст уже занят другим значением: отмена невозможна.",
+  journal_not_undone: "Вернуть автоматику можно только у отменённой записи.",
+  journal_already_restored: "Автоматика уже возвращена.",
+  journal_resplit_no_groups: "На этом уровне делить не на что: выберите другой уровень.",
+  journal_resplit_unavailable:
+    "Новое деление поставить нельзя: контекст в архиве, без семьи или ждёт семьи. Запись не изменена.",
+};
+
+export function journalRefusalLabel(code: string | undefined): string {
+  return (code !== undefined && JOURNAL_REFUSAL_LABEL[code]) || JOURNAL_REFUSAL_FALLBACK;
+}
+
+/** Уровни разделов для «Поправить»: индекс звена цепочки от корня, с нуля; сервер отказывает, где делить не на что. */
+export const JOURNAL_RESPLIT_LEVELS = [0, 1, 2, 3, 4] as const;
 
 /** Предел активных параметров схемы семьи (спека 3в §2.2); тот же держит сервер. */
 export const MAX_SCHEMA_PARAMETERS = 10;
