@@ -1040,3 +1040,50 @@ class TestReplaceReusesBucketsForNewEstimate:
             sa.select(sa.func.count()).select_from(ContextBucket)
         ).scalar_one()
         assert bucket_count_after == bucket_count_before
+
+
+class TestStatusCacheResetOnImport:
+    """Сводка, запрошенная во время импорта, не переживает его окончания: сброс
+    стоит в `finally` `run_import_job`, а не в прослойке запроса — та отвечает
+    раньше фоновой задачи (спека кэша сводки §2.4 п. 2, §3 проверка 3)."""
+
+    @pytest.fixture(autouse=True)
+    def _cache_on(self, monkeypatch):
+        from config import settings
+
+        monkeypatch.setattr(settings, "SEMANTIC_STATUS_CACHE_TTL_S", 300)
+
+    @staticmethod
+    def _probing_parse(payload, counter, *, fail=False):
+        from services.status_cache import status_cache
+
+        def _compute():
+            counter["calls"] += 1
+            return {"calls": counter["calls"]}
+
+        def _parse(handle):
+            handle.read()
+            status_cache.get(_compute)  # сводка запрошена и запомнена посреди импорта
+            status_cache.get(_compute)
+            assert counter["calls"] == 1  # предусловие: значение держится
+            if fail:
+                raise EstimateParseError("не разобран")
+            return ParseResult(data=payload, parser_version="1.0.0", warnings=[])
+
+        return _parse
+
+    @pytest.mark.parametrize("fail,expected", [(False, "done"), (True, "error")])
+    def test_next_get_recomputes_after_the_import_ends(self, job_env, fail, expected):
+        from services.status_cache import status_cache
+
+        counter = {"calls": 0}
+        payload = payload_for(job_env.contract)
+
+        job = job_env.run(payload, parse=self._probing_parse(payload, counter, fail=fail))
+
+        assert job.status == expected
+        # parse действительно звал кэш и значение держалось (ошибка предусловия
+        # внутри parse иначе тоже дала бы `error`, а пустой кэш — зелёный итог).
+        assert counter["calls"] == 1
+        assert status_cache.get(lambda: {"calls": -1}) == {"calls": -1}
+

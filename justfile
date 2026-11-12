@@ -36,10 +36,10 @@ install-frontend:
 
 # ИНВАРИАНТ (AGENTS.md §3): строго ОДИН worker-процесс uvicorn — это условие
 # корректности startup-recovery import_jobs. Никаких --workers N.
-# Backend на :8259 (БД — по db_target, дефолт local)
+# Backend на :8260 (БД — по db_target, дефолт local)
 dev-backend: pg-ensure
     @echo "==> БД: {{db_target}}"
-    cd backend && {{db_env}} uv run uvicorn main:app --reload --port 8259
+    cd backend && {{db_env}} uv run uvicorn main:app --reload --port 8260
 
 dev-frontend:
     cd frontend && npm run dev

@@ -1962,3 +1962,39 @@ class TestAcceptAll:
         report = releasable.accept_all_proposals(db_session, actor_id=_admin(factories).id)
 
         assert report["accepted"] == 2 and report["stale"] == 0
+
+
+class TestStatusCacheAfterPartialAcceptAll:
+    """Сводка очереди не показывает принятое: «принять всё» упало на второй семье
+    после коммита первой, но кэш `GET /status` сброшен при любом исходе запроса
+    (спека кэша сводки §2.4 п. 1, §3 проверка 2)."""
+
+    URL = f"{BASE}/releasable-proposals/accept-all"
+
+    def test_status_after_a_failed_accept_all_drops_exactly_the_first_family(
+        self, admin_client, db_session, factories, monkeypatch
+    ):
+        from services.status_cache import status_cache
+
+        first = _deferred(db_session, factories)
+        second = _deferred(db_session, factories)
+        assert first.family.id < second.family.id
+        db_session.commit()
+        monkeypatch.setattr(app_settings, "SEMANTIC_STATUS_CACHE_TTL_S", 300)
+        real = releasable.decide_releasable
+
+        def fail_on_second(db, family_id, *args, **kwargs):
+            if family_id == second.family.id:
+                raise RuntimeError("упало на второй семье")
+            return real(db, family_id, *args, **kwargs)
+
+        monkeypatch.setattr(releasable, "decide_releasable", fail_on_second)
+        before = admin_client.get(f"{BASE}/status").json()["releasable_open"]
+        assert before == len(first.ids) + len(second.ids)  # предусловие: значение в кэше
+
+        with pytest.raises(RuntimeError, match="упало на второй семье"):
+            admin_client.post(self.URL)
+        after = admin_client.get(f"{BASE}/status").json()["releasable_open"]
+
+        assert after == before - len(first.ids)
+        status_cache.invalidate()

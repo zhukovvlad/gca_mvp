@@ -197,6 +197,15 @@ class QueueStatus(TypedDict):
     releasable_open: int
 
 
+class HeavyStatusParts(TypedDict):
+    """Дорогие поля сводки: растут с каталогом, поэтому маршрут держит их в кэше
+    (`services/status_cache.py`); типы — как у одноимённых полей `QueueStatus`."""
+
+    stale_units: list[StaleUnitInfo]
+    config_stale: ConfigStaleInfo | None
+    releasable_open: int
+
+
 class JobRow(TypedDict):
     """Строка очереди ошибок и задержанных. `kind` — вид задания. Задание
     предложения и значений — по контексту (`context_id`, наименование, путь);
@@ -1164,9 +1173,23 @@ def _stale_scan(db: Session) -> tuple[list[StaleUnitInfo], ConfigStaleInfo | Non
     )
 
 
-def queue_status(db: Session) -> QueueStatus:
+def heavy_status_parts(db: Session) -> HeavyStatusParts:
+    """Дорогие части сводки: устаревшие единицы, изменённая конфигурация и число
+    действующих предложений «Можно отпустить». Ничего не помнит."""
+    stale_units, config_stale = _stale_scan(db)
+    return HeavyStatusParts(
+        stale_units=stale_units,
+        config_stale=config_stale,
+        releasable_open=len(current_proposals(db, family_ids=None, page=None)),
+    )
+
+
+def queue_status(db: Session, *, heavy: HeavyStatusParts | None = None) -> QueueStatus:
     """Шапка экрана: расход за 24 часа против бюджета, остановка захвата,
-    удержанные пачки, устаревшие единицы и конфигурация. Деньги — строками."""
+    удержанные пачки, устаревшие единицы и конфигурация. Деньги — строками.
+
+    Дорогие части (`heavy`) маршрут подставляет из кэша; без них считаются здесь,
+    так что прямой вызов отвечает свежо. Дешёвые поля — всегда заново."""
     now = dt.datetime.now(dt.UTC)
     state = db.get(SemanticWorkerState, 1)
     paused: PausedInfo | None = None
@@ -1194,21 +1217,22 @@ def queue_status(db: Session) -> QueueStatus:
         )
         for b in batches
     ]
-    stale_units, config_stale = _stale_scan(db)
+    if heavy is None:
+        heavy = heavy_status_parts(db)
     promotion = _promotion_counters(db)
     return QueueStatus(
         spent_24h_usd=money_str(spent_last_24h(db, now=now)),
         daily_budget_usd=money_str(settings.SEMANTIC_DAILY_BUDGET_USD),
         claim_paused=paused,
         held_batches=held,
-        stale_units=stale_units,
-        config_stale=config_stale,
+        stale_units=heavy["stale_units"],
+        config_stale=heavy["config_stale"],
         zones_disputed=db.execute(
             sa.select(sa.func.count(SectionChain.id)).where(
                 SectionChain.zone.is_(None), SectionChain.proposed_zone.is_not(None)
             )
         ).scalar_one(),
-        releasable_open=len(current_proposals(db, family_ids=None, page=None)),
+        releasable_open=heavy["releasable_open"],
         **promotion,
     )
 

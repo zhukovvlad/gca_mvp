@@ -101,6 +101,7 @@ from services.context_routing import RoutingError
 from services.family_change import AutoAcceptError, FamilyLockMismatch
 from services.semantic_decisions import CODE_PREVIEW_CHANGED, DecisionConflict
 from services.semantic_reconcile import NO_CAP
+from services.status_cache import status_cache
 from services.work_families import WorkFamilyError
 
 router = APIRouter(prefix="/api/v1/semantic", tags=["semantic"])
@@ -1311,7 +1312,10 @@ def queue_status_route(
     _admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    return crud_semantic_queue.queue_status(db)
+    # Дорогие части — из кэша (долг №57); функцию зовём через модуль в момент
+    # вызова, чтобы тест мог подменить её счётчиком.
+    heavy = status_cache.get(lambda: crud_semantic_queue.heavy_status_parts(db))
+    return crud_semantic_queue.queue_status(db, heavy=heavy)
 
 
 # ---------------------------------------------------------------------------

@@ -56,6 +56,7 @@ from services.matching import MatchCounters, match_positions
 from services.round_import import import_round, projection_for_inn
 from services.semantic_cost import event_cap_from
 from services.semantic_reconcile import contexts_of_estimates, reconcile_semantic_jobs
+from services.status_cache import status_cache
 from services.unit_resolution import UnitResolver
 from storage import Storage, StorageFileNotFound
 from utils import utcnow_aware
@@ -263,6 +264,34 @@ def _award_copy_data(
 
 
 def run_import_job(
+    job_id: int,
+    *,
+    session_factory: Callable[[], Session],
+    storage: Storage,
+    replace: bool = False,
+    soft_timeout_minutes: int | None = None,
+    parse: Callable | None = None,
+) -> None:
+    """Выполняет задание импорта и по его окончании сбрасывает кэш сводки очереди.
+
+    Сброс — при любом исходе (`done`, `error`, любое исключение), после коммита
+    сессии B: прослойка запроса отвечает раньше фоновой задачи и импорт не
+    покрывает (спека кэша сводки §2.4 п. 2). Сам импорт — `_run_import_job`.
+    """
+    try:
+        _run_import_job(
+            job_id,
+            session_factory=session_factory,
+            storage=storage,
+            replace=replace,
+            soft_timeout_minutes=soft_timeout_minutes,
+            parse=parse,
+        )
+    finally:
+        status_cache.invalidate()
+
+
+def _run_import_job(
     job_id: int,
     *,
     session_factory: Callable[[], Session],
