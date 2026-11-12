@@ -362,7 +362,7 @@ export function OfferLinesTable({ lines, layout, vat, rateClass, canResolve = fa
     flush();
   }
 
-  if (lines.length === 0) {
+  if (bodyRows.length === 0) {
     return (
       <p data-testid="lines-empty" className="px-2 py-3 text-sm text-fg-secondary">
         {EMPTY_LINES_LABEL}

@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import { ourPriceTreeOfferFixture } from "@/test/fixtures";
+import { ourPriceLineFixture, ourPriceTreeOfferFixture } from "@/test/fixtures";
 import type { OurPriceOffer } from "@/types/domain";
 
 import { OfferTree } from "./OfferTree";
@@ -263,5 +263,83 @@ describe("открытие строки", () => {
     renderTree({ onOpenLine });
     fireEvent.click(screen.getByTestId("node-toggle-cat-21"));
     expect(onOpenLine).not.toHaveBeenCalled();
+  });
+});
+
+describe("статьи без строк, где есть только дополнительные работы", () => {
+  /** Корень 11 → промежуточная 21 → лист 31 и лист 32; строк нет вовсе, деньги — в итогах статей. */
+  function moneyOnlyOffer(): OurPriceOffer {
+    const offer = ourPriceTreeOfferFixture();
+    offer.lines = [];
+    offer.categories = [
+      { id: 11, parent_id: null, code: "04", title: "Конструктивные решения", sort_order: 1 },
+      { id: 21, parent_id: 11, code: "4.1", title: "Подземная часть", sort_order: 1 },
+      { id: 31, parent_id: 21, code: "4.1.1", title: "Фундаментная плита", sort_order: 1 },
+    ];
+    const net = { net: "777000.50", shown: "947940.61" };
+    offer.node_totals = {
+      categories: {
+        "11": { lines: 0, no_price: 0, kp_total: net },
+        "21": { lines: 0, no_price: 0, kp_total: net },
+        "31": { lines: 0, no_price: 0, kp_total: net },
+      },
+      chapters: {},
+    };
+    return offer;
+  }
+
+  it("«показывать»: вложенные статьи и их суммы видны, пустого состояния нет", () => {
+    renderTree({ offer: moneyOnlyOffer(), defaultOpen: true });
+    expect(screen.queryByTestId("lines-empty")).toBeNull();
+    expect(groupKeys()).toEqual(["cat-21", "cat-31"]);
+    expect(screen.getByTestId("node-kp-cat-21")).toHaveTextContent("КП 777 000,50 ₽");
+    expect(screen.getByTestId("node-kp-cat-31")).toHaveTextContent("КП 777 000,50 ₽");
+  });
+
+  it("«скрыть»: у корня только строки без цены, у соседней статьи только допработы — соседка видна", () => {
+    const offer = moneyOnlyOffer();
+    offer.categories = [
+      { id: 11, parent_id: null, code: "04", title: "Конструктивные решения", sort_order: 1 },
+      { id: 21, parent_id: 11, code: "4.1", title: "Подземная часть", sort_order: 1 },
+      { id: 22, parent_id: 11, code: "4.2", title: "Надземная часть", sort_order: 2 },
+    ];
+    offer.lines = [
+      ourPriceLineFixture({
+        position_item_id: 1,
+        state: "no_price",
+        category_id: 21,
+        article_id: 11,
+      }),
+    ];
+    offer.node_totals = {
+      categories: {
+        "11": { lines: 1, no_price: 1, kp_total: { net: "555000.25", shown: "677100.31" } },
+        "21": { lines: 1, no_price: 1, kp_total: { net: "0.00", shown: "0.00" } },
+        "22": { lines: 0, no_price: 0, kp_total: { net: "555000.25", shown: "677100.31" } },
+      },
+      chapters: { "21": { "6000": { lines: 1, no_price: 1, kp_total: { net: "0.00", shown: "0.00" } } } },
+    };
+    renderTree({ offer, mode: "hide", defaultOpen: true });
+    expect(lineIds()).toEqual([]);
+    expect(screen.queryByTestId("lines-empty")).toBeNull();
+    expect(groupKeys()).toEqual(["cat-22"]);
+    expect(screen.getByTestId("node-kp-cat-22")).toHaveTextContent("КП 555 000,25 ₽");
+  });
+
+  it("ветка без строк и без денег остаётся пустой: показано пустое состояние", () => {
+    const { container } = render(
+      <OfferTree
+        nodes={[]}
+        trail={["Конструктивные решения"]}
+        vat="net"
+        rateClass="Класс 2"
+        mode="show"
+        filter="all"
+        defaultOpen
+        onOpenLine={() => undefined}
+      />
+    );
+    expect(within(container).getByTestId("lines-empty")).toBeInTheDocument();
+    expect(groupKeys()).toEqual([]);
   });
 });
