@@ -18,7 +18,7 @@ import {
   ourPriceLineViewFixture,
 } from "@/test/fixtures";
 import { server } from "@/test/server";
-import { createTestQueryClient, renderWithProviders } from "@/test/utils";
+import { createTestQueryClient, renderWithProviders, waitForDialogFocus } from "@/test/utils";
 import { OUR_PRICE_POLL_MS } from "@/services/queries";
 import { qk } from "@/services/queryKeys";
 import type { ManualRung, MoneyPair, OurPriceLine, OurPriceLineView, OurPriceRungContract } from "@/types/domain";
@@ -330,6 +330,9 @@ describe("лестница", () => {
       const asked = serveView(withRungs([3, 5, 4, 6]));
       renderSheet();
       await screen.findByTestId("rung-v-cls");
+      // Начальный фокус диалога Base UI ставится в кадре (rAF): фокус ступени,
+      // поставленный раньше, диалог перехватит, и стрелка уйдёт мимо.
+      await waitForDialogFocus();
       const user = userEvent.setup();
       rung("v", "cls").focus();
       await user.keyboard("{ArrowRight}");
@@ -343,6 +346,9 @@ describe("лестница", () => {
       serveView(withRungs([3, 5, 4, 6]));
       renderSheet();
       await screen.findByTestId("rung-v-cls");
+      // Начальный фокус диалога Base UI ставится в кадре (rAF): фокус ступени,
+      // поставленный раньше, диалог перехватит, и стрелка уйдёт мимо.
+      await waitForDialogFocus();
       const user = userEvent.setup();
       rung("v", "cls").focus();
       await user.keyboard("{ArrowLeft}");
@@ -357,6 +363,9 @@ describe("лестница", () => {
       serveView(withRungs([3, 5, 0, 6]));
       renderSheet();
       await screen.findByTestId("rung-v-cls");
+      // Начальный фокус диалога Base UI ставится в кадре (rAF): фокус ступени,
+      // поставленный раньше, диалог перехватит, и стрелка уйдёт мимо.
+      await waitForDialogFocus();
       const user = userEvent.setup();
       rung("v", "all").focus();
       await user.keyboard("{ArrowRight}");
@@ -368,6 +377,9 @@ describe("лестница", () => {
       const asked = serveView(withRungs([3, 5, 4, 6]));
       renderSheet();
       await screen.findByTestId("rung-v-cls");
+      // Начальный фокус диалога Base UI ставится в кадре (rAF): фокус ступени,
+      // поставленный раньше, диалог перехватит, и стрелка уйдёт мимо.
+      await waitForDialogFocus();
       const user = userEvent.setup();
       rung("v", "cls").focus();
       await user.keyboard("a");
@@ -744,10 +756,10 @@ describe("панель как окно", () => {
     expect(screen.queryByTestId("recalc-overlay")).not.toBeInTheDocument();
   });
 
-  it("ширина — тем же вариантным префиксом, что у базового Sheet", async () => {
+  it("ширина 680 px — тем же вариантным префиксом, что у базового Sheet", async () => {
     serveView(() => view());
     renderSheet();
-    expect((await opened()).className).toContain("data-[side=right]:sm:max-w-lg");
+    expect((await opened()).className).toContain("data-[side=right]:sm:max-w-[680px]");
   });
 
   it("отказ сервера — подпись отказа, а не пустая панель", async () => {
@@ -889,6 +901,7 @@ describe("«Для выгрузки»: сохранение под серым с
     serveView(() => view({ agreed }));
     renderSheet();
     const field = await screen.findByLabelText(/Договорились/);
+    await waitForDialogFocus();
     await userEvent.type(field, "1234.5");
     agreed = agreedFixture({ net: "1234.5" });
     await userEvent.click(screen.getByTestId("agreed-save"));
@@ -911,7 +924,9 @@ describe("«Для выгрузки»: сохранение под серым с
       })
     );
     renderSheet();
-    await userEvent.type(await screen.findByLabelText(/Договорились/), "5");
+    await screen.findByLabelText(/Договорились/);
+    await waitForDialogFocus();
+    await userEvent.type(screen.getByLabelText(/Договорились/), "5");
     await userEvent.click(screen.getByTestId("agreed-save"));
     const overlay = await screen.findByTestId("recalc-overlay");
     expect(overlay).toHaveTextContent(SAVING_LABEL);
@@ -930,7 +945,9 @@ describe("«Для выгрузки»: сохранение под серым с
       })
     );
     renderSheet();
-    await userEvent.type(await screen.findByLabelText(/Договорились/), "5");
+    await screen.findByLabelText(/Договорились/);
+    await waitForDialogFocus();
+    await userEvent.type(screen.getByLabelText(/Договорились/), "5");
     gate = new Promise<void>((resolve) => {
       release = resolve;
     });

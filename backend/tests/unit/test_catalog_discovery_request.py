@@ -179,11 +179,14 @@ class TestTariffs:
             SEMANTIC_VALUES_PRICE_INPUT_PER_M=Decimal("3.1"),
             SEMANTIC_DISCOVERY_PRICE_INPUT_PER_M=Decimal("4.1"),
         )
-        # Шесть видов, четыре тарифа: section_zone делит тариф с предложениями семей,
-        # releasable_params — со схемой семьи (решение 11 плана лестницы аналогов).
+        # Четыре вида со своим тарифом; section_zone делит тариф с предложениями семей,
+        # releasable_params — со схемой семьи, auto_split — со значениями контекстов.
         # Попарно различны четыре вида со своим тарифом.
         own = [k for k in SemanticJobKind
-               if k not in (SemanticJobKind.section_zone, SemanticJobKind.releasable_params)]
+               if k not in (
+                   SemanticJobKind.section_zone, SemanticJobKind.releasable_params,
+                   SemanticJobKind.auto_split,
+               )]
         got = [tariffs_from(s, kind).input_per_m for kind in own]
 
         assert sorted(got) == [Decimal("1.1"), Decimal("2.1"), Decimal("3.1"), Decimal("4.1")]

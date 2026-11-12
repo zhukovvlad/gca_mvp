@@ -141,7 +141,11 @@ class TestResponseFormats:
             "properties"
         ]["source"]
         assert source == {
-            "anyOf": [{"type": "string", "enum": ["name", "path"]}, {"type": "null"}]
+            "anyOf": [{"type": "string", "enum": ["name", "path"]}, {"type": "null"}],
+            "description": (
+                "Обязателен (name или path) при kind value, new и several; "
+                "null только при none и conflict."
+            ),
         }
 
     def test_checker_rejects_extra_key_and_wrong_type(self):
@@ -154,7 +158,7 @@ class TestResponseFormats:
     def test_per_schema_format_rejects_ordinal_outside_the_schema(self):
         # Нарушение, ради которого формат строится по схеме: объект для
         # параметра, которого в схеме нет.
-        ok = {"ordinal": 1, "kind": "none", "value": None, "source": None}
+        ok = {"ordinal": 1, "kind": "none", "value": None, "source": None, "values": None, "combine": None}
         two = _schema_of(values_response_format_for([1, 2]))
         gap = _schema_of(values_response_format_for([1, 3]))
         assert _conforms(two, {"values": [ok]})
@@ -166,7 +170,7 @@ class TestResponseFormats:
         # Предусловие для формата значений: перечисления `kind`/`source`,
         # тип-объединение `value` и обязательные ключи проверяльщик видит.
         schema = _schema_of(VALUES_RESPONSE_FORMAT)
-        ok = {"ordinal": 1, "kind": "none", "value": None, "source": None}
+        ok = {"ordinal": 1, "kind": "none", "value": None, "source": None, "values": None, "combine": None}
         assert _conforms(schema, {"values": [ok]})
         for bad in (
             {**ok, "kind": "bogus"},
@@ -198,10 +202,10 @@ class TestResponseFormats:
         schema = _schema_of(VALUES_RESPONSE_FORMAT)
         params = [SchemaParameterIn(1, "p", ("a", "b"))]
         cases = {
-            "bad_kind": [{"ordinal": 1, "kind": "none", "value": "a", "source": None}],
-            "value_not_in_list": [{"ordinal": 1, "kind": "value", "value": "z", "source": "name"}],
-            "bad_ordinal": [{"ordinal": 2, "kind": "none", "value": None, "source": None}],
-            "empty_value": [{"ordinal": 1, "kind": "new", "value": " ", "source": "path"}],
+            "bad_kind": [{"ordinal": 1, "kind": "none", "value": "a", "source": None, "values": None, "combine": None}],
+            "value_not_in_list": [{"ordinal": 1, "kind": "value", "value": "z", "source": "name", "values": None, "combine": None}],
+            "bad_ordinal": [{"ordinal": 2, "kind": "none", "value": None, "source": None, "values": None, "combine": None}],
+            "empty_value": [{"ordinal": 1, "kind": "new", "value": " ", "source": "path", "values": None, "combine": None}],
         }
         for code, items in cases.items():
             payload = {"values": items}

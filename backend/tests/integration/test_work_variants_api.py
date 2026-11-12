@@ -423,7 +423,7 @@ class TestSchemaRead:
         value = body["parameters"][0]["values"][0]
         assert set(value) == {
             "id", "value", "origin", "merged_into_id", "range_lo", "range_hi", "retired",
-            "contexts", "rows",
+            "contexts", "rows", "composite",
         }
         assert value["origin"] == "schema"
         assert value["merged_into_id"] is None

@@ -163,6 +163,8 @@ class TestSchemaForm:
         assert set(body["parameters"][0]["values"][0]) == {
             "id", "value", "origin", "merged_into_id", "range_lo", "range_hi", "retired",
             "contexts", "rows",
+            # Составное значение (спека упрощения каталога §2.3, место 4).
+            "composite",
         }
         [off_list] = _parameter_of(body, 2)["off_list"][:1]
         assert set(off_list) == {"text_norm", "text", "contexts", "rows"}

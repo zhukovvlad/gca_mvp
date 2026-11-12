@@ -2,17 +2,22 @@ import { Fragment, useMemo, useState, type CSSProperties } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { compareDecimalStrings } from "@/lib/decimal";
 import { cn } from "@/lib/utils";
 import type { Decimal, MoneyPair, OurPriceLine, OurPriceOffer, OurPriceOfferArticle } from "@/types/domain";
 
-import { OfferLinesTable } from "./OfferLinesTable";
-import { matchesFilter, type OfferFilter } from "./offerFilter";
+import { OfferTree } from "./OfferTree";
+import { matchesFilter, type NoPriceMode, type OfferFilter } from "./offerFilter";
+import { buildOfferTree } from "./offerTreeModel";
 import { absDecimal, formatBelow, formatMoney, formatSigned, pick, type VatView } from "./money";
 import {
   FORK_COLUMN_LABEL,
   LEGEND_MISMATCH,
+  NO_PRICE_FILTER_HINT,
+  NO_PRICE_FILTER_LABEL,
+  NO_PRICE_MODE_LABEL,
   OFFER_ARTICLES_TITLE,
   OFFER_COLUMN,
   OFFER_TOTAL_LABEL,
@@ -83,6 +88,11 @@ export function OfferArticlesTable({
   const [open, setOpen] = useState<ReadonlySet<string>>(() =>
     initialOpen === null ? new Set() : new Set([initialOpen])
   );
+  const [mode, setMode] = useState<NoPriceMode>("show");
+
+  const tree = useMemo(() => buildOfferTree(offer), [offer]);
+  const rootNodes = useMemo(() => new Map(tree.map((node) => [articleKey(node.kind === "category" ? node.id : null), node])), [tree]);
+  const noPriceLines = useMemo(() => offer.lines.filter((line) => line.state === "no_price").length, [offer.lines]);
 
   const linesByArticle = useMemo(() => {
     const groups = new Map<string, OurPriceLine[]>();
@@ -144,7 +154,10 @@ export function OfferArticlesTable({
     // Нет строк в категории — прочерк: «0,00 ₽» читался бы как сумма, которой нет.
     const aboveLines = (linesByArticle.get(key) ?? []).filter((line) => matchesFilter(line, "above_lowest")).length;
     const belowLines = totals?.below_lines ?? 0;
-    const expanded = open.has(key);
+    // «Только они» раскрывает все статьи, и корни без таких строк тоже: пустота подписана, а не спрятана.
+    const expanded = mode === "only" || open.has(key);
+    const defaultOpen = mode === "only" || initialOpen === key;
+    const rootNode = rootNodes.get(key);
     return (
       <Fragment key={key}>
         <TableRow data-testid={`article-${key}`}>
@@ -193,11 +206,17 @@ export function OfferArticlesTable({
         {expanded && (
           <TableRow>
             <TableCell colSpan={COLUMNS} className="bg-surface-sunken p-0">
-              <OfferLinesTable
-                lines={(linesByArticle.get(key) ?? []).filter((line) => matchesFilter(line, filter))}
+              <OfferTree
+                // Раскрытие по умолчанию задаёт, как вошли: адресом статьи или режимом «только они».
+                key={String(defaultOpen)}
+                nodes={rootNode !== undefined && rootNode.kind === "category" ? rootNode.children : []}
+                trail={[article.title]}
                 vat={vat}
                 rateClass={rateClass}
                 canResolve={canResolve}
+                mode={mode}
+                filter={filter}
+                defaultOpen={defaultOpen}
                 onOpenLine={onOpenLine}
               />
             </TableCell>
@@ -212,6 +231,33 @@ export function OfferArticlesTable({
       <CardHeader>
         <CardTitle>{OFFER_ARTICLES_TITLE}</CardTitle>
         <p className="text-xs text-fg-secondary">{LEGEND_MISMATCH}</p>
+        <div className="flex flex-wrap items-center gap-2 pt-2 text-sm">
+          <span>
+            {NO_PRICE_FILTER_LABEL} · <b data-testid="no-price-count">{noPriceLines}</b>:
+          </span>
+          <ToggleGroup
+            variant="outline"
+            size="sm"
+            spacing={0}
+            aria-label={NO_PRICE_FILTER_LABEL}
+            value={[mode]}
+            onValueChange={(value) => {
+              // Нажатая кнопка не снимается: режим всегда один из трёх.
+              if (value.length > 0) setMode(value[0] as NoPriceMode);
+            }}
+          >
+            {(Object.keys(NO_PRICE_MODE_LABEL) as NoPriceMode[]).map((item) => (
+              <ToggleGroupItem
+                key={item}
+                value={item}
+                className="aria-pressed:bg-primary aria-pressed:text-primary-foreground"
+              >
+                {NO_PRICE_MODE_LABEL[item]}
+              </ToggleGroupItem>
+            ))}
+          </ToggleGroup>
+          <span className="text-xs text-fg-secondary">{NO_PRICE_FILTER_HINT}</span>
+        </div>
       </CardHeader>
       <CardContent>
         <Table>

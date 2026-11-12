@@ -9,7 +9,13 @@ export const REVIEW_PAGE_ROUTE = "/review";
 
 const WIDE_PAGE_ROUTES = [WIDE_PAGE_ROUTE, REVIEW_PAGE_ROUTE];
 
-/** Путь раздела с широкой страницей: сам маршрут и его подпути. */
+/** Страница участника «Против нашей цены»: дерево статей и разделов с таблицей строк шире обычной страницы. */
+const OFFER_PAGE_PATH = /^\/tenders\/\d+\/rounds\/\d+\/our-price\/offers\/\d+\/?$/;
+
+/** Путь раздела с широкой страницей: сам маршрут и его подпути, а также страница участника «Против нашей цены». */
 export function isWidePagePath(pathname: string): boolean {
-  return WIDE_PAGE_ROUTES.some((route) => pathname === route || pathname.startsWith(`${route}/`));
+  return (
+    WIDE_PAGE_ROUTES.some((route) => pathname === route || pathname.startsWith(`${route}/`)) ||
+    OFFER_PAGE_PATH.test(pathname)
+  );
 }

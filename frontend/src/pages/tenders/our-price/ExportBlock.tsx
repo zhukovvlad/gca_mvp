@@ -1,5 +1,6 @@
 import { useState, type KeyboardEvent } from "react";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -12,10 +13,9 @@ import {
   usePutAgreed,
   usePutComment,
 } from "@/services/queries";
-import type { Decimal, OurPriceAnalog, OurPriceLine, OurPriceLineView } from "@/types/domain";
+import type { Decimal, OurPriceLine, OurPriceLineView } from "@/types/domain";
 
 import { formatMoney, formatUnitPrice, pick, priceUnitLabel, type VatView } from "./money";
-import { TargetRow } from "./TargetRow";
 import {
   AGREED_HINT,
   AGREED_PLACEHOLDER,
@@ -26,10 +26,11 @@ import {
   COMMENT_TAG,
   COMMENT_TAG_EMPTY,
   COMMENT_TO_TEMPLATE,
-  EXPORT_OURS_LABEL,
-  EXPORT_OURS_NONE_NOTE,
+  EXPORT_NOTHING_NOTE,
   EXPORT_OURS_NOTE,
+  EXPORT_SOURCE,
   SAVE_LABEL,
+  TARGET_CARD,
   VAT_NET_LABEL,
   vatShownLabel,
 } from "./ourPriceCopy";
@@ -45,10 +46,6 @@ export interface ExportBlockProps {
   vatView: VatView;
   /** Ставка КП; `null` — база НДС неизвестна, ввод только нетто. */
   vatRate: Decimal | null;
-  /** Ряд ИПЦ экрана для выбора цели работы; без него — `null`. */
-  seriesId?: number | null;
-  /** Справка аналогов панели: по ней строка цели называет выбранный аналог. */
-  analogs?: OurPriceAnalog[];
 }
 
 const DASH = "—";
@@ -65,9 +62,17 @@ function commentTag(comment: OurPriceLineView["comment"]): string | null {
   return comment.text === "" ? COMMENT_TAG_EMPTY : COMMENT_TAG.custom;
 }
 
+/** Подпись цели в источнике числа: действующий выбор человека, иначе самая низкая. */
+function targetLabel(line: OurPriceLine): string {
+  const choice = line.choice;
+  if (choice === null || !choice.active) return TARGET_CARD.lowest;
+  return choice.kind === "analog" ? TARGET_CARD.pinned : TARGET_CARD[choice.kind];
+}
+
 /**
- * Блок «Для выгрузки» (спека 4б §2.14): наша расценка справкой, «Договорились» и комментарий
- * для подрядчика. Сохранение — явной кнопкой; отказ уровня поля стоит у поля, а не тостом.
+ * Блок «В файл подрядчику» (спека 4б §2.14, упрощения каталога §2.11): крупно число, которое уйдёт в
+ * выгрузку, и откуда оно, затем «Договорились» и комментарий для подрядчика. Сохранение — явной
+ * кнопкой; отказ уровня поля стоит у поля, а не тостом. Цель выбирается карточками в разделе «Сравнение».
  */
 export function ExportBlock({
   tenderId,
@@ -78,15 +83,13 @@ export function ExportBlock({
   canEdit,
   vatView,
   vatRate,
-  seriesId = null,
-  analogs = [],
 }: ExportBlockProps) {
   const positionItemId = line.position_item_id;
   const shownRate = vatView === "shown" ? vatRate : null;
   const basis = shownRate !== null ? "shown" : "net";
   // Файл ставит цену за единицу подрядчика: у системы `line.ours` - ставка ₽/м² объекта, и подписывать
   // её единицей подрядчика нельзя; поэтому справка берёт `file_ours` - то, что уйдёт в книгу.
-  const ours = pick(line.file_ours, vatView);
+  const ours = pick(line.file_ours, basis);
   const unit = priceUnitLabel(line.unit);
 
   const putAgreed = usePutAgreed(tenderId, roundId, offerId);
@@ -151,29 +154,36 @@ export function ExportBlock({
 
   const agreedCaption = agreedLabel(line.unit, shownRate !== null ? vatShownLabel(shownRate) : VAT_NET_LABEL);
 
+  // В файл идёт договорённое число, если оно есть, иначе наша расценка; источник называет, откуда оно.
+  const fileNumber = agreedPrice ?? ours;
+  const source =
+    line.agreed !== null
+      ? line.file_ours !== null
+        ? EXPORT_SOURCE.agreedOverTarget
+        : EXPORT_SOURCE.agreedManual
+      : ours === null
+        ? EXPORT_SOURCE.nothing
+        : line.kind === "work"
+          ? EXPORT_SOURCE.target(targetLabel(line))
+          : EXPORT_SOURCE.ours;
+  const sourceNote = line.agreed !== null ? null : ours === null ? EXPORT_NOTHING_NOTE : EXPORT_OURS_NOTE;
+
   return (
     <div data-testid="export-block" className="space-y-4 text-sm">
-      {line.kind === "work" && (
-        <TargetRow
-          tenderId={tenderId}
-          roundId={roundId}
-          offerId={offerId}
-          seriesId={seriesId}
-          line={line}
-          analogs={analogs}
-          canEdit={canEdit}
-        />
-      )}
-      <p>
-        <span className="text-fg-secondary">{EXPORT_OURS_LABEL}</span>{" "}
-        <span data-testid="export-ours" className="font-mono tabular-nums">
-          {ours === null ? DASH : `${formatUnitPrice(ours)} ${unit}`}
-          <span className="font-sans text-xs text-fg-secondary">
-            {" "}
-            · {ours === null ? EXPORT_OURS_NONE_NOTE : EXPORT_OURS_NOTE}
+      <div className="space-y-1.5">
+        <p>
+          <span data-testid="export-ours" className="font-mono text-2xl font-semibold tabular-nums">
+            {fileNumber === null ? DASH : formatUnitPrice(fileNumber)}
+            <span className="ml-1.5 font-sans text-sm font-normal text-fg-secondary">{unit}</span>
           </span>
-        </span>
-      </p>
+        </p>
+        <p data-testid="export-source" className="flex flex-wrap items-center gap-2">
+          <Badge variant="secondary" className="h-auto whitespace-normal py-0.5">
+            {source}
+          </Badge>
+          {sourceNote !== null && <span className="text-xs text-fg-secondary">{sourceNote}</span>}
+        </p>
+      </div>
 
       <div className="space-y-1">
         {canEdit ? (

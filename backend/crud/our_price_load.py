@@ -33,6 +33,7 @@ from models import (
     Contract,
     Contractor,
     Estimate,
+    EstimateAdditionalWork,
     FamilyParameter,
     FamilyParameterSchema,
     FamilyParameterValue,
@@ -57,7 +58,8 @@ from models import (
     WorkVariant,
     WorkVariantValue,
 )
-from services.analog_ladder import FamilyLadderInfo, WorkHistoryLine
+from services.analog_ladder import CompositeValue, FamilyLadderInfo, Form, WorkHistoryLine
+from services.composite_values import composite_parts
 from services.our_price import HistoryContract, HistoryLine, KpLine, LineKey
 from services.our_price_money import CategoryRow
 from services.zone_rules import Zone, normalize_title
@@ -303,6 +305,10 @@ class KpLineRow:
     family_title: str | None
     variant_label: str | None
     secondary: tuple[tuple[str, str], ...]
+    #: Статья раздела строки (`chapter.work_category_id`); `None` — «Нераспределённое».
+    category_id: int | None = None
+    #: Раздел сметы, в котором лежит строка; `None` — строка вне разделов.
+    chapter_item_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -325,12 +331,15 @@ class _VariantInfo:
     #: parameter_id -> value_id | `None` по активным главным параметрам; только у варианта
     #: на действующей версии (у варианта на замещённой версии значения несопоставимы).
     main_values: Mapping[int, int | None] = field(default_factory=dict)
+    #: parameter_id -> форма значения: id составного значения либо `"simple"`; ключи те же, что у `main_values`.
+    forms: Mapping[int, Form] = field(default_factory=dict)
 
 
 def _variant_infos(db: Session, variant_ids: Sequence[int]) -> dict[int, _VariantInfo]:
-    """Ключ и подпись каждого варианта тремя запросами, сколько бы вариантов ни
+    """Ключ и подпись каждого варианта четырьмя запросами, сколько бы вариантов ни
     было: заголовки (семья, версия схемы варианта, действующая версия семьи),
-    активные главные параметры версий и значения вариантов.
+    активные главные параметры версий, значения вариантов и составные среди них
+    (форма значения, спека упрощения каталога §2.2).
 
     Первый главный параметр — у варианта на действующей (`frozen`) версии, чьих
     активных главных параметров два и больше; у варианта на замещённой версии
@@ -384,6 +393,9 @@ def _variant_infos(db: Session, variant_ids: Sequence[int]) -> dict[int, _Varian
         .where(WorkVariantValue.variant_id.in_(ids))
     ).all():
         values[variant_id][parameter_id] = (value_id, text)
+    composite_of = composite_parts(
+        db, {value_id for own in values.values() for value_id, _ in own.values() if value_id is not None}
+    )
 
     infos: dict[int, _VariantInfo] = {}
     for head in heads:
@@ -394,6 +406,9 @@ def _variant_infos(db: Session, variant_ids: Sequence[int]) -> dict[int, _Varian
         if on_current and len(parameters) >= 2:
             first_main = (parameters[0], own.get(parameters[0], (None, None))[0])
         parts = [head.title] + [own.get(parameter_id, (None, None))[1] or _UNKNOWN_LABEL for parameter_id in parameters]
+        main_values = (
+            {parameter_id: own.get(parameter_id, (None, None))[0] for parameter_id in parameters} if on_current else {}
+        )
         infos[head.id] = _VariantInfo(
             family_id=head.family_id,
             family_title=head.title,
@@ -401,11 +416,11 @@ def _variant_infos(db: Session, variant_ids: Sequence[int]) -> dict[int, _Varian
             label=_LABEL_SEPARATOR.join(parts),
             schema_id=head.schema_id,
             current_schema_id=head.current_schema_id,
-            main_values=(
-                {parameter_id: own.get(parameter_id, (None, None))[0] for parameter_id in parameters}
-                if on_current
-                else {}
-            ),
+            main_values=main_values,
+            forms={
+                parameter_id: value_id if value_id in composite_of else "simple"
+                for parameter_id, value_id in main_values.items()
+            },
         )
     return infos
 
@@ -659,28 +674,63 @@ def load_work_history(
                 weight=weight,
                 vat_base=vat_base,
                 conflicted=_conflicts_of(conflicts, context_id, info.schema_id),
+                forms=info.forms,
             )
         )
     return lines, _family_ladder_infos(db)
 
 
-def load_analog_details(db: Session, position_item_ids: Sequence[int]) -> dict[int, tuple[str, str | None, list[str]]]:
-    """Наименование, единица и названия разделов строк договоров для справки панели: один запрос."""
+def load_composites(db: Session, line: KpLine) -> dict[int, CompositeValue]:
+    """Составные значения главных параметров одной строки КП: parameter_id -> вид и части (id, текст).
+    У строки без составных значений запросов нет; иначе два запроса, сколько бы частей ни было."""
+    composite_ids = {parameter_id: form for parameter_id, form in line.forms.items() if form != "simple"}
+    parts_of = composite_parts(db, composite_ids.values())
+    part_ids = {part for _, parts in parts_of.values() for part in parts}
+    texts = (
+        dict(
+            db.execute(
+                sa.select(FamilyParameterValue.id, FamilyParameterValue.value).where(
+                    FamilyParameterValue.id.in_(part_ids)
+                )
+            ).all()
+        )
+        if part_ids
+        else {}
+    )
+    return {
+        parameter_id: CompositeValue(
+            kind=parts_of[value_id][0], parts=tuple((part, texts[part]) for part in parts_of[value_id][1])
+        )
+        for parameter_id, value_id in composite_ids.items()
+    }
+
+
+def load_analog_details(
+    db: Session, position_item_ids: Sequence[int]
+) -> dict[int, tuple[str, str | None, list[str], int | None, int | None]]:
+    """Справка панели по строкам договоров одним запросом: наименование, единица, названия
+    разделов цепочки, статья раздела строки договора (`None` — раздела нет или у него нет статьи)
+    и раздел сметы договора, в котором лежит строка (`None` — вне разделов)."""
     ids = sorted(set(position_item_ids))
     if not ids:
         return {}
+    chapter = aliased(PositionItem)
     return {
-        item_id: (title, unit, list(titles or []))
-        for item_id, title, unit, titles in db.execute(
+        item_id: (title, unit, list(titles or []), category_id, chapter_item_id)
+        for item_id, title, unit, titles, category_id, chapter_item_id in db.execute(
             sa.select(
                 PositionItem.id,
                 PositionItem.job_title_in_proposal,
                 UnitOfMeasure.symbol,
                 SectionChain.titles,
+                chapter.work_category_id,
+                PositionItem.chapter_item_id,
             )
             .select_from(PositionItem)
             .outerjoin(UnitOfMeasure, UnitOfMeasure.id == PositionItem.unit_id)
             .outerjoin(SectionChain, SectionChain.id == PositionItem.section_chain_id)
+            # составной FK держит главу и строку в одном предложении
+            .outerjoin(chapter, chapter.id == PositionItem.chapter_item_id)
             .where(PositionItem.id.in_(ids))
         ).all()
     }
@@ -774,6 +824,7 @@ def load_kp_lines(db: Session, estimate_ids: Sequence[int]) -> dict[int, list[Kp
             WorkFamily.title,
             CatalogPosition.unit_id,
             PositionItem.section_chain_id,
+            PositionItem.chapter_item_id,
         )
         .select_from(PositionItem)
         .join(Proposal, Proposal.id == PositionItem.proposal_id)
@@ -818,6 +869,7 @@ def load_kp_lines(db: Session, estimate_ids: Sequence[int]) -> dict[int, list[Kp
             family_title,
             unit_id,
             chain_id,
+            chapter_item_id,
         ) = row
         info = infos.get(variant_id) if variant_id is not None else None
         signal = signals.get(item_id, CatalogSignal(False, False))
@@ -851,6 +903,7 @@ def load_kp_lines(db: Session, estimate_ids: Sequence[int]) -> dict[int, list[Kp
                     chain_titles=chain.titles if chain is not None else frozenset(),
                     schema_id=info.schema_id if info is not None else None,
                     main_values=info.main_values if info is not None else {},
+                    forms=info.forms if info is not None else {},
                     conflicted=_conflicts_of(conflicts, context_id, info.schema_id if info else None),
                     zone_waiting=chain is not None
                     and chain.zone is None
@@ -868,6 +921,8 @@ def load_kp_lines(db: Session, estimate_ids: Sequence[int]) -> dict[int, list[Kp
                 family_title=family_title,
                 variant_label=info.label if info is not None else None,
                 secondary=secondary.get(context_id, ()) if context_id is not None else (),
+                category_id=category_id,
+                chapter_item_id=chapter_item_id,
             )
         )
     return result
@@ -929,6 +984,25 @@ def kp_vat_bases(db: Session, estimate_ids: Sequence[int]) -> dict[int, Decimal 
     return bases
 
 
+def load_additional_works(db: Session, estimate_ids: Sequence[int]) -> dict[int, list[tuple[int | None, Decimal]]]:
+    """Дополнительные работы смет одним запросом: смета -> пары (статья или `None`, валовая сумма).
+    Это второй источник `v_category_totals`; строк позиций они не образуют и в разделы сметы не
+    входят (у них нет связи с разделом, только исходный текст)."""
+    result: dict[int, list[tuple[int | None, Decimal]]] = {estimate_id: [] for estimate_id in estimate_ids}
+    if not result:
+        return result
+    for estimate_id, category_id, amount in db.execute(
+        sa.select(Lot.estimate_id, EstimateAdditionalWork.work_category_id, EstimateAdditionalWork.total_amount)
+        .select_from(EstimateAdditionalWork)
+        .join(Proposal, Proposal.id == EstimateAdditionalWork.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .where(Lot.estimate_id.in_(list(estimate_ids)))
+        .order_by(Lot.estimate_id, EstimateAdditionalWork.id)
+    ).all():
+        result[estimate_id].append((category_id, amount))
+    return result
+
+
 def category_rows(db: Session, estimate_ids: Sequence[int]) -> list[CategoryRow]:
     """Строки `v_category_totals` заданных смет как есть: по одной на предложение
     (и источник суммы), без накопления — его делает ядро. Базу НДС несёт сама
@@ -953,9 +1027,20 @@ def category_rows(db: Session, estimate_ids: Sequence[int]) -> list[CategoryRow]
     return [CategoryRow(estimate_id=r[0], work_category_id=r[1], vat_base=r[2], amount=r[3]) for r in rows]
 
 
-def category_roots(db: Session) -> tuple[dict[int, int], dict[int, ArticleMeta]]:
-    """Корень каждой статьи классификатора (корень — сам себе) и описание корней.
-    Порядок статей экрана — `sort_order` корня. Дерево читается одним запросом."""
+@dataclass(frozen=True)
+class CategoryMeta:
+    """Статья классификатора на любом уровне дерева."""
+
+    id: int
+    parent_id: int | None
+    code: str | None
+    title: str
+    sort_order: int | None
+
+
+def category_tree(db: Session) -> tuple[dict[int, int], dict[int, CategoryMeta]]:
+    """Корень каждой статьи классификатора (корень — сам себе) и описание всех статей.
+    Дерево читается одним запросом; цикл в родителях — `ValueError`."""
     rows = db.execute(
         sa.select(
             WorkCategory.id,
@@ -977,7 +1062,19 @@ def category_roots(db: Session) -> tuple[dict[int, int], dict[int, ArticleMeta]]
         return category_id
 
     root_of = {category_id: root(category_id) for category_id in parent}
+    tree = {
+        row[0]: CategoryMeta(id=row[0], parent_id=row[1], code=row[2], title=row[3], sort_order=row[4]) for row in rows
+    }
+    return root_of, tree
+
+
+def category_roots(db: Session) -> tuple[dict[int, int], dict[int, ArticleMeta]]:
+    """Корень каждой статьи классификатора (корень — сам себе) и описание корней.
+    Порядок статей экрана — `sort_order` корня. Дерево читается одним запросом."""
+    root_of, tree = category_tree(db)
     meta = {
-        row[0]: ArticleMeta(id=row[0], code=row[2], title=row[3], sort_order=row[4]) for row in rows if row[1] is None
+        category_id: ArticleMeta(id=category_id, code=node.code, title=node.title, sort_order=node.sort_order)
+        for category_id, node in tree.items()
+        if node.parent_id is None
     }
     return root_of, meta

@@ -143,7 +143,18 @@ def _migration_0024():
     return _load_migration("*0024-analog_ladder.py", "_migration_0024")
 
 
+#: То же для миграции 0025: список видов заданий (пятый вид `auto_split`) и равносильность
+#: предмета-контекста.
+_REWRITTEN_BY_0025 = frozenset({"SEMANTIC_JOB_KINDS", "CK_SEMANTIC_JOBS_CONTEXT_SUBJECT"})
+
+
+def _migration_0025():
+    return _load_migration("*0025-catalog_simplify.py", "_migration_0025")
+
+
 def _current_migration_for(name: str):
+    if name in _REWRITTEN_BY_0025:
+        return _migration_0025()
     if name in _REWRITTEN_BY_0024:
         return _migration_0024()
     if name in _REWRITTEN_BY_0022:
@@ -1659,7 +1670,7 @@ class TestParityWithMigration:
             SEMANTIC_JOB_KINDS, "SEMANTIC_JOB_KINDS",
             {
                 "family_suggestion", "family_schema", "context_values", "family_discovery",
-                "section_zone", "releasable_params",
+                "section_zone", "releasable_params", "auto_split",
             },
         ),
         (FAMILY_SOURCES, "FAMILY_SOURCES", {"manual", "suggestion", "auto_suggestion"}),
@@ -1738,7 +1749,8 @@ class TestParityWithMigration:
          "(kind IN ('family_schema', 'releasable_params')) = "
          "(context_id IS NULL AND family_id IS NOT NULL)"),
         (CK_SEMANTIC_JOBS_CONTEXT_SUBJECT, "CK_SEMANTIC_JOBS_CONTEXT_SUBJECT",
-         "(kind IN ('family_suggestion', 'context_values')) = (context_id IS NOT NULL)"),
+         "(kind IN ('family_suggestion', 'context_values', 'auto_split')) = "
+         "(context_id IS NOT NULL)"),
         (CK_SEMANTIC_JOBS_SCHEMA_ID_BY_KIND, "CK_SEMANTIC_JOBS_SCHEMA_ID_BY_KIND",
          "(kind IN ('family_schema', 'context_values', 'releasable_params')) = "
          "(schema_id IS NOT NULL)"),

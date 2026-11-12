@@ -89,7 +89,7 @@ export default function OurPriceOfferPage() {
   if (failure !== null) {
     const status = isAxiosError(failure) ? failure.response?.status : undefined;
     return (
-      <div className="container-page py-8">
+      <div className="container-wide py-8">
         <EmptyState
           title={ERROR_TITLE}
           description={errorLabel(status, seriesId !== null, apiErrorDetail(failure))}
@@ -101,7 +101,7 @@ export default function OurPriceOfferPage() {
 
   if (data === undefined) {
     return (
-      <div className="container-page py-8">
+      <div className="container-wide py-8">
         <Skeleton className="h-96" />
       </div>
     );
@@ -152,7 +152,7 @@ export default function OurPriceOfferPage() {
     <div
       data-testid="offer-page"
       data-open-line={openLine ?? undefined}
-      className="container-page space-y-4 py-8"
+      className="container-wide space-y-4 py-8"
     >
       <Breadcrumbs
         items={[

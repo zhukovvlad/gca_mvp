@@ -5,6 +5,7 @@ import type {
   ContextsParams,
   GroupSelector,
   GroupState,
+  JournalParams,
   MatrixParams,
   RateStandardParams,
   ReviewQueueParams,
@@ -282,6 +283,13 @@ export const qk = {
       page: number,
       pageSize: number
     ) => ["semantic-contexts", "group-members", contextId, selector, state, page, pageSize] as const,
+  },
+
+  /** «Журнал ИИ»: страница ленты и запись с подробностями (спека упрощения каталога §2.7). */
+  journal: {
+    all: ["semantic-journal"] as const,
+    list: (params: JournalParams) => ["semantic-journal", "list", params] as const,
+    item: (id: number) => ["semantic-journal", "item", id] as const,
   },
 
   /** Экран «Предложения»: очередь предложений и сводка шапки (спека semantic-suggestions §2.12). */

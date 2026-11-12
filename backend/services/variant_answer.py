@@ -57,10 +57,12 @@ SCHEMA_RESPONSE_FORMAT: Final = {
     },
 }
 
-#: `{"values": [{"ordinal", "kind", "value", "source"}]}` — тегированный
-#: объект: `kind` ∈ `value|new|conflict|none`; `value` — строка или `null`;
-#: `source` — `name`, `path` или `null` (через `anyOf`: строгий режим провайдера
-#: отвергает `enum` рядом с `type`-списком).
+#: `{"values": [{"ordinal", "kind", "value", "source", "values", "combine"}]}` —
+#: тегированный объект: `kind` ∈ `value|new|conflict|none|several`; `value` — строка
+#: или `null`; `source` — `name`, `path` или `null`; `values` (только у `several`,
+#: спека упрощения каталога §2.4) — массив строк или `null`; `combine` — `all`, `any`
+#: или `null` (через `anyOf`: строгий режим провайдера отвергает `enum` рядом с
+#: `type`-списком).
 VALUES_RESPONSE_FORMAT: Final = {
     "type": "json_schema",
     "json_schema": {
@@ -77,7 +79,7 @@ VALUES_RESPONSE_FORMAT: Final = {
                             "ordinal": {"type": "integer", "enum": _ORDINALS},
                             "kind": {
                                 "type": "string",
-                                "enum": ["value", "new", "conflict", "none"],
+                                "enum": ["value", "new", "conflict", "none", "several"],
                             },
                             "value": {"type": ["string", "null"]},
                             "source": {
@@ -85,9 +87,25 @@ VALUES_RESPONSE_FORMAT: Final = {
                                     {"type": "string", "enum": ["name", "path"]},
                                     {"type": "null"},
                                 ],
+                                "description": (
+                                    "Обязателен (name или path) при kind value, new и several; "
+                                    "null только при none и conflict."
+                                ),
+                            },
+                            "values": {
+                                "anyOf": [
+                                    {"type": "array", "items": {"type": "string"}},
+                                    {"type": "null"},
+                                ],
+                            },
+                            "combine": {
+                                "anyOf": [
+                                    {"type": "string", "enum": ["all", "any"]},
+                                    {"type": "null"},
+                                ],
                             },
                         },
-                        "required": ["ordinal", "kind", "value", "source"],
+                        "required": ["ordinal", "kind", "value", "source", "values", "combine"],
                         "additionalProperties": False,
                     },
                 },
@@ -205,12 +223,15 @@ def model_parameter_limit(human_count: int) -> int:
     §2.8); отрицательным предел не бывает."""
     return max(0, min(MAX_PARAMETERS, MAX_ACTIVE_PARAMETERS - human_count))
 
-ValueKind = Literal["value", "new", "conflict", "none"]
-_KINDS: Final = ("value", "new", "conflict", "none")
+ValueKind = Literal["value", "new", "conflict", "none", "several"]
+_KINDS: Final = ("value", "new", "conflict", "none", "several")
 _SOURCES: Final = ("name", "path")
+_COMBINES: Final = ("all", "any")
 
 _SCHEMA_KEYS: Final = ("ordinal", "name", "values")
 _VALUE_KEYS: Final = ("ordinal", "kind", "value", "source")
+#: Ключи, которые ответ прежней формы мог не нести: их отсутствие равно `null`.
+_VALUE_OPTIONAL_KEYS: Final = ("values", "combine")
 
 
 @dataclass(frozen=True)
@@ -223,10 +244,15 @@ class SchemaAnswer:
 
 @dataclass(frozen=True)
 class ValueItem:
+    """Элемент ответа по одному параметру. `values` и `combine` — только у `several`:
+    значения из списка или новые (не меньше двух различных) и способ их соединения."""
+
     ordinal: int
     kind: ValueKind
     value: str | None
     source: Literal["name", "path"] | None
+    values: tuple[str, ...] | None = None
+    combine: Literal["all", "any"] | None = None
 
 
 @dataclass(frozen=True)
@@ -248,14 +274,16 @@ def _object_of(raw: str) -> dict:
     return _parse_single_object(_extract_json_text(raw))
 
 
-def _check_keys(obj: dict, keys: tuple[str, ...], where: str) -> None:
+def _check_keys(
+    obj: dict, keys: tuple[str, ...], where: str, optional: tuple[str, ...] = ()
+) -> None:
     """Все ключи на месте (`missing_field`), и лишних нет (`bad_type`: ответ по
     строгой схеме с `additionalProperties: false` с лишним ключом схему не
-    соблюл)."""
+    соблюл). `optional` — ключи, которых может не быть."""
     missing = [key for key in keys if key not in obj]
     if missing:
         raise _fail("missing_field", f"{where}: нет обязательных полей: {', '.join(missing)}")
-    extra = sorted(set(obj) - set(keys))
+    extra = sorted(set(obj) - set(keys) - set(optional))
     if extra:
         raise _fail("bad_type", f"{where}: лишние ключи: {', '.join(extra)}")
 
@@ -329,12 +357,38 @@ def parse_schema_answer(raw: str, *, limit: int) -> SchemaAnswer:
     return SchemaAnswer(parameters=tuple(sorted(parsed, key=lambda p: p.ordinal)))
 
 
+def _fold_for_repeat(text: str) -> str:
+    """Форма для сравнения значений одного ответа `several`: без крайних и двойных
+    пробелов, без регистра, `ё` как `е`."""
+    return " ".join(text.split()).casefold().replace("ё", "е")
+
+
+def _several_values(obj: dict, where: str) -> tuple[tuple[str, ...], str]:
+    """Значения и способ соединения элемента `several`: не меньше двух непустых
+    различных значений, `combine` из `all|any`."""
+    combine = obj.get("combine")
+    if combine not in _COMBINES:
+        raise _fail("bad_kind", f"{where}: при kind=several combine обязателен: all или any")
+    raw_values = obj.get("values")
+    if not isinstance(raw_values, list):
+        raise _fail("bad_type", f"{where}.values: не массив")
+    values = tuple(
+        _nonblank(value, f"{where}.values[{index}]") for index, value in enumerate(raw_values)
+    )
+    if len(values) < 2:
+        raise _fail("bad_count", f"{where}: при kind=several значений не меньше двух")
+    if len({_fold_for_repeat(value) for value in values}) != len(values):
+        raise _fail("bad_count", f"{where}: значения several различны, повтор недопустим")
+    return values, combine
+
+
 def _parse_value_item(item: object, position: int) -> ValueItem:
     """Форма одного объекта ответа `context_values`; связь с параметрами схемы
-    проверяет вызывающий."""
+    проверяет вызывающий. `values` и `combine` могут отсутствовать (ответ прежней
+    формы) или быть `null`; непустыми они бывают только у `several`."""
     where = f"values[{position}]"
     obj = _dict_item(item, where)
-    _check_keys(obj, _VALUE_KEYS, where)
+    _check_keys(obj, _VALUE_KEYS, where, optional=_VALUE_OPTIONAL_KEYS)
     ordinal = _int_field(obj["ordinal"], f"{where}.ordinal")
     kind = obj["kind"]
     if not isinstance(kind, str):
@@ -350,6 +404,18 @@ def _parse_value_item(item: object, position: int) -> ValueItem:
     if source is not None and source not in _SOURCES:
         raise _fail("bad_kind", f"{where}: неизвестный source {source!r}")
 
+    if kind == "several":
+        if source is None:
+            raise _fail("bad_kind", f"{where}: при kind=several source обязателен")
+        if value is not None:
+            raise _fail("bad_kind", f"{where}: при kind=several value запрещён")
+        values, combine = _several_values(obj, where)
+        return ValueItem(
+            ordinal=ordinal, kind="several", value=None, source=source,  # type: ignore[arg-type]
+            values=values, combine=combine,  # type: ignore[arg-type]
+        )
+    if obj.get("values") is not None or obj.get("combine") is not None:
+        raise _fail("bad_kind", f"{where}: values и combine допустимы только при kind=several")
     if kind in ("value", "new"):
         if source is None:
             raise _fail("bad_kind", f"{where}: при kind={kind} source обязателен")

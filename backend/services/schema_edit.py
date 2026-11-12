@@ -42,6 +42,7 @@ from models import (
     FamilyParameter,
     FamilyParameterSchema,
     FamilyParameterValue,
+    FamilyValuePart,
     ParameterOrigin,
     ParameterRole,
     ParameterValueKind,
@@ -51,6 +52,7 @@ from models import (
     ValueSource,
     WorkFamily,
 )
+from services.composite_values import REFUSE_SCHEMA_COMPOSITE_TEXT
 from services.parameter_ranges import (
     RangeValue,
     build_range_values,
@@ -66,6 +68,7 @@ from services.semantic_reconcile import (
     _estimate_entries,
     preview_values_plan,
     reconcile_context_values,
+    reconcile_or_defer,
 )
 from services.variant_answer import MAX_ACTIVE_PARAMETERS as _MAX_ACTIVE_PARAMETERS
 from services.variant_request import SchemaParameterIn
@@ -85,12 +88,14 @@ from services.work_variants import (
     REFUSE_SCHEMA_VALUE_REMOVED,
     REFUSE_VALUE_NOT_FOUND,
     _active_variant_count,
+    _family_context_ids,
     _lock_contexts_statement,
     _lock_current_schema_statement,
     _lock_family_for_schema_life,
     _lock_values_statement,
     answered_main_rows,
     bump_revision,
+    canonical_value_id,
     invalidate_values_jobs,
     mark_rows_for_refresh,
     normalize_value,
@@ -106,6 +111,7 @@ REFUSE_SCHEMA_RANGE_TOO_MANY_VALUES = "schema_range_too_many_values"
 REFUSE_SCHEMA_ORDINALS_EXHAUSTED = "schema_ordinals_exhausted"
 REFUSE_OFF_LIST_NOT_FOUND = "off_list_not_found"
 REFUSE_OFF_LIST_TARGET_INVALID = "off_list_target_invalid"
+REFUSE_VALUE_TEXT_TAKEN = "value_text_taken"
 #: Тот же код, что у предпросмотров пересборки и автопринятия.
 REFUSE_PREVIEW_CHANGED = "preview_changed"
 
@@ -202,6 +208,7 @@ class _ValueRow:
     merged_into: int | None = None
     range_lo: Decimal | None = None
     range_hi: Decimal | None = None
+    composite: bool = False
 
     @property
     def active(self) -> bool:
@@ -254,6 +261,7 @@ def _read_values(db: Session, parameter_ids: Sequence[int]) -> dict[int, list[_V
             FamilyParameterValue.value, FamilyParameterValue.value_norm,
             FamilyParameterValue.merged_into_id, FamilyParameterValue.retired_at,
             FamilyParameterValue.range_lo, FamilyParameterValue.range_hi,
+            FamilyParameterValue.composite_kind,
         )
         .where(FamilyParameterValue.parameter_id.in_(list(values)))
         .order_by(FamilyParameterValue.id)
@@ -264,6 +272,7 @@ def _read_values(db: Session, parameter_ids: Sequence[int]) -> dict[int, list[_V
                 value_norm=row.value_norm, merged=row.merged_into_id is not None,
                 retired=row.retired_at is not None, merged_into=row.merged_into_id,
                 range_lo=row.range_lo, range_hi=row.range_hi,
+                composite=row.composite_kind is not None,
             )
         )
     return values
@@ -788,6 +797,7 @@ def _plan_rebuild(
             continue
         carrier = by_id[slot.value_id]
         if slot.current_text != slot.text:
+            _refuse_composite_text(carrier, existing.ordinal)
             plan.value_renames.append((slot.value_id, slot.text))
         if (carrier.range_lo, carrier.range_hi) != (slot.lo, slot.hi):
             bounds.append((slot.value_id, slot.lo, slot.hi))
@@ -796,6 +806,18 @@ def _plan_rebuild(
         sorted({slot.value_id: slot.text for slot in slots if slot.value_id is not None}.items())
     )
     plan.texts_after = (*carried.values(), *(slot.text for slot in slots if slot.value_id is None))
+
+
+def _refuse_composite_text(value: _ValueRow, ordinal: int | None) -> None:
+    """Текст составного значения собирается из частей и не правится (спека упрощения
+    каталога §2.3, место 4)."""
+    if value.composite:
+        raise WorkFamilyError(
+            REFUSE_SCHEMA_COMPOSITE_TEXT,
+            f"параметр {ordinal}: текст составного значения не правится — он собирается "
+            "из частей",
+            ordinal=ordinal,
+        )
 
 
 def _plan_parameter(
@@ -875,6 +897,7 @@ def _plan_parameter(
         elif found.retired:
             plan.new_values.append(_NewValue(text=text, norm=norm, revive_id=found.id))
         elif found.value != text:
+            _refuse_composite_text(found, draft.ordinal)
             plan.value_renames.append((found.id, text))
     return plan
 
@@ -1453,6 +1476,47 @@ def _write_rebuild(
             .values(retired_at=now)
             .execution_options(synchronize_session=False)
         )
+        _retire_composites_of(db, parameter_id, retired_ids, now)
+
+
+def _retire_composites_of(
+    db: Session, parameter_id: int, retired_ids: Sequence[int], now: datetime
+) -> None:
+    """Составное значение, у которого вывели часть, выводится тем же `retired_at`
+    (спека упрощения каталога §2.3, место 3); строки контекстов на нём — как у
+    выведенного простого: «уточняется»."""
+    composite_ids = list(
+        db.execute(
+            sa.select(FamilyParameterValue.id)
+            .join(FamilyValuePart, FamilyValuePart.value_id == FamilyParameterValue.id)
+            .where(
+                FamilyParameterValue.parameter_id == parameter_id,
+                FamilyValuePart.part_value_id.in_(list(retired_ids)),
+                FamilyParameterValue.retired_at.is_(None),
+                FamilyParameterValue.merged_into_id.is_(None),
+            )
+            .distinct()
+        ).scalars()
+    )
+    if not composite_ids:
+        return
+    context_ids = sorted(
+        db.execute(
+            sa.select(ContextParameterValue.context_id).where(
+                ContextParameterValue.parameter_id == parameter_id,
+                ContextParameterValue.value_id.in_(composite_ids),
+            )
+        ).scalars()
+    )
+    if context_ids:
+        db.execute(_lock_contexts_statement(context_ids)).all()
+        mark_rows_for_refresh(db, context_ids, parameter_id)
+    db.execute(
+        sa.update(FamilyParameterValue)
+        .where(FamilyParameterValue.id.in_(composite_ids))
+        .values(retired_at=now)
+        .execution_options(synchronize_session=False)
+    )
 
 
 def _write_plan(
@@ -1749,6 +1813,243 @@ def resolve_off_list(
     )
 
 
+# ---------------------------------------------------------------------------
+#  Отмена автодействий из «Журнала ИИ» (спека упрощения каталога §2.7)
+# ---------------------------------------------------------------------------
+
+def _current_parameter(
+    db: Session, family_id: int, schema_id: int, parameter_id: int
+) -> sa.Row:
+    """Активный параметр действующей версии семьи; чужой, архивный или из прежней
+    версии схемы — `parameter_not_found`."""
+    parameter = db.execute(
+        sa.select(FamilyParameter.ordinal, FamilyParameter.name, FamilyParameter.role).where(
+            FamilyParameter.id == parameter_id,
+            FamilyParameter.schema_id == schema_id,
+            FamilyParameter.archived_at.is_(None),
+        )
+    ).one_or_none()
+    if parameter is None:
+        raise WorkFamilyError(
+            REFUSE_PARAMETER_NOT_FOUND, f"параметр {parameter_id} не найден у семьи {family_id}",
+            parameter_id=parameter_id,
+        )
+    return parameter
+
+
+def _after_value_list_change(db: Session, family_id: int, schema_id: int) -> int:
+    """Список значений параметра изменился: уборка входов запроса и сверка заданий
+    значений семьи (как после слияния значений). Возвращает число поставленных заданий."""
+    refresh_inputs(db, [schema_id], settings=settings)
+    report = reconcile_or_defer(db, _family_context_ids(db, family_id))
+    return 0 if report is None else report.created + report.revived
+
+
+def split_composite_value(
+    db: Session, *, family_id: int, parameter_id: int, value_id: int, text: str,
+    actor_id: int,
+) -> list[int]:
+    """Отмена склейки (спека упрощения каталога §2.7, `composite`): составное значение
+    теряет части (`composite_kind`, `composite_key` -> `NULL`, строки
+    `family_value_parts` удаляются) и становится простым с текстом `text` и нормой от
+    него. Строки значений контекстов и варианты остаются на этом значении: меняется
+    только его состав. Список значений растёт на простое значение, поэтому `revision`
+    версии поднимается, пишется событие и сверяются задания значений семьи.
+
+    Возвращает `id` бывших частей по возрастанию — по ним вызывающий пишет вето.
+
+    Порядок блокировок: семья `FOR UPDATE`, действующая версия `FOR UPDATE`, значение.
+
+    Raises:
+        WorkFamilyError: семьи нет или она не активна; идёт пересборка схемы; текущей
+            версии нет; параметра нет в действующей версии (`parameter_not_found`);
+            значение слито или выведено из списка (`value_not_found`); норма `text`
+            занята другим значением параметра (`value_text_taken`) — тогда ничего не
+            изменено.
+    """
+    schema_id = _require_editable(db, family_id, lock=True)
+    parameter = _current_parameter(db, family_id, schema_id, parameter_id)
+    value = db.execute(_lock_values_statement([value_id])).scalar_one()
+    if value.merged_into_id is not None or value.retired_at is not None:
+        raise WorkFamilyError(
+            REFUSE_VALUE_NOT_FOUND, f"значение {value_id} уже не действующее составное",
+            value_id=value_id,
+        )
+    new_text = text.strip()
+    norm = normalize_value(new_text)
+    taken = db.execute(
+        sa.select(FamilyParameterValue.id).where(
+            FamilyParameterValue.parameter_id == parameter_id,
+            FamilyParameterValue.value_norm == norm,
+            FamilyParameterValue.id != value_id,
+        )
+    ).scalar_one_or_none()
+    if taken is not None:
+        raise WorkFamilyError(
+            REFUSE_VALUE_TEXT_TAKEN, f"текст «{new_text}» уже занят значением {taken}",
+            value_id=taken,
+        )
+    part_ids = sorted(
+        db.execute(
+            sa.select(FamilyValuePart.part_value_id).where(FamilyValuePart.value_id == value_id)
+        ).scalars()
+    )
+    db.execute(sa.delete(FamilyValuePart).where(FamilyValuePart.value_id == value_id))
+    value.composite_kind = None
+    value.composite_key = None
+    value.value = new_text
+    value.value_norm = norm
+    db.flush()
+    revision = bump_revision(db, schema_id)
+    jobs_enqueued = _after_value_list_change(db, family_id, schema_id)
+    variants = _active_variant_count(db, schema_id)
+    record_event(
+        db, event_type="family_schema_edited", family_id=family_id, actor_id=actor_id,
+        payload={
+            "schema_id": schema_id, "revision": revision,
+            "changes": [
+                {
+                    "ordinal": parameter.ordinal, "name": parameter.name,
+                    "composite_split": {
+                        "value_id": value_id, "value": new_text, "part_ids": part_ids,
+                    },
+                }
+            ],
+            "variants_before": variants, "variants_after": variants,
+            "jobs_enqueued": jobs_enqueued,
+        },
+    )
+    return part_ids
+
+
+def detach_equated_text(
+    db: Session, *, family_id: int, parameter_id: int, text: str, target_value_id: int,
+    context_ids: Sequence[int], actor_id: int,
+) -> None:
+    """Отмена приравнивания (спека упрощения каталога §2.7, `equated`): заводится простое
+    значение из `text` (`origin = 'extension'`; действующее значение с такой нормой
+    берётся как есть, выведенное из списка — возвращается), и строки значений
+    контекстов `context_ids`, стоящие на `target_value_id`, переходят на него — путём
+    «Слить с…» (`resolve_off_list`): источник `manual`, у главного параметра
+    пересчитываются варианты, открытые задания значений затронутых контекстов
+    закрываются как устаревшие. Контекст архивный или уже ушедший с цели остаётся как
+    есть.
+
+    Порядок блокировок: семья `FOR UPDATE`, действующая версия `FOR UPDATE`, значения
+    по `id`, контексты по `id`, варианты, задания.
+
+    Raises:
+        WorkFamilyError: семьи нет или она не активна; идёт пересборка схемы; текущей
+            версии нет; параметра нет в действующей версии (`parameter_not_found`);
+            норма `text` занята составным значением либо значением, которому `text`
+            уже синоним — цель или её каноническое (`value_text_taken`).
+    """
+    schema_id = _require_editable(db, family_id, lock=True)
+    parameter = _current_parameter(db, family_id, schema_id, parameter_id)
+    target_id = canonical_value_id(db, target_value_id)
+    norm = normalize_value(text)
+    existing = db.execute(
+        sa.select(FamilyParameterValue.id).where(
+            FamilyParameterValue.parameter_id == parameter_id,
+            FamilyParameterValue.value_norm == norm,
+        )
+    ).scalar_one_or_none()
+    new_id = target_id if existing is None else canonical_value_id(db, existing)
+    locked = {
+        row.id: row for row in db.execute(_lock_values_statement({target_id, new_id})).scalars()
+    }
+    joined_list = False
+    if existing is None:
+        created = FamilyParameterValue(
+            parameter_id=parameter_id, value=text.strip(), value_norm=norm,
+            origin=ValueOrigin.extension.value,
+        )
+        db.add(created)
+        db.flush()
+        new_id = created.id
+        listed_text = created.value
+        joined_list = True
+    else:
+        chosen = locked[new_id]
+        if new_id == target_id or chosen.composite_kind is not None:
+            raise WorkFamilyError(
+                REFUSE_VALUE_TEXT_TAKEN, f"текст «{text.strip()}» уже занят значением {new_id}",
+                value_id=new_id,
+            )
+        listed_text = chosen.value
+        if chosen.retired_at is not None:
+            chosen.retired_at = None
+            db.flush()
+            joined_list = True
+    if joined_list:
+        record_event(
+            db, event_type="family_schema_value_added", family_id=family_id,
+            payload={
+                "parameter_id": parameter_id, "value_id": new_id, "value": listed_text,
+                "origin": ValueOrigin.extension.value, "context_id": None,
+            },
+        )
+
+    moved = [
+        row.context_id
+        for row in db.execute(
+            sa.select(ContextParameterValue.context_id)
+            .join(CatalogContext, CatalogContext.id == ContextParameterValue.context_id)
+            .where(
+                ContextParameterValue.parameter_id == parameter_id,
+                ContextParameterValue.value_id == target_id,
+                ContextParameterValue.context_id.in_(list(context_ids)),
+                CatalogContext.archived_at.is_(None),
+            )
+            .order_by(ContextParameterValue.context_id)
+        ).all()
+    ]
+    if moved:
+        db.execute(_lock_contexts_statement(moved)).all()
+        db.execute(
+            sa.update(ContextParameterValue)
+            .where(
+                ContextParameterValue.context_id.in_(moved),
+                ContextParameterValue.parameter_id == parameter_id,
+            )
+            .values(
+                value_id=new_id, source=ValueSource.manual.value, off_list_text=None,
+                refresh_requested_at=None,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        db.flush()
+    if moved and parameter.role == ParameterRole.main.value:
+        recomputed = recompute_variants(
+            db, family_id=family_id, schema_id=schema_id, context_ids=moved
+        )
+        variants_before, variants_after = recomputed.variants_before, recomputed.variants_after
+    else:
+        variants_before = variants_after = _active_variant_count(db, schema_id)
+    revision = bump_revision(db, schema_id)
+    invalidate_values_jobs(
+        db, context_ids=moved, schema_id=schema_id, ordinal=parameter.ordinal
+    )
+    jobs_enqueued = _after_value_list_change(db, family_id, schema_id)
+    record_event(
+        db, event_type="family_schema_edited", family_id=family_id, actor_id=actor_id,
+        payload={
+            "schema_id": schema_id, "revision": revision,
+            "changes": [
+                {
+                    "ordinal": parameter.ordinal, "name": parameter.name,
+                    "equated_detached": {
+                        "text_norm": norm, "value_id": new_id, "from_value_id": target_id,
+                        "contexts": len(moved),
+                    },
+                }
+            ],
+            "variants_before": variants_before, "variants_after": variants_after,
+            "jobs_enqueued": jobs_enqueued,
+        },
+    )
+
+
 __all__: Sequence[str] = (
     "MAX_ACTIVE_PARAMETERS",
     "EditSummary",
@@ -1756,7 +2057,9 @@ __all__: Sequence[str] = (
     "RangeSpec",
     "ValueResolution",
     "apply_schema_edit",
+    "detach_equated_text",
     "preview_schema_edit",
     "resolve_off_list",
     "resolve_values",
+    "split_composite_value",
 )

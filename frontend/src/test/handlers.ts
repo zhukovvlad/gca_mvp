@@ -41,6 +41,7 @@ import {
   ourPriceOfferFixture,
   ourPriceRoundFixture,
 } from "./fixtures";
+import { initialJournal } from "./journalFixtures";
 import type {
   ContractCandidate,
   OurPriceLineState,
@@ -91,6 +92,8 @@ import type {
   SuggestionGroup,
   UnitHoldGroup,
   TenderCard,
+  JournalItem,
+  JournalItemDetail,
   WorkCategoryPathEntry,
   WorkFamily,
 } from "@/types/domain";
@@ -507,7 +510,13 @@ interface HandlerState {
    * `refused` - решение отвергнуто кодом `unknown_rung` (422); `invalid_agreed` и
    * `comment_too_long` - отказы уровня поля с текстом сервера.
    */
-  kpFileDecisionOutcome: "ok" | "refused" | "invalid_agreed" | "comment_too_long" | "analog_unavailable";
+  kpFileDecisionOutcome:
+    | "ok"
+    | "refused"
+    | "invalid_agreed"
+    | "comment_too_long"
+    | "analog_unavailable"
+    | "no_contractor_analog";
   /** `unknown_vat_base` - выгрузка отвечает кодированным 422 с текстом сервера. */
   kpFileExportOutcome: "ok" | "unknown_vat_base";
   /** `missing` - 404, `gone` - 410 (файл пропал из хранилища, запись жива). */
@@ -527,6 +536,12 @@ interface HandlerState {
   nextFamilyCategoryId: number;
   /** Query-строки `GET /families` по порядку — какой фильтр реально ушёл на сервер. */
   familiesRequests: string[];
+  /** «Журнал ИИ» (`/semantic/journal`): записи по форме провода, query-строки списка и тела действий. */
+  journal: JournalItemDetail[];
+  journalRequests: string[];
+  journalActions: Array<{ id: number; action: "undo" | "resplit" | "restore-auto"; body: unknown }>;
+  /** Отказ, который получит ближайшее действие журнала (один раз). */
+  journalRefusal: { action: "undo" | "resplit" | "restore-auto"; status: number; code: string } | null;
   /** Запросы справочника: `POST`/`PATCH`/`DELETE` по порядку. */
   categoryRequests: Array<{ method: string; id: number | null; body: Record<string, unknown> | null }>;
   /** Запросы `POST …/reopen` по порядку: id контекста. */
@@ -2059,6 +2074,10 @@ async function kpDecision({ request }: { request: Request }): Promise<Response> 
       code: "analog_unavailable",
       message: "Этот аналог не входит в остаток ступени строки: выбрать его нельзя.",
     },
+    no_contractor_analog: {
+      code: "no_contractor_analog",
+      message: "Среди аналогов остатка нет договора с этим подрядчиком.",
+    },
   } as const;
   const outcome = handlerState.kpFileDecisionOutcome;
   if (outcome !== "ok") {
@@ -2118,6 +2137,10 @@ export const handlerState: HandlerState = {
   familyCategories: initialFamilyCategories(),
   nextFamilyCategoryId: 100,
   familiesRequests: [],
+  journal: initialJournal(),
+  journalRequests: [],
+  journalActions: [],
+  journalRefusal: null,
   categoryRequests: [],
   reopenRequests: [],
   lastCreateFamilyRequest: null,
@@ -2202,6 +2225,7 @@ export function schemaValue(
     merged_into_id: null,
     range_lo: null,
     range_hi: null,
+    composite: null,
     retired: false,
     contexts: 0,
     rows: 0,
@@ -2300,6 +2324,70 @@ function schemaRefusalResponse(code: string, status: number) {
     { detail: { code, message: "server text must not reach the screen" } },
     { status }
   );
+}
+
+/** Отказ журнала в форме `detail.code`; текст сервера на экран попасть не должен. */
+function journalRefusalResponse(code: string, status: number, extra: Record<string, unknown> = {}) {
+  return HttpResponse.json(
+    { detail: { code, message: "server text must not reach the screen", ...extra } },
+    { status }
+  );
+}
+
+/** Порядок сервера: `created_at DESC, id DESC`. */
+function journalOrdered(): JournalItemDetail[] {
+  return [...handlerState.journal].sort(
+    (a, b) => b.created_at.localeCompare(a.created_at) || b.id - a.id
+  );
+}
+
+function journalListItem(item: JournalItemDetail): JournalItem {
+  const { details: _details, ...listItem } = item;
+  void _details;
+  return listItem;
+}
+
+/** Отборы журнала, кроме вида (общие для страницы и счётчиков), как `crud/ai_journal.py::_conditions`. */
+function journalMatches(item: JournalItemDetail, params: URLSearchParams): boolean {
+  const familyId = params.get("family_id");
+  if (familyId !== null && String(item.family.id) !== familyId) return false;
+  const state = params.get("state");
+  if (state !== null && item.state !== state) return false;
+  const q = (params.get("q") ?? "").toLowerCase();
+  if (q !== "") {
+    const haystack = [item.text ?? "", item.family.title, ...item.summary_values].join(" ").toLowerCase();
+    if (!haystack.includes(q)) return false;
+  }
+  return true;
+}
+
+function journalAction(
+  action: "undo" | "resplit" | "restore-auto",
+  id: number,
+  body: unknown
+): Response | JournalItemDetail {
+  handlerState.journalActions.push({ id, action, body });
+  const refusal = handlerState.journalRefusal;
+  if (refusal !== null && refusal.action === action) {
+    handlerState.journalRefusal = null;
+    return journalRefusalResponse(refusal.code, refusal.status);
+  }
+  const item = handlerState.journal.find((entry) => entry.id === id);
+  if (!item) return journalRefusalResponse("journal_not_found", 404);
+  if (action === "restore-auto") {
+    if (item.state !== "undone") return journalRefusalResponse("journal_not_undone", 409);
+    if (item.restored_at !== null) return journalRefusalResponse("journal_already_restored", 409);
+    item.restored_at = "2026-09-11T13:00:00+00:00";
+    return item;
+  }
+  if (item.state === "undone") return journalRefusalResponse("journal_already_undone", 409);
+  if (item.state === "locked") {
+    return journalRefusalResponse("journal_undo_locked", 409, { locked_by: item.undo.locked_by });
+  }
+  item.state = "undone";
+  item.undo = { available: false, locked_by: null };
+  item.undone = { at: "2026-09-11T12:59:00+00:00", by_email: "test@example.com" };
+  return item;
 }
 
 function schemaOf(familyId: number): FamilySchema {
@@ -2723,6 +2811,10 @@ export function resetHandlerState() {
   handlerState.familyCategories = initialFamilyCategories();
   handlerState.nextFamilyCategoryId = 100;
   handlerState.familiesRequests = [];
+  handlerState.journal = initialJournal();
+  handlerState.journalRequests = [];
+  handlerState.journalActions = [];
+  handlerState.journalRefusal = null;
   handlerState.categoryRequests = [];
   handlerState.reopenRequests = [];
   handlerState.lastCreateFamilyRequest = null;
@@ -4681,6 +4773,42 @@ export const handlers = [
       return true;
     });
     return HttpResponse.json({ items });
+  }),
+
+  // «Журнал ИИ» (спека упрощения каталога §2.7; `routers/semantic.py::list_journal_route`).
+  http.get("/api/v1/semantic/journal", ({ request }) => {
+    const url = new URL(request.url);
+    handlerState.journalRequests.push(url.search);
+    const params = url.searchParams;
+    const kind = params.get("kind");
+    const limit = Number(params.get("limit") ?? 50);
+    const offset = Number(params.get("offset") ?? 0);
+    const common = journalOrdered().filter((item) => journalMatches(item, params));
+    const selected = common.filter((item) => kind === null || item.kind === kind);
+    const counts = { split: 0, value_added: 0, composite: 0, equated: 0 };
+    for (const item of common) counts[item.kind] += 1;
+    return HttpResponse.json({
+      items: selected.slice(offset, offset + limit).map(journalListItem),
+      total: selected.length,
+      counts,
+    });
+  }),
+  http.get("/api/v1/semantic/journal/:id", ({ params }) => {
+    const item = handlerState.journal.find((entry) => entry.id === Number(params.id));
+    if (!item) return journalRefusalResponse("journal_not_found", 404);
+    return HttpResponse.json(item);
+  }),
+  http.post("/api/v1/semantic/journal/:id/undo", ({ params }) => {
+    const result = journalAction("undo", Number(params.id), null);
+    return result instanceof Response ? result : HttpResponse.json(result);
+  }),
+  http.post("/api/v1/semantic/journal/:id/resplit", async ({ params, request }) => {
+    const result = journalAction("resplit", Number(params.id), await request.json());
+    return result instanceof Response ? result : HttpResponse.json(result);
+  }),
+  http.post("/api/v1/semantic/journal/:id/restore-auto", ({ params }) => {
+    const result = journalAction("restore-auto", Number(params.id), null);
+    return result instanceof Response ? result : HttpResponse.json(result);
   }),
 
   // Справочник категорий семей (спека 3б §2.9, §2.12).

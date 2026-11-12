@@ -239,6 +239,19 @@ def test_work_below_the_lowest_counts_in_below_and_gives_a_negative_to_lowest():
     assert result.to_freshest == D(-300)
 
 
+def test_work_difference_to_the_contractor_is_signed_and_null_without_a_figure():
+    contracts, lines = two_contract_history()
+    contracts.append(contract(3, contractor=99))
+    lines.append(wline(1003, 3, "130"))
+    above = evaluate([work()], contracts=contracts, work_lines=lines).lines[1]
+    below = evaluate([work(price="120")], contracts=contracts, work_lines=lines).lines[1]
+    alone = evaluate([work()], contracts=contracts[:2], work_lines=lines[:2]).lines[1]
+
+    assert (above.to_contractor_unit, above.to_contractor) == (D(20), D(200))  # (150 - 130) * 10
+    assert (below.to_contractor_unit, below.to_contractor) == (D(-10), D(-100))  # (120 - 130) * 10
+    assert (alone.to_contractor_unit, alone.to_contractor) == (None, None)
+
+
 def test_work_all_outliers_is_a_unit_mismatch_without_numbers():
     contracts = [contract(1), contract(2)]
     lines = [wline(1001, 1, "2"), wline(1002, 2, "100000")]

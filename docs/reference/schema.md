@@ -728,3 +728,60 @@ kp_line_rungs                        -- удалена (см. раздел 9)
 **Что значит `releasable`.** Модель пишет признак, не меняя `origin` параметра и `revision` схемы; решение человека (очередь «Можно отпустить» или правка схемы) переводит параметр в `human` и повышает `revision` на 1. Правка схемы без поля `releasable` сохраняет текущий признак, явный `null` снимает его (тоже решение человека); смена роли `main → secondary` обнуляет признак. Параметры модели при пересборке не переносятся, человеческие переносятся вместе с признаком.
 
 **Блокировки и уборка предложений.** Порядок замков: строка семьи `FOR SHARE`, затем версия схемы, затем её активные главные параметры, затем строка предложения или задания `FOR UPDATE`. Решение человека берёт версию `FOR NO KEY UPDATE` (оно повышает `revision`; два решения с `FOR SHARE` встретились бы на этом повышении и замкнулись в цикл). Предложения, ставшие недействующими, убирают `schema_edit`, `update_family`, `set_unit`, `merge_families`, `merge_parameter_values`, `apply_values` (новое значение) и заморозка версии; уборка — гигиена таблицы, защиту держит повторный рендер запроса.
+
+## 11. Составные значения, решения человека и журнал ИИ
+
+Миграция `0025` ([спека упрощения каталога](../superpowers/specs/2026-11-10-catalog-simplify-design.md) §2.3, §2.6, §2.7, §2.9, §2.13); новые таблицы — в `_DOMAIN_TABLES` тестов, литералы CHECK — в паритетном тесте (`test_simplify_schema.py::TestParityWithMigration`). Решения человека записаны **нормами текста, а не id**: id значений меняются с каждой версией схемы, нормы действующих значений — нет.
+
+```
+family_parameter_values              -- составное значение главного параметра (+2 колонки)
+  composite_kind text NULL           # CHECK all|any: «вместе» | «или»
+  composite_key text NULL            # «<вид>:<id,id,…>», id частей по возрастанию
+  # CHECK (composite_kind IS NULL) = (composite_key IS NULL)
+  # частичный UNIQUE (parameter_id, composite_key) WHERE composite_key IS NOT NULL AND merged_into_id IS NULL AND retired_at IS NULL (raw SQL, RAW_SQL_INDEXES)
+
+family_value_parts                   -- части составного: простые действующие значения ТОГО ЖЕ параметра
+  value_id, part_value_id, parameter_id   # PK (value_id, part_value_id)
+  # составные FK (value_id, parameter_id) и (part_value_id, parameter_id) → family_parameter_values(id, parameter_id) ON DELETE CASCADE
+  # CHECK value_id <> part_value_id
+
+composite_vetoes                     -- вето состава: «этот состав не заводить»
+  id PK, family_id → work_families ON DELETE RESTRICT, parameter_name_norm text, kind text (CHECK all|any), value_norm text
+  set_by NOT NULL → users ON DELETE RESTRICT, set_at
+composite_veto_parts                 -- нормы частей вето
+  veto_id → composite_vetoes ON DELETE CASCADE, part_norm text   # PK (veto_id, part_norm)
+
+value_not_duplicates                 -- «не дубль»: этот текст НЕ равен этому значению
+  id PK, family_id → work_families ON DELETE RESTRICT, parameter_name_norm, text_norm, value_norm
+  set_by NOT NULL → users ON DELETE RESTRICT, set_at
+  # UNIQUE (family_id, parameter_name_norm, text_norm, value_norm)
+
+catalog_contexts                     -- пометка «автоделение не трогает» (+2 колонки)
+  auto_split_blocked_at NULL, auto_split_blocked_by NULL → users ON DELETE RESTRICT
+  # CHECK (auto_split_blocked_at IS NULL) = (auto_split_blocked_by IS NULL)
+
+catalog_auto_actions                 -- журнал ИИ: что система сделала сама
+  id PK, kind text NOT NULL          # CHECK split|value_added|composite|equated
+  family_id NOT NULL → work_families ON DELETE RESTRICT, context_id NULL → catalog_contexts ON DELETE RESTRICT
+  parameter_id NULL → family_parameters ON DELETE SET NULL, value_id NULL → family_parameter_values ON DELETE SET NULL
+  # перестройка схемы удаляет параметр и значение, запись журнала остаётся
+  payload jsonb NOT NULL, created_at
+  undone_at NULL, undone_by NULL → users ON DELETE RESTRICT, restored_at NULL
+  # CHECK (undone_at IS NULL) = (undone_by IS NULL)
+
+context_routing_rules.created_by     -- теперь NULL: правило заводит и автоделение (системного пользователя нет)
+
+semantic_jobs                        -- седьмой вид (0025)
+  kind (+ 'auto_split'), split_level int NULL
+  # CHECK предмета: auto_split — предмет-контекст (context_id NOT NULL), как family_suggestion и context_values
+  # CHECK split_level IS NULL OR (kind = 'auto_split' AND split_level >= 0)
+
+kp_line_targets.kind                 -- + 'contractor' («с этим подрядчиком»); CHECK freshest|analog|contractor
+  # CHECK (kind = 'analog') = (analog_position_item_id IS NOT NULL) — прежний, contractor под него не подпадает
+```
+
+**Что значит составное.** Составное значение — строка `family_parameter_values` с `composite_kind`, не меньше двух частей в `family_value_parts`, `origin = 'extension'`; текст и `value_norm` собираются из частей (« + » для `all`, « или » для `any`), одно составное на `(параметр, вид, состав)`. `context_parameter_values` не менялась: составное лежит в `value_id` как обычное значение. Решения человека разрешаются при каждой проверке по нормам действующих значений; слияние значения переписывает нормы решений на норму канонического (спека §2.6, §2.16).
+
+**Запись журнала.** Payload и действия по видам — спека §2.7; `payload.undo_decision` называет решение человека, которое поставила отмена (`{veto_id}`, `{not_duplicate_id}` или `{blocked}`), и ровно его снимает «вернуть автоматику». Строки `catalog_auto_actions` ссылаются на семью с `RESTRICT`: семью с записями журнала не удалить.
+
+**Миграция.** `upgrade` ничего не отказывает. `downgrade` отказывает, ничего не удалив, при восьми видах данных: части составных, составные значения, вето состава, «не дубль», пометка контекста, цель `contractor`, записи журнала, правила маршрутизации без автора; задания `auto_split` — очередь, откат их удаляет. Отклонения реализации от спеки — [§2.17 спеки](../superpowers/specs/2026-11-10-catalog-simplify-design.md).

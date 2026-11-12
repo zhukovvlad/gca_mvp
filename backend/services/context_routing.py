@@ -263,19 +263,53 @@ def chapter_paths(db: Session, chapter_item_ids: Collection[int]) -> dict[int, t
         RoutingError: среди путей найден цикл `chapter_item_id` (раздел
             встретился в собственной цепочке предков дважды).
     """
+    paths_bottom_up: dict[int, list[str]] = {}
+    for row in _chapter_chain_rows(db, chapter_item_ids):
+        paths_bottom_up.setdefault(row.start_id, []).append(row.title)
+
+    # `paths_bottom_up[id]` собран в порядке ВОЗРАСТАНИЯ `depth` (сам раздел,
+    # затем предки к корню) — тот же порядок, что `ChapterContext.chain`.
+    # Путь функции — СВЕРХУ ВНИЗ, поэтому список разворачивается.
+    return {start_id: tuple(reversed(titles)) for start_id, titles in paths_bottom_up.items()}
+
+
+@dataclass(frozen=True)
+class ChapterStep:
+    """Раздел сметы на пути строки: ключ, название и номер в файле (`item_number_in_proposal`)."""
+
+    chapter_item_id: int
+    title: str
+    number: str | None
+
+
+def chapter_steps(db: Session, chapter_item_ids: Collection[int]) -> dict[int, tuple[ChapterStep, ...]]:
+    """Те же пути, что у `chapter_paths`, но шагом служит раздел целиком (ключ, название, номер):
+    ОДИН запрос на множество разделов, порядок сверху вниз (корень сметы первым), сам раздел —
+    последним. Пустой вход — пустой словарь без обращения к БД. Цикл — `RoutingError`, как у
+    `chapter_paths`."""
+    steps_bottom_up: dict[int, list[ChapterStep]] = {}
+    for row in _chapter_chain_rows(db, chapter_item_ids):
+        steps_bottom_up.setdefault(row.start_id, []).append(ChapterStep(row.current_id, row.title, row.number))
+    return {start_id: tuple(reversed(steps)) for start_id, steps in steps_bottom_up.items()}
+
+
+def _chapter_chain_rows(db: Session, chapter_item_ids: Collection[int]):
+    """Строки рекурсивного запроса пути разделов, по возрастанию `depth` внутри каждого
+    `start_id`; найденный цикл — `RoutingError`. Общий запрос `chapter_paths` и `chapter_steps`."""
     ids = list(dict.fromkeys(chapter_item_ids))
     if not ids:
-        return {}
+        return []
 
     rows = db.execute(
         sa.text(
             """
-            WITH RECURSIVE chain(start_id, current_id, next_id, title, depth) AS (
+            WITH RECURSIVE chain(start_id, current_id, next_id, title, number, depth) AS (
                 SELECT
                     pi.id,
                     pi.id,
                     pi.chapter_item_id,
                     pi.job_title_in_proposal,
+                    pi.item_number_in_proposal,
                     0
                 FROM position_items pi
                 WHERE pi.id = ANY(:ids)
@@ -287,32 +321,26 @@ def chapter_paths(db: Session, chapter_item_ids: Collection[int]) -> dict[int, t
                     p.id,
                     p.chapter_item_id,
                     p.job_title_in_proposal,
+                    p.item_number_in_proposal,
                     chain.depth + 1
                 FROM chain
                 JOIN position_items p ON p.id = chain.next_id
                 WHERE chain.next_id IS NOT NULL
             )
             CYCLE current_id SET is_cycle USING visited_path
-            SELECT start_id, current_id, depth, title, is_cycle
+            SELECT start_id, current_id, depth, title, number, is_cycle
             FROM chain
             ORDER BY start_id, depth
             """
         ).bindparams(sa.bindparam("ids", value=ids, type_=sa.ARRAY(sa.BigInteger)))
     ).all()
-
-    paths_bottom_up: dict[int, list[str]] = {}
     for row in rows:
         if row.is_cycle:
             raise RoutingError(
                 f"раздел {row.start_id}: цикл в chapter_item_id — раздел "
                 f"{row.current_id} уже встречался в цепочке"
             )
-        paths_bottom_up.setdefault(row.start_id, []).append(row.title)
-
-    # `paths_bottom_up[id]` собран в порядке ВОЗРАСТАНИЯ `depth` (сам раздел,
-    # затем предки к корню) — тот же порядок, что `ChapterContext.chain`.
-    # Путь функции — СВЕРХУ ВНИЗ, поэтому список разворачивается.
-    return {start_id: tuple(reversed(titles)) for start_id, titles in paths_bottom_up.items()}
+    return rows
 
 
 # ---------------------------------------------------------------------------

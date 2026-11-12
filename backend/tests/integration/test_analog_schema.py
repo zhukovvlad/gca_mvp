@@ -71,6 +71,23 @@ def _migration_0024():
     return module
 
 
+def _migration_0025():
+    path = next(BACKEND_ROOT.glob("alembic/versions/*0025-catalog_simplify.py"))
+    spec = importlib.util.spec_from_file_location("_migration_0025_analog_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+#: Литералы, которые миграция 0025 переписала: текущее значение живёт в ней (вид цели
+#: строки КП и список видов заданий), а 0024 хранит прежнее.
+_REWRITTEN_BY_0025 = frozenset({"CK_KP_TARGET_KIND", "SEMANTIC_JOB_KINDS"})
+
+
+def _owner_of(name: str):
+    return _migration_0025() if name in _REWRITTEN_BY_0025 else _migration_0024()
+
+
 # ---------------------------------------------------------------------------
 #  Помощники
 # ---------------------------------------------------------------------------
@@ -201,10 +218,10 @@ class TestTablesColumnsAndConstraintNames:
     def test_the_closed_sets(self):
         assert ZONES == ("underground", "aboveground", "territory", "whole")
         assert ZONE_SOURCES == ("rule", "model", "human")
-        assert KP_TARGET_KINDS == ("freshest", "analog")
+        assert KP_TARGET_KINDS == ("freshest", "analog", "contractor")
         assert {kind.value for kind in SemanticJobKind} == {
             "family_suggestion", "family_schema", "context_values", "family_discovery",
-            "section_zone", "releasable_params",
+            "section_zone", "releasable_params", "auto_split",
         }
 
 
@@ -549,12 +566,12 @@ class TestParityWithMigration:
         (CK_FAMILY_PARAMETER_RELEASABLE_MAIN, "CK_FAMILY_PARAMETER_RELEASABLE_MAIN",
          "releasable IS NULL OR role = 'main'"),
         (CK_RELEASABLE_CONFIDENCE, "CK_RELEASABLE_CONFIDENCE", "confidence BETWEEN 0 AND 1"),
-        (CK_KP_TARGET_KIND, "CK_KP_TARGET_KIND", "kind IN ('freshest', 'analog')"),
+        (CK_KP_TARGET_KIND, "CK_KP_TARGET_KIND", "kind IN ('freshest', 'analog', 'contractor')"),
         (CK_KP_TARGET_ANALOG, "CK_KP_TARGET_ANALOG",
          "(kind = 'analog') = (analog_position_item_id IS NOT NULL)"),
         (SEMANTIC_JOB_KINDS, "SEMANTIC_JOB_KINDS",
          "'family_suggestion', 'family_schema', 'context_values', 'family_discovery', "
-         "'section_zone', 'releasable_params'"),
+         "'section_zone', 'releasable_params', 'auto_split'"),
         (CK_SEMANTIC_JOBS_SCHEMA_SUBJECT, "CK_SEMANTIC_JOBS_SCHEMA_SUBJECT",
          "(kind IN ('family_schema', 'releasable_params')) = "
          "(context_id IS NULL AND family_id IS NOT NULL)"),
@@ -571,7 +588,7 @@ class TestParityWithMigration:
     def test_check_expression_matches_migration_and_independent_literal(
         self, model_expr, name, independent
     ):
-        assert model_expr == getattr(_migration_0024(), name)
+        assert model_expr == getattr(_owner_of(name), name)
         assert model_expr == independent
 
     def test_the_closed_sets_match_the_check_literals(self):
@@ -609,9 +626,8 @@ class TestParityWithMigration:
             for c in Base.metadata.tables[table].constraints
             if isinstance(c, sa.CheckConstraint)
         }
-        migration = _migration_0024()
         expected = {
-            name: getattr(migration, constant)
+            name: getattr(_owner_of(constant), constant)
             for name, constant in self._MODEL_CHECKS[table].items()
         }
         assert declared == expected

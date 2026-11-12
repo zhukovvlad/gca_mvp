@@ -1,7 +1,8 @@
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState, type ReactNode } from "react";
 import { createColumnHelper, tableFeatures, useTable } from "@tanstack/react-table";
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 import type { Decimal, OurPriceLine } from "@/types/domain";
@@ -28,6 +29,7 @@ import {
   RUNG_MANUAL_TAG,
   SECONDARY_MARK,
   TARGET_MARK,
+  TREE_RESTORE_LABEL,
   variantCaption,
   workRungCaption,
 } from "./ourPriceCopy";
@@ -35,8 +37,21 @@ import { LineStateText } from "./LineStateText";
 import { SortHead } from "./SortHead";
 import { ariaSort, compareNullable, nextSort, type SortDir, type SortState } from "./sorting";
 
+/** Строка дерева: уровень (рисует вызывающий на всю ширину таблицы) или строка КП на глубине `depth`. */
+export type LayoutEntry =
+  | { kind: "group"; key: string; render: (colSpan: number) => ReactNode }
+  | { kind: "line"; line: OurPriceLine; depth: number };
+
+/** Раскладка таблицы деревом; пока пользователь не выбрал столбец сортировки, строки идут по ней. */
+export interface LineLayout {
+  entries: LayoutEntry[];
+  /** Путь из статей и разделов под названием строки (`position_item_id` → текст) в плоском, отсортированном списке. */
+  paths: ReadonlyMap<number, string>;
+}
+
 export interface OfferLinesTableProps {
   lines: OurPriceLine[];
+  layout?: LineLayout;
   vat: VatView;
   /** Название класса объекта: подпись ступени «… · класс · N дог.». */
   rateClass: string;
@@ -109,6 +124,11 @@ const helper = createColumnHelper<typeof features, OurPriceLine>();
 
 const DASH = "—";
 
+const DEFAULT_SORT: SortState<SortKey> = { key: "to_ours", dir: "desc" };
+
+/** Отступ строки дерева на ступень глубины, rem. */
+export const INDENT_REM = 1.125;
+
 /** Желаемые ширины числовых колонок (раскладка автоматическая: вилка расширяется по тексту); колонка работы берёт остаток. */
 const COLUMN_WIDTH: Record<string, string | undefined> = {
   unit: "w-16",
@@ -125,8 +145,13 @@ const COLUMN_WIDTH: Record<string, string | undefined> = {
  * По умолчанию строки идут по модулю разницы, сильнее всего расходящиеся — сверху;
  * числа сравниваются десятичными строками, пустые — в конце.
  */
-export function OfferLinesTable({ lines, vat, rateClass, canResolve = false, onOpenLine }: OfferLinesTableProps) {
-  const [sort, setSort] = useState<SortState<SortKey>>({ key: "to_ours", dir: "desc" });
+export function OfferLinesTable({ lines, layout, vat, rateClass, canResolve = false, onOpenLine }: OfferLinesTableProps) {
+  const [sort, setSort] = useState<SortState<SortKey>>(DEFAULT_SORT);
+  // Столбец выбрал пользователь: дерево выпрямляется в список. До этого сортировка по умолчанию
+  // упорядочивает строки внутри каждого уровня.
+  const [userSorted, setUserSorted] = useState(false);
+  const paths = layout !== undefined && userSorted ? layout.paths : null;
+  const treeMode = layout !== undefined && !userSorted;
 
   const sorted = useMemo(
     () => [...lines].sort((a, b) => compareLines(a, b, sort, vat)),
@@ -146,6 +171,14 @@ export function OfferLinesTable({ lines, vat, rateClass, canResolve = false, onO
               <button type="button" className="line-clamp-3 text-left text-fg" title={line.title}>
                 {line.title}
               </button>
+              {paths?.has(line.position_item_id) && (
+                <span
+                  data-testid={`path-${line.position_item_id}`}
+                  className="block text-[0.6875rem] leading-snug text-fg-secondary"
+                >
+                  {paths.get(line.position_item_id)}
+                </span>
+              )}
               {variant !== "" && (
                 <span className="block text-[0.6875rem] leading-snug text-fg-secondary">
                   {variant}
@@ -294,11 +327,42 @@ export function OfferLinesTable({ lines, vat, rateClass, canResolve = false, onO
         },
       }),
     ];
-  }, [vat, rateClass, canResolve]);
+  }, [vat, rateClass, canResolve, paths]);
 
   const table = useTable({ features, columns, data: sorted });
 
-  if (lines.length === 0) {
+  // Дерево: строки внутри уровня — в порядке общей сортировки; порядок самих уровней задаёт раскладка.
+  const rows = table.getRowModel().rows;
+  type BodyRow =
+    | { kind: "group"; key: string; render: (colSpan: number) => ReactNode }
+    | { kind: "line"; row: (typeof rows)[number]; depth: number };
+  const bodyRows: BodyRow[] = [];
+  if (!treeMode || layout === undefined) {
+    for (const row of rows) bodyRows.push({ kind: "line", row, depth: 0 });
+  } else {
+    const rowById = new Map(rows.map((row) => [row.original.position_item_id, row]));
+    const rank = new Map(rows.map((row, index) => [row.original.position_item_id, index]));
+    let run: Array<{ id: number; depth: number }> = [];
+    const flush = () => {
+      run.sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
+      for (const { id, depth } of run) {
+        const row = rowById.get(id);
+        if (row !== undefined) bodyRows.push({ kind: "line", row, depth });
+      }
+      run = [];
+    };
+    for (const entry of layout.entries) {
+      if (entry.kind === "line") {
+        run.push({ id: entry.line.position_item_id, depth: entry.depth });
+      } else {
+        flush();
+        bodyRows.push(entry);
+      }
+    }
+    flush();
+  }
+
+  if (bodyRows.length === 0) {
     return (
       <p data-testid="lines-empty" className="px-2 py-3 text-sm text-fg-secondary">
         {EMPTY_LINES_LABEL}
@@ -307,7 +371,8 @@ export function OfferLinesTable({ lines, vat, rateClass, canResolve = false, onO
   }
 
   const numeric = new Set(["quantity", "kp", "ours", "to_ours"]);
-  return (
+  const columnCount = table.getAllColumns().length;
+  const body = (
     <Table>
       <TableHeader>
         {table.getHeaderGroups().map((group) => (
@@ -322,7 +387,10 @@ export function OfferLinesTable({ lines, vat, rateClass, canResolve = false, onO
                   label={String(header.column.columnDef.header)}
                   sortKey={header.column.id as SortKey}
                   sort={sort}
-                  onSort={(key) => setSort((prev) => nextSort(prev, key))}
+                  onSort={(key) => {
+                    setSort((prev) => nextSort(prev, key));
+                    setUserSorted(true);
+                  }}
                   align={numeric.has(header.column.id) ? "right" : "left"}
                 />
               </TableHead>
@@ -331,28 +399,58 @@ export function OfferLinesTable({ lines, vat, rateClass, canResolve = false, onO
         ))}
       </TableHeader>
       <TableBody>
-        {table.getRowModel().rows.map((row) => (
-          <TableRow
-            key={row.id}
-            data-testid={`line-${row.original.position_item_id}`}
-            className="cursor-pointer"
-            onClick={() => onOpenLine(row.original.position_item_id)}
-          >
-            {row.getAllCells().map((cell) => (
-              <TableCell
-                key={cell.id}
-                className={cn(
-                  "align-top",
-                  numeric.has(cell.column.id) && "text-right",
-                  cell.column.id === "work" && "whitespace-normal"
-                )}
-              >
-                <table.FlexRender cell={cell} />
-              </TableCell>
-            ))}
-          </TableRow>
-        ))}
+        {bodyRows.map((entry) => {
+          if (entry.kind === "group") return <Fragment key={entry.key}>{entry.render(columnCount)}</Fragment>;
+          const { row, depth } = entry;
+          const noPrice = row.original.state === "no_price";
+          return (
+            <TableRow
+              key={row.id}
+              data-testid={`line-${row.original.position_item_id}`}
+              data-no-price={noPrice ? "true" : undefined}
+              className={cn("cursor-pointer", noPrice && "bg-danger-soft text-danger-text hover:bg-danger-soft")}
+              onClick={() => onOpenLine(row.original.position_item_id)}
+            >
+              {row.getAllCells().map((cell) => (
+                <TableCell
+                  key={cell.id}
+                  style={
+                    cell.column.id === "work" && depth > 0 ? { paddingLeft: `${depth * INDENT_REM + 0.5}rem` } : undefined
+                  }
+                  className={cn(
+                    "align-top",
+                    numeric.has(cell.column.id) && "text-right",
+                    cell.column.id === "work" && "whitespace-normal"
+                  )}
+                >
+                  <table.FlexRender cell={cell} />
+                </TableCell>
+              ))}
+            </TableRow>
+          );
+        })}
       </TableBody>
     </Table>
+  );
+
+  if (layout === undefined || !userSorted) return body;
+  return (
+    <>
+      <div className="px-2 py-1">
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          data-testid="tree-restore"
+          onClick={() => {
+            setSort(DEFAULT_SORT);
+            setUserSorted(false);
+          }}
+        >
+          {TREE_RESTORE_LABEL}
+        </Button>
+      </div>
+      {body}
+    </>
   );
 }

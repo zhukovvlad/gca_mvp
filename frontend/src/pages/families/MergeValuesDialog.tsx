@@ -30,6 +30,16 @@ interface MergeValuesDialogProps {
 }
 
 /**
+ * Подходит ли `target` целью слияния для `source`: простое сливается с простым, составное — с
+ * составным того же вида (иначе сервер откажет, спека упрощения каталога §2.3, место 2).
+ */
+function isMergeTarget(source: FamilySchemaValue | undefined, target: FamilySchemaValue): boolean {
+  if (source === undefined) return true;
+  if (source.composite === null || target.composite === null) return source.composite === target.composite;
+  return source.composite.kind === target.composite.kind;
+}
+
+/**
  * «Слить значения…»: источник и цель — значения ОДНОГО параметра (спека
  * `2026-10-02-catalog-variants-design.md` §2.8). Варианты источника переезжают к цели,
  * само значение остаётся синонимом цели.
@@ -65,6 +75,7 @@ function MergeValuesForm({
 
   const parameter = mergeable.find((candidate) => candidate.id === parameterId) ?? null;
   const values = parameter ? liveValues(parameter.values) : [];
+  const source = values.find((value) => value.id === sourceId);
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -126,7 +137,7 @@ function MergeValuesForm({
           <Label htmlFor="merge-values-target">Цель</Label>
           <EntitySelect
             id="merge-values-target"
-            items={values.filter((v) => v.id !== sourceId)}
+            items={values.filter((v) => v.id !== sourceId && isMergeTarget(source, v))}
             value={targetId}
             onChange={(v) => setTargetId(v as number | null)}
             getLabel={(v) => v.value}

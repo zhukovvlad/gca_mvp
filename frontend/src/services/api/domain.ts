@@ -18,6 +18,10 @@ import type {
   ContextCardData,
   ContextsPage,
   ContextsParams,
+  JournalItem,
+  JournalItemDetail,
+  JournalPage,
+  JournalParams,
   ConfirmSuggestionsResult,
   ActivateDiscoveryInput,
   ActivationOutcome,
@@ -509,7 +513,7 @@ export const tendersApi = {
     roundId: number,
     offerId: number,
     positionItemId: number,
-    body: { kind: "freshest" } | { kind: "analog"; analog_id: number },
+    body: { kind: "freshest" | "contractor" } | { kind: "analog"; analog_id: number },
     seriesId: number | null
   ): Promise<void> =>
     api
@@ -1004,6 +1008,22 @@ export const semanticApi = {
     api
       .post<MergeValuesResult>(`/v1/semantic/families/${familyId}/schema/values/merge`, input)
       .then((r) => r.data),
+
+  /** «Журнал ИИ» (спека упрощения каталога §2.7): лента, запись с подробностями и три действия. */
+  listJournal: (params?: JournalParams): Promise<JournalPage> =>
+    api.get<JournalPage>("/v1/semantic/journal", { params }).then((r) => r.data),
+
+  journalItem: (id: number): Promise<JournalItemDetail> =>
+    api.get<JournalItemDetail>(`/v1/semantic/journal/${id}`).then((r) => r.data),
+
+  undoJournal: (id: number): Promise<JournalItem> =>
+    api.post<JournalItem>(`/v1/semantic/journal/${id}/undo`).then((r) => r.data),
+
+  resplitJournal: (id: number, level: number): Promise<JournalItem> =>
+    api.post<JournalItem>(`/v1/semantic/journal/${id}/resplit`, { level }).then((r) => r.data),
+
+  restoreJournal: (id: number): Promise<JournalItem> =>
+    api.post<JournalItem>(`/v1/semantic/journal/${id}/restore-auto`).then((r) => r.data),
 
   resumeWorker: (): Promise<{ claim_paused: boolean }> =>
     api.post<{ claim_paused: boolean }>("/v1/semantic/worker/resume").then((r) => r.data),

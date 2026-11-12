@@ -274,6 +274,16 @@ export function formatDate(iso: string | null | undefined): string {
   });
 }
 
+/** Дата и время: `ДД.ММ.ГГГГ ЧЧ:ММ` в часовом поясе браузера; нет значения или не дата — `—`. */
+export function formatDateTime(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  const date = d.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric" });
+  const time = d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+  return `${date} ${time}`;
+}
+
 export function formatRelative(iso: string | null | undefined): string {
   if (!iso) return "—";
   const d = new Date(iso);

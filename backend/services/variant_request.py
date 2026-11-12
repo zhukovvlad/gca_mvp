@@ -65,7 +65,7 @@ from services.variant_answer import (
 #: `semantic_request.PROMPT_VERSION`); смена текста промпта сопровождается
 #: инкрементом.
 SCHEMA_PROMPT_VERSION = 4
-VALUES_PROMPT_VERSION = 1
+VALUES_PROMPT_VERSION = 2
 
 #: Сколько путей разделов уходит модели вместе с наименованием (спека §2.3).
 MAX_PATHS: Final = 10
@@ -111,13 +111,16 @@ VALUES_PROMPT = """Ты помогаешь вести каталог строи�
 - место (секция, корпус, этаж, урбан-блок, помещение как место) значением параметра не является;
 - если значение есть в закреплённом списке — "kind": "value" и "value" ровно как в списке;
 - если значение явно читается, но в списке его нет — "kind": "new" и "value" — новое значение;
-- если разные пути указывают на РАЗНЫЕ значения — "kind": "conflict", "value": null;
+- если в строке названо НЕСКОЛЬКО значений параметра одной работой (работа делается сразу по всем) — "kind": "several", "combine": "all", "value": null, а "values" — эти значения (от двух), каждое из списка или новое; "source" обязателен ("name" или "path"), как у "value" и "new";
+- если в строке названо несколько значений, из которых подходит любое ОДНО (союз «или», «либо», «/» между вариантами) — "kind": "several", "combine": "any", "value": null, а "values" — эти значения (от двух); "source" обязателен ("name" или "path"), как у "value" и "new";
+- "conflict" — только когда разные строки контекста (пути разделов) дают РАЗНЫЕ значения: "kind": "conflict", "value": null. Несколько значений в одной строке — это "several", а не "conflict";
 - если значения нет ни в наименовании, ни в путях — "kind": "none", "value": null. Не догадывайся по смыслу;
 - "source" — откуда прочитано значение: "name" (наименование) или "path" (путь разделов); для "kind" "conflict" и "none" — null;
+- "values" и "combine" заполняются только при "kind": "several"; в остальных случаях они null;
 - пустое значение недопустимо: если значения нет, это "kind": "none", а не пустая строка.
 
 Ответ — только JSON без пояснений:
-{"values": [{"ordinal": <номер параметра>, "kind": "value" | "new" | "conflict" | "none", "value": <строка или null>, "source": "name" | "path" | null}]}
+{"values": [{"ordinal": <номер параметра>, "kind": "value" | "new" | "conflict" | "none" | "several", "value": <строка или null>, "source": "name" | "path" | null, "values": [<строка>, ...] или null, "combine": "all" | "any" | null}]}
 По одному объекту на каждый параметр схемы."""
 
 
@@ -296,6 +299,7 @@ def load_human_parameters(
             FamilyParameterValue.parameter_id.in_(list(values_of)),
             FamilyParameterValue.merged_into_id.is_(None),
             FamilyParameterValue.retired_at.is_(None),
+            FamilyParameterValue.composite_kind.is_(None),
         )
         .order_by(FamilyParameterValue.parameter_id, FamilyParameterValue.id)
     ).all():
@@ -333,6 +337,7 @@ def load_schema_parameters(
                 FamilyParameterValue.parameter_id.in_(parameter_ids),
                 FamilyParameterValue.merged_into_id.is_(None),
                 FamilyParameterValue.retired_at.is_(None),
+                FamilyParameterValue.composite_kind.is_(None),
             )
             .order_by(FamilyParameterValue.parameter_id, FamilyParameterValue.id)
         ).all():

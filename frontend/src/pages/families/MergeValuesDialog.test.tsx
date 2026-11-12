@@ -295,3 +295,47 @@ describe("MergeValuesDialog: подстановка и диапазоны (сп�
     expect(document.body.textContent).not.toContain("merge_value_retired");
   });
 });
+
+describe("MergeValuesDialog: составные значения", () => {
+  function withComposite() {
+    const material = handlerState.familySchemas[SCHEMA_FAMILY_ID].parameters[0];
+    material.values.push(
+      schemaValue(1006, "профнастил + металлочерепица", "extension", {
+        composite: { kind: "all", part_ids: [1001, 1002] },
+      }),
+      schemaValue(1007, "профнастил или металлочерепица", "extension", {
+        composite: { kind: "any", part_ids: [1001, 1002] },
+      })
+    );
+  }
+
+  it("целью простого значения составное не предлагается: сервер отказал бы", async () => {
+    const user = userEvent.setup();
+    withComposite();
+    renderDialog();
+    const dialog = await opened();
+
+    await pick(user, dialog, "Параметр", "Материал");
+    await pick(user, dialog, "Источник", "профнастил");
+    await user.click(within(dialog).getByRole("combobox", { name: "Цель" }));
+
+    expect(await screen.findByRole("option", { name: "металлочерепица" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "профнастил + металлочерепица" })).not.toBeInTheDocument();
+  });
+
+  it("целью составного предлагаются только составные того же вида", async () => {
+    const user = userEvent.setup();
+    withComposite();
+    renderDialog();
+    const dialog = await opened();
+
+    await pick(user, dialog, "Параметр", "Материал");
+    await pick(user, dialog, "Источник", "профнастил + металлочерепица");
+    await user.click(within(dialog).getByRole("combobox", { name: "Цель" }));
+
+    expect(screen.queryByRole("option", { name: "профнастил" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "профнастил или металлочерепица" })).not.toBeInTheDocument();
+    // Составных того же вида больше нет: выбирать не из чего.
+    expect(screen.queryAllByRole("option")).toHaveLength(0);
+  });
+});

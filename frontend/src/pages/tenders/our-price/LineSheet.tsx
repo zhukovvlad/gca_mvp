@@ -7,11 +7,14 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
-import { kpDecisionMutationKey, useOurPriceLine, usePutTarget } from "@/services/queries";
+import { kpDecisionMutationKey, useDeleteTarget, useOurPriceLine, usePutTarget } from "@/services/queries";
 import type { Decimal, OurPriceLine, OurPriceLineView, RungLevel, RungScope } from "@/types/domain";
 
 import { AnalogsTable } from "./AnalogsTable";
-import { FigureCards } from "./FigureCards";
+import { LineWhere } from "./LineWhere";
+import { PartsReference } from "./PartsReference";
+import { TargetCards } from "./TargetCards";
+import { targetAnalogId, type TargetStrategy } from "./targetSelection";
 
 import { comparedKpPrice, comparedUnit, formatMoney, formatSigned, formatUnitPrice, pick, type VatView } from "./money";
 import {
@@ -20,6 +23,7 @@ import {
   contractNumber,
   contractsShort,
   CONTRACT_LOWER_BOUND,
+  COMPOSITE_NO_TARGET,
   CONTRACT_WITH_CONTRACTOR,
   GROUP_OUTSIDE,
   GROUP_THIS_LINE,
@@ -105,7 +109,7 @@ export function LineSheet({ positionItemId, onClose, ...rest }: LineSheetProps) 
       <SheetContent
         data-testid="line-sheet"
         side="right"
-        className="w-full overflow-y-auto data-[side=right]:sm:max-w-lg"
+        className="w-full overflow-y-auto data-[side=right]:sm:max-w-[680px]"
       >
         {positionItemId !== null && <LineSheetBody key={positionItemId} positionItemId={positionItemId} {...rest} />}
       </SheetContent>
@@ -225,7 +229,22 @@ function PanelContent({
         </p>
       )}
       <UnitWarn line={line} vat={vat} />
+      {((line.article ?? null) !== null || line.chapter_path.length > 0) && (
+        <Section title={SHEET_SECTION.where} testId="sheet-where">
+          <LineWhere article={line.article} chapterPath={line.chapter_path} />
+        </Section>
+      )}
       <Prices line={line} vat={vat} vatRate={vatRate} />
+      {line.kind === "work" && line.no_history_reason === "composite" && (
+        <Section title={SHEET_SECTION.comparison} testId="sheet-comparison">
+          <p
+            data-testid="composite-no-target"
+            className="rounded-lg border border-border bg-surface-sunken px-3 py-2 text-sm"
+          >
+            {COMPOSITE_NO_TARGET(line.composite_parameter?.name ?? null)}
+          </p>
+        </Section>
+      )}
       {line.kind === "work" && line.work_rung !== null && (
         <WorkComparison
           tenderId={tenderId}
@@ -271,6 +290,11 @@ function PanelContent({
           onSaved={() => onRung(null)}
         />
       )}
+      {data.parts_reference.length > 0 && (
+        <Section title={SHEET_SECTION.parts} testId="sheet-parts">
+          <PartsReference groups={data.parts_reference} vat={vat} unit={line.unit} />
+        </Section>
+      )}
       {data.group_lines.length > 0 && <Family line={line} groupLines={data.group_lines} vat={vat} />}
       {data.contracts.length > 0 && <Contracts contracts={data.contracts} vat={vat} />}
       {data.vat_dropped.length > 0 && (
@@ -295,8 +319,6 @@ function PanelContent({
           canEdit={canEdit}
           vatView={vat}
           vatRate={vatRate}
-          seriesId={seriesId}
-          analogs={data.analogs}
         />
       </Section>
     </div>
@@ -386,11 +408,18 @@ interface WorkComparisonProps {
  */
 function WorkComparison({ tenderId, roundId, offerId, seriesId, line, data, vat, canEdit }: WorkComparisonProps) {
   const put = usePutTarget(tenderId, roundId, offerId, seriesId);
+  const del = useDeleteTarget(tenderId, roundId, offerId);
   const rungNo = line.work_rung;
   if (rungNo === null) return null;
   const contracts = new Set(data.analogs.map((a) => a.contract_id)).size;
   const choice = line.choice;
-  const targetAnalogId = choice !== null && choice.active && choice.kind === "analog" ? choice.analog_id : null;
+  const pinnedAnalogId = choice !== null && choice.active && choice.kind === "analog" ? choice.analog_id : null;
+  const canChoose = canEdit && line.state === "comparable";
+  // Карточка шлёт вид стратегии, а не аналог: «самая низкая» — снять выбор, остальные — PUT с видом.
+  const choose = (strategy: TargetStrategy) => {
+    if (strategy === "lowest") del.mutate({ positionItemId: line.position_item_id });
+    else put.mutate({ positionItemId: line.position_item_id, kind: strategy });
+  };
   return (
     <Section title={SHEET_SECTION.comparison} testId="sheet-comparison">
       <div className="flex flex-wrap items-center gap-1.5 text-sm">
@@ -405,14 +434,23 @@ function WorkComparison({ tenderId, roundId, offerId, seriesId, line, data, vat,
           )}
         </span>
       </div>
-      <FigureCards line={line} analogs={data.analogs} vat={vat} />
+      <TargetCards
+        line={line}
+        analogs={data.analogs}
+        vat={vat}
+        canEdit={canEdit}
+        busy={put.isPending || del.isPending}
+        onChoose={choose}
+      />
       <h4 className="pt-1 text-xs font-semibold uppercase tracking-wide text-fg-secondary">{SHEET_SECTION.analogs}</h4>
       <AnalogsTable
         analogs={data.analogs}
         vat={vat}
-        canChoose={canEdit && line.state === "comparable"}
-        targetAnalogId={targetAnalogId}
-        busy={put.isPending}
+        canChoose={canChoose}
+        targetAnalogId={targetAnalogId(line)}
+        pinnedAnalogId={pinnedAnalogId}
+        contractorAnalogId={line.contractor?.analog_id ?? null}
+        busy={put.isPending || del.isPending}
         onChoose={(analogId) => put.mutate({ positionItemId: line.position_item_id, kind: "analog", analogId })}
       />
     </Section>

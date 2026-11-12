@@ -47,6 +47,8 @@ LINE_KEYS = {
     "context_id",
     "unit_id",
     "article_id",
+    "category_id",
+    "chapter_path",
     "title",
     "unit",
     "quantity",
@@ -66,12 +68,16 @@ LINE_KEYS = {
     "section_chain_id",
     "lowest",
     "freshest",
+    "contractor",
+    "composite_parameter",
     "range",
     "position",
     "to_lowest",
     "to_freshest",
     "to_lowest_unit",
     "to_freshest_unit",
+    "to_contractor",
+    "to_contractor_unit",
     "over_lowest",
     "over_freshest",
     "below",
@@ -85,7 +91,7 @@ LINE_KEYS = {
     "comment_kind",
     "manual_rung",
 }
-PANEL_KEYS = {"line", "group_lines", "contracts", "analogs", "vat_dropped", "comment"}
+PANEL_KEYS = {"line", "group_lines", "contracts", "analogs", "parts_reference", "vat_dropped", "comment"}
 TOLERANCE = D("1e-20")
 
 
@@ -132,7 +138,7 @@ def _pair(pair: dict | None) -> tuple[Decimal, Decimal | None] | None:
 
 def _breakdown_part(line: dict) -> dict:
     """Строка панели без `file_ours`: это поле есть только у панели, строки разбора его не несут."""
-    return {key: value for key, value in line.items() if key != "file_ours"}
+    return {key: value for key, value in line.items() if key not in {"file_ours", "article"}}
 
 
 def _line_of(body: dict, item) -> dict:
@@ -338,7 +344,18 @@ class TestOfferHeader:
         body = _ok(member_client, stage.tender, rnd, part)
         round_body = _round_ok(member_client, stage.tender, rnd)
 
-        assert set(body) == {"tender", "round", "progress", "history", "participants", "articles", "total", "lines"}
+        assert set(body) == {
+            "tender",
+            "round",
+            "progress",
+            "history",
+            "participants",
+            "articles",
+            "total",
+            "categories",
+            "node_totals",
+            "lines",
+        }
         assert body["tender"] == round_body["tender"]
         assert body["round"] == round_body["round"]
         assert body["history"]["contracts"] == round_body["history"]["contracts"]
@@ -1182,6 +1199,8 @@ class TestLinePanelAuto:
             "contractor_id",
             "contractor_title",
             "section_titles",
+            "article",
+            "chapter_path",
             "title",
             "unit",
             "price",

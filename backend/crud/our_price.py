@@ -32,11 +32,15 @@ from crud.kp_decisions import (
 from crud.our_price_inflation import plan_history_inflation, round_target_month
 from crud.our_price_load import (
     ArticleMeta,
+    CategoryMeta,
     KpLineRow,
     category_roots,
     category_rows,
+    category_tree,
     kp_vat_bases,
+    load_additional_works,
     load_analog_details,
+    load_composites,
     load_history,
     load_kp_lines,
     load_work_history,
@@ -55,7 +59,8 @@ from models import (
 )
 from money.inflation import YearMonth, adjust_amount
 from money.price import is_price
-from services.analog_ladder import FamilyLadderInfo, Figure, WorkHistory
+from services.analog_ladder import FamilyLadderInfo, Figure, WorkHistory, parts_reference
+from services.context_routing import ChapterStep, chapter_steps
 from services.excel import iso_date_to_ru
 from services.kp_comment import CommentInputs, InflationLabel, target_net, template_text
 from services.kp_file import FileContext, KpSourceLine, line_comment_inputs
@@ -75,17 +80,21 @@ from services.our_price import (
     SavedTarget,
     available_rungs,
     evaluate_offer,
+    kp_work_of,
     lines_totals,
     offer_totals,
     resolve_target,
 )
 from services.our_price_money import (
     UNALLOCATED,
+    NodeAmount,
+    NodeLine,
     article_net,
     estimate_net_total,
     history_shown_rate,
     money_pair,
     net_by_root,
+    node_totals,
     pct_to_median,
     per_sqm,
 )
@@ -741,7 +750,54 @@ def _waiting_admin(line: KpLine, result: LineResult | None) -> bool:
     )
 
 
-def _line_view(row: KpLineRow, result: LineResult, rate: Decimal | None, history: HistoryIndex) -> dict:
+def _composite_parameter(line: KpLine, families: Mapping[int, FamilyLadderInfo]) -> dict | None:
+    """Первый по порядку главный параметр строки с составным значением: `{id, name}`; иначе `None`.
+    Берётся из форм, загруженных вместе с вариантом, запросов не делает."""
+    info = families.get(line.key.family_id) if line.key is not None else None
+    if info is None:
+        return None
+    for parameter_id in info.main_parameter_ids:
+        if line.forms.get(parameter_id, "simple") != "simple" and parameter_id not in line.conflicted:
+            return {"id": parameter_id, "name": info.names[parameter_id]}
+    return None
+
+
+def _path_view(steps: Sequence[ChapterStep]) -> list[dict]:
+    """Путь по разделам сметы от её корня: ключ, название, номер раздела в файле."""
+    return [{"chapter_item_id": s.chapter_item_id, "title": s.title, "number": s.number} for s in steps]
+
+
+def _category_chain(tree: Mapping[int, CategoryMeta], category_id: int) -> list[CategoryMeta]:
+    """Статьи от корня до `category_id` включительно."""
+    chain = [tree[category_id]]
+    while chain[-1].parent_id is not None:
+        chain.append(tree[chain[-1].parent_id])
+    chain.reverse()
+    return chain
+
+
+def _article_ref(tree: Mapping[int, CategoryMeta], category_id: int | None) -> dict | None:
+    """Статья со своей цепочкой от корня (`chain` кончается самой статьёй); без статьи — `None`."""
+    if category_id is None:
+        return None
+    chain = _category_chain(tree, category_id)
+    node = chain[-1]
+    return {
+        "id": node.id,
+        "code": node.code,
+        "title": node.title,
+        "chain": [{"id": step.id, "code": step.code, "title": step.title} for step in chain],
+    }
+
+
+def _line_view(
+    row: KpLineRow,
+    result: LineResult,
+    rate: Decimal | None,
+    history: HistoryIndex,
+    families: Mapping[int, FamilyLadderInfo],
+    steps: Mapping[int, tuple[ChapterStep, ...]],
+) -> dict:
     """Строка КП: у работы — на лестнице аналогов, у системы — на ступени, которую выбрало ядро.
 
     Имена ядра 4а (`ours`, `to_ours`, `bargain`) на границе ответа названы по смыслу:
@@ -767,6 +823,8 @@ def _line_view(row: KpLineRow, result: LineResult, rate: Decimal | None, history
         "context_id": row.context_id,
         "unit_id": row.unit_id,
         "article_id": row.article_root_id,
+        "category_id": row.category_id,
+        "chapter_path": _path_view(steps.get(row.chapter_item_id, ())),
         "title": row.title,
         "unit": row.unit,
         "quantity": row.quantity,
@@ -810,17 +868,21 @@ def _line_view(row: KpLineRow, result: LineResult, rate: Decimal | None, history
         "section_chain_id": None if line.is_system else line.section_chain_id,
         "lowest": _lowest_view(result, rate),
         "freshest": _freshest_view(result.freshest, history, rate),
+        "contractor": _freshest_view(None if ladder is None else ladder.contractor, history, rate),
         "range": _range_view(result.range, rate),
         "position": result.position,
         "to_lowest": money_pair(result.to_ours, rate, unit=False),
         "to_freshest": money_pair(result.to_freshest, rate, unit=False),
         "to_lowest_unit": money_pair(result.to_ours_unit, rate, unit=True),
         "to_freshest_unit": money_pair(result.to_freshest_unit, rate, unit=True),
+        "to_contractor": money_pair(result.to_contractor, rate, unit=False),
+        "to_contractor_unit": money_pair(result.to_contractor_unit, rate, unit=True),
         "over_lowest": money_pair(result.bargain, rate, unit=False),
         "over_freshest": money_pair(over_freshest, rate, unit=False),
         "below": money_pair(result.below, rate, unit=False),
         "analogs_count": len(ladder.analogs) if ladder is not None else 0,
         "no_history_reason": ladder.no_history_reason if ladder is not None else None,
+        "composite_parameter": _composite_parameter(line, families),
         "group": group,
         "unit_mismatch": _mismatch_view(result),
     }
@@ -957,12 +1019,18 @@ def _decision_fields(
     }
 
 
-def _line_with_decisions(scene: _Scene, participant: _Participant, row: KpLineRow, result: LineResult) -> dict:
+def _line_with_decisions(
+    scene: _Scene,
+    participant: _Participant,
+    row: KpLineRow,
+    result: LineResult,
+    steps: Mapping[int, tuple[ChapterStep, ...]],
+) -> dict:
     # Строке разбора нужен только вид комментария, а не его текст, поэтому
     # единицу КП не читаем: вид от неё не зависит.
     template = _template_text(scene, participant, row, result, "")
     return {
-        **_line_view(row, result, participant.base, scene.index),
+        **_line_view(row, result, participant.base, scene.index, scene.families, steps),
         **_decision_fields(scene, participant, row, result, template),
     }
 
@@ -985,6 +1053,9 @@ def build_offer_view(
     rate = participant.base
     rows = scene.kp_lines[participant.estimate_id]
     view, kp_value = _participant_view(scene, participant, evaluation)
+    steps = chapter_steps(db, {row.chapter_item_id for row in rows if row.chapter_item_id is not None})
+    _, tree = category_tree(db)
+    extra = load_additional_works(db, [participant.estimate_id])[participant.estimate_id]
 
     def flat_cell(root: int | None, *, is_total: bool) -> dict:
         fork = scene.total_fork if is_total else _fork(scene.history.by_root.get(root, {}), scene.class_contracts)
@@ -1010,13 +1081,71 @@ def build_offer_view(
         "participants": [view],
         "articles": articles,
         "total": {**_TOTAL_HEAD, **flat_cell(None, is_total=True)},
+        "categories": _categories_view(tree, rows, extra),
+        "node_totals": _node_totals_view(tree, rows, evaluation, steps, rate, extra),
         "lines": [
-            _line_with_decisions(scene, participant, row, evaluation.lines[row.line.position_item_id]) for row in rows
+            _line_with_decisions(scene, participant, row, evaluation.lines[row.line.position_item_id], steps)
+            for row in rows
         ],
     }
     if scene.plan is not None:
         result["inflation"] = _inflation_view(scene.plan)
     return result
+
+
+def _categories_view(
+    tree: Mapping[int, CategoryMeta], rows: Sequence[KpLineRow], extra: Sequence[tuple[int | None, Decimal]]
+) -> list[dict]:
+    """Статьи на путях строк и дополнительных работ, от корня до своей статьи, без лишних; по номеру."""
+    own = [row.category_id for row in rows] + [category_id for category_id, _ in extra]
+    on_paths = {node.id for category_id in own if category_id is not None for node in _category_chain(tree, category_id)}
+    return [
+        {
+            "id": node.id,
+            "parent_id": node.parent_id,
+            "code": node.code,
+            "title": node.title,
+            "sort_order": node.sort_order,
+        }
+        for node in sorted((tree[category_id] for category_id in on_paths), key=lambda n: n.id)
+    ]
+
+
+def _node_totals_view(
+    tree: Mapping[int, CategoryMeta],
+    rows: Sequence[KpLineRow],
+    evaluation: OfferEvaluation,
+    steps: Mapping[int, tuple[ChapterStep, ...]],
+    base: Decimal | None,
+    extra: Sequence[tuple[int | None, Decimal]],
+) -> dict:
+    """Итоги узлов дерева по всем строкам КП и дополнительным работам: статьи (ключ `None` —
+    «Нераспределённое», как у корневых `articles`) и разделы сметы (допработы в них не входят)."""
+    lines = [
+        NodeLine(
+            total=row.line.total,
+            no_price=evaluation.lines[row.line.position_item_id].state is LineState.no_price,
+            categories=(
+                (None,)
+                if row.category_id is None
+                else tuple(node.id for node in _category_chain(tree, row.category_id))
+            ),
+            chapters=tuple(step.chapter_item_id for step in steps.get(row.chapter_item_id, ())),
+        )
+        for row in rows
+    ]
+    amounts = [
+        NodeAmount(
+            total=amount,
+            categories=(
+                (None,)
+                if category_id is None
+                else tuple(node.id for node in _category_chain(tree, category_id))
+            ),
+        )
+        for category_id, amount in extra
+    ]
+    return node_totals(lines, base=base, amounts=amounts)
 
 
 def _rung_choice(level: str | None, scope: str | None, position_item_id: int, auto: LineResult) -> RungChoice | None:
@@ -1090,20 +1219,35 @@ def _vat_dropped_view(scene: _Scene, row: KpLineRow, result: LineResult) -> list
     return []
 
 
-def _analogs_view(db: Session, scene: _Scene, participant: _Participant, result: LineResult) -> list[dict]:
-    """Справка работы: все аналоги выбранной ступени (включая выбросы) в порядке спеки §2.11.
-    У системы и у работы без ступени — пусто."""
+def _analog_ids(result: LineResult) -> list[int]:
+    """Строки договоров, которые панель покажет аналогами: у системы и у работы без ступени их нет."""
     ladder = result.ladder
     if ladder is None or ladder.rung_no is None:
         return []
-    details = load_analog_details(db, [analog.position_item_id for analog in ladder.analogs])
+    return [analog.position_item_id for analog in ladder.analogs]
+
+
+def _analogs_view(
+    scene: _Scene,
+    participant: _Participant,
+    result: LineResult,
+    details: Mapping[int, tuple[str, str | None, list[str], int | None, int | None]],
+    tree: Mapping[int, CategoryMeta],
+    steps: Mapping[int, tuple[ChapterStep, ...]],
+) -> list[dict]:
+    """Справка работы: все аналоги выбранной ступени (включая выбросы) в порядке спеки §2.11.
+    У системы и у работы без ступени — пусто. «Где аналог» — статья раздела строки договора и
+    полный путь по смете договора, не статья строки КП."""
+    ladder = result.ladder
+    if ladder is None or ladder.rung_no is None:
+        return []
     rate = participant.base
     lowest = ladder.lowest.analog_id if ladder.lowest is not None else None
     freshest = ladder.freshest.analog_id if ladder.freshest is not None else None
     view = []
     for analog in ladder.analogs:
         contract = scene.index.contract(analog.contract_id)
-        title, unit, section_titles = details[analog.position_item_id]
+        title, unit, section_titles, category_id, chapter_item_id = details[analog.position_item_id]
         view.append(
             {
                 "analog_id": analog.position_item_id,
@@ -1116,6 +1260,8 @@ def _analogs_view(db: Session, scene: _Scene, participant: _Participant, result:
                 "contractor_id": contract.contractor_id,
                 "contractor_title": contract.contractor_title,
                 "section_titles": section_titles,
+                "article": _article_ref(tree, category_id),
+                "chapter_path": _path_view(steps.get(chapter_item_id, ())),
                 "title": title,
                 "unit": unit,
                 "price": money_pair(analog.net, rate, unit=True),
@@ -1128,6 +1274,52 @@ def _analogs_view(db: Session, scene: _Scene, participant: _Participant, result:
                 "selectable": analog.outlier_ratio is None,
             }
         )
+    return view
+
+
+def _parts_reference_view(
+    db: Session, scene: _Scene, participant: _Participant, row: KpLineRow, result: LineResult
+) -> list[dict]:
+    """Справка «по частям» сборной строки (спека упрощения каталога §2.8): только панель. У системы
+    и у работы, не дошедшей до лестницы, справки нет; на суммы и цель она не влияет."""
+    if result.ladder is None:
+        return []
+    groups = parts_reference(
+        kp_work_of(row.line, result.kp_unit_net),
+        scene.work_history,
+        tender_class_id=scene.head.rate_class_id,
+        composites=load_composites(db, row.line),
+        tender_contractor_id=participant.contractor_id,
+        target_month=scene.target_month,
+    )
+    rate = participant.base
+    view = []
+    for group in groups:
+        parts = []
+        for part in group["parts"]:
+            lowest = None
+            if part.lowest_analog_id is not None:
+                contract = scene.index.contract(part.lowest_contract_id)
+                lowest = {
+                    "value": money_pair(part.min, rate, unit=True),
+                    "analog_id": part.lowest_analog_id,
+                    "object_title": contract.object_title,
+                    "contract_number": contract.number,
+                    "period": _period_text(contract.period),
+                }
+            parts.append(
+                {
+                    "value_id": part.value_id,
+                    "value": part.value,
+                    "analogs": part.analogs,
+                    "contracts": part.contracts,
+                    "min": money_pair(part.min, rate, unit=True),
+                    "max": money_pair(part.max, rate, unit=True),
+                    "lowest": lowest,
+                    "other_class": part.other_class,
+                }
+            )
+        view.append({**group, "parts": parts})
     return view
 
 
@@ -1168,15 +1360,20 @@ def build_line_view(
     rate = participant.base
     unit_texts = load_unit_texts(db, participant.estimate_id)
 
-    group_lines = []
+    group_rows: list[KpLineRow] = []
     if result.group_index is not None:
         family_id = evaluation.groups[result.group_index].family_id
         members = {pid for g in evaluation.groups if g.family_id == family_id for pid in g.lines}
-        group_lines = [
-            _line_with_decisions(scene, participant, r, evaluation.lines[r.line.position_item_id])
-            for r in rows
-            if r.line.position_item_id in members
-        ]
+        group_rows = [r for r in rows if r.line.position_item_id in members]
+    # пути разделов строки КП, её группы и аналогов — одним запросом на ответ
+    analog_details = load_analog_details(db, _analog_ids(result))
+    chapter_ids = {r.chapter_item_id for r in [row, *group_rows]} | {d[4] for d in analog_details.values()}
+    steps = chapter_steps(db, chapter_ids - {None})
+    _, tree = category_tree(db)
+    group_lines = [
+        _line_with_decisions(scene, participant, r, evaluation.lines[r.line.position_item_id], steps)
+        for r in group_rows
+    ]
 
     ratios = dict(result.mismatch.contracts) if result.mismatch is not None else {}
     contracts = []
@@ -1199,20 +1396,22 @@ def build_line_view(
         )
 
     vat_dropped = _vat_dropped_view(scene, row, result)
-    analogs = _analogs_view(db, scene, participant, result)
+    analogs = _analogs_view(scene, participant, result, analog_details, tree, steps)
 
     template = _template_text(scene, participant, row, result, unit_texts[position_item_id])
     own_comment = scene.decisions[participant.estimate_id].comments.get(position_item_id)
     line = {
-        **_line_view(row, result, rate, scene.index),
+        **_line_view(row, result, rate, scene.index, scene.families, steps),
         **_decision_fields(scene, participant, row, result, template),
         "file_ours": _file_ours(scene, participant, row, result, unit_texts[position_item_id]),
+        "article": _article_ref(tree, row.category_id),
     }
     return {
         "line": line,
         "group_lines": group_lines,
         "contracts": contracts,
         "analogs": analogs,
+        "parts_reference": _parts_reference_view(db, scene, participant, row, result),
         "vat_dropped": vat_dropped,
         "comment": {
             "kind": line["comment_kind"],

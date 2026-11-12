@@ -228,7 +228,7 @@ def _create_context(
     bucket: ContextBucket,
     catalog_position: CatalogPosition,
     is_default: bool,
-    actor_id: int,
+    actor_id: int | None,
     chain: tuple[str, ...] = (),
 ) -> CatalogContext:
     """Создаёт контекст разделения (спека §2.4, §2.14): `origin='split'`
@@ -275,10 +275,11 @@ def split_context(
     context_id: int,
     position_item_ids: list[int],
     rule: RulePredicate | None,
-    actor_id: int,
+    actor_id: int | None,
 ) -> SplitResult:
     """Разделяет контекст: выбранные членства переезжают в НОВЫЙ контекст той
-    же корзины (спека §2.4).
+    же корзины (спека §2.4). `actor_id = None` — действует система (автоделение,
+    спека упрощения каталога §2.5): правило и события без автора.
 
     Дальше одна из двух ветвей, которую выбирает вызывающий передачей
     `rule`:
@@ -482,9 +483,10 @@ def split_context(
 # ---------------------------------------------------------------------------
 
 def merge_contexts(
-    db: Session, *, source_context_id: int, target_context_id: int, actor_id: int
+    db: Session, *, source_context_id: int, target_context_id: int, actor_id: int | None
 ) -> int:
-    """Сливает `source_context_id` в `target_context_id` (спека §2.4).
+    """Сливает `source_context_id` в `target_context_id` (спека §2.4); `actor_id = None` —
+    действует система.
 
     Членства источника переезжают в цель БЕЗ изменения `routed_by`: ручные
     остаются ручными, а правила, указывавшие на источник, переводятся на

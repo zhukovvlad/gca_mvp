@@ -5,6 +5,11 @@ import { describe, expect, it } from "vitest";
 
 import { handlerState } from "@/test/handlers";
 import {
+  agreedFixture,
+  articleRefFixture,
+  chapterPathFixture,
+  compositeLineViewFixture,
+  contractorFigureFixture,
   KP_FILE_AUTHOR,
   OUR_PRICE_LINE_ID,
   OUR_PRICE_OFFER_ID,
@@ -20,14 +25,7 @@ import { ANALOG_UNAVAILABLE_TOAST } from "@/services/queries";
 import type { MoneyPair, OurPriceLine, OurPriceLineView, TargetChoice } from "@/types/domain";
 
 import { LineSheet, type LineSheetProps } from "./LineSheet";
-import {
-  ANALOGS_COLUMN,
-  SAVING_LABEL,
-  TARGET_BACK_TO_LOWEST,
-  TARGET_MAKE_FRESHEST,
-  UNIT_WARN_ALL_OUTLIERS,
-  zoneQueueHref,
-} from "./ourPriceCopy";
+import { SAVING_LABEL, SHEET_SECTION, UNIT_WARN_ALL_OUTLIERS, zoneQueueHref } from "./ourPriceCopy";
 
 const LINE_PATH = "/api/v1/tenders/:id/rounds/:roundId/our-price/offers/:offerId/lines/:positionItemId";
 const ADMIN = { id: 1, email: "admin@example.test", role: "admin" } as const;
@@ -94,7 +92,7 @@ describe("панель строки-работы: сравнение", () => {
     serve(() => workLineViewFixture());
     renderSheet();
     const low = await screen.findByTestId("figure-lowest");
-    expect(low).toHaveTextContent("Самая низкая расценка");
+    expect(low).toHaveTextContent("самая низкая");
     expect(low).toHaveTextContent("1 000,00");
     expect(low).toHaveTextContent("Объект Ж");
     expect(low).toHaveTextContent("ГП-08");
@@ -102,7 +100,7 @@ describe("панель строки-работы: сравнение", () => {
     expect(low).toHaveTextContent("КП выше");
     expect(low).toHaveTextContent("+20 000,00");
     const fresh = screen.getByTestId("figure-freshest");
-    expect(fresh).toHaveTextContent("Самая свежая расценка");
+    expect(fresh).toHaveTextContent("самая свежая");
     expect(fresh).toHaveTextContent("1 100,00");
     expect(fresh).toHaveTextContent("Объект З");
     expect(fresh).toHaveTextContent("08.2026");
@@ -175,10 +173,9 @@ describe("панель строки-работы: сравнение", () => {
   it("справка: колонки и строки аналогов; свежая и низкая помечены", async () => {
     serve(() => workLineViewFixture());
     renderSheet();
-    const table = await screen.findByTestId("analogs-table");
-    for (const title of Object.values(ANALOGS_COLUMN)) expect(table).toHaveTextContent(title);
+    await screen.findByTestId("analogs-table");
     expect(within(screen.getByTestId("analog-8001")).getByText("самая низкая")).toBeInTheDocument();
-    expect(within(screen.getByTestId("analog-8002")).getByText("свежая")).toBeInTheDocument();
+    expect(within(screen.getByTestId("analog-8002")).getByText("самая свежая")).toBeInTheDocument();
     expect(within(screen.getByTestId("analog-8001")).getByText("договор с этим подрядчиком")).toBeInTheDocument();
   });
 });
@@ -252,22 +249,192 @@ describe("причины «не с чем сравнить» у работы", (
   });
 });
 
-describe("«Для выгрузки»: цель строки-работы", () => {
-  it("по умолчанию — самая низкая (авто); admin видит «Сделать целью самую свежую», «Вернуть» нет", async () => {
+describe("панель работы: ширина и порядок секций", () => {
+  it("ширина панели 680 px вместо базовой lg", async () => {
     serve(() => workLineViewFixture());
     renderSheet();
-    const row = await screen.findByTestId("target-row");
-    expect(row).toHaveTextContent("Цель: самая низкая расценка");
-    expect(row).toHaveTextContent("авто");
-    expect(screen.getByRole("button", { name: TARGET_MAKE_FRESHEST })).toBeEnabled();
-    expect(screen.queryByRole("button", { name: TARGET_BACK_TO_LOWEST })).not.toBeInTheDocument();
+    await screen.findByTestId("sheet-comparison");
+    const sheet = screen.getByTestId("line-sheet");
+    expect(sheet.className).toContain("max-w-[680px]");
+    expect(sheet.className).not.toContain("max-w-lg");
   });
 
-  it("не admin: строка цели есть, кнопок и «сделать целью» нет", async () => {
+  const titles = () =>
+    within(screen.getByTestId("line-sheet"))
+      .getAllByRole("heading", { level: 4 })
+      .map((h) => h.textContent);
+
+  it("работа: где строка, цены, сравнение, аналоги, в файл подрядчику", async () => {
+    serve(() => workLineViewFixture());
+    renderSheet();
+    await screen.findByTestId("sheet-comparison");
+    expect(titles()).toEqual([
+      SHEET_SECTION.where,
+      SHEET_SECTION.prices,
+      SHEET_SECTION.comparison,
+      SHEET_SECTION.analogs,
+      SHEET_SECTION.export,
+    ]);
+  });
+
+  it("сборная строка: где строка, цены, сравнение, по частям, в файл подрядчику", async () => {
+    serve(() => compositeLineViewFixture());
+    renderSheet();
+    await screen.findByTestId("composite-no-target");
+    expect(titles()).toEqual([
+      SHEET_SECTION.where,
+      SHEET_SECTION.prices,
+      SHEET_SECTION.comparison,
+      SHEET_SECTION.parts,
+      SHEET_SECTION.export,
+    ]);
+  });
+});
+
+describe("панель работы: «где строка»", () => {
+  it("строка КП: цепочка статей и полный путь по смете КП с номерами", async () => {
+    serve(() =>
+      workLineViewFixture({
+        line: { chapter_path: chapterPathFixture("Корпус 2", "Плиты", "Перекрытия") },
+      })
+    );
+    renderSheet();
+    const where = await screen.findByTestId("sheet-where");
+    expect(within(where).getByTestId("where-article")).toHaveTextContent("4 Несущие конструкции");
+    expect(within(where).getByTestId("where-article")).toHaveTextContent("4.2.4 Вертикальные конструкции");
+    expect(within(where).getByTestId("where-path")).toHaveTextContent("п. 4 — Корпус 2");
+    expect(within(where).getByTestId("where-path")).toHaveTextContent("п. 4.1.2 — Перекрытия");
+    expect(where).toHaveTextContent("в смете КП");
+  });
+
+  it("карточка аналога из другой статьи показывает свою статью и свой путь, а не статью строки КП", async () => {
+    const other = articleRefFixture({
+      id: 32,
+      code: "4.2.2",
+      title: "Первый этаж",
+      chain: [
+        { id: 11, code: "4", title: "Несущие конструкции" },
+        { id: 32, code: "4.2.2", title: "Первый этаж" },
+      ],
+    });
+    serve(() =>
+      workLineViewFixture({
+        analogs: [
+          ourPriceAnalogFixture({ analog_id: 8001, is_lowest: true }),
+          ourPriceAnalogFixture({
+            analog_id: 8002,
+            article: other,
+            chapter_path: chapterPathFixture("Смета договора", "Корпус 3"),
+          }),
+        ],
+      })
+    );
+    renderSheet();
+    await screen.findByTestId("analog-8002");
+    const mine = within(screen.getByTestId("analog-8002")).getByTestId("line-where");
+    expect(mine).toHaveTextContent("4.2.2 Первый этаж");
+    expect(mine).not.toHaveTextContent("4.2.4");
+    expect(mine).toHaveTextContent("в смете договора");
+    expect(mine).toHaveTextContent("п. 4.1 — Корпус 3");
+    const same = within(screen.getByTestId("analog-8001")).getByTestId("line-where");
+    expect(same).toHaveTextContent("4.2.4 Вертикальные конструкции");
+    expect(within(screen.getByTestId("sheet-where")).getByTestId("where-article")).not.toHaveTextContent("4.2.2");
+  });
+
+  it("пути нет и статьи нет: блок «где строка» не рисуется, панель открывается", async () => {
+    serve(() =>
+      workLineViewFixture({
+        line: { article: null, chapter_path: [] },
+        analogs: [ourPriceAnalogFixture({ analog_id: 8001, article: null, chapter_path: [] })],
+      })
+    );
+    renderSheet();
+    expect(await screen.findByTestId("sheet-comparison")).toBeInTheDocument();
+    expect(screen.queryByTestId("sheet-where")).not.toBeInTheDocument();
+    expect(within(screen.getByTestId("analog-8001")).queryByTestId("line-where")).not.toBeInTheDocument();
+  });
+});
+
+describe("панель работы: не больше пяти аналогов", () => {
+  const many = (n: number) =>
+    Array.from({ length: n }, (_, i) =>
+      ourPriceAnalogFixture({
+        analog_id: 9000 + i,
+        contract_id: 200 + i,
+        object_title: `Объект ${i}`,
+        price: pair(String(1000 + i * 10), String(1220 + i * 10)),
+      })
+    );
+  const shownIds = () =>
+    screen.getAllByTestId(/^analog-\d+$/).map((r) => Number(r.getAttribute("data-testid")!.slice(7)));
+
+  it("девять аналогов: пять карточек и «ещё 4 аналога из 9»", async () => {
+    serve(() => workLineViewFixture({ analogs: many(9) }));
+    renderSheet();
+    await screen.findByTestId("analogs-table");
+    expect(shownIds()).toHaveLength(5);
+    expect(screen.getByRole("button", { name: "ещё 4 аналога из 9" })).toBeInTheDocument();
+  });
+
+  it("сначала аналоги с метками цели (низкая, свежая, с подрядчиком), затем по цене", async () => {
+    const list = many(9);
+    list[7] = { ...list[7], is_lowest: true, price: pair("5000", "6100") };
+    list[8] = { ...list[8], is_freshest: true, price: pair("6000", "7320") };
+    serve(() =>
+      workLineViewFixture({
+        line: {
+          lowest: { value: pair("5000", "6100"), analog_id: 9007, contract_id: 207, from_all_classes: false },
+          freshest: { value: pair("6000", "7320"), analog_id: 9008, contract_id: 208, period: "2026-08" },
+          contractor: contractorFigureFixture({ analog_id: 9006, contract_id: 206 }),
+        },
+        analogs: list,
+      })
+    );
+    renderSheet();
+    await screen.findByTestId("analogs-table");
+    expect(shownIds()).toEqual([9007, 9008, 9006, 9000, 9001]);
+  });
+
+  it("закреплённый аналог из хвоста после выбора попадает в пятёрку, а кнопки у него нет", async () => {
+    serve(() =>
+      workLineViewFixture({
+        line: { target_kind: "analog", choice: choice({ kind: "analog", analog_id: 9008 }) },
+        analogs: many(9),
+      })
+    );
+    renderSheet();
+    await screen.findByTestId("analogs-table");
+    expect(shownIds()[0]).toBe(9008);
+    expect(shownIds()).toHaveLength(5);
+    expect(within(screen.getByTestId("analog-9008")).queryByRole("button")).not.toBeInTheDocument();
+    expect(within(screen.getByTestId("analog-9008")).getByText("цель")).toBeInTheDocument();
+  });
+
+  it("«ещё N» раскрывает остальные, «свернуть» возвращает пять", async () => {
+    serve(() => workLineViewFixture({ analogs: many(7) }));
+    renderSheet();
+    await userEvent.click(await screen.findByRole("button", { name: "ещё 2 аналога из 7" }));
+    expect(shownIds()).toHaveLength(7);
+    await userEvent.click(screen.getByRole("button", { name: "свернуть" }));
+    expect(shownIds()).toHaveLength(5);
+  });
+});
+
+describe("карточки цели в панели", () => {
+  it("по умолчанию — самая низкая (авто); у admin кнопки на карточках", async () => {
+    serve(() => workLineViewFixture());
+    renderSheet();
+    const low = await screen.findByTestId("figure-lowest");
+    expect(low).toHaveAttribute("data-selected", "true");
+    expect(low).toHaveTextContent("цель · авто");
+    expect(within(screen.getByTestId("figure-freshest")).getByRole("button")).toBeEnabled();
+  });
+
+  it("не admin: карточки с цифрами, ни кнопок на них, ни «сделать целью» у аналогов", async () => {
     serve(() => workLineViewFixture());
     renderSheet({}, MEMBER);
-    expect(await screen.findByTestId("target-row")).toHaveTextContent("Цель: самая низкая расценка");
-    expect(screen.queryByRole("button", { name: TARGET_MAKE_FRESHEST })).not.toBeInTheDocument();
+    expect(await screen.findByTestId("figure-lowest")).toHaveAttribute("data-selected", "true");
+    expect(within(screen.getByTestId("figure-lowest")).queryByRole("button")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "сделать целью" })).not.toBeInTheDocument();
   });
 
@@ -286,6 +453,14 @@ describe("«Для выгрузки»: цель строки-работы", () =
     expect(within(screen.getByTestId("analog-8002")).queryByRole("button")).not.toBeInTheDocument();
   });
 
+  it("«сделать целью» есть и у аналога, на котором уже стоит метка стратегии", async () => {
+    serve(() => workLineViewFixture());
+    renderSheet();
+    await screen.findByTestId("analogs-table");
+    expect(within(screen.getByTestId("analog-8001")).getByText("самая низкая")).toBeInTheDocument();
+    expect(within(screen.getByTestId("analog-8001")).getByRole("button", { name: "сделать целью" })).toBeInTheDocument();
+  });
+
   it("unit_mismatch с selectable=true: выбор цели только у сравнимой строки — кнопок нет", async () => {
     serve(() =>
       workLineViewFixture({
@@ -300,35 +475,30 @@ describe("«Для выгрузки»: цель строки-работы", () =
     renderSheet();
     await screen.findByTestId("analogs-table");
     expect(screen.queryByRole("button", { name: "сделать целью" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: TARGET_MAKE_FRESHEST })).not.toBeInTheDocument();
+    expect(within(screen.getByTestId("figure-freshest")).queryByRole("button")).not.toBeInTheDocument();
   });
 
-  it("цель — самая свежая: строка цели, «Вернуть к самой низкой»; кнопки «самую свежую» нет", async () => {
-    serve(() => workLineViewFixture({ line: { target_kind: "freshest", choice: choice() } }));
-    renderSheet();
-    expect(await screen.findByTestId("target-row")).toHaveTextContent("Цель: самая свежая расценка");
-    expect(screen.queryByRole("button", { name: TARGET_MAKE_FRESHEST })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: TARGET_BACK_TO_LOWEST })).toBeInTheDocument();
-  });
-
-  it("цель — аналог: названы объект и договор, а у этого аналога вместо кнопки метка «цель»", async () => {
+  it("цель — аналог: карточка «выбранный аналог», у аналога метка «цель» вместо кнопки", async () => {
     serve(() =>
       workLineViewFixture({ line: { target_kind: "analog", choice: choice({ kind: "analog", analog_id: 8002 }) } })
     );
     renderSheet();
-    expect(await screen.findByTestId("target-row")).toHaveTextContent("Цель: аналог — Объект З, дог. Д-112");
+    expect(await screen.findByTestId("figure-pinned")).toHaveTextContent("выбранный аналог");
     const mine = screen.getByTestId("analog-8002");
     expect(within(mine).queryByRole("button", { name: "сделать целью" })).not.toBeInTheDocument();
     expect(within(mine).getByText("цель")).toBeInTheDocument();
   });
 
-  it("«договорились»: цель названа договорённой ценой", async () => {
-    serve(() => workLineViewFixture({ line: { target_kind: "agreed" } }));
+  it("цель — стратегия: у аналога, на которого она сейчас указывает, метка «цель», а кнопка остаётся", async () => {
+    serve(() => workLineViewFixture({ line: { target_kind: "freshest", choice: choice() } }));
     renderSheet();
-    expect(await screen.findByTestId("target-row")).toHaveTextContent("Цель: договорённая цена");
+    await screen.findByTestId("analogs-table");
+    const fresh = screen.getByTestId("analog-8002");
+    expect(within(fresh).getByText("цель")).toBeInTheDocument();
+    expect(within(fresh).getByRole("button", { name: "сделать целью" })).toBeInTheDocument();
   });
 
-  it("выбор не действует: плашка с причиной, цель — самая низкая, «Вернуть» остаётся", async () => {
+  it("выбор не действует: плашка с причиной, самая низкая нажата", async () => {
     serve(() =>
       workLineViewFixture({
         line: {
@@ -341,11 +511,10 @@ describe("«Для выгрузки»: цель строки-работы", () =
     expect(await screen.findByTestId("target-inactive")).toHaveTextContent(
       "Выбор не действует: аналога больше нет на ступени"
     );
-    expect(screen.getByTestId("target-row")).toHaveTextContent("Цель: самая низкая расценка");
-    expect(screen.getByRole("button", { name: TARGET_BACK_TO_LOWEST })).toBeInTheDocument();
+    expect(screen.getByTestId("figure-lowest")).toHaveAttribute("data-selected", "true");
   });
 
-  it("у строки не сравнимой цели нет: строки цели и кнопок нет", async () => {
+  it("у строки без сравнения карточек и кнопок нет", async () => {
     serve(() =>
       workLineViewFixture({
         line: { state: "no_history", no_history_reason: "no_family", target_kind: null, freshest: null, lowest: null },
@@ -354,46 +523,28 @@ describe("«Для выгрузки»: цель строки-работы", () =
     );
     renderSheet();
     await screen.findByTestId("sheet-state");
-    expect(screen.queryByTestId("target-row")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: TARGET_MAKE_FRESHEST })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("figure-lowest")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "сделать целью" })).not.toBeInTheDocument();
   });
 });
 
-describe("«Для выгрузки»: сохранение цели", () => {
-  it("«Сделать целью самую свежую»: PUT с kind freshest и рядом ИПЦ экрана", async () => {
-    serve(() => workLineViewFixture());
-    renderSheet({ seriesId: 3 });
-    await userEvent.click(await screen.findByRole("button", { name: TARGET_MAKE_FRESHEST }));
-    await waitFor(() => expect(targets()).toHaveLength(1));
-    const request = targets()[0];
-    expect(request.method).toBe("PUT");
-    expect(request.body).toEqual({ kind: "freshest" });
-    expect(new URL(request.url).searchParams.get("inflation_series_id")).toBe("3");
-  });
-
+describe("«В файл подрядчику»: сохранение цели", () => {
   it("без ряда ИПЦ параметр в адрес не попадает", async () => {
     serve(() => workLineViewFixture());
     renderSheet({ seriesId: null });
-    await userEvent.click(await screen.findByRole("button", { name: TARGET_MAKE_FRESHEST }));
+    await userEvent.click(within(await screen.findByTestId("figure-freshest")).getByRole("button"));
     await waitFor(() => expect(targets()).toHaveLength(1));
     expect(new URL(targets()[0].url).searchParams.has("inflation_series_id")).toBe(false);
   });
 
-  it("«сделать целью» у аналога: PUT с kind analog и его analog_id", async () => {
+  it("«сделать целью» у аналога: PUT с kind analog и его analog_id, рядом ИПЦ экрана", async () => {
     serve(() => workLineViewFixture());
     renderSheet({ seriesId: 3 });
     await screen.findByTestId("analogs-table");
     await userEvent.click(within(screen.getByTestId("analog-8002")).getByRole("button", { name: "сделать целью" }));
     await waitFor(() => expect(targets()).toHaveLength(1));
     expect(targets()[0].body).toEqual({ kind: "analog", analog_id: 8002 });
-  });
-
-  it("«Вернуть к самой низкой»: DELETE .../target", async () => {
-    serve(() => workLineViewFixture({ line: { target_kind: "freshest", choice: choice() } }));
-    renderSheet();
-    await userEvent.click(await screen.findByRole("button", { name: TARGET_BACK_TO_LOWEST }));
-    await waitFor(() => expect(targets()).toHaveLength(1));
-    expect(targets()[0].method).toBe("DELETE");
+    expect(new URL(targets()[0].url).searchParams.get("inflation_series_id")).toBe("3");
   });
 
   it("после сохранения панель перезапрошена и показывает новую цель", async () => {
@@ -408,8 +559,8 @@ describe("«Для выгрузки»: сохранение цели", () => {
       })
     );
     renderSheet();
-    await userEvent.click(await screen.findByRole("button", { name: TARGET_MAKE_FRESHEST }));
-    await waitFor(() => expect(screen.getByTestId("target-row")).toHaveTextContent("Цель: самая свежая расценка"));
+    await userEvent.click(within(await screen.findByTestId("figure-freshest")).getByRole("button"));
+    await waitFor(() => expect(screen.getByTestId("figure-freshest")).toHaveAttribute("data-selected", "true"));
     expect(asked.length).toBeGreaterThanOrEqual(2);
   });
 
@@ -426,7 +577,7 @@ describe("«Для выгрузки»: сохранение цели", () => {
       })
     );
     renderSheet();
-    await userEvent.click(await screen.findByRole("button", { name: TARGET_MAKE_FRESHEST }));
+    await userEvent.click(within(await screen.findByTestId("figure-freshest")).getByRole("button"));
     const overlay = await screen.findByTestId("recalc-overlay");
     expect(overlay).toHaveTextContent(SAVING_LABEL);
     expect(screen.getByTestId("figure-lowest")).toHaveTextContent("1 000,00");
@@ -443,6 +594,62 @@ describe("«Для выгрузки»: сохранение цели", () => {
     await userEvent.click(within(screen.getByTestId("analog-8002")).getByRole("button", { name: "сделать целью" }));
     expect(await screen.findByText(ANALOG_UNAVAILABLE_TOAST)).toBeInTheDocument();
     await waitFor(() => expect(asked.length).toBeGreaterThan(before));
+  });
+});
+
+describe("сборная строка", () => {
+  it("состояние: нет аналога, в строке несколько значений параметра с его именем", async () => {
+    serve(() => compositeLineViewFixture());
+    renderSheet();
+    expect(await screen.findByTestId("sheet-state")).toHaveTextContent(
+      "нет аналога: в строке несколько значений параметра «Тип конструкции»"
+    );
+  });
+
+  it("пояснение «цели нет» с именем параметра; карточек цели нет", async () => {
+    serve(() => compositeLineViewFixture());
+    renderSheet();
+    const why = await screen.findByTestId("composite-no-target");
+    expect(why).toHaveTextContent("Цели нет");
+    expect(why).toHaveTextContent("Тип конструкции");
+    expect(screen.queryByTestId("figure-lowest")).not.toBeInTheDocument();
+  });
+
+  it("«по частям»: части со своими цифрами, без кнопок цели", async () => {
+    serve(() => compositeLineViewFixture());
+    renderSheet();
+    const parts = await screen.findByTestId("parts-reference");
+    expect(within(parts).getByTestId("part-501")).toHaveTextContent("36 200,12");
+    expect(within(parts).queryByRole("button")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "сделать целью" })).not.toBeInTheDocument();
+  });
+
+  it("«в файл подрядчику»: число «—», «в файл ничего не идёт», шаблона комментария нет", async () => {
+    serve(() => compositeLineViewFixture());
+    renderSheet();
+    const block = await screen.findByTestId("export-block");
+    expect(within(block).getByTestId("export-ours")).toHaveTextContent("—");
+    expect(within(block).getByTestId("export-source")).toHaveTextContent("в файл ничего не идёт");
+    expect(within(block).getByLabelText("Комментарий для подрядчика")).toHaveValue("");
+  });
+
+  it("«Договорились»: число уходит в файл, источник — «договорились · вписано вручную»", async () => {
+    serve(() =>
+      compositeLineViewFixture({
+        line: { agreed: agreedFixture({ net: "43000.00", shown: "52460.00" }), target_kind: "agreed" },
+      })
+    );
+    renderSheet();
+    const block = await screen.findByTestId("export-block");
+    expect(within(block).getByTestId("export-ours")).toHaveTextContent("43 000,00");
+    expect(within(block).getByTestId("export-source")).toHaveTextContent("договорились · вписано вручную");
+    expect(within(block).getByTestId("export-source")).not.toHaveTextContent("перекрывает цель");
+  });
+
+  it("сборная строка в виде «с НДС»: справка по частям берёт shown", async () => {
+    serve(() => compositeLineViewFixture());
+    renderSheet({ vat: "shown", vatRate: "22.00" });
+    expect(await screen.findByTestId("part-501")).toHaveTextContent("44 164,15");
   });
 });
 

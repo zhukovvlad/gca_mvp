@@ -490,6 +490,12 @@ _DOMAIN_TABLES = (
     "section_chains",
     "releasable_proposals",
     "kp_line_targets",
+    # Упрощение управления каталогом (миграция 0025): пять новых таблиц — ЯВНО.
+    "family_value_parts",
+    "composite_vetoes",
+    "composite_veto_parts",
+    "value_not_duplicates",
+    "catalog_auto_actions",
     "position_items",
     "estimate_additional_works",
     "proposal_summary_lines",

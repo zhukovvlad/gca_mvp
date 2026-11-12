@@ -38,6 +38,10 @@ HTTP-слой поверх готовых сервисов задач 4, 6-10 (`
 состояние мешает — `409`, неверный ввод — `422`, объекта нет — `404`; ни один
 код отказа не уходит `500`.
 
+**«Журнал ИИ»** (спека упрощения каталога §2.7): чтение списка и записи, отмена
+склейки и приравнивания, «вернуть автоматику» — `crud/ai_journal.py`; отказы несут код
+(`journal_*`) и статус в самой ошибке (`DomainError`).
+
 **Транзакция.** `_mutating(db)` — контекстный менеджер одной транзакции на
 маршрут: успешный выход коммитит, любое из трёх исключений сервисов
 откатывает и транслирует в `HTTPException`, любое другое исключение
@@ -55,9 +59,10 @@ from typing import Literal
 
 import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy.orm import Session
 
+import crud.ai_journal as crud_ai_journal
 import crud.discovery as crud_discovery
 import crud.section_chains as crud_section_chains
 import crud.semantic as crud_semantic
@@ -78,6 +83,7 @@ from models import (
 )
 from routers.domain_errors import raise_domain_error
 from services import (
+    composite_values,
     context_operations,
     discovery_drafts,
     family_categories,
@@ -126,6 +132,8 @@ _STATUS_NOT_FOUND = frozenset(
 
 _STATUS_CONFLICT = frozenset(
     {
+        # Текст занят другим значением параметра: состояние, а не ввод (как journal_undo_conflict).
+        schema_edit.REFUSE_VALUE_TEXT_TAKEN,
         work_families.REFUSE_UPDATE_ARCHIVED,
         work_families.REFUSE_ACTIVATE_NOT_DRAFT,
         work_families.REFUSE_ACTIVATE_WITHOUT_DEFINITION,
@@ -205,6 +213,8 @@ _STATUS_UNPROCESSABLE = frozenset(
         schema_edit.REFUSE_OFF_LIST_TARGET_INVALID,
         work_variants.REFUSE_MERGE_OTHER_PARAMETER,
         work_variants.REFUSE_MERGE_CYCLE,
+        composite_values.REFUSE_MERGE_COMPOSITE_MISMATCH,
+        composite_values.REFUSE_SCHEMA_COMPOSITE_TEXT,
         context_operations.REFUSE_DIFFERENT_BUCKET,
         context_operations.REFUSE_INVALID_MEMBERSHIP,
         context_operations.REFUSE_INVALID_NEW_DEFAULT,
@@ -313,6 +323,10 @@ def _mutating(db: Session):
         # сервера, а не ввод: оба `409`.
         db.rollback()
         raise_domain_error(DomainError(status.HTTP_409_CONFLICT, str(exc), code=exc.code))
+    except DomainError as exc:
+        # Кодированные отказы «Журнала ИИ» (`crud/ai_journal.py`): статус несёт сама ошибка.
+        db.rollback()
+        raise_domain_error(exc)
     except Exception:
         db.rollback()
         raise
@@ -2087,3 +2101,82 @@ def auto_accept_route(
     with _mutating(db):
         applied = family_change.apply_auto_accept(db, preview_hash=body.preview_hash)
     return {"applied": dict(applied)}
+
+
+# ---------------------------------------------------------------------------
+#  «Журнал ИИ» (спека упрощения каталога §2.7)
+# ---------------------------------------------------------------------------
+
+@router.get("/journal")
+def list_journal_route(
+    kind: Literal["split", "value_added", "composite", "equated"] | None = Query(default=None),
+    family_id: int | None = Query(default=None),
+    state: Literal["active", "undone", "locked"] | None = Query(default=None),
+    q: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=MAX_PAGE_SIZE),
+    offset: int = Query(default=0, ge=0),
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Страница журнала: `{items, total, counts}`; `counts` — по видам при всех отборах,
+    кроме вида."""
+    return crud_ai_journal.list_journal(
+        db, kind=kind, family_id=family_id, state=state, q=q or None, limit=limit, offset=offset
+    )
+
+
+@router.get("/journal/{item_id}")
+def journal_item_route(
+    item_id: int,
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    try:
+        return crud_ai_journal.get_journal_item(db, item_id)
+    except DomainError as exc:
+        raise_domain_error(exc)
+
+
+@router.post("/journal/{item_id}/undo")
+def journal_undo_route(
+    item_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Отмена склейки, приравнивания или автоделения; ответ — обновлённая запись."""
+    with _mutating(db):
+        item = crud_ai_journal.undo_action(db, item_id, user_id=admin.id)
+    return item
+
+
+class JournalResplitRequest(BaseModel):
+    """Уровень нового деления: индекс звена цепочки разделов от корня, с нуля."""
+    model_config = ConfigDict(extra="forbid")
+
+    level: int = Field(ge=0)
+
+
+@router.post("/journal/{item_id}/resplit")
+def journal_resplit_route(
+    item_id: int,
+    body: JournalResplitRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """«Поправить» деление: отмена без пометки и задание автоделения на заданном уровне;
+    ответ — отменённая запись, новая придёт отдельно."""
+    with _mutating(db):
+        item = crud_ai_journal.resplit_action(db, item_id, user_id=admin.id, level=body.level)
+    return item
+
+
+@router.post("/journal/{item_id}/restore-auto")
+def journal_restore_auto_route(
+    item_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """«Вернуть автоматику»: снимает решение, записанное отменой; ответ — запись."""
+    with _mutating(db):
+        item = crud_ai_journal.restore_auto(db, item_id, user_id=admin.id)
+    return item

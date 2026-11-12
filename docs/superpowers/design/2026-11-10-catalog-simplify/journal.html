@@ -1,0 +1,535 @@
+<!doctype html>
+<html lang="ru" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Журнал ИИ</title>
+<style>
+
+:root {
+  --bg-page:#F4F2EC; --surface:#FFFFFF; --sunken:#F7F6F2; --hover:#FAFAF7;
+  --fg:#1F2128; --fg2:#5A5D66; --fg3:#8E8B82;
+  --border:rgba(0,0,0,.08); --border2:rgba(0,0,0,.14);
+  --accent:#5F8568; --accent-soft:#E8F0EA; --accent-text:#3D5443;
+  --action:#2D3A30; --action-text:#F7F6F2;
+  --dear:#C2410C; --dear-soft:#FCEBDD; --dear-text:#7C2D12;
+  --cheap:#2563A8; --cheap-soft:#E2EDF8; --cheap-text:#1E3A5F;
+  --neutral-soft:#EFEEE6; --neutral-border:#D8D4C8; --neutral-text:#5F5E5A;
+  --warn:#B5642E; --warn-soft:#FAF1E1; --warn-border:#E8C8A8; --warn-text:#6B3915;
+  --shadow:0 1px 2px rgba(0,0,0,.05),0 8px 24px rgba(0,0,0,.05);
+  --font-serif:"Cormorant Garamond","Source Serif Pro",Georgia,serif;
+  --font-sans:"Geist","Inter",-apple-system,"Segoe UI",Roboto,sans-serif;
+  --font-mono:"JetBrains Mono","SF Mono",Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg-page:#1A1D24; --surface:#232730; --sunken:#1F232B; --hover:#262B35;
+  --fg:#E8E6E0; --fg2:#B4B2AC; --fg3:#8A8880;
+  --border:#2D323D; --border2:#3A4148;
+  --accent:#8FAB91; --accent-soft:#2A352D; --accent-text:#B8C4BB;
+  --action:#D9E2DA; --action-text:#1A1D24;
+  --dear:#F08A5D; --dear-soft:#3D2A20; --dear-text:#F4B08F;
+  --cheap:#6DA7EC; --cheap-soft:#22334A; --cheap-text:#A9CBF2;
+  --neutral-soft:#2A2D33; --neutral-border:#3A3E46; --neutral-text:#B4B2AC;
+  --warn:#D49A6E; --warn-soft:#353027; --warn-border:#4A3D2E; --warn-text:#E0AE86;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.25); color-scheme:dark; } }
+:root[data-theme="dark"] {
+  --bg-page:#1A1D24; --surface:#232730; --sunken:#1F232B; --hover:#262B35;
+  --fg:#E8E6E0; --fg2:#B4B2AC; --fg3:#8A8880;
+  --border:#2D323D; --border2:#3A4148;
+  --accent:#8FAB91; --accent-soft:#2A352D; --accent-text:#B8C4BB;
+  --action:#D9E2DA; --action-text:#1A1D24;
+  --dear:#F08A5D; --dear-soft:#3D2A20; --dear-text:#F4B08F;
+  --cheap:#6DA7EC; --cheap-soft:#22334A; --cheap-text:#A9CBF2;
+  --neutral-soft:#2A2D33; --neutral-border:#3A3E46; --neutral-text:#B4B2AC;
+  --warn:#D49A6E; --warn-soft:#353027; --warn-border:#4A3D2E; --warn-text:#E0AE86;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.25); color-scheme:dark; }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg-page); color:var(--fg); font-family:var(--font-sans); font-size:14px; line-height:1.5; }
+.wrap { max-width:1240px; margin:0 auto; padding:32px 24px 64px; }
+@media (max-width:640px){ .wrap{ padding:20px 16px 48px; } }
+h1,h2,h3 { margin:0; text-wrap:balance; } p { margin:0; }
+.serif { font-family:var(--font-serif); font-weight:600; letter-spacing:-.01em; }
+.eyebrow { font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--fg3); font-weight:500; }
+.num { font-family:var(--font-mono); font-variant-numeric:tabular-nums; white-space:nowrap; }
+.t2{color:var(--fg2)} .t3{color:var(--fg3)} .small{font-size:12px} .xs{font-size:11px}
+.intro { display:grid; gap:10px; max-width:84ch; }
+.intro h1 { font-size:clamp(30px,4.5vw,42px); line-height:1.05; }
+.intro .lead { color:var(--fg2); font-size:15px; }
+.tabs { display:flex; gap:4px; flex-wrap:wrap; background:var(--neutral-soft); padding:4px; border-radius:10px; width:fit-content; max-width:100%; margin:28px 0 14px; }
+.tab { border:0; background:transparent; color:var(--fg2); font:inherit; font-size:13px; font-weight:500; padding:7px 14px; border-radius:7px; cursor:pointer; }
+.tab[aria-selected="true"] { background:var(--surface); color:var(--fg); box-shadow:0 1px 2px rgba(0,0,0,.08); }
+button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.tabnote { color:var(--fg2); font-size:13px; margin-bottom:14px; max-width:92ch; }
+.view[hidden] { display:none; }
+.app { background:var(--bg-page); border:1px solid var(--border2); border-radius:12px; overflow:hidden; box-shadow:var(--shadow); }
+.appbar { display:flex; align-items:center; gap:18px; padding:10px 16px; background:var(--surface); border-bottom:1px solid var(--border); overflow-x:auto; }
+.appbar .logo { font-family:var(--font-serif); font-weight:600; font-size:18px; }
+.appbar nav { display:flex; gap:14px; font-size:13px; color:var(--fg2); white-space:nowrap; }
+.appbar nav .on { color:var(--fg); font-weight:500; }
+.page { padding:18px 20px 24px; display:grid; gap:16px; min-width:0; }
+@media (max-width:640px){ .page{ padding:14px 12px 20px; } }
+.btn { height:30px; padding:0 11px; border-radius:7px; border:1px solid var(--border2); background:var(--surface); color:var(--fg); font:inherit; font-size:12.5px; cursor:pointer; white-space:nowrap; display:inline-flex; align-items:center; gap:6px; }
+.btn.primary { background:var(--action); color:var(--action-text); border-color:transparent; }
+.btn.ghost { border-color:transparent; background:transparent; color:var(--fg2); }
+.btn.sm { height:26px; padding:0 8px; font-size:12px; }
+.badge { display:inline-flex; align-items:center; gap:4px; font-size:11px; line-height:1; padding:4px 7px; border-radius:999px; border:1px solid var(--neutral-border); background:var(--neutral-soft); color:var(--neutral-text); white-space:nowrap; }
+.badge.accent { background:var(--accent-soft); color:var(--accent-text); border-color:transparent; }
+.badge.warn { background:var(--warn-soft); color:var(--warn-text); border-color:var(--warn-border); }
+.badge.cheap { background:var(--cheap-soft); color:var(--cheap-text); border-color:transparent; }
+.badge.dear { background:var(--dear-soft); color:var(--dear-text); border-color:transparent; }
+.card { background:var(--surface); border:1px solid var(--border); border-radius:10px; }
+
+.wrap { max-width:1920px; }
+.intro { max-width:96ch; }
+.tbl { width:100%; border-collapse:collapse; font-size:13px; }
+.tbl th { position:sticky; top:0; background:var(--sunken); color:var(--fg3); font-weight:500; font-size:11.5px; text-align:left; padding:8px 10px; border-bottom:1px solid var(--border2); z-index:1; }
+.tbl td { padding:8px 10px; border-bottom:1px solid var(--border); vertical-align:top; }
+.tbl .r { text-align:right; }
+.scroller { overflow:auto; max-height:820px; }
+tr.ch td { cursor:pointer; padding-top:7px; padding-bottom:7px; }
+tr.art.root td { background:var(--sunken); font-weight:600; }
+tr.art.mid td { background:var(--neutral-soft); }
+tr.art.leaf td { background:var(--neutral-soft); }
+tr.art.leaf .cht { font-weight:600; }
+tr.sec td { background:var(--surface); border-bottom:1px dashed var(--border2); }
+tr.sec .cht { color:var(--fg); font-weight:500; }
+.eb { font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--warn-text); background:var(--warn-soft); border:1px solid var(--warn-border); border-radius:999px; padding:1px 6px; margin-right:6px; }
+.crumb { display:block; padding-left:20px; font-size:11.5px; color:var(--fg3); }
+.tw { display:inline-block; width:14px; color:var(--fg3); transition:transform .1s; }
+tr.ch[aria-expanded="false"] .tw { transform:rotate(-90deg); }
+.chn { color:var(--fg3); margin-right:4px; }
+.chm { float:right; color:var(--fg2); font-size:12px; font-weight:400; }
+td.work { min-width:360px; width:36%; }
+.lnk { all:unset; cursor:pointer; color:var(--fg); }
+.lnk:hover { text-decoration:underline; }
+.cap { display:block; font-size:11px; color:var(--fg3); font-family:var(--font-sans); white-space:normal; }
+.dear-t { color:var(--dear); } .cheap-t { color:var(--cheap); }
+tr.ln.hl td { background:var(--accent-soft); }
+tr.ln.np td { background:var(--dear-soft); }
+tr.ln.np td:first-child { box-shadow:inset 3px 0 0 var(--dear); }
+tr.ln.np .num { color:var(--dear-text); }
+.badge.npb { background:var(--dear); color:#fff; border-color:transparent; }
+.npc { color:var(--dear); font-weight:500; }
+.fbar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; font-size:13px; color:var(--fg2); }
+.seg { display:inline-flex; background:var(--neutral-soft); border-radius:8px; padding:3px; gap:2px; }
+.seg button { border:0; background:transparent; font:inherit; font-size:12.5px; color:var(--fg2); padding:5px 10px; border-radius:6px; cursor:pointer; }
+.seg button[aria-pressed="true"] { background:var(--surface); color:var(--fg); box-shadow:0 1px 2px rgba(0,0,0,.08); }
+.grid2 { display:grid; grid-template-columns:minmax(0,1fr) 680px; gap:16px; align-items:start; }
+@media (max-width:1200px){ .grid2{ grid-template-columns:1fr; } }
+.sheet { background:var(--surface); border:1px solid var(--border2); border-radius:12px; padding:18px; display:grid; gap:14px; box-shadow:var(--shadow); }
+.sheet h3 { font-family:var(--font-serif); font-size:21px; line-height:1.2; }
+.path { list-style:none; margin:0; padding:0; display:grid; gap:2px; color:var(--fg2); }
+.path li:last-child { color:var(--fg); font-weight:500; }
+.where { background:var(--sunken); border-radius:8px; padding:10px 12px; display:grid; gap:6px; }
+.lbl { font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--fg3); }
+.artchip { display:inline-block; background:var(--accent-soft); color:var(--accent-text); border-radius:6px; padding:2px 8px; font-size:12px; }
+.an { border-top:1px solid var(--border); padding-top:12px; display:grid; gap:6px; }
+:root { --k-fresh:#0E7C7B; --k-fresh-soft:#DDF1F0; --k-own:#7A4FB5; --k-own-soft:#EEE6F8; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --k-fresh:#4FC3C1; --k-fresh-soft:#1D3534; --k-own:#B794E8; --k-own-soft:#30263F; } }
+:root[data-theme="dark"] { --k-fresh:#4FC3C1; --k-fresh-soft:#1D3534; --k-own:#B794E8; --k-own-soft:#30263F; }
+.k { display:inline-flex; align-items:center; gap:5px; font-size:12px; font-weight:600; line-height:1; padding:5px 10px 5px 8px; border-radius:999px; color:#fff; white-space:nowrap; }
+.k i { font-style:normal; font-size:12px; opacity:.9; }
+.k-low { background:var(--cheap); }
+.k-fresh { background:var(--k-fresh); }
+.k-own { background:var(--k-own); }
+.k-pick, .k-target { background:var(--action); color:var(--action-text); }
+.k-own.soft { background:var(--k-own-soft); color:var(--k-own); font-weight:500; font-size:11px; padding:3px 8px; }
+.k-class { background:var(--accent-soft); color:var(--accent-text); border:1px solid var(--accent); }
+.k-rel { background:var(--warn-soft); color:var(--warn-text); border:1px solid var(--warn-border); font-weight:500; }
+.ktags { display:flex; gap:5px; flex-wrap:wrap; }
+.an .k-target { display:none; } .an.is-target .k-target { display:inline-flex; }
+.an.is-target { box-shadow:inset 3px 0 0 var(--action); padding-left:12px; }
+.big2 { font-size:15px; font-weight:600; }
+.sh-h { display:flex; justify-content:space-between; gap:12px; }
+.verdict { display:inline-block; font-size:13px; font-weight:600; padding:4px 10px; border-radius:6px; }
+.verdict.in { background:var(--neutral-soft); color:var(--fg); }
+.blk { display:grid; gap:10px; border-top:1px solid var(--border); padding-top:12px; }
+.kv { display:grid; grid-template-columns:150px 1fr; gap:6px 12px; margin:0; font-size:13px; }
+.kv dt { color:var(--fg3); } .kv dd { margin:0; }
+.tcs { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:8px; }
+.tc { all:unset; box-sizing:border-box; cursor:pointer; display:grid; gap:6px; align-content:start; padding:12px; border-radius:10px; border:1px solid var(--border2); background:var(--surface); }
+.tc[hidden] { display:none; }
+.tc:hover { background:var(--hover); }
+.tc-n { font-size:22px; font-weight:600; } .tc-n .num { font-size:22px; }
+.tc-low { border-top:4px solid var(--cheap); } .tc-fresh { border-top:4px solid var(--k-fresh); } .tc-own { border-top:4px solid var(--k-own); } .tc-pick { border-top:4px solid var(--action); }
+.tc[aria-pressed="true"] { outline:2px solid var(--action); outline-offset:-1px; background:var(--sunken); }
+.tc-f { font-size:12px; margin-top:2px; }
+.tc-f .on { display:none; font-weight:600; } .tc[aria-pressed="true"] .tc-f .on { display:inline; } .tc[aria-pressed="true"] .tc-f .off { display:none; }
+.tc-f .off { color:var(--fg2); text-decoration:underline; }
+.inp { font:inherit; font-size:13px; color:var(--fg); background:var(--surface); border:1px solid var(--border2); border-radius:7px; padding:6px 10px; }
+.row { display:flex; gap:8px; } .row .inp { flex:1; }
+.ta { width:100%; box-sizing:border-box; resize:vertical; line-height:1.45; }
+/* Тема — как в приложении: по умолчанию светлая, системную не берём (ThemeProvider enableSystem=false);
+   тёмные значения — из frontend/src/index.css [data-theme="dark"]. */
+:root[data-theme="dark"] {
+  --bg-page:#1A1D24; --surface:#232730; --sunken:#1F232B; --hover:#262B35;
+  --fg:#EDEAE0; --fg2:#B5B2A8; --fg3:#8E8B82;
+  --border:#2D323D; --border2:#3A4148;
+  --accent:#8FAB91; --accent-soft:#2A352D; --accent-text:#B8C4BB;
+  --action:#B8C4BB; --action-text:#1A1D24;
+  --neutral-soft:#2A2D33; --neutral-border:#353944; --neutral-text:#B5B2A8;
+  --warn:#D49A6E; --warn-soft:#353027; --warn-border:#4A3D2E; --warn-text:#D49A6E;
+  --dear:#E07878; --dear-soft:#3A2929; --dear-text:#E8A0A0;
+  --k-fresh:#4FC3C1; --k-fresh-soft:#1D3534; --k-own:#9085E9; --k-own-soft:#2E2A45;
+  color-scheme:dark; }
+:root[data-theme="dark"] .k:not(.k-class):not(.k-rel):not(.soft) { color:#1A1D24; }
+.thm { position:fixed; top:14px; right:16px; z-index:10; box-shadow:var(--shadow); background:var(--surface); }
+.an[hidden] { display:none; }
+.an.is-target .mk { display:none; }
+.anmore { all:unset; box-sizing:border-box; cursor:pointer; width:100%; text-align:center; padding:9px; border:1px dashed var(--border2); border-radius:8px; color:var(--fg2); font-size:12.5px; }
+.anmore:hover { background:var(--hover); color:var(--fg); }
+.btn.tgt { border-color:var(--action); font-weight:600; } .btn.tgt i { font-style:normal; }
+.btn.tgt:hover { background:var(--action); color:var(--action-text); }
+.an-a { justify-content:flex-end; }
+.exp { display:grid; gap:12px; padding:16px; border-radius:12px; border:1px solid var(--action); border-top:5px solid var(--action); background:var(--surface); box-shadow:var(--shadow); }
+.exp-h { display:flex; gap:10px; align-items:center; }
+.exp-ic { width:32px; height:32px; border-radius:8px; display:grid; place-items:center; background:var(--action); color:var(--action-text); font-size:17px; }
+.exp-t { font-family:var(--font-serif); font-size:22px; font-weight:600; line-height:1.1; }
+.exp-n .num { font-size:30px; font-weight:600; }
+.exp-b { background:var(--accent-soft); color:var(--accent-text); border-color:transparent; font-size:12px; padding:5px 9px; }
+.exp-b.deal { background:var(--action); color:var(--action-text); }
+.fld { display:grid; gap:6px; padding-top:10px; border-top:1px solid var(--border); }
+.an-h { display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; font-size:13px; }
+.an-t { font-size:13.5px; }
+.an-w { display:grid; gap:4px; }
+.an-a { display:flex; gap:6px; }
+.chips { display:flex; gap:6px; flex-wrap:wrap; }
+.pill { font-size:11.5px; padding:3px 9px; border-radius:999px; background:var(--neutral-soft); border:1px solid var(--neutral-border); color:var(--neutral-text); }
+.pill.same { background:var(--accent-soft); color:var(--accent-text); border-color:transparent; }
+.target { background:var(--sunken); border-radius:8px; padding:10px 12px; display:grid; gap:8px; }
+.pills { display:flex; gap:6px; flex-wrap:wrap; }
+.tp { border:1px solid var(--border2); background:var(--surface); color:var(--fg); font:inherit; font-size:12.5px; padding:5px 11px; border-radius:999px; cursor:pointer; }
+.tp[aria-pressed="true"] { background:var(--action); color:var(--action-text); border-color:transparent; }
+.tp .auto { font-size:10.5px; opacity:.75; margin-left:4px; }
+.chg { display:grid; gap:6px; max-width:96ch; font-size:13px; color:var(--fg2); margin:0 0 14px; padding-left:18px; }
+.thm { top:auto; bottom:14px; }
+.jgrid { display:grid; grid-template-columns:minmax(0,1fr) 560px; gap:16px; align-items:start; }
+@media (max-width:1200px){ .jgrid{ grid-template-columns:1fr; } }
+.hd { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap; }
+.hd h2 { font-family:var(--font-serif); font-size:28px; line-height:1.1; }
+.ptabs { display:inline-flex; gap:4px; background:var(--neutral-soft); padding:4px; border-radius:10px; flex-wrap:wrap; }
+.ptabs span { font-size:13px; padding:6px 14px; border-radius:7px; color:var(--fg2); }
+.ptabs .on { background:var(--surface); color:var(--fg); font-weight:500; box-shadow:0 1px 2px rgba(0,0,0,.08); }
+.ptabs .new { display:inline-block; min-width:18px; margin-left:6px; padding:0 5px; border-radius:999px; background:var(--action); color:var(--action-text); font-size:11px; text-align:center; }
+.sel { font:inherit; font-size:12.5px; color:var(--fg); background:var(--surface); border:1px solid var(--border2); border-radius:7px; height:30px; padding:0 8px; }
+.seg button .c { color:var(--fg3); margin-left:4px; font-size:11.5px; }
+.kd { display:inline-flex; align-items:center; gap:6px; font-size:11.5px; font-weight:600; padding:3px 9px 3px 7px; border-radius:999px; white-space:nowrap; }
+.kd::before { content:""; width:7px; height:7px; border-radius:50%; background:currentColor; }
+.kd-split { background:var(--accent-soft); color:var(--accent-text); }
+.kd-comp { background:var(--warn-soft); color:var(--warn-text); }
+.kd-new { background:var(--cheap-soft); color:var(--cheap-text); }
+.kd-eq { background:var(--k-own-soft); color:var(--k-own); }
+tr.day td { background:var(--sunken); font-size:11.5px; color:var(--fg3); letter-spacing:.04em; text-transform:uppercase; padding:6px 10px; }
+tr.je td { cursor:pointer; }
+tr.je:hover td { background:var(--hover); }
+tr.je[aria-selected="true"] td { background:var(--accent-soft); }
+tr.je[aria-selected="true"] td:first-child { box-shadow:inset 3px 0 0 var(--accent); }
+tr.je.off .what { color:var(--fg3); text-decoration:line-through; text-decoration-color:var(--border2); }
+.what b { font-weight:600; }
+.st { font-size:11px; padding:2px 7px; border-radius:999px; border:1px solid var(--neutral-border); color:var(--neutral-text); white-space:nowrap; }
+.st.off { border-style:dashed; }
+.st.fix { background:var(--neutral-soft); }
+.more { all:unset; box-sizing:border-box; cursor:pointer; display:block; width:100%; text-align:center; padding:10px; color:var(--fg2); font-size:12.5px; border-top:1px dashed var(--border2); }
+.more:hover { background:var(--hover); color:var(--fg); }
+.det { position:sticky; top:12px; }
+.det h3 { font-family:var(--font-serif); font-size:21px; line-height:1.2; }
+.meta { display:flex; gap:8px; flex-wrap:wrap; align-items:center; font-size:12px; color:var(--fg3); }
+.grp { border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+.grp-h { display:flex; justify-content:space-between; gap:10px; padding:8px 12px; background:var(--sunken); font-size:13px; }
+.grp ul { list-style:none; margin:0; padding:4px 0; }
+.grp li { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:5px 12px; font-size:12.5px; color:var(--fg2); }
+.grp li .sel { height:26px; font-size:12px; }
+.parts { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+.part { font-size:12.5px; padding:4px 10px; border-radius:7px; border:1px solid var(--border2); background:var(--surface); }
+.part small { display:block; font-size:10.5px; color:var(--fg3); }
+.part.new { border-color:var(--cheap); }
+.part.new small { color:var(--cheap-text); }
+.plus { color:var(--fg3); font-size:12px; }
+.ba { display:grid; gap:6px; padding:12px; border-radius:8px; background:var(--sunken); }
+.ba-arr { line-height:1; padding-left:14px; }
+.cx { display:grid; gap:4px; padding:8px 0; border-bottom:1px dashed var(--border); }
+.cx-n { font-size:13px; font-weight:500; }
+.cx-kv { grid-template-columns:130px 1fr; font-size:12.5px; }
+.ba-col { display:grid; gap:6px; align-content:start; }
+.ba-arr { font-size:22px; color:var(--fg2); }
+.part { font-size:13.5px; font-weight:500; }
+.part.was { text-decoration:line-through; text-decoration-color:var(--fg3); color:var(--fg2); font-weight:400; width:fit-content; }
+.arrow { font-size:18px; color:var(--fg3); }
+.vals { display:flex; gap:5px; flex-wrap:wrap; }
+.vals span { font-size:12px; padding:2px 8px; border-radius:999px; background:var(--neutral-soft); color:var(--neutral-text); }
+.acts { display:flex; gap:8px; flex-wrap:wrap; border-top:1px solid var(--border); padding-top:12px; }
+.btn.undo { border-color:var(--dear); color:var(--dear); font-weight:600; }
+.btn.undo:hover { background:var(--dear); color:#fff; }
+.btn.link { border-color:transparent; background:transparent; color:var(--fg2); text-decoration:underline; text-underline-offset:3px; }
+.note { font-size:12.5px; padding:10px 12px; border-radius:8px; background:var(--neutral-soft); color:var(--fg2); border-left:3px solid var(--neutral-border); }
+.note.off { border-left-color:var(--dear); }
+.note.done { border-left-color:var(--accent); }
+.edit { display:grid; gap:10px; padding:12px; border:1px dashed var(--action); border-radius:8px; }
+.ovl { position:fixed; inset:0; background:rgba(15,17,22,.45); display:grid; place-items:center; padding:16px; z-index:20; }
+.ovl[hidden] { display:none; }
+.dlg { background:var(--surface); color:var(--fg); border-radius:12px; padding:20px; max-width:480px; width:100%; display:grid; gap:12px; box-shadow:0 12px 40px rgba(0,0,0,.3); }
+.dlg h4 { margin:0; font-family:var(--font-serif); font-size:20px; }
+.dlg ul { margin:0; padding-left:18px; display:grid; gap:4px; font-size:13px; color:var(--fg2); }
+.dlg .acts { justify-content:flex-end; border:0; padding:0; }
+.btn.danger { background:var(--dear); color:#fff; border-color:transparent; font-weight:600; }
+:root[data-theme="dark"] .btn.danger, :root[data-theme="dark"] .btn.undo:hover { color:#1A1D24; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="seg thm" role="group" aria-label="Тема"><button type="button" aria-pressed="true" data-th="light">светлая</button><button type="button" aria-pressed="false" data-th="dark">тёмная</button></div>
+<div class="intro">
+  <div class="eyebrow">GCA · макет к дизайну «Упрощение управления каталогом» · журнал, ред. 1</div>
+  <h1 class="serif">«Журнал ИИ» — четвёртая вкладка «Семей»</h1>
+  <p class="lead">Всё, что система сама сделала с каталогом в рамках этой фичи: <b>деления контекстов, склейки, ставшие составными значениями,
+  новые значения и приравнивания</b>. Слева — лента записей с отборами, справа — карточка выбранной записи и то, что из неё
+  можно исправить. Автоматические действия идут от имени «система», правки — от администратора. Записи, числа и строки
+  условные.</p>
+</div>
+<ul class="chg">
+  <li>Кликните запись слева — справа её карточка. У деления попробуйте «Поправить» и «Отменить — вернуть как было».</li>
+  <li>Отменённая запись остаётся в ленте зачёркнутой: видно, кто и когда отменил и что стало с контекстом.</li>
+  <li>Остальные автоматические действия ИИ (назначение семьи по порогу, схема параметров, варианты) сюда не входят — это техдолг.</li>
+</ul>
+
+<div class="app" style="margin-top:18px">
+  <div class="appbar"><span class="logo">База расценок ГП</span><nav><span>Главная</span><span>Договоры</span><span>Тендеры</span><span class="on">Семьи</span></nav></div>
+  <div class="page">
+    <div class="hd">
+      <div><h2>Семьи и контексты</h2><p class="t2 small">Семьи работ, семантика контекстов каталога и операции над ними</p></div>
+      <div class="ptabs" role="tablist"><span>Семьи</span><span>Контексты</span><span>Предложения</span><span class="on">Журнал ИИ<span class="new" title="новых с последнего просмотра">2</span></span></div>
+    </div>
+
+    <div class="fbar">
+      <div class="seg" role="group" aria-label="Вид записи" id="fkind">
+        <button type="button" aria-pressed="true" data-k="all">Все<span class="c">412</span></button>
+        <button type="button" aria-pressed="false" data-k="split">Деления<span class="c">58</span></button>
+        <button type="button" aria-pressed="false" data-k="comp">Склейки<span class="c">163</span></button>
+        <button type="button" aria-pressed="false" data-k="nv">Новые значения<span class="c">47</span></button>
+        <button type="button" aria-pressed="false" data-k="eq">Приравнено<span class="c">144</span></button>
+      </div>
+      <select class="sel" id="ffam" aria-label="Семья"><option value="">Все семьи</option></select>
+      <select class="sel" id="fst" aria-label="Состояние"><option value="">Действуют и отменённые</option><option value="on">Только действующие</option><option value="off">Только отменённые</option></select>
+      <input class="inp" style="height:30px;min-width:220px" placeholder="Значение, контекст, семья" aria-label="Поиск">
+    </div>
+
+    <div class="jgrid">
+      <div class="card" style="overflow:hidden">
+        <table class="tbl"><thead><tr><th style="width:150px">Что</th><th>Запись</th><th style="width:210px">Семья</th><th style="width:96px">Когда</th></tr></thead>
+        <tbody id="list"></tbody></table>
+        <button class="more" type="button">Показать ещё 50 · всего 412</button>
+      </div>
+      <section class="sheet det" id="det" aria-live="polite"></section>
+    </div>
+  </div>
+</div>
+</div>
+
+<div class="ovl" id="ovl" hidden><div class="dlg" role="dialog" aria-modal="true" aria-labelledby="dlg-t"><h4 id="dlg-t"></h4><div id="dlg-b"></div>
+<div class="acts"><button type="button" class="btn" id="dlg-no">Не отменять</button><button type="button" class="btn danger" id="dlg-ok"></button></div></div></div>
+
+<script>
+function setTheme(t) {
+  document.documentElement.dataset.theme = t;
+  document.querySelectorAll('[data-th]').forEach(b => b.setAttribute('aria-pressed', b.dataset.th === t));
+  try { localStorage.setItem('mk-theme', t); } catch (e) {}
+}
+document.querySelectorAll('[data-th]').forEach(b => b.addEventListener('click', () => setTheme(b.dataset.th)));
+try { const t = localStorage.getItem('mk-theme'); if (t === 'dark' || t === 'light') setTheme(t); } catch (e) {}
+
+const KIND = { split:['Деление','kd-split'], comp:['Склейка → составное','kd-comp'], nv:['Новое значение','kd-new'], eq:['Приравнено','kd-eq'] };
+const BETON = 'Устройство жб конструкций';
+const COLS = ['колонны','пилоны','трансферные конструкции'];
+const cp = (b, w, sec) => ({ name:'Корпус ' + sec + ' ' + b + (w ? ' ' + w + ' F150' : '') + ' арматурой класса А500С, А240', other:'класс бетона ' + b + ' · ' + (w ? 'водонепроницаемость ' + w : 'водонепроницаемость не указана') });
+const E = [
+  { id:102, day:'11 ноября 2026 · новая смета КП', when:'11.11 09:40', kind:'eq', fam:BETON, param:'Тип конструкции',
+    value:'плиты покрытий', to:'перекрытия', contexts:3, src:'ответ модели по строке «Бетонирование плит покрытий В30 толщ. 220»', state:'on' },
+  { id:101, day:'11 ноября 2026 · новая смета КП', when:'11.11 09:40', kind:'nv', fam:'Вентиляция', param:'Тип изделия',
+    value:'диффузор щелевой', contexts:1, src:'ответ модели по строке «Диффузор щелевой 2-щелевой L=1200»',
+    existing:['решётка вентиляционная','решётка декоративная','диффузор','клапан обратный','воздуховод'], state:'on' },
+  { id:91, day:'10 ноября 2026 · первый прогон', when:'10.11 03:12', kind:'split', fam:BETON,
+    ctx:'Бетонирование стен и колонн В40', level:3, levels:{2:'Корпус 2 / Корпус 3 / Корпус 5 / Корпус 7 / Корпус 9', 3:'Стены / Колонны'},
+    groups:[ { sec:'Стены', val:'стены', n:14, after:2, lines:['Корпус 2 › Стены В40 толщ. 200','Корпус 3 › Стены В40 толщ. 250','Корпус 5 › Стены лифтовых шахт В40'] },
+             { sec:'Колонны', val:'колонны', n:9, lines:['Корпус 2 › Колонны 400×400 В40','Корпус 7 › Колонны 500×500 В40','Корпус 9 › Колонны 400×600 В40'] } ],
+    state:'on' },
+  { id:97, day:'10 ноября 2026 · первый прогон', when:'10.11 03:13', kind:'split', fam:BETON,
+    ctx:'Бетонирование лестничных маршей и площадок В30', level:3, levels:{3:'Марши / Площадки'},
+    groups:[ { sec:'Марши', val:'лестничные марши', n:8, lines:['Корпус 1 › Марши В30'] },
+             { sec:'Площадки', val:'лестничные площадки', n:5, lines:['Корпус 1 › Площадки В30'] } ],
+    state:'locked', lockedBy:'«…Площадки» — администратор перенёс 2 строки, 10.11 12:05' },
+  { id:92, day:'10 ноября 2026 · первый прогон', when:'10.11 03:12', kind:'split', fam:'Перегородки из газобетона',
+    ctx:'Кладка перегородок из газобетона D500', level:3, levels:{3:'Перегородки 100 мм / Перегородки 200 мм'},
+    groups:[ { sec:'Перегородки 100 мм', val:'100 мм', n:6, lines:['Типовой этаж › Перегородки 100 мм'] },
+             { sec:'Перегородки 200 мм', val:'200 мм', n:4, lines:['Типовой этаж › Перегородки 200 мм'] } ],
+    state:'off', by:'администратор · 10.11 15:42' },
+  { id:93, day:'10 ноября 2026 · первый прогон', when:'10.11 03:14', kind:'comp', fam:BETON, param:'Тип конструкции',
+    value:'колонны, пилоны, трансферные конструкции', parts:COLS.map(v => [v, 'old']), contexts:13,
+    src:'название раздела сметы: подрядчик оценил колонны, пилоны и трансферные конструкции одной строкой',
+    ctxs:[ cp('B50', 'W6', '4 с 2-го по 14 этаж'), cp('B40', 'W6', '1 с 25-го до кровли'), cp('B70', 'W6', '6 с 2-го по 9 этаж') ], state:'on' },
+  { id:95, day:'10 ноября 2026 · первый прогон', when:'10.11 03:14', kind:'comp', fam:BETON, param:'Тип конструкции',
+    value:'балки, капители, трансферные конструкции', parts:[ ['балки','old'], ['капители','old'], ['трансферные конструкции','old'] ], contexts:2,
+    src:'название раздела сметы',
+    ctxs:[ cp('B40', 'W6', '1, 2, 3, 4, 5, 7, 9'), cp('B50', '', '1, 2, 3, 4, 5, 7, 9') ], state:'on' },
+  { id:94, day:'10 ноября 2026 · первый прогон', when:'10.11 03:16', kind:'nv', fam:BETON, param:'Тип конструкции',
+    value:'ригели', contexts:1, src:'ответ модели по строке «Ригели монолитные В40 W6 F150»',
+    existing:['балки','капители','колонны','лестничные марши','парапеты','перекрытия','пилоны','плиты','стены','трансферные конструкции'], state:'on' },
+  { id:96, day:'10 ноября 2026 · первый прогон', when:'10.11 03:15', kind:'comp', alt:true, fam:'Перегородки из ГКЛ', param:'Система',
+    value:'Knauf П113 или Gyproc П-1М-1ГСП', parts:[ ['Knauf П113','old'], ['Gyproc П-1М-1ГСП','new'] ], contexts:1,
+    ctxs:[ { name:'Устройство перегородок из ГКЛ в два слоя', other:'толщина 125 мм' } ], state:'on' },
+];
+let sel = 91, editing = false, merging = false;
+const fk = { kind:'all', fam:'', st:'' };
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const q = s => '«' + esc(s) + '»';
+
+function line(e) {
+  if (e.kind === 'split') return 'Контекст <b>' + q(e.ctx) + '</b> разделён по разделам сметы на ' + e.groups.length + ': ' +
+    e.groups.map(g => esc(g.sec) + ' — ' + g.n).join(', ');
+  if (e.kind === 'comp') return q(e.value) + ' → ' + e.parts.map(([v]) => '<b>' + q(v) + '</b>').join(e.alt ? ' или ' : ' + ');
+  if (e.kind === 'nv') return 'Добавлено <b>' + q(e.value) + '</b> в ' + q(e.param);
+  return '<b>' + q(e.value) + '</b> = ' + q(e.to) + ' в ' + q(e.param);
+}
+function stateChip(e) {
+  if (e.state === 'off') return ' <span class="st off">отменено</span>';
+  if (e.state === 'fix') return ' <span class="st fix">поправлено</span>';
+  if (e.state === 'locked') return ' <span class="st">правили вручную</span>';
+  if (e.state === 'merged') return ' <span class="st fix">слито</span>';
+  return '';
+}
+function visible(e) {
+  return (fk.kind === 'all' || e.kind === fk.kind) && (!fk.fam || e.fam === fk.fam) &&
+    (!fk.st || (fk.st === 'off' ? e.state === 'off' : e.state !== 'off'));
+}
+function renderList() {
+  let html = '', day = '';
+  E.filter(visible).forEach(e => {
+    if (e.day !== day) { day = e.day; html += '<tr class="day"><td colspan="4">' + esc(day) + '</td></tr>'; }
+    html += '<tr class="je' + (e.state === 'off' ? ' off' : '') + '" data-id="' + e.id + '" aria-selected="' + (e.id === sel) + '" tabindex="0">' +
+      '<td><span class="kd ' + KIND[e.kind][1] + '">' + KIND[e.kind][0] + '</span></td>' +
+      '<td><span class="what">' + line(e) + '</span>' + stateChip(e) + '</td>' +
+      '<td class="t2 small">' + esc(e.fam) + '</td><td class="num t3 small">' + esc(e.when) + '</td></tr>';
+  });
+  document.getElementById('list').innerHTML = html || '<tr><td colspan="4" class="t3">Записей с такими отборами нет.</td></tr>';
+  document.querySelectorAll('tr.je').forEach(tr => {
+    const go = () => { sel = +tr.dataset.id; editing = false; merging = false; renderList(); renderDet(); };
+    tr.addEventListener('click', go);
+    tr.addEventListener('keydown', ev => { if (ev.key === 'Enter') go(); });
+  });
+}
+function head(e) {
+  return '<div class="meta"><span class="kd ' + KIND[e.kind][1] + '">' + KIND[e.kind][0] + '</span><span>запись ' + e.id +
+    '</span><span>·</span><span class="num">' + esc(e.when) + '</span><span>·</span><span>система</span></div>';
+}
+function human() { return '<div class="acts"><button class="btn" type="button" title="снять пометку решения человека">Вернуть автоматику</button></div>'; }
+function offNote(e, text) { return '<div class="note off"><b>Отменено</b> · ' + esc(e.by) + '. ' + text + '</div>'; }
+
+function detSplit(e) {
+  let h = head(e) + '<h3>Контекст ' + q(e.ctx) + ' разделён</h3>' +
+    '<dl class="kv"><dt>Семья</dt><dd>' + esc(e.fam) + '</dd><dt>Почему</dt><dd>значение главного параметра у строк разное, а пути в сметах расходятся на ' + e.level + '-м уровне разделов</dd>' +
+    '<dt>Правила</dt><dd>' + e.groups.length + ' правила маршрутизации «ближайший раздел = …»: новые строки из этих разделов сразу идут в свой контекст</dd></dl>';
+  if (e.state === 'off') return h + offNote(e, 'Контекст снова один, помечен «к делению», аналогов у строк нет. Автоматически система его больше не делит — разделить можно вручную на вкладке «Контексты».') +
+    '<div class="acts"><button class="btn link" type="button" title="переход на вкладку «Контексты»">Открыть контекст →</button></div>';
+  if (e.state === 'locked') return h + '<div class="note off"><b>Отмена недоступна</b>: после деления часть правил человек — ' + esc(e.lockedBy) + '. Ручное решение отмена не стирает; дальше — вручную на вкладке «Контексты».</div>' +
+    '<div class="acts"><button class="btn undo" type="button" disabled style="opacity:.45;cursor:not-allowed">Отменить — вернуть как было</button><button class="btn link" type="button">Открыть контекст →</button></div>';
+  if (editing) {
+    h += '<div class="edit"><div class="row" style="align-items:center"><span class="small t2">Делить по разделам уровня</span><select class="sel">' +
+      Object.entries(e.levels).map(([lv, t]) => '<option' + (+lv === e.level ? ' selected' : '') + '>' + lv + ' — ' + esc(t) + '</option>').join('') + '</select></div>';
+    e.groups.forEach(g => {
+      h += '<div class="grp"><div class="grp-h"><span><b>' + esc(g.sec) + '</b> · значение ' + q(g.val) + '</span><span class="t3">' + g.n + ' строк</span></div><ul>' +
+        g.lines.map(l => '<li><span>' + esc(l) + '</span><select class="sel" aria-label="В группу">' +
+          e.groups.map(o => '<option' + (o === g ? ' selected' : '') + '>в ' + q(o.sec) + '</option>').join('') + '</select></li>').join('') +
+        '<li class="t3">… ещё ' + (g.n - g.lines.length) + '</li></ul></div>';
+    });
+    h += '<div class="acts" style="border:0;padding:0"><button class="btn primary" type="button" id="save">Сохранить правку</button><button class="btn" type="button" id="cancelEdit">Не сохранять</button></div></div>';
+    return h;
+  }
+  if (e.state === 'fix') h += '<div class="note done"><b>Поправлено</b> · администратор · только что. Правила маршрутизации пересобраны.</div>';
+  e.groups.forEach(g => {
+    h += '<div class="grp"><div class="grp-h"><span><b>' + esc(g.sec) + '</b> · значение ' + q(g.val) + '</span><span class="t3">' + g.n + ' строк</span></div><ul>' +
+      g.lines.map(l => '<li><span>' + esc(l) + '</span></li>').join('') + '<li class="t3">… ещё ' + (g.n - g.lines.length) + '</li></ul></div>';
+  });
+  return h + '<div class="acts"><button class="btn undo" type="button" id="undo">Отменить — вернуть как было</button><button class="btn" type="button" id="edit">Поправить</button><button class="btn link" type="button">Открыть контекст →</button></div>';
+}
+function detComp(e) {
+  let h = head(e) + '<h3>' + q(e.value) + ' стало составным значением из ' + e.parts.length + ' частей</h3>' +
+    '<dl class="kv"><dt>Семья · параметр</dt><dd>' + esc(e.fam) + ' · ' + q(e.param) + '</dd>' +
+    (e.src ? '<dt>Откуда склейка</dt><dd>' + esc(e.src) + '</dd>' : '') + '</dl>' +
+    '<div class="ba"><div class="ba-col"><span class="lbl">Было — простое значение, склейка в тексте</span><span class="part was">' + esc(e.value) + '</span></div>' +
+    '<span class="ba-arr" aria-hidden="true">↓</span>' +
+    '<div class="ba-col"><span class="lbl">Стало — то же значение, составное' + (e.alt ? ' (альтернатива)' : '') + ': части — ссылки на значения списка</span><div class="parts">' +
+    e.parts.map(([v, s], i) => (i ? '<span class="plus">' + (e.alt ? 'или' : '+') + '</span>' : '') +
+      '<span class="part' + (s === 'new' ? ' new' : '') + '">' + esc(v) + '<small>' + (s === 'new' ? 'заведено новым' : 'уже было в списке') + '</small></span>').join('') + '</div></div></div>' +
+    (e.alt ? '<p class="small t2">«Или» — альтернатива: аналог — такая же альтернатива, части — для справки.</p>' : '<p class="small t2">Аналоги таких строк — строки с тем же составом частей; части — блоком «по частям, для справки».</p>') +
+    '<div class="blk"><span class="lbl">Контексты · ' + e.contexts + ' — значение то же, варианты не меняются</span>' +
+    e.ctxs.map(c => '<div class="cx"><div class="cx-n">' + esc(c.name) + '</div><dl class="kv cx-kv">' +
+      '<dt>' + esc(e.param) + '</dt><dd><b>' + e.parts.map(([v]) => esc(v)).join(e.alt ? ' или ' : ' + ') + '</b> <span class="t3">— одно составное значение; было текстом ' + q(e.value) + '</span></dd>' +
+      '<dt>Остальные</dt><dd class="t2">' + esc(c.other) + ' — без изменений</dd></dl></div>').join('') +
+    (e.contexts > e.ctxs.length ? '<span class="t3 small">… ещё ' + (e.contexts - e.ctxs.length) + '</span>' : '') + '</div>';
+  if (e.state === 'off') return h + offNote(e, 'Значение снова простое, без частей; контексты его не меняли. Решение человека: фильтр склеек это значение больше не раскладывает.') + human();
+  return h + '<div class="acts"><button class="btn undo" type="button" id="undo">Отменить — снова простое значение</button><button class="btn link" type="button">Открыть семью →</button></div>';
+}
+function detNv(e) {
+  let h = head(e) + '<h3>Добавлено значение ' + q(e.value) + '</h3>' +
+    '<dl class="kv"><dt>Семья · параметр</dt><dd>' + esc(e.fam) + ' · ' + q(e.param) + '</dd><dt>Откуда</dt><dd>' + esc(e.src) + '</dd>' +
+    '<dt>Используют</dt><dd>' + e.contexts + ' контекст(а)</dd><dt>Проверка дублей</dt><dd>совпадений по смыслу в списке нет</dd></dl>' +
+    '<div class="blk"><span class="lbl">Значения параметра в списке</span><div class="vals">' + e.existing.map(v => '<span>' + esc(v) + '</span>').join('') + '</div></div>';
+  if (e.state === 'merged') return h + '<div class="note done"><b>Слито</b> с ' + q(e.mergedTo) + ' · администратор · только что. Контексты получили ' + q(e.mergedTo) + '.</div>';
+  if (merging) return h + '<div class="edit"><span class="small t2">Слить ' + q(e.value) + ' с существующим значением — контексты получат его:</span><div class="row"><select class="sel" id="mto" style="flex:1">' +
+    e.existing.map(v => '<option>' + esc(v) + '</option>').join('') + '</select><button class="btn primary" type="button" id="domerge">Слить</button><button class="btn" type="button" id="nomerge">Не сливать</button></div></div>';
+  return h + '<div class="acts"><button class="btn" type="button" id="merge" style="border-color:var(--action);font-weight:600">Слить с другим значением…</button><button class="btn link" type="button">Открыть семью →</button></div>';
+}
+function detEq(e) {
+  let h = head(e) + '<h3>' + q(e.value) + ' приравнено к ' + q(e.to) + '</h3>' +
+    '<dl class="kv"><dt>Семья · параметр</dt><dd>' + esc(e.fam) + ' · ' + q(e.param) + '</dd><dt>Откуда</dt><dd>' + esc(e.src) + '</dd>' +
+    '<dt>Что сделано</dt><dd>новое значение не заведено; ' + e.contexts + ' контекста получили ' + q(e.to) + '</dd></dl>';
+  if (e.state === 'off') return h + offNote(e, q(e.value) + ' заведено отдельным значением, контексты переведены на него. Пара помечена «не дубль»: фильтр больше не приравняет этот текст к ' + q(e.to) + '.') + human();
+  return h + '<div class="acts"><button class="btn undo" type="button" id="undo">Отвязать — завести отдельным значением</button><button class="btn link" type="button">Открыть семью →</button></div>';
+}
+const DIALOG = {
+  split: e => ['Вернуть как было?', '<ul><li>Сейчас в частях: ' + e.groups.map(g => q(g.sec) + ' — ' + (g.n + (g.after || 0)) + ' строк' + (g.after ? ' (из них ' + g.after + ' пришли после деления)' : '')).join(', ') + '. Все они вернутся в один контекст ' + q(e.ctx) + '.</li><li>Снимутся ' + e.groups.length + ' правила маршрутизации, заведённые этим делением.</li><li>Контекст станет «к делению», у его строк не будет аналога.</li><li>Автоматически система его больше делить не будет — только вручную на вкладке «Контексты».</li></ul>', 'Вернуть как было'],
+  comp: e => ['Снова простое значение?', '<ul><li>' + q(e.value) + ' потеряет ссылки на части и станет обычным значением списка; ' + e.contexts + ' контекста остаются на нём.</li><li>Блок «по частям» у этих строк пропадёт.</li><li>Заведённые из склейки значения останутся в списке — слить их можно из их записей.</li></ul>', 'Снова простое значение'],
+  eq: e => ['Отвязать значение?', '<ul><li>' + q(e.value) + ' будет заведено отдельным значением параметра ' + q(e.param) + '.</li><li>' + e.contexts + ' контекста перейдут с ' + q(e.to) + ' на него.</li></ul>', 'Отвязать'],
+};
+function renderDet() {
+  const e = E.find(x => x.id === sel);
+  const det = document.getElementById('det');
+  if (!e) { det.innerHTML = '<p class="t3">Выберите запись слева.</p>'; return; }
+  det.innerHTML = { split:detSplit, comp:detComp, nv:detNv, eq:detEq }[e.kind](e);
+  const on = (id, fn) => { const b = document.getElementById(id); if (b) b.addEventListener('click', fn); };
+  on('undo', () => openDlg(e));
+  on('edit', () => { editing = true; renderDet(); });
+  on('cancelEdit', () => { editing = false; renderDet(); });
+  on('save', () => { editing = false; e.state = 'fix'; renderList(); renderDet(); });
+  on('merge', () => { merging = true; renderDet(); });
+  on('nomerge', () => { merging = false; renderDet(); });
+  on('domerge', () => { e.mergedTo = document.getElementById('mto').value; e.state = 'merged'; merging = false; renderList(); renderDet(); });
+}
+const ovl = document.getElementById('ovl');
+let pending = null;
+function openDlg(e) {
+  const [t, b, ok] = DIALOG[e.kind](e);
+  document.getElementById('dlg-t').textContent = t;
+  document.getElementById('dlg-b').innerHTML = b;
+  document.getElementById('dlg-ok').textContent = ok;
+  pending = e; ovl.hidden = false; document.getElementById('dlg-no').focus();
+}
+function closeDlg() { ovl.hidden = true; pending = null; }
+document.getElementById('dlg-no').addEventListener('click', closeDlg);
+ovl.addEventListener('click', ev => { if (ev.target === ovl) closeDlg(); });
+document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && !ovl.hidden) closeDlg(); });
+document.getElementById('dlg-ok').addEventListener('click', () => {
+  pending.state = 'off'; pending.by = 'администратор · только что'; closeDlg(); renderList(); renderDet();
+});
+document.querySelectorAll('#fkind button').forEach(b => b.addEventListener('click', () => {
+  fk.kind = b.dataset.k;
+  document.querySelectorAll('#fkind button').forEach(x => x.setAttribute('aria-pressed', x === b));
+  renderList();
+}));
+const ffam = document.getElementById('ffam');
+[...new Set(E.map(e => e.fam))].forEach(f => { const o = document.createElement('option'); o.value = f; o.textContent = f; ffam.appendChild(o); });
+ffam.addEventListener('change', () => { fk.fam = ffam.value; renderList(); });
+document.getElementById('fst').addEventListener('change', ev => { fk.st = ev.target.value; renderList(); });
+renderList(); renderDet();
+</script>
+</body>
+</html>

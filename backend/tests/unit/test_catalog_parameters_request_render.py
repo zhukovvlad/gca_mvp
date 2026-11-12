@@ -21,7 +21,8 @@ from services.variant_request import (
 )
 
 #: Тот же литерал, что в `test_catalog_parameters_request_snapshot.py`.
-FULL_EXACT_HASH = "2b2de6c7d26b53314e5582540a0a4bd0a6f7403917ab4195e73e69e5c4f527b8"
+# Эталон сдвинут вместе с промптом значений v2 и форматом ответа `several` (спека упрощения каталога §2.4).
+FULL_EXACT_HASH = "1d312aa4e8dfb5cbdf385489c769da7a7ac7116123b3d8954fba097db5635605"
 
 
 def _settings() -> Settings:

@@ -177,7 +177,7 @@ def test_values_response_format_is_the_documented_literal():
                                 "ordinal": {"type": "integer", "enum": [1, 2, 3]},
                                 "kind": {
                                     "type": "string",
-                                    "enum": ["value", "new", "conflict", "none"],
+                                    "enum": ["value", "new", "conflict", "none", "several"],
                                 },
                                 "value": {"type": ["string", "null"]},
                                 "source": {
@@ -185,9 +185,27 @@ def test_values_response_format_is_the_documented_literal():
                                         {"type": "string", "enum": ["name", "path"]},
                                         {"type": "null"},
                                     ],
+                                    "description": (
+                                        "Обязателен (name или path) при kind value, new и several; "
+                                        "null только при none и conflict."
+                                    ),
+                                },
+                                "values": {
+                                    "anyOf": [
+                                        {"type": "array", "items": {"type": "string"}},
+                                        {"type": "null"},
+                                    ],
+                                },
+                                "combine": {
+                                    "anyOf": [
+                                        {"type": "string", "enum": ["all", "any"]},
+                                        {"type": "null"},
+                                    ],
                                 },
                             },
-                            "required": ["ordinal", "kind", "value", "source"],
+                            "required": [
+                                "ordinal", "kind", "value", "source", "values", "combine",
+                            ],
                             "additionalProperties": False,
                         },
                     },
@@ -207,7 +225,7 @@ def test_values_response_format_is_the_documented_literal():
 class TestPrompts:
     def test_prompt_versions(self):
         assert SCHEMA_PROMPT_VERSION == 4
-        assert VALUES_PROMPT_VERSION == 1
+        assert VALUES_PROMPT_VERSION == 2
 
     def test_schema_prompt_states_thirty_value_limit(self):
         assert "от 1 до 30" in SCHEMA_PROMPT

@@ -50,6 +50,7 @@ from models import (
     FamilyParameterValue,
     FamilyStatus,
     FamilySuggestion,
+    FamilyValuePart,
     ParameterOrigin,
     ParameterRole,
     ParameterValueKind,
@@ -66,6 +67,7 @@ from models import (
     WorkVariant,
     WorkVariantValue,
 )
+from services.ai_journal import record_action
 from services.context_routing import _NOT_APPLICABLE_CATALOG_KINDS
 from services.family_change import (
     FamilyLockMismatch,
@@ -826,7 +828,11 @@ def _carry_human_parameters(
     списка», признак «можно отпустить», происхождение и активные значения (слитые и выведенные не
     переносятся) копируются. Параметры модели прежней версии не переносятся.
     Возвращает `({прежний id параметра: новый}, {прежний id значения: новый},
-    описание параметров для события)`."""
+    описание параметров для события)`. Составные значения переносятся вторым
+    проходом: части — через `value_map`, ключ состава пересобирается; составное,
+    у которого переносится меньше двух частей, в `value_map` не попадает."""
+    from services.composite_values import composite_key
+
     old_parameters = db.execute(
         sa.select(FamilyParameter)
         .where(
@@ -850,7 +856,7 @@ def _carry_human_parameters(
         db.flush()
         parameter_map[old.id] = row.id
         copied = 0
-        for old_value in db.execute(
+        active_values = db.execute(
             sa.select(FamilyParameterValue)
             .where(
                 FamilyParameterValue.parameter_id == old.id,
@@ -858,12 +864,42 @@ def _carry_human_parameters(
                 FamilyParameterValue.retired_at.is_(None),
             )
             .order_by(FamilyParameterValue.id)
-        ).scalars():
+        ).scalars().all()
+        # Два прохода: сначала простые значения, затем составные — их части уже
+        # получили новые `id` (спека упрощения каталога §2.3, место 5).
+        for old_value in active_values:
+            if old_value.composite_kind is not None:
+                continue
             value_row = FamilyParameterValue(
                 parameter_id=row.id, value=old_value.value, value_norm=old_value.value_norm,
                 origin=old_value.origin, range_lo=old_value.range_lo, range_hi=old_value.range_hi,
             )
             db.add(value_row)
+            db.flush()
+            value_map[old_value.id] = value_row.id
+            copied += 1
+        for old_value in active_values:
+            if old_value.composite_kind is None:
+                continue
+            old_parts = db.execute(
+                sa.select(FamilyValuePart.part_value_id).where(
+                    FamilyValuePart.value_id == old_value.id
+                )
+            ).scalars().all()
+            new_parts = sorted(value_map[part] for part in old_parts if part in value_map)
+            if len(new_parts) < 2:
+                continue  # потерявшее части не переносится
+            value_row = FamilyParameterValue(
+                parameter_id=row.id, value=old_value.value, value_norm=old_value.value_norm,
+                origin=old_value.origin, composite_kind=old_value.composite_kind,
+                composite_key=composite_key(old_value.composite_kind, new_parts),
+            )
+            db.add(value_row)
+            db.flush()
+            db.add_all(
+                FamilyValuePart(value_id=value_row.id, part_value_id=part, parameter_id=row.id)
+                for part in new_parts
+            )
             db.flush()
             value_map[old_value.id] = value_row.id
             copied += 1
@@ -881,7 +917,8 @@ def _carry_human_rows(
     «уточняется» не копируется: она ссылается на выведенное значение, которого в
     новой версии нет, и параметр становится недостающим. Значение строки без
     отметки всегда активно (спека 3в §2.2), поэтому перевод по `value_map`
-    полон."""
+    полон, кроме составного, не перенесённого за потерей частей: его строки
+    становятся «не уточнено»."""
     if not parameter_map:
         return
     rows = db.execute(
@@ -893,16 +930,38 @@ def _carry_human_rows(
         )
         .order_by(ContextParameterValue.context_id, ContextParameterValue.parameter_id)
     ).scalars().all()
-    copies = [
-        {
-            "context_id": row.context_id, "schema_id": schema.id,
-            "parameter_id": parameter_map[row.parameter_id],
-            "value_id": value_map[row.value_id] if row.value_id is not None else None,
-            "source": row.source, "job_id": row.job_id, "created_at": row.created_at,
-            "off_list_text": row.off_list_text, "refresh_requested_at": None,
-        }
-        for row in rows
-    ]
+    # Составное, потерявшее части, не переносится: строки на нём становятся «не
+    # уточнено» (спека упрощения каталога §2.3, место 5). Любая иная строка без
+    # перевода — ошибка, как и раньше.
+    dropped = {
+        row.value_id for row in rows
+        if row.value_id is not None and row.value_id not in value_map
+    }
+    if dropped:
+        dropped = set(
+            db.execute(
+                sa.select(FamilyParameterValue.id).where(
+                    FamilyParameterValue.id.in_(dropped),
+                    FamilyParameterValue.composite_kind.is_not(None),
+                )
+            ).scalars()
+        )
+    copies = []
+    for row in rows:
+        carried_off = row.value_id in dropped
+        copies.append(
+            {
+                "context_id": row.context_id, "schema_id": schema.id,
+                "parameter_id": parameter_map[row.parameter_id],
+                "value_id": (
+                    None if row.value_id is None or carried_off else value_map[row.value_id]
+                ),
+                "source": ValueSource.none.value if carried_off else row.source,
+                "job_id": None if carried_off else row.job_id, "created_at": row.created_at,
+                "off_list_text": None if carried_off else row.off_list_text,
+                "refresh_requested_at": None,
+            }
+        )
     if copies:
         db.execute(sa.insert(ContextParameterValue), copies)
         db.flush()
@@ -917,6 +976,9 @@ def _write_frozen_schema(
     получают номера H+1..H+N (`origin = schema`), версия `building` -> `frozen`,
     прежняя текущая -> `superseded` (заморозка сохраняется), событие.
     Вызывающий уже взял блокировки и вынес вердикт."""
+    from services.composite_values import find_or_create_composite
+    from services.value_filters import glue_in_answer
+
     now = _now()
     described: list[dict[str, object]] = []
     carried = 0
@@ -937,16 +999,32 @@ def _write_frozen_schema(
         db.add(row)
         db.flush()
         seen: set[str] = set()
+        texts: list[str] = []
         for text in parameter.values:
             norm = normalize_value(text)
             if norm in seen:
                 continue  # дубль в ответе схлопывается: первое по порядку
             seen.add(norm)
-            value_row = FamilyParameterValue(
-                parameter_id=row.id, value=text.strip(), value_norm=norm,
+            texts.append(text.strip())
+        # Склейка, все части которой названы в этом же ответе, заводится составным
+        # значением (спека упрощения каталога §2.3, место 5), а не простым.
+        glue = glue_in_answer(texts)
+        simple_rows: dict[int, FamilyParameterValue] = {}
+        for index, text in enumerate(texts):
+            if index in glue:
+                continue
+            simple_rows[index] = FamilyParameterValue(
+                parameter_id=row.id, value=text, value_norm=normalize_value(text),
                 origin=ValueOrigin.schema.value,
             )
-            db.add(value_row)
+            db.add(simple_rows[index])
+        db.flush()
+        for index, (kind, part_indexes) in glue.items():
+            find_or_create_composite(
+                db, parameter_id=row.id, kind=kind,
+                part_ids=[simple_rows[part].id for part in part_indexes],
+                context_id=None, source_text=texts[index],
+            )
         described.append({"name": row.name, "values": len(seen)})
     db.flush()
 
@@ -1319,6 +1397,14 @@ def _extend_with_value(
                 "origin": ValueOrigin.extension.value, "context_id": context_id,
             },
         )
+        record_action(
+            db, kind="value_added", family_id=family_id, context_id=context_id,
+            parameter_id=parameter_id, value_id=value_id,
+            payload={
+                "text": text.strip(), "origin_context_id": context_id,
+                "from_composite_id": None,
+            },
+        )
     return value_id
 
 
@@ -1367,6 +1453,7 @@ def apply_values(
     db: Session, *, context_id: int, schema_id: int, answer: ValuesAnswer, paths_hash: str,
     guard: JobGuard | None, settings: Settings,
     requested_ordinals: Sequence[int] | None = None,
+    queue_auto_split: bool = True,
 ) -> ApplyValuesOutcome:
     """Применяет результат `context_values` одной транзакцией (спека §2.6, шаги
     (0)-(8), 3в §2.4); коммит за вызывающим.
@@ -1391,12 +1478,19 @@ def apply_values(
     все активные; `()` — завершение без модели (ничего не запрошено, вариант
     назначается по сохранённым строкам).
 
+    `queue_auto_split` — после назначения варианта ставить (или, при пометке «автоделение не
+    трогает», снимать) задание автоделения контекста «к делению» (спека упрощения каталога
+    §2.5). Само автоделение и отмена деления применяют значения с `False`: задание они ведут
+    сами.
+
     Raises:
         AnswerSchemaError: ответ не согласуется со схемой (состав `ordinal`,
             значение не из списка, пустое после нормализации) — до любой
             записи; вызывающий откатывает транзакцию.
         ValueError: задание охраны не относится к контексту.
     """
+    from services.value_filters import assembled_text, resolve_new_value, resolve_several
+
     if guard is not None:
         subject = db.execute(
             sa.select(SemanticJob.kind, SemanticJob.context_id).where(
@@ -1467,6 +1561,10 @@ def apply_values(
             raise _schema_error(
                 "empty_value", f"ordinal {item.ordinal}: значение пусто после нормализации"
             )
+        if item.kind == "several" and not all(normalize_value(text) for text in item.values or ()):
+            raise _schema_error(
+                "empty_value", f"ordinal {item.ordinal}: значение пусто после нормализации"
+            )
         if item.kind == "value":
             listed[item.ordinal] = _listed_value_id(
                 db, parameter_id=parameter_ids[item.ordinal], text=item.value or ""
@@ -1484,28 +1582,44 @@ def apply_values(
         if item.kind == "value":
             value_ids[ordinal] = listed[ordinal]
             sources[ordinal] = item.source or ""
-        elif item.kind == "new":
-            text = (item.value or "").strip()
+        elif item.kind in ("new", "several"):
+            text = (
+                (item.value or "").strip() if item.kind == "new"
+                else assembled_text(item.combine or "all", item.values or ())
+            )
             if parameter.value_kind == ParameterValueKind.range.value:
                 # Параметр-диапазон: число в ответе система относит к диапазону
-                # сама; не число — значение не из списка.
-                range_value_id = _range_value_id(
-                    db, parameter_id=parameter_ids[ordinal], text=text
+                # сама; не число (и любое `several`) — значение не из списка.
+                range_value_id = (
+                    _range_value_id(db, parameter_id=parameter_ids[ordinal], text=text)
+                    if item.kind == "new" else None
                 )
                 if range_value_id is not None:
                     value_ids[ordinal] = range_value_id
                     sources[ordinal] = item.source or ""
                     continue
-            elif not parameter.closed:
-                added_before = len(added)
-                value_ids[ordinal] = _extend_with_value(
-                    db, parameter_id=parameter_ids[ordinal], schema_id=schema_id,
-                    family_id=family_id, context_id=context_id, text=text, added=added,
-                )
-                if len(added) > added_before:
+            else:
+                if item.kind == "new":
+                    resolved = resolve_new_value(
+                        db, parameter_id=parameter_ids[ordinal], text=text, context_id=context_id
+                    )
+                else:
+                    resolved = resolve_several(
+                        db, parameter_id=parameter_ids[ordinal], combine=item.combine or "all",
+                        texts=item.values or (), context_id=context_id,
+                    )
+                added.extend(resolved.added_ids)
+                if resolved.added_ids:
                     extended_parameter_ids.add(parameter_ids[ordinal])
-                sources[ordinal] = item.source or ""
-                continue
+                if resolved.action == "none":
+                    value_ids[ordinal] = None
+                    sources[ordinal] = ValueSource.none.value
+                    continue
+                if resolved.action != "off_list":
+                    value_ids[ordinal] = resolved.value_id
+                    sources[ordinal] = item.source or ""
+                    continue
+                text = resolved.text or text
             value_ids[ordinal] = None
             sources[ordinal] = ValueSource.off_list.value
             off_list_text[ordinal] = text
@@ -1642,6 +1756,10 @@ def apply_values(
         # аналогов §2.7): предложения и задание версии пересматриваются.
         refresh_inputs(db, [schema_id], settings=settings)
     reconcile_or_defer(db, [context_id])
+    if resolved is not None and queue_auto_split:
+        from services.auto_split import schedule_auto_split
+
+        schedule_auto_split(db, context_id=context_id, settings=settings)
 
     return ApplyValuesOutcome(
         applied=True, unapplied_reason=None, variant_id=variant_id,
@@ -2017,7 +2135,7 @@ def _lock_contexts_statement(context_ids: Sequence[int]):
 
 def merge_parameter_values(
     db: Session, *, parameter_id: int, source_value_id: int, target_value_id: int,
-    actor_id: int,
+    actor_id: int | None, cascade: bool = False, keep_origin: bool = False,
 ) -> Mapping[int, int]:
     """Слияние синонимов значений одного параметра (спека §2.8): источник
     становится синонимом цели. Возвращает отображение «вариант-источник ->
@@ -2030,14 +2148,21 @@ def merge_parameter_values(
     с `merged_into_id`, его ключ и построчные значения остаются историей;
     архивный вариант-цель с пришедшими контекстами возвращается в `active`.
     Без такого набора ключ и строки варианта переписываются, он остаётся тем
-    же. Варианты, уже слитые раньше, — история и не трогаются.
+    же. Варианты, уже слитые раньше, — история и не трогаются. `keep_origin` —
+    системное слияние: происхождение параметра остаётся прежним (человек слияние не делал).
 
     Raises:
         WorkFamilyError: параметра нет или он архивный; значения нет; значения разных
             параметров; источник уже слит; каноническая цель — сам источник
             или его предок; источник или каноническая цель выведены из
-            списка (`REFUSE_MERGE_VALUE_RETIRED`).
+            списка (`REFUSE_MERGE_VALUE_RETIRED`); составное и простое значение либо
+            составные разного вида (`merge_values_composite_mismatch`). Слияние,
+            которое делает сам сервис составных (`cascade`), пары составное -> простое
+            не отказывает: часть слили с другой частью, и составное стало ею.
     """
+    from services.composite_values import REFUSE_MERGE_COMPOSITE_MISMATCH, rebuild_after_part_merge
+    from services.human_decisions import rewrite_after_merge
+
     located = db.execute(
         sa.select(
             FamilyParameter.schema_id, FamilyParameterSchema.family_id, FamilyParameter.role
@@ -2105,6 +2230,13 @@ def merge_parameter_values(
         for value in db.execute(_lock_values_statement({source_value_id, canonical_id})).scalars()
     }
     source_value = locked_values[source_value_id]
+    if not cascade and source_value.composite_kind != locked_values[canonical_id].composite_kind:
+        raise WorkFamilyError(
+            REFUSE_MERGE_COMPOSITE_MISMATCH,
+            f"значения {source_value_id} и {canonical_id}: составное сливается только с "
+            "составным того же вида",
+            value_id=source_value_id,
+        )
     for retired_id in (source_value_id, canonical_id):
         if locked_values[retired_id].retired_at is not None:
             raise WorkFamilyError(
@@ -2237,13 +2369,25 @@ def merge_parameter_values(
     )
     source_value.merged_into_id = canonical_id
     # Правка значений человеком делает параметр модели параметром человека
-    # (спека 3в §2.5): пересборка такой параметр сохраняет (§2.8).
-    db.execute(
-        sa.update(FamilyParameter)
-        .where(FamilyParameter.id == parameter_id)
-        .values(origin=ParameterOrigin.human.value)
-    )
+    # (спека 3в §2.5): пересборка такой параметр сохраняет (§2.8). Системное слияние
+    # (`keep_origin`, первый прогон упрощения каталога) происхождения не меняет.
+    if not keep_origin:
+        db.execute(
+            sa.update(FamilyParameter)
+            .where(FamilyParameter.id == parameter_id)
+            .values(origin=ParameterOrigin.human.value)
+        )
     db.flush()
+    # Решения человека и составные значения следуют за слиянием в той же транзакции
+    # (спека упрощения каталога §2.3 место 2, §2.6).
+    rewrite_after_merge(
+        db, parameter_id=parameter_id, source_value_id=source_value_id,
+        canonical_value_id=canonical_id,
+    )
+    rebuild_after_part_merge(
+        db, parameter_id=parameter_id, source_id=source_value_id, canonical_id=canonical_id,
+        actor_id=actor_id,
+    )
     bump_revision(db, schema_id)
     record_event(
         db,

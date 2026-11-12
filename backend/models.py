@@ -1540,6 +1540,8 @@ CK_CONTEXT_FAMILY_PROVENANCE = (
     "OR (work_family_id IS NOT NULL AND family_source IS NOT NULL AND family_at IS NOT NULL "
     "AND (family_by IS NOT NULL) = (family_source = 'manual'))"
 )
+#: Время и автор пометки «автоделение не трогает» пишутся вместе (миграция 0025).
+CK_CONTEXT_AUTO_SPLIT_BLOCKED_PAIR = "(auto_split_blocked_at IS NULL) = (auto_split_blocked_by IS NULL)"
 CK_CONTEXT_KIND_SOURCE_PAIR = "(semantic_kind_source = 'manual') = (semantic_kind_by IS NOT NULL)"
 CK_CONTEXT_NAME_ROLE_SOURCE_PAIR = "(name_role_source = 'manual') = (name_role_by IS NOT NULL)"
 CK_MEMBER_RULE_PAIR = "(routed_by = 'rule') = (routing_rule_id IS NOT NULL)"
@@ -1638,6 +1640,8 @@ class SemanticJobKind(str, enum.Enum):
     # цепочка) и «можно отпустить» параметры семьи (предмет — семья и версия схемы).
     section_zone = "section_zone"
     releasable_params = "releasable_params"
+    # Автоделение контекста (миграция 0025): предмет — контекст.
+    auto_split = "auto_split"
 
 
 SCHEMA_STATUSES = _sql_str_list(SchemaStatus)
@@ -1687,6 +1691,15 @@ CK_PARAMETER_VALUE_RANGE_ORDER = "range_lo IS NULL OR range_hi IS NULL OR range_
 #: Выведенное из списка значение не бывает слитым: перестройка значений ничего не
 #: сливает, а слитые остаются только синонимами, слитыми человеком.
 CK_PARAMETER_VALUE_RETIRED_NOT_MERGED = "retired_at IS NULL OR merged_into_id IS NULL"
+
+#: Составное значение (миграция 0025, спека упрощения каталога §2.3): вид — «все
+#: части» или «любая из частей». Вид и ключ состава задаются парой; `NULL` в `IN`
+#: проходит, поэтому «вид без ключа» и «ключ без вида» ловит только пара.
+COMPOSITE_KINDS = ("all", "any")
+CK_PARAMETER_VALUE_COMPOSITE_KIND = (
+    "composite_kind IN (" + ", ".join(f"'{v}'" for v in COMPOSITE_KINDS) + ")"
+)
+CK_PARAMETER_VALUE_COMPOSITE_PAIR = "(composite_kind IS NULL) = (composite_key IS NULL)"
 
 CK_VARIANT_ARCHIVED_PAIR = "(status = 'archived') = (archived_at IS NOT NULL)"
 CK_VARIANT_MERGED_NEEDS_ARCHIVED = "merged_into_id IS NULL OR status = 'archived'"
@@ -2082,6 +2095,16 @@ class CatalogContext(Base):
     pending_by = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
     pending_threshold = Column(Numeric, nullable=True)
     pending_at = Column(DateTime(timezone=True), nullable=True)
+    # «Автоделение не трогает» (миграция 0025, спека упрощения каталога §2.6): ставит
+    # только исправление человека из журнала, снимает только «вернуть автоматику».
+    auto_split_blocked_at = Column(DateTime(timezone=True), nullable=True)
+    auto_split_blocked_by = Column(
+        Integer,
+        ForeignKey(
+            "users.id", ondelete="RESTRICT", name="fk_catalog_contexts_auto_split_blocked_by"
+        ),
+        nullable=True,
+    )
 
     bucket = relationship("ContextBucket")
     work_family = relationship("WorkFamily", foreign_keys=[work_family_id])
@@ -2146,6 +2169,9 @@ class CatalogContext(Base):
             CK_CONTEXT_SPLIT_HINT_NEEDS_VARIANT, name="ck_catalog_contexts_split_hint_needs_variant"
         ),
         CheckConstraint(CK_CONTEXT_PENDING, name="ck_catalog_contexts_pending"),
+        CheckConstraint(
+            CK_CONTEXT_AUTO_SPLIT_BLOCKED_PAIR, name="ck_catalog_contexts_auto_split_blocked_pair"
+        ),
         # UNIQUE (bucket_id) WHERE is_default AND archived_at IS NULL — частичный
         # уникальный индекс, raw SQL в миграции 0017 (alembic/env.py
         # RAW_SQL_INDEXES: uq_catalog_contexts_default_per_bucket). Половина
@@ -2167,7 +2193,8 @@ class ContextRoutingRule(Base):
     # Составной FK ниже проверяет и существование, и принадлежность корзине —
     # одиночного ForeignKey на context_id намеренно нет.
     context_id = Column(BigInteger, nullable=False)
-    created_by = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    # NULL — правило завёл не человек, а автоделение (миграция 0025).
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
     created_at = _created_at()
 
     bucket = relationship("ContextBucket")
@@ -2396,7 +2423,13 @@ CK_SEMANTIC_JOBS_SCHEMA_SUBJECT = (
 #: у `family_suggestion` и `context_values`, версия схемы — у `family_schema` и
 #: `context_values`; у `family_discovery` нет ни того, ни другого.
 CK_SEMANTIC_JOBS_CONTEXT_SUBJECT = (
-    "(kind IN ('family_suggestion', 'context_values')) = (context_id IS NOT NULL)"
+    "(kind IN ('family_suggestion', 'context_values', 'auto_split')) = "
+    "(context_id IS NOT NULL)"
+)
+#: Миграция 0025: предмет `auto_split` — контекст (равносильность выше переписана под
+#: пятый вид). Уровень деления бывает только у этого вида и не отрицателен.
+CK_SEMANTIC_JOBS_SPLIT_LEVEL = (
+    "split_level IS NULL OR (kind = 'auto_split' AND split_level >= 0)"
 )
 #: Миграция 0024: версия схемы нужна и `releasable_params`.
 CK_SEMANTIC_JOBS_SCHEMA_ID_BY_KIND = (
@@ -2552,6 +2585,8 @@ class SemanticJob(Base):
         ForeignKey("section_chains.id", ondelete="RESTRICT", name="fk_semantic_jobs_section_chain"),
         nullable=True,
     )
+    # Уровень деления задания `auto_split` (миграция 0025); у прочих видов NULL.
+    split_level = Column(Integer, nullable=True)
     # Оси запроса для журнала, вне ключа — NOT NULL (решение оркестратора
     # задачи 1: задание всегда создаётся из отрендеренного запроса).
     prompt_version = Column(Text, nullable=False)
@@ -2587,6 +2622,7 @@ class SemanticJob(Base):
         CheckConstraint(
             CK_SEMANTIC_JOBS_SECTION_CHAIN_SUBJECT, name="ck_semantic_jobs_section_chain_subject"
         ),
+        CheckConstraint(CK_SEMANTIC_JOBS_SPLIT_LEVEL, name="ck_semantic_jobs_split_level"),
         # UNIQUE (COALESCE(unit_id,-1)) WHERE kind = 'family_discovery' AND status IN
         # ('pending','running','privacy_hold') — raw SQL в миграции 0021
         # (RAW_SQL_INDEXES: uq_semantic_jobs_discovery_live): одно живое открытие на единицу.
@@ -2900,12 +2936,25 @@ class FamilyParameterValue(Base):
     range_hi = Column(Numeric, nullable=True)
     # Значение, ушедшее из списка без слияния.
     retired_at = Column(DateTime(timezone=True), nullable=True)
+    # Составное значение (миграция 0025, спека упрощения каталога §2.3): вид и ключ
+    # состава `<вид>:<id,id,…>` — парой; части — в `family_value_parts`.
+    composite_kind = Column(Text, nullable=True)
+    composite_key = Column(Text, nullable=True)
 
     parameter = relationship("FamilyParameter")
 
     __table_args__ = (
         UniqueConstraint(
             "parameter_id", "value_norm", name="uq_family_parameter_values_parameter_value_norm"
+        ),
+        # UNIQUE (parameter_id, composite_key) WHERE composite_key IS NOT NULL AND
+        # merged_into_id IS NULL AND retired_at IS NULL — частичный, raw SQL в миграции
+        # 0025 (RAW_SQL_INDEXES: uq_family_parameter_values_composite_key).
+        CheckConstraint(
+            CK_PARAMETER_VALUE_COMPOSITE_KIND, name="ck_family_parameter_values_composite_kind"
+        ),
+        CheckConstraint(
+            CK_PARAMETER_VALUE_COMPOSITE_PAIR, name="ck_family_parameter_values_composite_pair"
         ),
         # Цель составных FK значений варианта, значений контекста и слияния.
         UniqueConstraint("id", "parameter_id", name="uq_family_parameter_values_id_parameter"),
@@ -3308,7 +3357,8 @@ class KpSentFile(Base):
 #: Зона цепочки разделов, источник решения и вид выбора цели строки КП.
 ZONES = ("underground", "aboveground", "territory", "whole")
 ZONE_SOURCES = ("rule", "model", "human")
-KP_TARGET_KINDS = ("freshest", "analog")
+#: `contractor` — число подрядчика участника КП (миграция 0025, спека упрощения каталога §2.9).
+KP_TARGET_KINDS = ("freshest", "analog", "contractor")
 
 #: Литералы CHECK продублированы в миграции 0024 (она не импортирует `models.py`);
 #: паритет держит `test_analog_schema.py`. Предикаты тотальны при `NULL` операндах
@@ -3418,4 +3468,164 @@ class KpLineTarget(Base):
         ),
         CheckConstraint(CK_KP_TARGET_KIND, name="ck_kp_line_targets_kind"),
         CheckConstraint(CK_KP_TARGET_ANALOG, name="ck_kp_line_targets_analog"),
+    )
+
+
+# ---------------------------------------------------------------------------
+#  Упрощение управления каталогом (миграция 0025, спека упрощения каталога)
+# ---------------------------------------------------------------------------
+
+#: Вид действия журнала ИИ (спека §2.7).
+AUTO_ACTION_KINDS = ("split", "value_added", "composite", "equated")
+
+#: Литералы CHECK продублированы в миграции 0025 (она не импортирует `models.py`);
+#: паритет держит `test_simplify_schema.py`.
+CK_VALUE_PART_NOT_SELF = "value_id <> part_value_id"
+CK_COMPOSITE_VETO_KIND = "kind IN (" + ", ".join(f"'{v}'" for v in COMPOSITE_KINDS) + ")"
+CK_AUTO_ACTION_KIND = "kind IN (" + ", ".join(f"'{v}'" for v in AUTO_ACTION_KINDS) + ")"
+#: Время и автор отмены записи журнала пишутся вместе (миграция 0025).
+CK_AUTO_ACTION_UNDONE_PAIR = "(undone_at IS NULL) = (undone_by IS NULL)"
+
+
+class FamilyValuePart(Base):
+    """Часть составного значения (спека §2.3). Часть всегда того же параметра, что и
+    составное: оба составных внешних ключа идут через `(id, parameter_id)`."""
+    __tablename__ = "family_value_parts"
+
+    value_id = Column(BigInteger, nullable=False)
+    part_value_id = Column(BigInteger, nullable=False)
+    parameter_id = Column(BigInteger, nullable=False)
+
+    __table_args__ = (
+        PrimaryKeyConstraint("value_id", "part_value_id", name="pk_family_value_parts"),
+        ForeignKeyConstraint(
+            ["value_id", "parameter_id"],
+            ["family_parameter_values.id", "family_parameter_values.parameter_id"],
+            ondelete="CASCADE", name="fk_family_value_parts_value",
+        ),
+        ForeignKeyConstraint(
+            ["part_value_id", "parameter_id"],
+            ["family_parameter_values.id", "family_parameter_values.parameter_id"],
+            ondelete="CASCADE", name="fk_family_value_parts_part",
+        ),
+        CheckConstraint(CK_VALUE_PART_NOT_SELF, name="ck_family_value_parts_not_self"),
+    )
+
+
+class CompositeVeto(Base):
+    """Вето состава: «этот состав — одно простое значение» (решение человека, спека
+    §2.6). Записано текстом — семья, `name_norm` параметра, `value_norm` значения, —
+    а не id: id меняются с каждой версией схемы, нормы действующих значений — нет."""
+    __tablename__ = "composite_vetoes"
+
+    id = Column(BigInteger, nullable=False)
+    family_id = Column(BigInteger, nullable=False)
+    parameter_name_norm = Column(Text, nullable=False)
+    kind = Column(Text, nullable=False)
+    value_norm = Column(Text, nullable=False)
+    set_by = Column(Integer, nullable=False)
+    set_at = Column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
+
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_composite_vetoes"),
+        ForeignKeyConstraint(
+            ["family_id"], ["work_families.id"], ondelete="RESTRICT",
+            name="fk_composite_vetoes_family",
+        ),
+        ForeignKeyConstraint(
+            ["set_by"], ["users.id"], ondelete="RESTRICT", name="fk_composite_vetoes_set_by"
+        ),
+        CheckConstraint(CK_COMPOSITE_VETO_KIND, name="ck_composite_vetoes_kind"),
+    )
+
+
+class CompositeVetoPart(Base):
+    """Норма части состава, на который наложено вето."""
+    __tablename__ = "composite_veto_parts"
+
+    veto_id = Column(BigInteger, nullable=False)
+    part_norm = Column(Text, nullable=False)
+
+    __table_args__ = (
+        PrimaryKeyConstraint("veto_id", "part_norm", name="pk_composite_veto_parts"),
+        ForeignKeyConstraint(
+            ["veto_id"], ["composite_vetoes.id"], ondelete="CASCADE",
+            name="fk_composite_veto_parts_veto",
+        ),
+    )
+
+
+class ValueNotDuplicate(Base):
+    """«Не дубль»: текст не приравнивать к значению (решение человека, спека §2.6),
+    записано текстом так же, как вето состава."""
+    __tablename__ = "value_not_duplicates"
+
+    id = Column(BigInteger, nullable=False)
+    family_id = Column(BigInteger, nullable=False)
+    parameter_name_norm = Column(Text, nullable=False)
+    text_norm = Column(Text, nullable=False)
+    value_norm = Column(Text, nullable=False)
+    set_by = Column(Integer, nullable=False)
+    set_at = Column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
+
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_value_not_duplicates"),
+        ForeignKeyConstraint(
+            ["family_id"], ["work_families.id"], ondelete="RESTRICT",
+            name="fk_value_not_duplicates_family",
+        ),
+        ForeignKeyConstraint(
+            ["set_by"], ["users.id"], ondelete="RESTRICT", name="fk_value_not_duplicates_set_by"
+        ),
+        UniqueConstraint(
+            "family_id", "parameter_name_norm", "text_norm", "value_norm",
+            name="uq_value_not_duplicates_family_param_text_value",
+        ),
+    )
+
+
+class CatalogAutoAction(Base):
+    """Строка «Журнала ИИ» (спека §2.7): что система сделала сама. Состав `payload`
+    зависит от вида. Предметы — необязательные ссылки: параметр и значение могут уйти
+    с перестройкой схемы (тогда ссылка обнуляется, а запись остаётся)."""
+    __tablename__ = "catalog_auto_actions"
+
+    id = Column(BigInteger, nullable=False)
+    kind = Column(Text, nullable=False)
+    family_id = Column(BigInteger, nullable=False)
+    context_id = Column(BigInteger, nullable=True)
+    parameter_id = Column(BigInteger, nullable=True)
+    value_id = Column(BigInteger, nullable=True)
+    # none_as_null=True: Python `None` обязан лечь SQL NULL и упасть на NOT NULL, а не
+    # лечь JSON-литералом `null`, который `NOT NULL` пропускает.
+    payload = Column(JSONB(none_as_null=True), nullable=False)
+    created_at = _created_at()
+    undone_at = Column(DateTime(timezone=True), nullable=True)
+    undone_by = Column(Integer, nullable=True)
+    restored_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_catalog_auto_actions"),
+        ForeignKeyConstraint(
+            ["family_id"], ["work_families.id"], ondelete="RESTRICT",
+            name="fk_catalog_auto_actions_family",
+        ),
+        ForeignKeyConstraint(
+            ["context_id"], ["catalog_contexts.id"], ondelete="RESTRICT",
+            name="fk_catalog_auto_actions_context",
+        ),
+        ForeignKeyConstraint(
+            ["parameter_id"], ["family_parameters.id"], ondelete="SET NULL",
+            name="fk_catalog_auto_actions_parameter",
+        ),
+        ForeignKeyConstraint(
+            ["value_id"], ["family_parameter_values.id"], ondelete="SET NULL",
+            name="fk_catalog_auto_actions_value",
+        ),
+        ForeignKeyConstraint(
+            ["undone_by"], ["users.id"], ondelete="RESTRICT",
+            name="fk_catalog_auto_actions_undone_by",
+        ),
+        CheckConstraint(CK_AUTO_ACTION_KIND, name="ck_catalog_auto_actions_kind"),
+        CheckConstraint(CK_AUTO_ACTION_UNDONE_PAIR, name="ck_catalog_auto_actions_undone_pair"),
     )

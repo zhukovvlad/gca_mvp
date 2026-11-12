@@ -87,6 +87,16 @@ def _load_migration_0021():
     return module
 
 
+def _load_migration_0025():
+    import importlib.util
+
+    path = next(BACKEND_ROOT.glob("alembic/versions/*0025-catalog_simplify.py"))
+    spec = importlib.util.spec_from_file_location("_migration_0025_discovery_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _load_migration_0024():
     import importlib.util
 
@@ -370,10 +380,10 @@ class TestDiscoveryJobKind:
         with rejected_by(db_session, "ck_semantic_jobs_kind"):
             _job(db_session, factories, kind="family_discover", context_id=None)
 
-    def test_kind_enum_has_the_six_kinds(self):
+    def test_kind_enum_has_the_seven_kinds(self):
         assert {kind.value for kind in SemanticJobKind} == {
             "family_suggestion", "family_schema", "context_values", "family_discovery",
-            "section_zone", "releasable_params",
+            "section_zone", "releasable_params", "auto_split",
         }
 
 
@@ -1025,7 +1035,7 @@ class TestParityWithMigration:
     _IN_CASES = [
         (SEMANTIC_JOB_KINDS, "SEMANTIC_JOB_KINDS",
          {"family_suggestion", "family_schema", "context_values", "family_discovery",
-          "section_zone", "releasable_params"}),
+          "section_zone", "releasable_params", "auto_split"}),
         (DRAFT_GROUPS, "DRAFT_GROUPS", {"new", "existing", "not_work"}),
         (DRAFT_STATUSES, "DRAFT_STATUSES",
          {"open", "activated", "merged", "discarded", "superseded"}),
@@ -1044,15 +1054,15 @@ class TestParityWithMigration:
 
     #: Списки, которые миграция 0022 переписала: текущее значение живёт в ней.
     _REWRITTEN_BY_0022 = frozenset({"SEMANTIC_EVENT_TYPES_SQL"})
-    #: Список видов заданий переписала миграция 0024.
-    _REWRITTEN_BY_0024 = frozenset({"SEMANTIC_JOB_KINDS"})
+    #: Список видов заданий переписала миграция 0025 (до неё — 0024).
+    _REWRITTEN_BY_0025 = frozenset({"SEMANTIC_JOB_KINDS"})
 
     @pytest.mark.parametrize(
         ("model_expr", "name", "independent"), _IN_CASES, ids=[case[1] for case in _IN_CASES]
     )
     def test_in_list_matches_migration_and_independent_literal(self, model_expr, name, independent):
-        if name in self._REWRITTEN_BY_0024:
-            owner = _load_migration_0024()
+        if name in self._REWRITTEN_BY_0025:
+            owner = _load_migration_0025()
         elif name in self._REWRITTEN_BY_0022:
             owner = _load_migration_0022()
         else:
@@ -1074,7 +1084,8 @@ class TestParityWithMigration:
         (CK_FAMILY_CATEGORY_DEFINITION_NOT_BLANK, "CK_FAMILY_CATEGORY_DEFINITION_NOT_BLANK",
          "btrim(definition) <> ''"),
         (CK_SEMANTIC_JOBS_CONTEXT_SUBJECT, "CK_SEMANTIC_JOBS_CONTEXT_SUBJECT",
-         "(kind IN ('family_suggestion', 'context_values')) = (context_id IS NOT NULL)"),
+         "(kind IN ('family_suggestion', 'context_values', 'auto_split')) = "
+         "(context_id IS NOT NULL)"),
         (CK_SEMANTIC_JOBS_SCHEMA_ID_BY_KIND, "CK_SEMANTIC_JOBS_SCHEMA_ID_BY_KIND",
          "(kind IN ('family_schema', 'context_values', 'releasable_params')) = "
          "(schema_id IS NOT NULL)"),
@@ -1118,11 +1129,12 @@ class TestParityWithMigration:
     def test_check_expression_matches_migration_and_independent_literal(
         self, model_expr, name, independent
     ):
-        owner = (
-            _load_migration_0024()
-            if name == "CK_SEMANTIC_JOBS_SCHEMA_ID_BY_KIND"
-            else _load_migration_0021()
-        )
+        if name == "CK_SEMANTIC_JOBS_CONTEXT_SUBJECT":
+            owner = _load_migration_0025()
+        elif name == "CK_SEMANTIC_JOBS_SCHEMA_ID_BY_KIND":
+            owner = _load_migration_0024()
+        else:
+            owner = _load_migration_0021()
         assert model_expr == getattr(owner, name)
         assert model_expr == independent
 

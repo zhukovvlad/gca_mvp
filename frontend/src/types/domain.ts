@@ -2911,6 +2911,12 @@ export interface FamilySchemaValue {
   /** Границы значения диапазона, строками; `null` — «до …» и «… и более», а у точного значения обе. */
   range_lo: string | null;
   range_hi: string | null;
+  /**
+   * Составное значение (спека упрощения каталога §2.3): вид (`all` — «+», `any` — «или») и id
+   * частей, значений того же параметра; `null` — простое значение. Текст составного собирает
+   * сервер из частей, править его нельзя.
+   */
+  composite: SchemaComposite | null;
   /** Выведенные значения в схеме не отдаются, поэтому у отданных всегда `false`. */
   retired: boolean;
   /** Живые контексты со значением и их строки каталога. */
@@ -3462,7 +3468,7 @@ export interface WorkRung {
   other_class: boolean;
 }
 
-export type NoHistoryReason = "no_family" | "path_conflict" | "no_params" | "no_zone_match";
+export type NoHistoryReason = "no_family" | "path_conflict" | "composite" | "no_params" | "no_zone_match";
 
 export interface LowestFigure {
   value: MoneyPair;
@@ -3480,13 +3486,18 @@ export interface FreshestFigure {
   period: string | null;
 }
 
-export type TargetKind = "agreed" | "lowest" | "freshest" | "analog";
+export type TargetKind = "agreed" | "lowest" | "freshest" | "analog" | "contractor";
 
-/** Почему выбор цели перестал действовать (спека лестницы аналогов §2.14). */
-export type TargetResetReason = "kind_changed" | "not_comparable" | "analog_unavailable" | "no_freshest";
+/** Почему выбор цели перестал действовать (спека лестницы аналогов §2.14, упрощения каталога §2.9). */
+export type TargetResetReason =
+  | "kind_changed"
+  | "not_comparable"
+  | "analog_unavailable"
+  | "no_freshest"
+  | "no_contractor";
 
 export interface TargetChoice {
-  kind: "freshest" | "analog";
+  kind: "freshest" | "analog" | "contractor";
   analog_id: number | null;
   /** `false` - выбор сохранён, но не действует (см. `reset_reason`). */
   active: boolean;
@@ -3520,6 +3531,81 @@ export interface OurPriceAnalog {
   place_match: number;
   /** Аналог остатка (не выброс): его можно сделать целью. */
   selectable: boolean;
+  /** Статья раздела строки ДОГОВОРА (не статья строки КП); `null` - раздел без статьи. */
+  article: OurPriceArticleRef | null;
+  /** Путь по смете договора от её корня; может быть пустым. */
+  chapter_path: OurPriceChapterStep[];
+}
+
+/** Статья со своей цепочкой от корня классификатора; `chain` кончается самой статьёй. */
+export interface OurPriceArticleRef {
+  id: number;
+  code: string | null;
+  title: string;
+  chain: Array<{ id: number; code: string | null; title: string }>;
+}
+
+/** Часть составного значения в справке «по частям» (спека упрощения каталога §2.8). */
+export interface OurPricePartReference {
+  value_id: number;
+  value: string;
+  /** Все кандидаты части выбранного класса, включая выбросы. */
+  analogs: number;
+  contracts: number;
+  /** Вилка остатка без выбросов; `null` - остатка нет. */
+  min: MoneyPair | null;
+  max: MoneyPair | null;
+  lowest: {
+    value: MoneyPair;
+    analog_id: number;
+    object_title: string;
+    contract_number: string;
+    period: string | null;
+  } | null;
+  /** Кандидатов класса тендера нет, взяты из другого класса. */
+  other_class: boolean;
+}
+
+export interface OurPricePartsGroup {
+  parameter_id: number;
+  parameter_name: string;
+  kind: string;
+  parts: OurPricePartReference[];
+}
+
+/** Раздел на пути строки: ключ, название и номер раздела в файле участника. */
+export interface OurPriceChapterStep {
+  chapter_item_id: number;
+  title: string;
+  number: string | null;
+}
+
+/** Статья классификатора на пути строк участника (корень, промежуточные, конечная). */
+export interface OurPriceCategory {
+  id: number;
+  parent_id: number | null;
+  code: string | null;
+  title: string;
+  sort_order: number | null;
+}
+
+/**
+ * Итог узла дерева: все строки узла и его потомков. `kp_total` считает сервер
+ * (`null` - база НДС КП неизвестна), клиент деньги не складывает.
+ */
+export interface OurPriceNodeTotals {
+  lines: number;
+  no_price: number;
+  kp_total: MoneyPair | null;
+}
+
+/**
+ * Итоги узлов: ключ статьи - её id, «Нераспределённое» - строка `"null"`. Итог раздела считается
+ * в разрезе статьи: `chapters[<статья строки>][<chapter_item_id>]`, только строки этой статьи в поддереве раздела.
+ */
+export interface OurPriceNodeTotalsMap {
+  categories: Record<string, OurPriceNodeTotals>;
+  chapters: Record<string, Record<string, OurPriceNodeTotals>>;
 }
 
 export interface OurPriceLine {
@@ -3529,6 +3615,10 @@ export interface OurPriceLine {
   /** Единица каталожной строки контекста; `null` без членства или без единицы. */
   unit_id: number | null;
   article_id: number | null;
+  /** Статья раздела строки (`chapter.work_category_id`); `null` - «Нераспределённое». */
+  category_id: number | null;
+  /** Цепочка разделов сметы сверху вниз: корень сметы первым, раздел строки последним. */
+  chapter_path: OurPriceChapterStep[];
   title: string;
   unit: string | null;
   quantity: Decimal | null;
@@ -3556,18 +3646,25 @@ export interface OurPriceLine {
   lowest: LowestFigure | null;
   /** Самая свежая расценка; `null` - её нет (нет аналогов с датой цены или строка - система). */
   freshest: FreshestFigure | null;
+  /** Самая свежая расценка среди аналогов остатка с этим подрядчиком; `null` - таких нет. */
+  contractor: FreshestFigure | null;
   position: "above" | "in" | "below" | null;
   to_lowest: MoneyPair | null;
   to_freshest: MoneyPair | null;
   /** Разница цены КП за единицу к самой низкой / свежей (₽ за единицу строки, без округления). */
   to_lowest_unit: MoneyPair | null;
   to_freshest_unit: MoneyPair | null;
+  /** То же к цифре подрядчика участника (`contractor`); `null` - цифры подрядчика нет. */
+  to_contractor: MoneyPair | null;
+  to_contractor_unit: MoneyPair | null;
   over_lowest: MoneyPair | null;
   over_freshest: MoneyPair | null;
   below: MoneyPair | null;
   /** Аналогов на ступени, с выбросами; у системы 0. */
   analogs_count: number;
   no_history_reason: NoHistoryReason | null;
+  /** Первый главный параметр строки с составным значением; `null` - строка не сборная. */
+  composite_parameter: { id: number; name: string } | null;
   group: { lines: number; share: Decimal; kp_per_sqm: MoneyPair | null } | null;
   unit_mismatch: {
     kp_ratio: Decimal | null;
@@ -3589,6 +3686,8 @@ export interface OurPriceLine {
   manual_rung: ManualRung | null;
   /** Цена за единицу строки КП, как её поставит файл без договорённости; `null` - цены в файле не будет. */
   file_ours: MoneyPair | null;
+  /** Статья раздела строки со своей цепочкой; есть только в ответе панели, `null` - «Нераспределённое». */
+  article?: OurPriceArticleRef | null;
 }
 
 /** Автор решения: `id` и почта пользователя. */
@@ -3644,6 +3743,9 @@ export interface OurPriceOffer {
   participants: OurPriceParticipant[];
   articles: OurPriceOfferArticle[];
   total: OurPriceArticleHead & OurPriceCell;
+  /** Статьи на путях строк участника, включая промежуточные. */
+  categories: OurPriceCategory[];
+  node_totals: OurPriceNodeTotalsMap;
   lines: OurPriceLine[];
 }
 
@@ -3675,6 +3777,8 @@ export interface OurPriceLineView {
   contracts: OurPriceRungContract[];
   /** Справка работы в порядке §2.11; у системы пусто. */
   analogs: OurPriceAnalog[];
+  /** Справка «по частям» сборной строки; пусто у остальных. На цель и итоги не влияет. */
+  parts_reference: OurPricePartsGroup[];
   vat_dropped: OurPriceVatDropped[];
   /**
    * Комментарий строки: `text` - свой, если задан, иначе шаблонный; `template_text` -
@@ -3826,4 +3930,93 @@ export interface ReleasableProposalRow {
 export interface ReleasableProposalList {
   items: ReleasableProposalRow[];
   total: number;
+}
+
+/** Состав составного значения схемы: вид и id частей (значения того же параметра). */
+export interface SchemaComposite {
+  kind: "all" | "any";
+  part_ids: number[];
+}
+
+// ---------------------------------------------------------------------------
+//  «Журнал ИИ» (спека упрощения каталога §2.7; `backend/crud/ai_journal.py`)
+// ---------------------------------------------------------------------------
+
+/** Вид записи журнала: деление контекста, новое значение, склейка в составное, приравнивание. */
+export type JournalKind = "split" | "value_added" | "composite" | "equated";
+
+/** Состояние записи: действует, отменена, отмена недоступна (`locked` — только у деления). */
+export type JournalState = "active" | "undone" | "locked";
+
+/**
+ * Почему отмена деления недоступна: событие человека после записи. У замка без события (член
+ * перенесён вручную, часть архивирована) все три поля `null`.
+ */
+export interface JournalLockedBy {
+  event_type: string | null;
+  actor_email: string | null;
+  at: string | null;
+}
+
+export interface JournalItem {
+  id: number;
+  kind: JournalKind;
+  created_at: string;
+  family: { id: number; title: string };
+  context: { id: number; title: string } | null;
+  parameter: { id: number; name: string } | null;
+  /** Значение записи (id и текст сейчас); `null` — у деления и когда значения уже нет. */
+  value: { id: number; text: string } | null;
+  text: string | null;
+  /** Значения записи: части деления, части склейки, «текст, значение» приравнивания, текст нового значения. */
+  summary_values: string[];
+  state: JournalState;
+  undo: { available: boolean; locked_by: JournalLockedBy | null };
+  undone: { at: string; by_email: string | null } | null;
+  restored_at: string | null;
+}
+
+/** Часть деления с нынешним числом строк и числом после отмены. */
+export interface JournalSplitPart {
+  context_id: number;
+  title: string;
+  members_now: number;
+  members_after: number;
+}
+
+/** Контекст записи склейки или приравнивания и значение параметра на нём сейчас. */
+export interface JournalContextDetail {
+  id: number;
+  title: string;
+  parameter_value: string | null;
+}
+
+export type JournalDetails =
+  | { level: number | null; parts: JournalSplitPart[] }
+  | {
+      contexts: JournalContextDetail[];
+      undo_text: string;
+      /** Вид составного (`all` — «+», `any` — «или»); только у склейки. */
+      composite_kind?: "all" | "any" | null;
+    };
+
+/** `GET /semantic/journal/:id`: запись с подробностями (у нового значения их нет). */
+export interface JournalItemDetail extends JournalItem {
+  details?: JournalDetails;
+}
+
+export interface JournalPage {
+  items: JournalItem[];
+  total: number;
+  /** Числа по видам при всех отборах, кроме вида. */
+  counts: Record<JournalKind, number>;
+}
+
+export interface JournalParams {
+  kind?: JournalKind;
+  family_id?: number;
+  state?: JournalState;
+  q?: string;
+  limit?: number;
+  offset?: number;
 }

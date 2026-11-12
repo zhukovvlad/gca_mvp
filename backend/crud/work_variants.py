@@ -39,6 +39,7 @@ from models import (
     WorkVariant,
     WorkVariantValue,
 )
+from services.composite_values import composite_parts
 from services.releasable import current_proposals
 from services.schema_edit import EditSummary
 from services.semantic_cost import (
@@ -64,11 +65,20 @@ from services.work_variants import normalize_value
 _UNBUILT_SCHEMA_ID = 0
 
 
+class CompositeOut(TypedDict):
+    """Состав составного значения: вид (`all` — вместе, `any` — или) и `id` частей по
+    возрастанию."""
+
+    kind: str
+    part_ids: list[int]
+
+
 class ValueOut(TypedDict):
     """Значение списка параметра. `contexts` и `rows` — живые (не архивные)
     контексты со значением и их строки каталога; границы диапазона — строками
     (`None` — «до …» и «… и более»). Выведенные из списка значения не отдаются,
-    поэтому `retired` у отданных всегда `False`."""
+    поэтому `retired` у отданных всегда `False`. `composite` — состав составного
+    значения, у простого `None`."""
 
     id: int
     value: str
@@ -79,6 +89,7 @@ class ValueOut(TypedDict):
     retired: bool
     contexts: int
     rows: int
+    composite: CompositeOut | None
 
 
 class RangeOut(TypedDict):
@@ -362,6 +373,7 @@ def _parameters_of(db: Session, schema_id: int) -> list[ParameterOut]:
         .order_by(FamilyParameter.ordinal, FamilyParameterValue.id)
     ).all()
     by_value, off_list, refreshing = _row_statistics(db, schema_id)
+    composites = composite_parts(db, [row.value_id for row in rows if row.value_id is not None])
     parameters: dict[int, ParameterOut] = {}
     for row in rows:
         parameter = parameters.setdefault(
@@ -401,6 +413,14 @@ def _parameters_of(db: Session, schema_id: int) -> list[ParameterOut]:
                     retired=False,
                     contexts=contexts,
                     rows=member_rows,
+                    composite=(
+                        None
+                        if row.value_id not in composites
+                        else CompositeOut(
+                            kind=composites[row.value_id][0],
+                            part_ids=list(composites[row.value_id][1]),
+                        )
+                    ),
                 )
             )
     return list(parameters.values())

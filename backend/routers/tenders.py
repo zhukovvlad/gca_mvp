@@ -199,9 +199,9 @@ class RungPut(BaseModel):
 
 
 class TargetPut(BaseModel):
-    """Выбор цели: «самая свежая» без аналога или «аналог» с `analog_id`."""
+    """Выбор цели: «самая свежая» и «с этим подрядчиком» без аналога или «аналог» с `analog_id`."""
 
-    kind: Literal["freshest", "analog"]
+    kind: Literal["freshest", "analog", "contractor"]
     analog_id: int | None = None
 
     @model_validator(mode="after")
