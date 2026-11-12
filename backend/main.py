@@ -36,6 +36,7 @@ from routers import units
 from services.maintenance import run_startup_maintenance
 from services.semantic_client import ModelClient, OpenRouterClient
 from services.semantic_runner import SemanticRunner
+from services.status_cache import status_cache
 from storage import get_storage
 
 
@@ -172,6 +173,22 @@ async def log_requests(request: Request, call_next):
         elapsed = (time.time() - start) * 1000
         logger.exception(f"{request.method} {request.url.path} → 500 ({elapsed:.0f}ms)")
         raise
+
+
+@app.middleware("http")
+async def invalidate_status_cache_on_write(request: Request, call_next):
+    """Сбрасывает кэш сводки очереди по окончании запроса на изменение — при любом
+    коде ответа и при исключении в обработчике: маршруты коммитают сами, и
+    исключение после коммита (например, «принять всё» на второй семье) оставило бы
+    в кэше устаревшее. Чтения кэш не трогают. Путь не проверяется (спека кэша
+    сводки §2.4 п. 1). Фоновые задачи запроса (импорт) прослойка не покрывает —
+    их сбрасывает `run_import_job`."""
+    if request.method not in ("POST", "PUT", "PATCH", "DELETE"):
+        return await call_next(request)
+    try:
+        return await call_next(request)
+    finally:
+        status_cache.invalidate()
 
 
 # Auth router — без обязательной авторизации (login, me, refresh, logout)

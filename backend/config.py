@@ -85,6 +85,9 @@ class Settings(BaseSettings):
     SEMANTIC_DAILY_BUDGET_USD: Decimal = Field(Decimal("30"), ge=0)
     SEMANTIC_EVENT_MAX_CONTEXTS: int = Field(3000, ge=0)
     SEMANTIC_EVENT_MAX_RESERVE_USD: Decimal = Field(Decimal("15"), ge=0)
+    # Срок жизни кэша дорогих частей сводки очереди, секунды (долг №57); 0 — выключен.
+    # Кэш в памяти процесса: верен только при одном процессе uvicorn (AGENTS.md §3).
+    SEMANTIC_STATUS_CACHE_TTL_S: int = Field(300, ge=0)
 
     # Варианты работ (спека 2026-10-02-catalog-variants-design.md §2.3, §2.5):
     # профиль модели и тарифы по виду задания. Предложения семей остаются на

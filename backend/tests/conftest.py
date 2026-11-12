@@ -668,3 +668,19 @@ def factories(db_session):
     f._register_session(db_session)
     yield f
     f._register_session(None)
+
+
+@pytest.fixture(autouse=True)
+def _status_cache_off(monkeypatch) -> Iterator[None]:
+    """Кэш сводки очереди выключен (срок 0) и пуст до и после каждого теста.
+
+    Действующие тесты проверяют расчёт сводки и меняют данные в обход HTTP; с
+    включённым кэшем они читали бы прежнее значение. Тесты кэша включают срок
+    сами (спека кэша сводки §2.5)."""
+    from config import settings
+    from services.status_cache import status_cache
+
+    monkeypatch.setattr(settings, "SEMANTIC_STATUS_CACHE_TTL_S", 0)
+    status_cache.invalidate()
+    yield
+    status_cache.invalidate()
