@@ -255,7 +255,7 @@ cp backend/.env.example backend/.env   # заполнить SECRET_KEY (openssl 
 cp .env.test.example .env.test         # для локальных тестов
 just db-dev-init      # создать gca_dev на локальном кластере + миграции
 just create-user admin@example.com admin   # первый пользователь (пароль — интерактивно)
-just dev-backend      # http://localhost:8259 (один worker!)
+just dev-backend      # http://localhost:8260 (один worker!)
 just dev-frontend     # http://localhost:5173
 ```
 
