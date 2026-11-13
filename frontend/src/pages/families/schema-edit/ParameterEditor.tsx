@@ -133,7 +133,11 @@ export function ParameterEditor({ schema, draft, saved, edited, moves, onChange,
           }}
         >
           {ROLES.map((role) => (
-            <ToggleGroupItem key={role} value={role}>
+            <ToggleGroupItem
+              key={role}
+              value={role}
+              className="aria-pressed:bg-primary aria-pressed:text-primary-foreground"
+            >
               {PARAMETER_ROLE_LABEL[role]}
             </ToggleGroupItem>
           ))}
@@ -174,7 +178,11 @@ export function ParameterEditor({ schema, draft, saved, edited, moves, onChange,
           }}
         >
           {KINDS.map((kind) => (
-            <ToggleGroupItem key={kind} value={kind}>
+            <ToggleGroupItem
+              key={kind}
+              value={kind}
+              className="aria-pressed:bg-primary aria-pressed:text-primary-foreground"
+            >
               {PARAMETER_KIND_LABEL[kind]}
             </ToggleGroupItem>
           ))}
