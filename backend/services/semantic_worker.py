@@ -29,7 +29,7 @@ from decimal import Decimal
 from uuid import UUID
 
 import sqlalchemy as sa
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from config import Settings
 from config import settings as default_settings
@@ -96,6 +96,7 @@ from services.semantic_reconcile import (
     _load_values_columns,
     _values_applicable,
     families_awaiting_schema,
+    reconcile_after_values_batch,
     reconcile_context_values,
     reconcile_family_schemas,
     values_need,
@@ -378,18 +379,36 @@ def _note_closed(closed_units: list[int | None] | None, job: SemanticJob) -> Non
         closed_units.append(job.unit_id)
 
 
+def _note_values_closed(
+    db: Session, closed_families: list[int] | None, job: SemanticJob
+) -> None:
+    """Семья версии схемы закрытого задания значений — для проверки конца пачки
+    (спека §2.4 п. 1). Задания других видов семью не отмечают."""
+    if closed_families is not None and job.kind == SemanticJobKind.context_values.value:
+        closed_families.append(
+            db.execute(
+                sa.select(FamilyParameterSchema.family_id).where(
+                    FamilyParameterSchema.id == job.schema_id
+                )
+            ).scalar_one()
+        )
+
+
 def claim_next(
     db: Session,
     *,
     settings: Settings,
     now: datetime,
     closed_units: list[int | None] | None = None,
+    closed_values_families: list[int] | None = None,
 ) -> Claim | None:
     """Захват одного задания — шаги спеки §2.5 строго по порядку; коммитит сама.
     `None` — захвата нет: остановка, нет готовых заданий или не хватает бюджета.
     В `closed_units` (если передан) попадают единицы заданий предложений, которые
     захват отменил или задержал: открытых заданий в такой единице могло не
-    остаться, и схемы её семей ждут сверки."""
+    остаться, и схемы её семей ждут сверки. В `closed_values_families` — семьи
+    заданий значений, которые захват отменил или задержал: пачка семьи могла
+    кончиться, и контексты с нуждой ждут повтора."""
     state = _lock_worker_state(db)
     if state.claim_paused:
         db.commit()
@@ -406,12 +425,14 @@ def claim_next(
         if current.cancel_reason is not None:
             _cancel(db, job, current.cancel_reason)
             _note_closed(closed_units, job)
+            _note_values_closed(db, closed_values_families, job)
             continue
         rendered = current.rendered
         assert rendered is not None  # причины отмены нет — запрос отрендерен
         if rendered.request_hash != job.request_hash:
             _cancel(db, job, SemanticCancelReason.input_changed)
             _note_closed(closed_units, job)
+            _note_values_closed(db, closed_values_families, job)
             continue
         kind = SemanticJobKind(job.kind)
 
@@ -442,6 +463,7 @@ def claim_next(
             job.privacy_matches = matches
             db.flush()
             _note_closed(closed_units, job)
+            _note_values_closed(db, closed_values_families, job)
             continue
 
         if kind == SemanticJobKind.family_discovery:
@@ -1330,6 +1352,18 @@ def _sweep_context_values(
             )
         ),
     )
+    # Пачка семьи контекста в работе (спека §2.1): сверку отложит конец пачки.
+    batch_job = aliased(SemanticJob)
+    batch_schema = aliased(FamilyParameterSchema)
+    batch_in_work = sa.exists().where(
+        batch_job.kind == SemanticJobKind.context_values.value,
+        batch_job.status.in_(
+            (SemanticJobStatus.pending.value, SemanticJobStatus.running.value)
+        ),
+        batch_schema.id == batch_job.schema_id,
+        batch_schema.family_id
+        == sa.func.coalesce(CatalogContext.pending_family_id, CatalogContext.work_family_id),
+    )
     with session_factory() as db:
         context_ids = (
             db.execute(
@@ -1341,6 +1375,7 @@ def _sweep_context_values(
                         CatalogContext.pending_family_id, CatalogContext.work_family_id
                     ).is_not(None),
                     ~live_job,
+                    ~batch_in_work,
                 )
                 .order_by(CatalogContext.id)
                 .limit(SWEEP_CONTEXT_LIMIT)
@@ -1381,6 +1416,29 @@ def sweep_semantic_queue(
         return after_context_id
 
 
+def _reconcile_values_of_family(
+    session_factory: Callable[[], Session], family_id: int
+) -> None:
+    """Проверка конца пачки заданий значений семьи (спека §2.3, §2.4 п. 1) в
+    отдельной транзакции после записи ответа: её ошибка записанного не трогает,
+    исключение не выходит из цикла исполнителя."""
+    try:
+        with session_factory() as db:
+            reconcile_after_values_batch(db, family_id=family_id)
+            db.commit()
+    except Exception:  # noqa: BLE001 — исключение проверки наружу не уходит
+        logger.exception("Проверка конца пачки значений семьи %s не удалась", family_id)
+
+
+def _values_family_of_job(session_factory: Callable[[], Session], job_id: int) -> int:
+    with session_factory() as db:
+        return db.execute(
+            sa.select(FamilyParameterSchema.family_id)
+            .join(SemanticJob, SemanticJob.schema_id == FamilyParameterSchema.id)
+            .where(SemanticJob.id == job_id)
+        ).scalar_one()
+
+
 def _unit_of_job(session_factory: Callable[[], Session], job_id: int) -> int | None:
     with session_factory() as db:
         return db.execute(
@@ -1398,11 +1456,17 @@ def process_one(
     """Захват, вызов, запись — по сессии на шаг, вызов модели вне транзакции.
     `False` — захватывать нечего. Иначе `True`, и исключение задания наружу не
     уходит: попытка закрывается ошибкой, цикл продолжается (спека §2.5, п. 4).
-    После задания предложения (любой исход) — сверка схем его единицы."""
+    После задания предложения (любой исход) — сверка схем его единицы; после
+    задания значений (любой исход, в том числе отмены при захвате) — проверка
+    конца пачки его семьи."""
     closed_units: list[int | None] = []
+    closed_values_families: list[int] = []
     try:
         with session_factory() as db:
-            claim = claim_next(db, settings=settings, now=clock(), closed_units=closed_units)
+            claim = claim_next(
+                db, settings=settings, now=clock(), closed_units=closed_units,
+                closed_values_families=closed_values_families,
+            )
         if claim is None:
             return False
         try:
@@ -1413,10 +1477,19 @@ def process_one(
                     closed_units.append(_unit_of_job(session_factory, claim.job_id))
                 except Exception:  # noqa: BLE001 — исключение хука наружу не уходит
                     logger.exception("Единица задания %s не прочитана", claim.job_id)
+            if claim.kind == SemanticJobKind.context_values:
+                try:
+                    closed_values_families.append(
+                        _values_family_of_job(session_factory, claim.job_id)
+                    )
+                except Exception:  # noqa: BLE001 — исключение хука наружу не уходит
+                    logger.exception("Семья задания %s не прочитана", claim.job_id)
         return True
     finally:
         for unit_id in dict.fromkeys(closed_units):
             _reconcile_schemas_of_unit(session_factory, unit_id, settings=settings)
+        for family_id in dict.fromkeys(closed_values_families):
+            _reconcile_values_of_family(session_factory, family_id)
 
 
 def _run_claim(

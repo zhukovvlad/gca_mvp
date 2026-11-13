@@ -729,11 +729,15 @@ def _plan_context_values(
     material_by_context: dict[int, ContextRequestMaterial],
     jobs: Collection[SemanticJob],
     plan: _Plan,
+    *,
+    values_barrier: bool = False,
 ) -> None:
     """Ветвь `context_values` — таблица исходов по предмету «контекст + версия
     схемы» с текущим отпечатком; запрос строится по подмножеству параметров,
     которое нужно контексту (`values_need`); новое ставится, когда есть что
-    спросить или нужен вариант (без модели)."""
+    спросить или нужен вариант (без модели). `values_barrier` — контекстам, у
+    семьи которых пачка заданий значений в работе (спека §2.1), задания не
+    создаются и не оживляются; отмены нетекущих отпечатков идут как всегда."""
     if not material_by_context:
         return
     ids = list(material_by_context)
@@ -747,7 +751,10 @@ def _plan_context_values(
     needs = _values_needs(
         db, {cid: values_material[cid] for cid in applicable}, columns
     )
-    _plan_values_jobs(material_by_context, values_material, applicable, needs, jobs, plan)
+    barred = _barred_contexts(db, applicable) if values_barrier else frozenset()
+    _plan_values_jobs(
+        material_by_context, values_material, applicable, needs, jobs, plan, barred=barred
+    )
 
 
 def _plan_values_jobs(
@@ -757,6 +764,7 @@ def _plan_values_jobs(
     needs: Mapping[int, ValuesNeed],
     jobs: Collection[SemanticJob],
     plan: _Plan,
+    barred: Collection[int] = (),
 ) -> None:
     """Решения по заданиям значений, когда материал, применимость и нужда
     контекстов уже известны. Чистая часть `_plan_context_values`: правка схемы
@@ -773,6 +781,8 @@ def _plan_values_jobs(
         current = _plan_applicable(
             plan, jobs_by_context.get(context_id, []), (material.schema_id, rendered.request_hash)
         )
+        if context_id in barred:
+            continue
         if not need.ordinals and not need.variant_due:
             continue
         fingerprint = Fingerprint(
@@ -1310,7 +1320,11 @@ def _split_jobs(
 
 
 def _plan_all(
-    db: Session, context_ids: Collection[int], family_ids: Collection[int] = ()
+    db: Session,
+    context_ids: Collection[int],
+    family_ids: Collection[int] = (),
+    *,
+    values_barrier: bool = False,
 ) -> _FullPlan:
     """План сверки всех трёх видов по набору контекстов — без записей.
     `family_ids` — семьи, чьи схемы сверяются сверх семей единиц контекстов
@@ -1321,7 +1335,9 @@ def _plan_all(
     suggestion_jobs, values_jobs = _split_jobs(all_jobs)
     full = _FullPlan(prepared=prepared)
     _plan_suggestions(prepared, suggestion_jobs, full)
-    _plan_context_values(db, material_by_context, values_jobs, full.values)
+    _plan_context_values(
+        db, material_by_context, values_jobs, full.values, values_barrier=values_barrier
+    )
     planned_units = {
         material_by_context[fingerprint.context_id].unit_id
         for fingerprint, _rendered in full.suggestions.entries()
@@ -1909,10 +1925,13 @@ def reconcile_semantic_jobs(
     cap: EventCap | object,
     source: str,
     import_job_id: int | None = None,
+    values_barrier: bool = False,
 ) -> ReconcileReport:
     """Сверка очереди с текущим состоянием набора контекстов для трёх видов
     заданий (спека §2.7, инвариант). Одна транзакция ВЫЗЫВАЮЩЕГО — `commit` эта
-    функция не делает.
+    функция не делает. `values_barrier=True` — задания значений контексту, у
+    семьи которого пачка в работе, не создаются и не оживляются (обработчик
+    ответа модели не ставит повтор посреди пачки, спека §2.4а).
 
     Порядок: (1) материал, применимость, рендер; (2) задания набора одним
     запросом; (3) план каждого вида — отмены неприменимых и старых отпечатков,
@@ -1922,7 +1941,7 @@ def reconcile_semantic_jobs(
     выполняются при любом потолке; (5) `E` всех видов вместе — либо целиком,
     либо одной удержанной пачкой (потолок события, §2.11)."""
     _check_arguments(cap, source)
-    full = _plan_all(db, context_ids)
+    full = _plan_all(db, context_ids, values_barrier=values_barrier)
     return _execute_plan(db, full, cap=cap, source=source, import_job_id=import_job_id)
 
 
@@ -1948,36 +1967,128 @@ def reconcile_family_schemas(
     return _execute_plan(db, full, cap=cap, source=source, import_job_id=None)
 
 
+def _family_of_context():
+    """Семья контекста — `coalesce(pending_family_id, work_family_id)`, как везде в
+    очереди значений."""
+    return sa.func.coalesce(CatalogContext.pending_family_id, CatalogContext.work_family_id)
+
+
+def _families_with_values_batch(db: Session, family_ids: Collection[int]) -> set[int]:
+    """Семьи набора, у которых пачка заданий значений в работе (спека §2.1): есть
+    задание `context_values` в `pending` или `running`, чья версия схемы
+    принадлежит семье. `privacy_hold`, `done`, `cancelled`, `error` пачку не
+    держат."""
+    if not family_ids:
+        return set()
+    return set(
+        db.execute(
+            sa.select(FamilyParameterSchema.family_id)
+            .join(SemanticJob, SemanticJob.schema_id == FamilyParameterSchema.id)
+            .where(
+                SemanticJob.kind == SemanticJobKind.context_values.value,
+                SemanticJob.status.in_(
+                    (SemanticJobStatus.pending.value, SemanticJobStatus.running.value)
+                ),
+                FamilyParameterSchema.family_id.in_(list(family_ids)),
+            )
+            .distinct()
+        )
+        .scalars()
+        .all()
+    )
+
+
+def values_batch_in_work(db: Session, family_id: int) -> bool:
+    """Пачка заданий значений семьи в работе (спека §2.1)."""
+    return family_id in _families_with_values_batch(db, [family_id])
+
+
+def _barred_contexts(db: Session, context_ids: Collection[int]) -> frozenset[int]:
+    """Контексты набора, у семьи которых пачка заданий значений в работе."""
+    rows = db.execute(
+        sa.select(CatalogContext.id, _family_of_context()).where(
+            CatalogContext.id.in_(list(context_ids))
+        )
+    ).all()
+    busy = _families_with_values_batch(db, {family_id for _id, family_id in rows if family_id})
+    return frozenset(context_id for context_id, family_id in rows if family_id in busy)
+
+
+def values_batch_candidates(db: Session, family_id: int) -> list[int]:
+    """Контексты семьи, которым пора поставить задание значений (спека §2.2):
+    неархивные, применимые, с нуждой — непустые `ordinals` или `variant_due` по
+    `values_need_of` (тот же расчёт, что у сверки), без предметов отброшенных
+    пачек; по возрастанию `id`. Нужда, а не история заданий: она переживает
+    перезапуск и не расходится с постановкой сверки."""
+    context_ids = list(
+        db.execute(
+            sa.select(CatalogContext.id)
+            .where(CatalogContext.archived_at.is_(None), _family_of_context() == family_id)
+            .order_by(CatalogContext.id)
+        )
+        .scalars()
+        .all()
+    )
+    if not context_ids:
+        return []
+    material = load_request_material(db, context_ids)
+    values_material = load_values_material(db, context_ids)
+    columns = _load_values_columns(db, list(values_material)) if values_material else {}
+    applicable = {
+        context_id
+        for context_id, values in values_material.items()
+        if context_id in material and _values_applicable(material[context_id], columns[context_id])
+    }
+    needs = _values_needs(db, {context_id: values_material[context_id] for context_id in applicable}, columns)
+    needy = [
+        context_id
+        for context_id in context_ids
+        if context_id in applicable
+        and (needs[context_id].ordinals or needs[context_id].variant_due)
+    ]
+    return without_discarded_values(db, needy)
+
+
+def reconcile_after_values_batch(db: Session, *, family_id: int) -> int:
+    """Проверка конца пачки заданий значений семьи (спека §2.3): семья берётся
+    `FOR UPDATE` — проверки двух последних обработчиков семьи идут по очереди, —
+    затем, если пачка не в работе, кандидатам (§2.2) ставятся задания обычной
+    сверкой значений, потолок события — из настроек. Возвращает число
+    поставленных или возвращённых в `pending` заданий. Транзакцию не коммитит."""
+    # Модуль `work_families` сам импортирует эту сверку.
+    from services.work_families import _lock_families_statement
+
+    db.execute(_lock_families_statement([family_id], exclusive=True)).all()
+    if values_batch_in_work(db, family_id):
+        return 0
+    candidates = values_batch_candidates(db, family_id)
+    if not candidates:
+        return 0
+    report = reconcile_context_values(
+        db, candidates, cap=event_cap_from(settings), source="operation"
+    )
+    return report.created + report.revived
+
+
 def schedule_extension_wave(db: Session, *, family_id: int, parameter_id: int) -> int:
-    """Волна перезапроса после расширений списка (спека §2.8, §2.6, 3в §2.4): если
-    у семьи нет заданий `context_values` в `pending`/`running`, помечает «уточняется»
+    """Волна перезапроса после расширений списка (спека §2.8, §2.6, 3в §2.4;
+    перезапрос после изменившегося входа §2.4 п. 2): помечает «уточняется»
     (`refresh_requested_at`) строку этого параметра у контекстов семьи, у которых
     его значение пусто (`source = 'none'` либо `off_list`: расхождение путей
-    `path_conflict` значением не пусто), и сверяет их обычным планом: нужда
-    контекста — этот один параметр, поэтому задание хранит его номер, а следующая
-    сверка считает его текущим. Параметр архивный или не действующей версии
-    ничего не запускает. Вызывается обработчиком результата после того, как
-    собственное задание уже `done`. Потолок события — из настроек. Возвращает
-    число поставленных или возвращённых в `pending` заданий."""
+    `path_conflict` значением не пусто) — ВСЕГДА, и посреди пачки заданий семьи
+    тоже: пустую строку `none` нуждой не считает ничто иное, и без отметки
+    запомнить волну нечем. Постановку отдаёт проверке конца пачки
+    (`reconcile_after_values_batch`): пока в работе задание семьи, она ничего не
+    ставит, а последний обработчик пачки подберёт отмеченные контексты. Параметр
+    архивный или не действующей версии ничего не запускает. Вызывается
+    обработчиком результата после того, как собственное задание уже `done`.
+    Возвращает число поставленных или возвращённых в `pending` заданий."""
     parameter = db.execute(
         sa.select(FamilyParameter.archived_at, FamilyParameterSchema.status)
         .join(FamilyParameterSchema, FamilyParameterSchema.id == FamilyParameter.schema_id)
         .where(FamilyParameter.id == parameter_id)
     ).one()
     if parameter.archived_at is not None or parameter.status != SchemaStatus.frozen.value:
-        return 0
-    open_jobs = (
-        sa.select(SemanticJob.id)
-        .join(FamilyParameterSchema, FamilyParameterSchema.id == SemanticJob.schema_id)
-        .where(
-            SemanticJob.kind == SemanticJobKind.context_values.value,
-            SemanticJob.status.in_(
-                (SemanticJobStatus.pending.value, SemanticJobStatus.running.value)
-            ),
-            FamilyParameterSchema.family_id == family_id,
-        )
-    )
-    if db.execute(open_jobs.limit(1)).first() is not None:
         return 0
     context_ids = (
         db.execute(
@@ -1988,27 +2099,18 @@ def schedule_extension_wave(db: Session, *, family_id: int, parameter_id: int) -
                 ContextParameterValue.source.in_(
                     (ValueSource.none.value, ValueSource.off_list.value)
                 ),
-                sa.func.coalesce(CatalogContext.pending_family_id, CatalogContext.work_family_id)
-                == family_id,
+                _family_of_context() == family_id,
             )
         )
         .scalars()
         .all()
     )
-    if not context_ids:
-        return 0
-    # Запись строк значений принадлежит ядру варианта (`work_variants`), а не сверке.
-    from services.work_variants import mark_rows_for_refresh
+    if context_ids:
+        # Запись строк значений принадлежит ядру варианта (`work_variants`), а не сверке.
+        from services.work_variants import mark_rows_for_refresh
 
-    mark_rows_for_refresh(db, context_ids, parameter_id)
-    material = load_request_material(db, context_ids)
-    _suggestion_jobs, values_jobs = _split_jobs(_load_jobs_for_contexts(db, list(material)))
-    full = _FullPlan()
-    _plan_context_values(db, material, values_jobs, full.values)
-    report = _execute_plan(
-        db, full, cap=event_cap_from(settings), source="operation", import_job_id=None
-    )
-    return report.created + report.revived
+        mark_rows_for_refresh(db, context_ids, parameter_id)
+    return reconcile_after_values_batch(db, family_id=family_id)
 
 
 # ---------------------------------------------------------------------------

@@ -209,7 +209,8 @@ def claim_next(
   `values_need_of`, после `without_discarded_values`; по возрастанию `id`.
 - `reconcile_after_values_batch` — ровно §2.3: семья `FOR UPDATE` оператором
   `_lock_families_statement(..., exclusive=True)`; пачка в работе → `0` без
-  записей; иначе сверка кандидатов с `cap=event_cap_from(settings)`,
+  записей; иначе сверка значений кандидатов (`reconcile_context_values`,
+  правка спеки по ходу реализации) с `cap=event_cap_from(settings)`,
   `source="operation"`; возвращает `created + revived` отчёта; пустые
   кандидаты → `0` без вызова сверки. Не коммитит.
 - `schedule_extension_wave` — §2.4 п. 2: архивный параметр или не
