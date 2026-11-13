@@ -1,9 +1,19 @@
 name: backend-tests
 
 on:
-  push:
-    branches: [main]
+  # Только PR: прогон на push в main после мержа повторял бы уже пройденный
+  # прогон PR и удваивал расход минут (репозиторий приватный с 14.11.2026,
+  # лимит Actions — 2000 минут в месяц). Ручной запуск — workflow_dispatch.
   pull_request:
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-tests.yml"
+  workflow_dispatch:
+
+# Новый пуш в тот же PR снимает незаконченный прогон старого коммита.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   backend-tests:
