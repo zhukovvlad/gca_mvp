@@ -51,4 +51,8 @@ jobs:
 
       - name: Run frontend tests (vitest)
         # `npm test` = `vitest --run` (одноразовый прогон, не watch).
-        run: npm test
+        #
+        # --maxWorkers=2: по умолчанию vitest берёт «ядра минус один», и на
+        # 2-ядерном раннере приватного репозитория (с 14.11.2026) шёл в ОДИН
+        # поток — 514 с против 200 с на 4 ядрах (PR #79 против PR #78).
+        run: npm test -- --maxWorkers=2

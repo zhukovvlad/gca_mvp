@@ -113,11 +113,15 @@ jobs:
         # conftest applies Alembic to head on TEST_DATABASE_URL once per session;
         # the pgvector package makes CREATE EXTENSION vector succeed.
         #
-        # -n 12 подобран под раннер ubuntu-latest и НЕ совпадает с локальным
-        # дефолтом test-backend-parallel (8) — расхождение и план его снять:
-        # docs/TECH_DEBT.md, запись 2. Раздача — --dist worksteal из addopts
-        # (backend/pyproject.toml). Каждый xdist-воркёр пересоздаёт себе базу
-        # gca_gw<N>_test и мигрирует её сам — Postgres достаточно заранее
-        # существующей gca_test для db-test-check.
-        run: uv run --locked pytest -n 12
+        # Раннер приватного репозитория — 2 ядра (с 14.11.2026; публичный
+        # давал 4, и под него стояло -n 12). Каждый воркёр сам собирает тесты,
+        # пересоздаёт базу gca_gw<N>_test и накатывает миграции, поэтому лишние
+        # воркёры на двух ядрах — чистый расход: -n 12 на 2 ядрах шёл >20 мин
+        # (PR #79). Число — по замеру, docs/TECH_DEBT.md, запись 2. Раздача —
+        # --dist worksteal из addopts (backend/pyproject.toml).
+        #
+        # Медленные группы — миграции на scratch-базе (migration_roundtrip) и
+        # скрипт ревью (review_tooling): 169 тестов, около половины времени
+        # набора — гоняет backend-slow.yml, когда меняется то, что они проверяют.
+        run: uv run --locked pytest -n 4 -m "not migration_roundtrip and not review_tooling"
         working-directory: backend
