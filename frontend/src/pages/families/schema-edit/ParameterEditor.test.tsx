@@ -193,6 +193,22 @@ describe("ParameterEditor: «только из списка» и вид знач
     expect(within(editor).getByText("модели · правлен вами")).toBeInTheDocument();
   });
 
+  it("нажатый пункт переключателей роли и вида закрашен: класс aria-pressed:bg-primary у нажатого, у ненажатого aria-pressed=false", async () => {
+    const dialog = await opened();
+
+    for (const label of ["Роль", "Вид значений"]) {
+      const items = within(within(dialog).getByRole("group", { name: label })).getAllByRole("button");
+      const pressed = items.filter((item) => item.getAttribute("aria-pressed") === "true");
+      const idle = items.filter((item) => item.getAttribute("aria-pressed") === "false");
+      expect(pressed).toHaveLength(1);
+      expect(idle.length).toBeGreaterThan(0);
+      for (const item of items) {
+        expect(item.className).toContain("aria-pressed:bg-primary");
+        expect(item.className).toContain("aria-pressed:text-primary-foreground");
+      }
+    }
+  });
+
   it("переключатель вида нажат на текущем виде", async () => {
     const dialog = await opened();
 

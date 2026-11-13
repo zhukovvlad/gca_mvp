@@ -1260,6 +1260,9 @@ class TestExtensionWave:
         world = _wave_world(db_session, factories, contexts=2)
         other, empty = world.contexts
         _set_cpv(db_session, world, empty, None)
+        # У `other` значение уже есть: нужды, которую проверка конца пачки подобрала
+        # бы сама, у него нет — ставит задание только волна для `empty`.
+        _set_cpv(db_session, world, other, world.value_id)
         _job(db_session, kind=_VALUES, request_hash="other", status=status, context_id=other,
              schema_id=world.schema.id, paths_hash="p")
 
@@ -1268,6 +1271,7 @@ class TestExtensionWave:
         )
 
         assert posted == 1
+        assert [j.context_id for j in _jobs(db_session, kind=_VALUES, status="pending")] == [empty]
 
     def test_open_job_of_another_family_does_not_stop_the_wave(self, db_session, factories):
         world = _wave_world(db_session, factories, contexts=1)

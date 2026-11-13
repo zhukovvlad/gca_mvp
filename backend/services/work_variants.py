@@ -86,6 +86,7 @@ from services.semantic_reconcile import (
     _ensure_building_version,
     reconcile_family_schemas,
     reconcile_or_defer,
+    reconcile_semantic_jobs,
     revive_answered_suggestion_job,
     schedule_extension_wave,
 )
@@ -1449,6 +1450,21 @@ def _switch_pending_family(db: Session, context: CatalogContext) -> int | None:
     return previous_family_id
 
 
+def _reconcile_after_values(
+    db: Session, context_id: int, *, guard: JobGuard | None, settings: Settings
+) -> None:
+    """Сверка контекста в конце `apply_values`. С охраной задания (ответ модели
+    из исполнителя очереди) — с барьером: контекст, у семьи которого пачка в
+    работе, повтор не получает, его подберёт проверка конца пачки (спека §2.4а).
+    Без охраны — как у любой операции (`reconcile_or_defer`)."""
+    if guard is None:
+        reconcile_or_defer(db, [context_id])
+        return
+    reconcile_semantic_jobs(
+        db, [context_id], cap=event_cap_from(settings), source="operation", values_barrier=True
+    )
+
+
 def apply_values(
     db: Session, *, context_id: int, schema_id: int, answer: ValuesAnswer, paths_hash: str,
     guard: JobGuard | None, settings: Settings,
@@ -1524,7 +1540,7 @@ def apply_values(
         if locked.job is not None:
             _close_job_unapplied(locked.job, "not_applicable")
         db.flush()
-        reconcile_or_defer(db, [context_id])
+        _reconcile_after_values(db, context_id, guard=guard, settings=settings)
         return _unapplied_values("not_applicable")
     schema = locked.schema
     family_id = (
@@ -1755,7 +1771,7 @@ def apply_values(
         # Список значений параметра — вход запроса «можно отпустить» (спека лестницы
         # аналогов §2.7): предложения и задание версии пересматриваются.
         refresh_inputs(db, [schema_id], settings=settings)
-    reconcile_or_defer(db, [context_id])
+    _reconcile_after_values(db, context_id, guard=guard, settings=settings)
     if resolved is not None and queue_auto_split:
         from services.auto_split import schedule_auto_split
 
