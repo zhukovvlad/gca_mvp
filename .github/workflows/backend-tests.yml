@@ -59,11 +59,17 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq postgresql-16-pgvector
           dpkg-query -W postgresql-16 postgresql-16-pgvector
+          # Одноразовый кластер: долговечность записи ему не нужна. Без fsync
+          # TRUNCATE доменных таблиц до и после каждого committing-теста и
+          # миграции на каждом воркёре не ждут сброса на диск.
+          printf 'fsync = off\nsynchronous_commit = off\nfull_page_writes = off\n' \
+            | sudo tee /etc/postgresql/16/main/conf.d/ci-no-durability.conf
           sudo systemctl start postgresql.service
           until pg_isready -h localhost -p 5432; do sleep 1; done
           sudo -u postgres psql -v ON_ERROR_STOP=1 \
             -c "ALTER USER postgres PASSWORD 'postgres';" \
-            -c "CREATE DATABASE gca_test;"
+            -c "CREATE DATABASE gca_test;" \
+            -c "SHOW fsync;"
 
       - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
