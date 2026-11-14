@@ -311,7 +311,7 @@ def schema_build_wait(db: Session, family_id: int) -> BuildWait | None
 ```ts
 interface BudgetPause { until: string; source: string | null; limit_usd: string | null; spend_usd: string | null; attempt_id: number }
 // QueueStatus.budget_pause: BudgetPause | null
-// FamilySchemaView.build_wait: { held_batches: { batch_id: number; source: string; import_job_id: number | null }[]; live_jobs: number } | null
+// FamilySchema.build_wait: { held_batches: { batch_id: number; source: string; import_job_id: number | null }[]; live_jobs: number } | null
 ```
 
 **Утверждения**
