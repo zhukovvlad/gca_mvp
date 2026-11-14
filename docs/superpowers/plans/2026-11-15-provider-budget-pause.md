@@ -3,7 +3,10 @@
 **Спека:** `docs/superpowers/specs/2026-11-15-provider-budget-pause-design.md` (гейт 2 одобрен 15.11.2026, редакция 2, `a4f4a13`)
 **Дизайн:** `docs/superpowers/design/2026-11-15-provider-budget-pause.md` (редакция 3)
 **Ветка:** `fix/provider-budget-pause`, черновой PR #83
-**Статус:** редакция 1, 15.11.2026, на гейте 3.
+**Статус:** редакция 2, 15.11.2026, на гейте 3. Круг 1 Codex (на
+`f2cb58f`): правки контрактных ожиданий и фикстур перечислены и разрешены
+явно (Global Constraints, файлы Task 1 и 4); `schema_ready_to_build`
+сохраняет `False` для несуществующей семьи (решение 4, Task 4).
 
 > Исполнителю: задачи по порядку; каждая — цикл TDD
 > (`superpowers:test-driven-development`: тесты первыми, красный прогон
@@ -44,10 +47,28 @@
   `_open_suggestion_state` сохраняет и подпись, и ответ — у неё два
   потребителя кроме схемы (`services/family_discovery.py`, сверка в
   `semantic_reconcile.py`).
-- Существующие тесты затронутых наборов зелёные **без правок**. Исключение —
-  тексты плашки остановки в `SuggestionsHeader.test.tsx`, если тест
-  сравнивает весь текст: причина `reserve_exceeded` печатает прежний текст,
-  поломка допустима только от смены разметки, исполнитель называет её.
+- Существующие тесты затронутых наборов зелёные **без правок** — кроме
+  перечисленных ниже. Это не поломки, а ожидания и фикстуры, которые
+  закрепляют прежний контракт, а фича его меняет. Правка — ровно до нового
+  контракта, прежние смысловые утверждения остаются:
+  - `backend/tests/unit/test_semantic_queue_client.py`,
+    `TestErrors.test_other_4xx_are_permanent`: из параметров уходит 402 — его
+    закрепляют новые тесты Task 1 (402 → `ProviderBudgetError`); 403 с телом
+    без `limit_source` остаётся в параметрах постоянной ошибкой (Task 1);
+  - `backend/tests/integration/test_work_variants_api.py`,
+    `TestSchemaRead.test_shape_and_order`: в точный набор ключей ответа
+    добавляется `build_wait`, плюс утверждение, что у схемы без ожидания он
+    `None` (Task 4);
+  - `frontend/src/test/handlers.ts` (`initialQueueStatus`, `emptySchema`,
+    `initialFamilySchemas`), `SuggestionsHeader.test.tsx` и
+    `SuggestionsHeader.pending.test.tsx` (свои сборщики `QueueStatus`): новые
+    обязательные поля `budget_pause: null` и `build_wait: null` (Task 4);
+  - тексты плашки остановки в `SuggestionsHeader.test.tsx`, если тест
+    сравнивает разметку целиком: причина `reserve_exceeded` печатает прежний
+    текст (Task 4).
+
+  Любую другую поломку исполнитель называет в отчёте с причиной; она —
+  дефект реализации, пока оркестратор не решит иначе.
 - Субагентам: кириллицу в терминал не печатать, вывод pytest и vitest — в
   файл, `PYTHONIOENCODING=utf-8`; vitest запускать из `C:\…` (заглавная буква
   диска).
@@ -89,8 +110,12 @@
    остаётся» и «остановка снимает паузу по времени» живут в ней одной.
 4. **Причина ожидания схемы** — новая `open_suggestion_holds(db)`, которая
    возвращает и единицы, и удержавшие их пачки; `_open_suggestion_state` и
-   новая `schema_build_wait` строятся из неё, а `schema_ready_to_build`
-   становится `schema_build_wait(...) is None`. Так у трёх потребителей одно
+   новая `schema_build_wait` строятся из неё. `schema_ready_to_build`
+   **сохраняет проверку существования семьи**: семьи нет → `False`, как
+   сегодня (`test_unknown_family_is_not_ready`); семья есть →
+   `schema_build_wait(...) is None`. `schema_build_wait` для отсутствующей
+   семьи отвечает `None` — причины ожидания у неё нет, а «семьи нет» решает
+   не она: маршрут схемы отвечает 404 раньше. Так у трёх потребителей одно
    правило отбора (§2.7 п. 3).
 5. **Тест миграции** — отдельный файл `*_schema.py` с маркером
    `migration_roundtrip`: его гоняет `backend-slow` по пути
@@ -140,8 +165,9 @@ class ProviderBudgetError(TransientModelError):
   `5.0001` без потери); строка или `null` → `None`.
 - 403 с `metadata` модерации (без бюджетного `limit_source`) — по-прежнему
   `PermanentModelError` с `http_403` (проверка 3).
-- 429, 5xx, 400, 401 — как сегодня (существующие тесты `TestErrors` зелёные
-  без правок).
+- 429, 5xx, 400, 401, 404, 422 — как сегодня; тесты `TestErrors` зелёные без
+  правок, кроме `test_other_4xx_are_permanent`: из его параметров уходит
+  402 (Global Constraints), 403 с телом без `limit_source` в нём остаётся.
 
 **Имена**
 - Заводятся: `BudgetAction`, `ProviderBudgetError`.
@@ -282,6 +308,10 @@ class BudgetPauseInfo(TypedDict):
 - Test: `backend/tests/integration/test_provider_budget_pause.py` (класс
   `TestBuildWait`), `SuggestionsHeader.test.tsx`, `ContextCard.test.tsx`,
   `FamiliesTab.test.tsx`, `SchemaBlock.test.tsx`
+- Edit (контрактные ожидания и фикстуры, Global Constraints):
+  `backend/tests/integration/test_work_variants_api.py`
+  (`TestSchemaRead.test_shape_and_order`), `frontend/src/test/handlers.ts`,
+  `SuggestionsHeader.pending.test.tsx`
 
 **Interfaces**
 - Потребляет: `QueueStatus.budget_pause` (Task 3), `_open_suggestion_state`,
@@ -318,6 +348,11 @@ interface BudgetPause { until: string; source: string | null; limit_usd: string 
 - `_open_suggestion_state` на тех же данных отвечает как до правки (её
   существующие тесты в `test_work_variants_reconcile.py` и
   `test_catalog_discovery_worker.py` зелёные без правок).
+- `schema_ready_to_build` несуществующей семьи — `False`
+  (`test_unknown_family_is_not_ready` зелёный без правок); у существующей —
+  `True` ровно тогда, когда `schema_build_wait` — `None`.
+- Ответ `GET /families/{id}/schema` несёт `build_wait`; у схемы без ожидания
+  — `None` (правка `test_shape_and_order` — по Global Constraints).
 - `build_wait`: пачка с отпечатками предложений этой единицы → номер, источник
   и `job`; `mass` с отпечатками предложений → в каждой единице; только
   задания → `live_jobs` (проверка 19). Пачки только из `family_schema` или
