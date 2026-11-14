@@ -310,7 +310,7 @@ class _RecordingEngine:
 def _run_db_engine_setup(monkeypatch, worker_id):
     """Довести `db_engine` до yield с подменёнными engine, Alembic и guard'ом.
 
-    Возвращает (engine, вызовы пересоздания базы).
+    Возвращает (engine, вызовы пересоздания базы, URL-ы `alembic upgrade`).
     """
     import alembic.command
 
@@ -321,27 +321,100 @@ def _run_db_engine_setup(monkeypatch, worker_id):
     monkeypatch.setattr(conftest_module, "_recreate_worker_database", recreated.append)
     engine = _RecordingEngine()
     monkeypatch.setattr(conftest_module, "create_engine", lambda url, **kw: engine)
-    monkeypatch.setattr(alembic.command, "upgrade", lambda cfg, rev: None)
+    upgraded: list[str] = []
+    monkeypatch.setattr(
+        alembic.command,
+        "upgrade",
+        lambda cfg, rev: upgraded.append(cfg.get_main_option("sqlalchemy.url")),
+    )
 
     gen = conftest_module.db_engine.__wrapped__(worker_id)
     assert next(gen) is engine
     gen.close()
-    return engine, recreated
+    return engine, recreated, upgraded
 
 
 def test_worker_recreates_its_database_and_never_drops_the_schema(monkeypatch):
     """Воркёр не шлёт DROP SCHEMA: снос мигрированной схемы держит ~2200 слотов
     таблицы блокировок, и восемь воркёров разом её исчерпывали."""
-    engine, recreated = _run_db_engine_setup(monkeypatch, "gw3")
+    engine, recreated, _ = _run_db_engine_setup(monkeypatch, "gw3")
 
     assert [make_url(u).database for u in recreated] == ["gca_gw3_test"]
     assert not any("DROP SCHEMA" in s for s in engine.statements), engine.statements
 
 
+def test_worker_does_not_migrate_its_own_database(monkeypatch):
+    """База воркёра приходит копией мигрированного шаблона: своя цепочка
+    Alembic на каждом воркёре — ровно то, что делило 2 ядра раннера CI."""
+    _, _, upgraded = _run_db_engine_setup(monkeypatch, "gw3")
+
+    assert upgraded == []
+
+
 def test_master_drops_the_schema_and_keeps_its_database(monkeypatch):
     """Серийный путь не пересоздаёт gca_test (её готовят рецепты justfile),
-    а сносит схему, как до правки."""
-    engine, recreated = _run_db_engine_setup(monkeypatch, "master")
+    а сносит схему и мигрирует её сам, как до правки."""
+    engine, recreated, upgraded = _run_db_engine_setup(monkeypatch, "master")
 
     assert recreated == []
     assert any("DROP SCHEMA public CASCADE" in s for s in engine.statements), engine.statements
+    assert upgraded == [BASE_URL]
+
+
+# ---------------------------------------------------------------------------
+#  Шаблон прогона: имя и годность (миграции — один раз на прогон)
+# ---------------------------------------------------------------------------
+
+
+def test_template_name_is_derived_from_the_worker_database():
+    """gca_gw3_test → gca_template_test; двузначный номер и другая основа —
+    тоже; хост, порт и учётка — те, что уже допустили барьеры."""
+    url = "postgresql+psycopg://alice:s3cr3t@localhost:6543/gca_gw11_test"
+    template = make_url(conftest_module.template_database_url(url))
+    assert template.database == "gca_template_test"
+    assert (template.username, template.password, template.host, template.port) == (
+        "alice",
+        "s3cr3t",
+        "localhost",
+        6543,
+    )
+    review = conftest_module.template_database_url(
+        "postgresql+psycopg://postgres@localhost:5459/gca_review_gw0_test"
+    )
+    assert make_url(review).database == "gca_review_template_test"
+
+
+def test_template_name_passes_barrier_b():
+    """Шаблон мутируется (DROP/CREATE), поэтому его имя обязано быть тестовым."""
+    template = conftest_module.template_database_url(
+        conftest_module.worker_database_url(BASE_URL, "gw0")
+    )
+    assert conftest_module.test_database_refusal_reason(template) is None
+
+
+@pytest.mark.parametrize(
+    "db_name", ["gca_test", "gca_gw_test", "gca_gw0", "gw0_test", "gca_dev"]
+)
+def test_template_name_from_a_non_worker_database_is_loud(db_name):
+    """Вывести шаблон можно только из имени базы воркёра — иначе RuntimeError."""
+    url = f"postgresql+psycopg://postgres@localhost:5459/{db_name}"
+    with pytest.raises(BaseException) as exc_info:  # noqa: B017 — тип ниже
+        conftest_module.template_database_url(url)
+    assert isinstance(exc_info.value, RuntimeError), type(exc_info.value).__name__
+
+
+@pytest.mark.parametrize(
+    ("comment", "run_marker", "current"),
+    [
+        ("run-a", "run-a", True),
+        # Шаблон прошлого прогона: мог быть построен по другим миграциям.
+        ("run-a", "run-b", False),
+        # Шаблон без метки: миграция на нём упала или его строили не мы.
+        (None, "run-a", False),
+        # Прогон без метки (не под xdist): шаблону доверять нечем.
+        ("run-a", None, False),
+        (None, None, False),
+    ],
+)
+def test_template_is_current_only_for_this_run(comment, run_marker, current):
+    assert conftest_module.template_is_current(comment, run_marker) is current
