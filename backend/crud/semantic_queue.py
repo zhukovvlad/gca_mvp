@@ -159,6 +159,14 @@ class PausedInfo(TypedDict):
     paused_at: str
 
 
+class BudgetPauseInfo(TypedDict):
+    until: str
+    source: str | None
+    limit_usd: str | None
+    spend_usd: str | None
+    attempt_id: int
+
+
 class HeldBatchInfo(TypedDict):
     batch_id: int
     source: str
@@ -185,6 +193,7 @@ class QueueStatus(TypedDict):
     spent_24h_usd: str
     daily_budget_usd: str
     claim_paused: PausedInfo | None
+    budget_pause: BudgetPauseInfo | None
     held_batches: list[HeldBatchInfo]
     stale_units: list[StaleUnitInfo]
     config_stale: ConfigStaleInfo | None
@@ -268,6 +277,10 @@ def money_str(value: Decimal) -> str:
     """Деньги строкой в фиксированной записи: `str(Decimal("1E+2"))` — `"1E+2"`,
     а экран разбирает деньги строкой без экспоненты."""
     return format(value, "f")
+
+
+def _money_or_none(value: Decimal | None) -> str | None:
+    return money_str(value) if value is not None else None
 
 
 def _iso(value: dt.datetime | None) -> str | None:
@@ -1199,6 +1212,19 @@ def queue_status(db: Session, *, heavy: HeavyStatusParts | None = None) -> Queue
             attempt_id=state.paused_attempt_id,
             paused_at=state.paused_at.isoformat(),
         )
+    budget_pause: BudgetPauseInfo | None = None
+    if (
+        state is not None
+        and state.budget_paused_until is not None
+        and state.budget_paused_until > now
+    ):
+        budget_pause = BudgetPauseInfo(
+            until=state.budget_paused_until.isoformat(),
+            source=state.budget_pause_source,
+            limit_usd=_money_or_none(state.budget_limit_usd),
+            spend_usd=_money_or_none(state.budget_spend_usd),
+            attempt_id=state.budget_pause_attempt_id,
+        )
     batches = db.execute(
         sa.select(SemanticReconcileBatch)
         .where(SemanticReconcileBatch.status == ReconcileBatchStatus.held.value)
@@ -1224,6 +1250,7 @@ def queue_status(db: Session, *, heavy: HeavyStatusParts | None = None) -> Queue
         spent_24h_usd=money_str(spent_last_24h(db, now=now)),
         daily_budget_usd=money_str(settings.SEMANTIC_DAILY_BUDGET_USD),
         claim_paused=paused,
+        budget_pause=budget_pause,
         held_batches=held,
         stale_units=heavy["stale_units"],
         config_stale=heavy["config_stale"],
