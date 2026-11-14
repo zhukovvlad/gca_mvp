@@ -3,7 +3,9 @@
 **Спека:** `docs/superpowers/specs/2026-11-15-provider-budget-pause-design.md` (гейт 2 одобрен 15.11.2026, редакция 2, `a4f4a13`)
 **Дизайн:** `docs/superpowers/design/2026-11-15-provider-budget-pause.md` (редакция 3)
 **Ветка:** `fix/provider-budget-pause`, черновой PR #83
-**Статус:** редакция 2, 15.11.2026, на гейте 3. Круг 1 Codex (на
+**Статус:** редакция 2, 15.11.2026. **Гейт 3 одобрен пользователем
+15.11.2026** после второго круга ревью Codex в PR #83 (на `2d6b213`
+замечаний нет; уточнение счёта Task 3 — 915, а не 916 — внесено). Круг 1 Codex (на
 `f2cb58f`): правки контрактных ожиданий и фикстур перечислены и разрешены
 явно (Global Constraints, файлы Task 1 и 4); `schema_ready_to_build`
 сохраняет `False` для несуществующей семьи (решение 4, Task 4).
@@ -291,8 +293,10 @@ class BudgetPauseInfo(TypedDict):
   tests/unit/test_semantic_queue_client.py tests/integration/test_semantic_queue_worker.py
   tests/integration/test_catalog_discovery_worker.py tests/integration/test_work_variants_reconcile.py
   tests/integration/test_semantic_queue_api.py tests/integration/test_work_variants_api.py
-  tests/integration/test_semantic_queue_schema.py` — ДО 916, ПОСЛЕ 916 плюс
-  новые тесты Task 1, все зелёные.
+  tests/integration/test_semantic_queue_schema.py` — ДО 916, ПОСЛЕ **915**
+  плюс новые тесты Task 1, все зелёные: случай 402 уходит из
+  `test_other_4xx_are_permanent` (Global Constraints), в замере это
+  уменьшение называется, а не выглядит потерянным тестом.
 - Снятия (оркестратор): задание снова в `error` при отказе (проверка 4, 14);
   стоимость выполненных порций → 0 (проверка 5); проверка паузы в
   `claim_next` убрана (проверка 9); предохранитель на пути отказа убран
