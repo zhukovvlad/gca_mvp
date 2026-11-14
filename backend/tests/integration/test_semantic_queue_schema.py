@@ -31,7 +31,6 @@ from models import (
     CK_WORKER_STATE_SINGLETON_ID,
     RECONCILE_BATCH_SOURCES,
     RECONCILE_BATCH_STATUSES,
-    SEMANTIC_ATTEMPT_OUTCOMES,
     SEMANTIC_CANCEL_REASONS,
     SEMANTIC_JOB_STATUSES,
     SUGGESTION_UNPUBLISHED_REASONS,
@@ -684,7 +683,10 @@ class TestParityWithMigration:
          {"pending", "running", "done", "error", "cancelled", "privacy_hold"}),
         (SEMANTIC_CANCEL_REASONS, "SEMANTIC_CANCEL_REASONS",
          {"input_changed", "not_applicable", "privacy_declined", "stale_hold"}),
-        (SEMANTIC_ATTEMPT_OUTCOMES, "SEMANTIC_ATTEMPT_OUTCOMES",
+        # Расширено миграцией 0026: здесь замороженная редакция 0018 против её
+        # прежнего литерала; `models.py` против 0026 — test_provider_budget_schema.py.
+        ("'ok', 'transient_error', 'permanent_error', 'schema_error', 'lost_claim'",
+         "SEMANTIC_ATTEMPT_OUTCOMES",
          {"ok", "transient_error", "permanent_error", "schema_error", "lost_claim"}),
         (SUGGESTION_UNPUBLISHED_REASONS, "SUGGESTION_UNPUBLISHED_REASONS",
          {"stale_fingerprint", "lost_claim", "context_not_applicable", "rejected"}),
