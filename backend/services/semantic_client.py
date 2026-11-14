@@ -13,8 +13,10 @@
 """
 from __future__ import annotations
 
+import enum
 import json
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Protocol
 
@@ -38,6 +40,41 @@ class TransientModelError(Exception):
     def __init__(self, message: str, *, error_class: str | None = None) -> None:
         super().__init__(message)
         self.error_class = error_class
+
+
+class BudgetAction(str, enum.Enum):
+    """Что делать с отказом провайдера по деньгам: ждать или остановить очередь."""
+
+    pause = "pause"
+    stop = "stop"
+
+
+class ProviderBudgetError(TransientModelError):
+    """Отказ провайдера по деньгам (спека `2026-11-15-provider-budget-pause-design.md`
+    §2.1). Наследник временной ошибки: место, которое о нём не знает, повторит
+    задание с отсрочкой, но не испортит его в «Ошибки»."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        action: BudgetAction,
+        error_class: str | None = None,
+        resets_at: datetime | None = None,
+        retry_after_s: int | None = None,
+        stop_reason: str | None = None,
+        limit_source: str | None = None,
+        limit_usd: Decimal | None = None,
+        spend_usd: Decimal | None = None,
+    ) -> None:
+        super().__init__(message, error_class=error_class)
+        self.action = action
+        self.resets_at = resets_at
+        self.retry_after_s = retry_after_s
+        self.stop_reason = stop_reason
+        self.limit_source = limit_source
+        self.limit_usd = limit_usd
+        self.spend_usd = spend_usd
 
 
 class PermanentModelError(Exception):
@@ -111,6 +148,119 @@ def _parse_response(raw: bytes) -> ModelResponse:
     )
 
 
+#: Источники лимита провайдера (`error.metadata.limit_source`) → `error_class`.
+_IN_FLIGHT_SOURCE = "openrouter_in_flight_budget"
+_CREDITS_SOURCE = "openrouter_credits"
+_RESET_SOURCES = {
+    "openrouter_key_limit": "budget_key_limit",
+    "openrouter_guardrail_budget": "budget_guardrail",
+    "openrouter_workspace_budget": "budget_workspace",
+}
+
+_DEFAULT_RETRY_AFTER_S = 60
+_MAX_RETRY_AFTER_S = 3600
+_MISSING = object()
+
+
+def _retry_after_s(value: str | None) -> int:
+    """Целое число секунд 1..3600; иначе (нет, 0, дата, мусор) — 60."""
+    if value is not None:
+        text = value.strip()
+        if text.isascii() and text.isdigit() and 1 <= int(text) <= _MAX_RETRY_AFTER_S:
+            return int(text)
+    return _DEFAULT_RETRY_AFTER_S
+
+
+def _parse_resets_at(value: object) -> datetime | None:
+    """Строка ISO 8601 с часовым поясом → время в UTC; иначе `None`."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(UTC)
+
+
+def _budget_refusal(response: httpx.Response) -> ProviderBudgetError | None:
+    """Разбор `402`/`403` по таблице спеки §2.1. `None` — отказ не по деньгам
+    (для `403`: прежняя постоянная ошибка `http_403`)."""
+    status = response.status_code
+    metadata: dict = {}
+    try:
+        data = json.loads(response.content, parse_float=Decimal)
+    except ValueError:
+        data = None
+    error = data.get("error") if isinstance(data, dict) else None
+    raw_meta = error.get("metadata") if isinstance(error, dict) else None
+    if isinstance(raw_meta, dict):
+        metadata = raw_meta
+    source = metadata.get("limit_source")
+    source = source if isinstance(source, str) else None
+    message = f"HTTP {status}: {response.text[:_ERROR_BODY_LIMIT]}"
+    common = {
+        "limit_source": source,
+        "limit_usd": _as_cost(metadata.get("limit_usd")),
+        "spend_usd": _as_cost(metadata.get("spend_usd")),
+    }
+
+    if status == 402:
+        if source == _IN_FLIGHT_SOURCE:
+            return ProviderBudgetError(
+                message,
+                action=BudgetAction.pause,
+                error_class="budget_in_flight",
+                retry_after_s=_retry_after_s(response.headers.get("Retry-After")),
+                **common,
+            )
+        if source == _CREDITS_SOURCE:
+            return ProviderBudgetError(
+                message,
+                action=BudgetAction.stop,
+                error_class="budget_credits",
+                stop_reason="provider_credits",
+                **common,
+            )
+        return ProviderBudgetError(
+            message,
+            action=BudgetAction.stop,
+            error_class="budget_unknown",
+            stop_reason="provider_refusal_unknown",
+            **common,
+        )
+
+    error_class = _RESET_SOURCES.get(source) if source is not None else None
+    if error_class is None:
+        return None
+    raw_resets = metadata.get("resets_at", _MISSING)
+    if raw_resets is None:
+        return ProviderBudgetError(
+            message,
+            action=BudgetAction.stop,
+            error_class=error_class,
+            stop_reason="provider_budget_no_reset",
+            **common,
+        )
+    resets_at = None if raw_resets is _MISSING else _parse_resets_at(raw_resets)
+    if resets_at is None:
+        return ProviderBudgetError(
+            message,
+            action=BudgetAction.stop,
+            error_class=error_class,
+            stop_reason="provider_refusal_unknown",
+            **common,
+        )
+    return ProviderBudgetError(
+        message,
+        action=BudgetAction.pause,
+        error_class=error_class,
+        resets_at=resets_at,
+        **common,
+    )
+
+
 class OpenRouterClient:
     """`ModelClient` поверх `httpx.Client`. `http_client` внедряется в тестах
     (`httpx.MockTransport`); без него клиент создаёт свой."""
@@ -155,6 +305,10 @@ class OpenRouterClient:
             raise TransientModelError(
                 f"HTTP {status}: {response.text[:_ERROR_BODY_LIMIT]}", error_class=f"http_{status}"
             )
+        if status in (402, 403):
+            refusal = _budget_refusal(response)
+            if refusal is not None:
+                raise refusal
         if status >= 400:
             raise PermanentModelError(
                 f"HTTP {status}: {response.text[:_ERROR_BODY_LIMIT]}", error_class=f"http_{status}"
