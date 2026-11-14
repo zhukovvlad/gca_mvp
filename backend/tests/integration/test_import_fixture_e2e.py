@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -15,6 +16,7 @@ from pathlib import Path
 import pytest
 import sqlalchemy as sa
 from openpyxl import load_workbook
+from sqlalchemy.orm import Session
 
 from models import (
     CatalogKind,
@@ -102,18 +104,6 @@ def xlsx_stub(marker: str) -> bytes:
     return buffer.getvalue()
 
 
-@pytest.fixture
-def imported_fixture_estimate(
-    committing_client, committing_db, committing_factories, stub_with_fixture
-) -> int:
-    """Загруженная fixture-смета; отдаёт `estimate_id`."""
-    contract = committing_factories.ContractFactory.create()
-    committing_db.commit()
-    job = upload(committing_client, contract.id, xlsx_stub("categories"))
-    assert job["status"] == ImportJobStatus.done.value, job["error_text"]
-    return job["estimate_id"]
-
-
 @dataclass
 class ImportedFixture:
     """То немногое из результата импорта, что нужно сквозным тестам Ф4a."""
@@ -123,22 +113,133 @@ class ImportedFixture:
     warnings: list[str]
 
 
+@dataclass
+class _ModuleImport:
+    estimate_id: int
+    fixture: ImportedFixture
+
+
+@pytest.fixture(scope="module")
+def _module_import(db_engine, parsed_fixture, tmp_path_factory) -> _ModuleImport:
+    """Импорт fixture-сметы ОДИН раз на модуль — для тестов, которые результат
+    только читают.
+
+    Импорт стоит ~30 с процессора (матчинг 2576 строк), и при импорте на каждый
+    тест модуль съедал около четверти времени всего бэкенд-набора на раннере CI
+    (замер PR #79, 14.11.2026: 845 из ~3560 воркёр-секунд). Тесты, которые сами
+    пишут в базу (`TestFullPipelineOnFixture`, `TestMatchingMetric`), импортируют
+    своё и идут через `committing_*`, как раньше.
+
+    Данные коммитятся по-настоящему, поэтому таблицы чистятся до импорта и после
+    модуля. Function-фикстура `committing_session_factory` чистит их перед каждым
+    своим тестом — модульные данные она бы стёрла; от этого стережёт
+    `fixture_db`, а порядок тестов в файле ставит пишущие тесты раньше читающих.
+    """
+    from unittest.mock import MagicMock
+
+    from fastapi.testclient import TestClient
+    from sqlalchemy.orm import sessionmaker
+
+    from auth import get_current_user
+    from database import get_db, get_session_factory
+    from main import app
+    from models import UserRole
+    from storage import LocalStorage, get_storage
+    from tests import factories as f
+    from tests.conftest import _truncate_domain_tables
+
+    factory = sessionmaker(bind=db_engine, autoflush=False, autocommit=False)
+    storage = LocalStorage(tmp_path_factory.mktemp("module_import") / "storage")
+    _truncate_domain_tables(db_engine)
+    try:
+        with factory() as db:
+            f._register_session(db)
+            try:
+                contract = f.ContractFactory.create()
+                db.commit()
+                contract_id = contract.id
+            finally:
+                f._register_session(None)
+
+        def override_get_db():
+            db = factory()
+            try:
+                yield db
+            finally:
+                db.close()
+
+        def override_get_current_user():
+            user = MagicMock()
+            user.id = 1
+            user.role = UserRole.admin
+            user.is_active = True
+            return user
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(import_pipeline, "parse_estimate", lambda _handle: parsed_fixture)
+            app.dependency_overrides[get_db] = override_get_db
+            app.dependency_overrides[get_current_user] = override_get_current_user
+            app.dependency_overrides[get_session_factory] = lambda: factory
+            app.dependency_overrides[get_storage] = lambda: storage
+            try:
+                csrf = "test-csrf-token"
+                with TestClient(app, headers={"X-CSRF-Token": csrf}) as client:
+                    client.cookies.set("csrf_token", csrf)
+                    job = upload(client, contract_id, xlsx_stub("categories"))
+            finally:
+                app.dependency_overrides.clear()
+        assert job["status"] == ImportJobStatus.done.value, job["error_text"]
+        estimate_id = job["estimate_id"]
+
+        with factory() as db:
+            raw = db.get(EstimateRawData, estimate_id)
+            proposal_id = db.execute(
+                sa.select(Proposal.id)
+                .join(Lot, Lot.id == Proposal.lot_id)
+                .where(Lot.estimate_id == estimate_id)
+            ).scalar_one()
+            estimate = db.get(Estimate, estimate_id)
+            import_job = db.get(ImportJob, estimate.import_job_id)
+            imported = ImportedFixture(
+                raw=raw.raw_data, proposal_id=proposal_id, warnings=list(import_job.warnings)
+            )
+        yield _ModuleImport(estimate_id=estimate_id, fixture=imported)
+    finally:
+        _truncate_domain_tables(db_engine)
+
+
 @pytest.fixture
-def imported_fixture(committing_db, imported_fixture_estimate) -> ImportedFixture:
-    """`imported_fixture_estimate`, обёрнутый в сырой JSON, id единственного
-    предложения и предупреждения задания — всё из БД, без повторного импорта."""
-    estimate_id = imported_fixture_estimate
-    raw = committing_db.get(EstimateRawData, estimate_id)
-    proposal_id = committing_db.execute(
-        sa.select(Proposal.id)
-        .join(Lot, Lot.id == Proposal.lot_id)
-        .where(Lot.estimate_id == estimate_id)
-    ).scalar_one()
-    estimate = committing_db.get(Estimate, estimate_id)
-    job = committing_db.get(ImportJob, estimate.import_job_id)
-    return ImportedFixture(
-        raw=raw.raw_data, proposal_id=proposal_id, warnings=list(job.warnings)
-    )
+def fixture_db(db_engine, _module_import) -> Iterator[Session]:
+    """Сессия читающего теста над модульным импортом.
+
+    Перед тестом проверяет, что импортированная смета на месте: тест вида
+    «таких строк 0» на стёртой базе прошёл бы, ничего не проверив.
+    """
+    from sqlalchemy.orm import Session as _Session
+
+    db = _Session(bind=db_engine, autoflush=False)
+    try:
+        assert db.get(Estimate, _module_import.estimate_id) is not None, (
+            "модульный импорт fixture-сметы стёрт до теста — вероятно, перед этим "
+            "тестом в модуле шёл тест на committing_* (он чистит таблицы)"
+        )
+        yield db
+    finally:
+        db.rollback()
+        db.close()
+
+
+@pytest.fixture
+def imported_fixture_estimate(_module_import) -> int:
+    """Загруженная fixture-смета (модульный импорт); отдаёт `estimate_id`."""
+    return _module_import.estimate_id
+
+
+@pytest.fixture
+def imported_fixture(_module_import) -> ImportedFixture:
+    """Сырой JSON, id единственного предложения и предупреждения задания
+    модульного импорта."""
+    return _module_import.fixture
 
 
 class TestFullPipelineOnFixture:
@@ -289,8 +390,8 @@ class TestCategoryResolutionOnFixture:
         "where l.estimate_id = :eid"
     )
 
-    def test_chapters_are_split_as_measured(self, committing_db, imported_fixture_estimate):
-        counts = committing_db.execute(
+    def test_chapters_are_split_as_measured(self, fixture_db, imported_fixture_estimate):
+        counts = fixture_db.execute(
             sa.text(
                 "select "
                 " count(*) filter (where p.is_chapter and p.smr_article_raw is not null "
@@ -312,10 +413,10 @@ class TestCategoryResolutionOnFixture:
         assert counts.unreadable == 0
 
     def test_every_work_row_is_attached_to_a_chapter(
-        self, committing_db, imported_fixture_estimate
+        self, fixture_db, imported_fixture_estimate
     ):
         """Строк вне структуры в этом файле нет, значит родитель есть у каждой позиции."""
-        orphans = committing_db.execute(
+        orphans = fixture_db.execute(
             sa.text(
                 "select count(*) " + self._SCOPE
                 + " and not p.is_chapter and p.chapter_item_id is null"
@@ -325,10 +426,10 @@ class TestCategoryResolutionOnFixture:
         assert orphans == 0
 
     def test_unassigned_positions_match_the_measurement(
-        self, committing_db, imported_fixture_estimate
+        self, fixture_db, imported_fixture_estimate
     ):
         """Настоящий пробел: «14 SHELL & CORE» и «15 Рабочая документация» (спека §1.2)."""
-        unassigned = committing_db.execute(
+        unassigned = fixture_db.execute(
             sa.text(
                 "select count(*) from position_items p "
                 "join position_items c on c.id = p.chapter_item_id "
@@ -342,7 +443,7 @@ class TestCategoryResolutionOnFixture:
         assert unassigned == FIXTURE_POSITIONS_UNASSIGNED
 
     def test_parent_is_a_chapter_of_the_same_proposal_standing_earlier_in_the_file(
-        self, committing_db, imported_fixture_estimate
+        self, fixture_db, imported_fixture_estimate
     ):
         """Независимая проверка: эталон — порядок ключей файла, а не вывод резолвера.
 
@@ -351,7 +452,7 @@ class TestCategoryResolutionOnFixture:
         ожидание берётся из `position_key_in_proposal` — его пишет импорт из ключей
         парсера, а не резолвер.
         """
-        broken = committing_db.execute(
+        broken = fixture_db.execute(
             sa.text(
                 "select count(*) from position_items p "
                 "join position_items c on c.id = p.chapter_item_id "
@@ -366,7 +467,7 @@ class TestCategoryResolutionOnFixture:
         ).scalar_one()
         assert broken == 0
         # Ноль не должен быть вакуозным: ссылки в смете действительно есть.
-        attached = committing_db.execute(
+        attached = fixture_db.execute(
             sa.text("select count(*) " + self._SCOPE + " and p.chapter_item_id is not null"),
             {"eid": imported_fixture_estimate},
         ).scalar_one()
@@ -563,10 +664,10 @@ class TestAdditionalWorksInDatabase:
     после Core-операции — урок Ф3)."""
 
     def test_no_position_item_exists_for_the_aggregate_row(
-        self, committing_db, imported_fixture_estimate
+        self, fixture_db, imported_fixture_estimate
     ):
         """П.4: соответствующего `position_item` в БД нет."""
-        count = committing_db.execute(
+        count = fixture_db.execute(
             sa.select(sa.func.count())
             .select_from(PositionItem)
             .join(Proposal, Proposal.id == PositionItem.proposal_id)
@@ -579,11 +680,11 @@ class TestAdditionalWorksInDatabase:
         assert count == 0
 
     def test_three_additional_work_records_are_created(
-        self, committing_db, imported_fixture_estimate
+        self, fixture_db, imported_fixture_estimate
     ):
         """П.5: три записи `estimate_additional_works` (полная расшивка, P == T)."""
         ids = (
-            committing_db.execute(
+            fixture_db.execute(
                 sa.select(EstimateAdditionalWork.id)
                 .join(Proposal, Proposal.id == EstimateAdditionalWork.proposal_id)
                 .join(Lot, Lot.id == Proposal.lot_id)
@@ -595,11 +696,11 @@ class TestAdditionalWorksInDatabase:
         assert len(ids) == 3
 
     def test_additional_work_amounts_and_categories_match_the_three_lines(
-        self, committing_db, imported_fixture_estimate
+        self, fixture_db, imported_fixture_estimate
     ):
         """П.6: суммы и статьи ожидаемы — включая нулевую сумму и обе
         нераспределённые строки (кандидат без статьи; ноль кандидатов)."""
-        rows = committing_db.execute(
+        rows = fixture_db.execute(
             sa.select(
                 EstimateAdditionalWork.ordinal,
                 EstimateAdditionalWork.chapter_ref_raw,
@@ -619,7 +720,7 @@ class TestAdditionalWorksInDatabase:
         assert resolved.total_amount == FIXTURE_SVEDENIYA_REF_RESOLVED_AMOUNT
         assert resolved.title == FIXTURE_SVEDENIYA_REF_RESOLVED_TITLE
         assert resolved.work_category_id is not None
-        category_code = committing_db.execute(
+        category_code = fixture_db.execute(
             sa.select(WorkCategory.code).where(WorkCategory.id == resolved.work_category_id)
         ).scalar_one()
         assert category_code == FIXTURE_SVEDENIYA_CATEGORY_CODE
@@ -633,10 +734,10 @@ class TestAdditionalWorksInDatabase:
         assert absent.work_category_id is None  # ноль кандидатов
 
     def test_records_sum_equals_the_aggregate_row_control_total(
-        self, committing_db, imported_fixture_estimate
+        self, fixture_db, imported_fixture_estimate
     ):
         """П.7: сумма расшивки равна контрольной сумме агрегатной строки `T`."""
-        total = committing_db.execute(
+        total = fixture_db.execute(
             sa.select(sa.func.coalesce(sa.func.sum(EstimateAdditionalWork.total_amount), 0))
             .join(Proposal, Proposal.id == EstimateAdditionalWork.proposal_id)
             .join(Lot, Lot.id == Proposal.lot_id)
@@ -645,7 +746,7 @@ class TestAdditionalWorksInDatabase:
         assert Decimal(total) == FIXTURE_ADDITIONAL_WORKS_TOTAL
 
     def test_domain_total_matches_the_independent_grand_total_of_the_file(
-        self, committing_db, imported_fixture_estimate, fixture_worksheet
+        self, fixture_db, imported_fixture_estimate, fixture_worksheet
     ):
         """П.8: `position_items` + допработы == независимое ИТОГО файла.
 
@@ -670,13 +771,13 @@ class TestAdditionalWorksInDatabase:
         закрывает сверка на настоящей оферте, где ИТОГО никто не правил
         (DoD спеки §6).
         """
-        positions_total = committing_db.execute(
+        positions_total = fixture_db.execute(
             sa.select(sa.func.coalesce(sa.func.sum(PositionItem.total_cost_total), 0))
             .join(Proposal, Proposal.id == PositionItem.proposal_id)
             .join(Lot, Lot.id == Proposal.lot_id)
             .where(Lot.estimate_id == imported_fixture_estimate, PositionItem.is_chapter.is_(False))
         ).scalar_one()
-        additional_works_total = committing_db.execute(
+        additional_works_total = fixture_db.execute(
             sa.select(sa.func.coalesce(sa.func.sum(EstimateAdditionalWork.total_amount), 0))
             .join(Proposal, Proposal.id == EstimateAdditionalWork.proposal_id)
             .join(Lot, Lot.id == Proposal.lot_id)
@@ -713,10 +814,10 @@ def test_three_sheet_rows_give_three_summary_keys_in_raw(imported_fixture):
     ]
 
 
-def test_three_summary_records_reach_the_database(committing_db, imported_fixture):
+def test_three_summary_records_reach_the_database(fixture_db, imported_fixture):
     lines = {
         line.summary_key: line
-        for line in committing_db.scalars(
+        for line in fixture_db.scalars(
             sa.select(ProposalSummaryLine).where(
                 ProposalSummaryLine.proposal_id == imported_fixture.proposal_id
             )
@@ -731,12 +832,12 @@ def test_three_summary_records_reach_the_database(committing_db, imported_fixtur
 
 
 def test_gross_total_matches_the_reference_read_from_the_sheet(
-    committing_db, imported_fixture, fixture_worksheet
+    fixture_db, imported_fixture, fixture_worksheet
 ):
     """Главное доказательство починки: поле совпадает с эталоном, прочитанным
     с листа помимо парсера. До Ф4a в этом поле лежала сумма БЕЗ НДС."""
     expected = _independent_total_with_vat(fixture_worksheet, FIXTURE_CONTRACTOR)
-    stored = committing_db.scalars(
+    stored = fixture_db.scalars(
         sa.select(ProposalSummaryLine).where(
             ProposalSummaryLine.proposal_id == imported_fixture.proposal_id,
             ProposalSummaryLine.summary_key == "total_cost_including_vat",
@@ -749,7 +850,7 @@ def test_gross_total_matches_the_reference_read_from_the_sheet(
     "field",
     ["materials_cost", "works_cost", "indirect_costs_cost", "total_cost"],
 )
-def test_identity_holds_on_the_stored_records(committing_db, imported_fixture, field):
+def test_identity_holds_on_the_stored_records(fixture_db, imported_fixture, field):
     """Все ЧЕТЫРЕ денежные колонки, а не только итоговая (спека §2.6).
 
     Сверка одной колонки прошла бы и при разъехавшейся разбивке: три остальные
@@ -758,7 +859,7 @@ def test_identity_holds_on_the_stored_records(committing_db, imported_fixture, f
     """
     lines = {
         line.summary_key: line
-        for line in committing_db.scalars(
+        for line in fixture_db.scalars(
             sa.select(ProposalSummaryLine).where(
                 ProposalSummaryLine.proposal_id == imported_fixture.proposal_id
             )
@@ -884,9 +985,9 @@ def test_fixture_raw_vat_rate_is_a_decimal_string_on_the_contractor_level(import
     assert "vat_rate" not in contractor["contractor_items"]
 
 
-def test_fixture_database_vat_rate_is_a_decimal_twenty(committing_db, imported_fixture):
+def test_fixture_database_vat_rate_is_a_decimal_twenty(fixture_db, imported_fixture):
     """П.4: `proposals.vat_rate == Decimal("20")` — сравнение `Decimal` с `Decimal`."""
-    stored = committing_db.execute(
+    stored = fixture_db.execute(
         sa.select(Proposal.vat_rate).where(Proposal.id == imported_fixture.proposal_id)
     ).scalar_one()
     assert stored == Decimal("20")
