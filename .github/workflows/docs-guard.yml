@@ -1,0 +1,39 @@
+name: docs-guard
+
+# Страж документации (`just check-agents-index`) для PR, меняющих документы.
+# Отдельно от backend-tests: тот запускается только на правки backend/, а
+# правка одних документов не должна гонять тринадцать тысяч тестов. Страж
+# остаётся и шагом backend-tests — правка кода тоже может разорвать ссылку
+# из документа.
+#
+# Скрипт стража — только стандартная библиотека Python: ни uv, ни Postgres
+# не нужны, прогон — секунды.
+
+on:
+  pull_request:
+    paths:
+      - "AGENTS.md"
+      - "CLAUDE.md"
+      - "docs/**"
+      - "backend/scripts/check_agents_index.py"
+      - ".github/workflows/docs-guard.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs-guard:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check docs index (guard)
+        run: python scripts/check_agents_index.py
+        working-directory: backend

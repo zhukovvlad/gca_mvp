@@ -1,9 +1,19 @@
 name: frontend-tests
 
 on:
-  push:
-    branches: [main]
+  # Только PR: прогон на push в main после мержа повторял бы уже пройденный
+  # прогон PR и удваивал расход минут (репозиторий приватный с 14.11.2026,
+  # лимит Actions — 2000 минут в месяц). Ручной запуск — workflow_dispatch.
   pull_request:
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend-tests.yml"
+  workflow_dispatch:
+
+# Новый пуш в тот же PR снимает незаконченный прогон старого коммита.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   frontend-tests:
@@ -41,4 +51,8 @@ jobs:
 
       - name: Run frontend tests (vitest)
         # `npm test` = `vitest --run` (одноразовый прогон, не watch).
-        run: npm test
+        #
+        # --maxWorkers=2: по умолчанию vitest берёт «ядра минус один», и на
+        # 2-ядерном раннере приватного репозитория (с 14.11.2026) шёл в ОДИН
+        # поток — 514 с против 200 с на 4 ядрах (PR #79 против PR #78).
+        run: npm test -- --maxWorkers=2

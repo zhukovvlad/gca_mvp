@@ -5,7 +5,9 @@
 * Integration-тесты используют реальный Postgres (через TEST_DATABASE_URL),
   но Alembic мигрирует один раз на сессию. Каждый тест — в транзакции с rollback.
 * Под pytest-xdist каждый воркёр работает со СВОЕЙ базой (`gca_gw<N>_test`),
-  которую сам и создаёт; серийный прогон идёт по `gca_test` как раньше.
+  которую сам и создаёт копией мигрированного шаблона прогона
+  (`gca_template_test`, миграции накатывает один воркёр); серийный прогон идёт
+  по `gca_test` как раньше.
   Спека: docs/superpowers/specs/2026-08-11-pytest-parallel-workers-design.md.
 """
 from __future__ import annotations
@@ -210,24 +212,96 @@ def _create_worker_database(url: str) -> None:
             conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(db_name)))
 
 
-def _recreate_worker_database(url: str) -> None:
-    """DROP DATABASE + CREATE DATABASE базы воркёра: чистый старт без DROP SCHEMA.
+_WORKER_DB_NAME_RE = re.compile(r"(.+)_gw\d+_test")
 
-    `DROP SCHEMA public CASCADE` на мигрированной базе держит до конца
-    транзакции блокировку на КАЖДЫЙ удаляемый объект, включая сотни функций и
-    операторов расширений `vector` и `btree_gist`: замер 05.10.2026 — 2224
-    слота на один снос при общей таблице 64 × 100 = 6400. Три воркёра,
-    стартовавшие разом, её исчерпывают (`out of shared memory`, TECH_DEBT
-    запись 1). Удаление базы целиком берёт одну блокировку вместо тысяч.
 
-    FORCE обрывает чужие подключения к этой базе — они бывают лишь у второго
-    прогона на тех же именах воркёров, а тот всё равно снёс бы схему.
+def template_database_url(worker_url: str) -> str:
+    """URL базы-шаблона прогона: `gca_gw3_test` → `gca_template_test`.
+
+    Шаблон — мигрированная база, которую воркёры копируют вместо того, чтобы
+    каждый накатывал цепочку Alembic сам. Имя выводится из имени базы воркёра:
+    тот же хост, порт и учётка (их уже допустили барьеры и
+    `ensure_mutation_allowed`), тот же суффикс `_test`. Всё, что не похоже на
+    базу воркёра, — громкий RuntimeError: имя уходит в DDL.
     """
+    parsed = make_url(worker_url)
+    match = _WORKER_DB_NAME_RE.fullmatch(parsed.database or "")
+    if match is None:
+        raise RuntimeError(
+            f"Не вывести имя базы-шаблона из {parsed.database!r}: ожидается имя "
+            "базы воркёра вида '<основа>_gw<N>_test'."
+        )
+    return parsed.set(database=f"{match.group(1)}_template_test").render_as_string(
+        hide_password=False
+    )
+
+
+def template_is_current(comment: str | None, run_marker: str | None) -> bool:
+    """Годится ли существующий шаблон этому прогону.
+
+    Метка — идентификатор прогона xdist (`PYTEST_XDIST_TESTRUNUID`, у всех
+    воркёров одного запуска общий). Шаблон годится, только если он помечен
+    ИМЕННО этим прогоном: шаблон прошлого запуска мог быть построен по другим
+    миграциям. Нет метки — шаблон строится заново (медленно, но верно).
+    """
+    return run_marker is not None and comment == run_marker
+
+
+def _migrate_to_head(url: str) -> None:
+    """`alembic upgrade head` на базе `url` в этом же процессе."""
+    from alembic import command
+    from alembic.config import Config
+
+    cfg = Config(str(BACKEND_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
+    cfg.set_main_option("sqlalchemy.url", url)
+
+    # command.upgrade() исполняет alembic/env.py в этом же процессе, а тот
+    # модуль-уровнево делает load_dotenv(ROOT / ".env") — снимаем побочный
+    # эффект на окружение тестового процесса.
+    _environ_snapshot = dict(os.environ)
+    try:
+        command.upgrade(cfg, "head")
+    finally:
+        os.environ.clear()
+        os.environ.update(_environ_snapshot)
+
+
+def _recreate_worker_database(url: str) -> None:
+    """База воркёра заново — копией мигрированного шаблона прогона.
+
+    Чистый старт без DROP SCHEMA: `DROP SCHEMA public CASCADE` на мигрированной
+    базе держит до конца транзакции блокировку на КАЖДЫЙ удаляемый объект,
+    включая сотни функций и операторов расширений `vector` и `btree_gist`:
+    замер 05.10.2026 — 2224 слота на один снос при общей таблице 64 × 100 =
+    6400. Три воркёра, стартовавшие разом, её исчерпывают (`out of shared
+    memory`, TECH_DEBT запись 1). Удаление базы целиком берёт одну блокировку.
+
+    Миграции накатывает ОДИН воркёр — на шаблон (`template_database_url`);
+    остальные копируют его `CREATE DATABASE … TEMPLATE`. На 2-ядерном раннере
+    CI каждый воркёр гонял цепочку Alembic сам, деля процессор с соседями.
+    Очередь держит advisory-блокировка на служебной базе (ключ — от имени
+    шаблона, чужие проекты кластера не ждут): первый воркёр строит шаблон и
+    метит его прогоном, следующие видят метку и только копируют. Копия — тоже
+    под блокировкой: шаблон не перестроится посреди копирования вторым
+    запуском pytest на тех же именах.
+
+    FORCE обрывает чужие подключения к сносимой базе — они бывают лишь у
+    второго прогона на тех же именах, а тот всё равно снёс бы схему.
+    """
+    import zlib
+
     import psycopg
     from psycopg import sql
 
     parsed = make_url(url)
     name = sql.Identifier(parsed.database or "")
+    template_url = template_database_url(url)
+    template_db = make_url(template_url).database or ""
+    template = sql.Identifier(template_db)
+    lock_key = zlib.crc32(template_db.encode())
+    run_marker = os.environ.get("PYTEST_XDIST_TESTRUNUID")
+
     with psycopg.connect(
         host=parsed.host,
         port=parsed.port,
@@ -236,21 +310,47 @@ def _recreate_worker_database(url: str) -> None:
         dbname="postgres",
         autocommit=True,
     ) as conn:
-        conn.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(name))
-        conn.execute(sql.SQL("CREATE DATABASE {}").format(name))
+        conn.execute("SELECT pg_advisory_lock(%s)", (lock_key,))
+        try:
+            row = conn.execute(
+                "SELECT shobj_description(oid, 'pg_database') "
+                "FROM pg_database WHERE datname = %s",
+                (template_db,),
+            ).fetchone()
+            if not template_is_current(row[0] if row else None, run_marker):
+                conn.execute(
+                    sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(template)
+                )
+                conn.execute(sql.SQL("CREATE DATABASE {}").format(template))
+                _migrate_to_head(template_url)
+                if run_marker is not None:
+                    # Метка — последней: шаблон, на котором миграция упала,
+                    # остаётся без неё и следующим воркёром перестраивается.
+                    conn.execute(
+                        sql.SQL("COMMENT ON DATABASE {} IS {}").format(
+                            template, sql.Literal(run_marker)
+                        )
+                    )
+            conn.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(name))
+            conn.execute(
+                sql.SQL("CREATE DATABASE {} TEMPLATE {}").format(name, template)
+            )
+        finally:
+            conn.execute("SELECT pg_advisory_unlock(%s)", (lock_key,))
 
 
 @pytest.fixture(scope="session")
 def db_engine(worker_id) -> Iterator:
-    """Engine на TEST_DATABASE_URL. Накатывает Alembic один раз на сессию.
+    """Engine на TEST_DATABASE_URL, мигрированной до head; один раз на сессию.
 
     `worker_id` — штатная session-фикстура pytest-xdist: `master` при серийном
     прогоне, `gw<N>` в воркёре. Порядок операций зафиксирован планом и стережётся
     wiring-тестами (test_worker_database.py, пп. 8–11):
 
         worker URL → resolve + барьер (a) → барьер (b) → ensure_mutation_allowed
-                   → воркёр: DROP + CREATE DATABASE | master: DROP SCHEMA
-                   → migrations
+                   → воркёр: DROP + CREATE DATABASE копией шаблона прогона
+                     (миграции — один раз на шаблон, см. _recreate_worker_database)
+                   | master: DROP SCHEMA → migrations
 
     Перестройка URL — первым шагом: иначе барьеры судили бы `gca_test`, а работа
     шла бы по `gca_gw0_test`. CREATE DATABASE — мутация, поэтому строго после
@@ -303,14 +403,6 @@ def db_engine(worker_id) -> Iterator:
     if refusal is not None:
         pytest.skip(refusal)
 
-    # Накатываем миграции через Alembic
-    from alembic import command
-    from alembic.config import Config
-
-    cfg = Config(str(BACKEND_ROOT / "alembic.ini"))
-    cfg.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
-    cfg.set_main_option("sqlalchemy.url", test_url)
-
     # Guard закрывает случай, которого барьеры не ловят: удалённая "_test"-база,
     # которая не loopback и не в DB_EXTRA_TARGETS.
     ensure_mutation_allowed(test_url, "conftest DROP SCHEMA")
@@ -319,7 +411,8 @@ def db_engine(worker_id) -> Iterator:
     # разный: воркёр пересоздаёт свою базу целиком (DROP SCHEMA восьми воркёров
     # разом исчерпывает таблицу блокировок — см. _recreate_worker_database),
     # master сносит схему как раньше — gca_test готовят рецепты justfile, а
-    # одиночный снос в таблицу укладывается.
+    # одиночный снос в таблицу укладывается. База воркёра приходит уже
+    # мигрированной — копией шаблона прогона; master мигрирует сам.
     if worker_id != "master":
         _recreate_worker_database(test_url)
 
@@ -328,16 +421,7 @@ def db_engine(worker_id) -> Iterator:
     if worker_id == "master":
         with engine.begin() as conn:
             conn.exec_driver_sql("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
-
-    # command.upgrade() исполняет alembic/env.py в этом же процессе, а тот
-    # модуль-уровнево делает load_dotenv(ROOT / ".env") — снимаем побочный
-    # эффект на окружение тестового процесса.
-    _environ_snapshot = dict(os.environ)
-    try:
-        command.upgrade(cfg, "head")
-    finally:
-        os.environ.clear()
-        os.environ.update(_environ_snapshot)
+        _migrate_to_head(test_url)
 
     yield engine
     engine.dispose()

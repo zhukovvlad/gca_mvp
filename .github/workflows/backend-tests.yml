@@ -1,9 +1,26 @@
 name: backend-tests
 
 on:
-  push:
-    branches: [main]
+  # Только PR: прогон на push в main после мержа повторял бы уже пройденный
+  # прогон PR и удваивал расход минут (репозиторий приватный с 14.11.2026,
+  # лимит Actions — 2000 минут в месяц). Ручной запуск — workflow_dispatch.
   pull_request:
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-tests.yml"
+      # Входы бэкенд-тестов вне backend/: fixture-смета (парсер, e2e импорта)
+      # и два файла фронта, которые сверяются с бэкендом
+      # (test_event_labels_sync.py, test_semantic_queue_org_forms_sync.py).
+      # Новое чтение файла вне backend/ в тестах — строка сюда.
+      - "fixtures/**"
+      - "frontend/src/pages/families/labels.ts"
+      - "frontend/src/pages/families/matchRanges.ts"
+  workflow_dispatch:
+
+# Новый пуш в тот же PR снимает незаконченный прогон старого коммита.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   backend-tests:
@@ -49,11 +66,17 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq postgresql-16-pgvector
           dpkg-query -W postgresql-16 postgresql-16-pgvector
+          # Одноразовый кластер: долговечность записи ему не нужна. Без fsync
+          # TRUNCATE доменных таблиц до и после каждого committing-теста и
+          # миграции на каждом воркёре не ждут сброса на диск.
+          printf 'fsync = off\nsynchronous_commit = off\nfull_page_writes = off\n' \
+            | sudo tee /etc/postgresql/16/main/conf.d/ci-no-durability.conf
           sudo systemctl start postgresql.service
           until pg_isready -h localhost -p 5432; do sleep 1; done
           sudo -u postgres psql -v ON_ERROR_STOP=1 \
             -c "ALTER USER postgres PASSWORD 'postgres';" \
-            -c "CREATE DATABASE gca_test;"
+            -c "CREATE DATABASE gca_test;" \
+            -c "SHOW fsync;"
 
       - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
@@ -103,11 +126,15 @@ jobs:
         # conftest applies Alembic to head on TEST_DATABASE_URL once per session;
         # the pgvector package makes CREATE EXTENSION vector succeed.
         #
-        # -n 12 подобран под раннер ubuntu-latest и НЕ совпадает с локальным
-        # дефолтом test-backend-parallel (8) — расхождение и план его снять:
-        # docs/TECH_DEBT.md, запись 2. Раздача — --dist worksteal из addopts
-        # (backend/pyproject.toml). Каждый xdist-воркёр пересоздаёт себе базу
-        # gca_gw<N>_test и мигрирует её сам — Postgres достаточно заранее
-        # существующей gca_test для db-test-check.
-        run: uv run --locked pytest -n 12
+        # Раннер приватного репозитория — 2 ядра (с 14.11.2026; публичный
+        # давал 4, и под него стояло -n 12). Каждый воркёр сам собирает тесты,
+        # пересоздаёт базу gca_gw<N>_test и накатывает миграции, поэтому лишние
+        # воркёры на двух ядрах — чистый расход: -n 12 на 2 ядрах шёл >20 мин
+        # (PR #79). Число — по замеру, docs/TECH_DEBT.md, запись 2. Раздача —
+        # --dist worksteal из addopts (backend/pyproject.toml).
+        #
+        # Медленные группы — миграции на scratch-базе (migration_roundtrip) и
+        # скрипт ревью (review_tooling): 169 тестов, около половины времени
+        # набора — гоняет backend-slow.yml, когда меняется то, что они проверяют.
+        run: uv run --locked pytest -n 4 -m "not migration_roundtrip and not review_tooling" --durations=25
         working-directory: backend
