@@ -123,5 +123,5 @@ jobs:
         # Медленные группы — миграции на scratch-базе (migration_roundtrip) и
         # скрипт ревью (review_tooling): 169 тестов, около половины времени
         # набора — гоняет backend-slow.yml, когда меняется то, что они проверяют.
-        run: uv run --locked pytest -n 4 -m "not migration_roundtrip and not review_tooling"
+        run: uv run --locked pytest -n 4 -m "not migration_roundtrip and not review_tooling" --durations=0 --durations-min=0.3
         working-directory: backend
