@@ -23,6 +23,8 @@ on:
       - "backend/tests/integration/*_schema.py"
       - "backend/scripts/enumerate_review_units.py"
       - "backend/tests/unit/test_enumerate_review_units.py"
+      # Тест скрипта ревью читает и этот документ процесса.
+      - "docs/process/implementation.md"
       - "backend/pyproject.toml"
       - "backend/uv.lock"
       - ".github/workflows/backend-slow.yml"

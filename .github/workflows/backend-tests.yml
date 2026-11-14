@@ -8,6 +8,13 @@ on:
     paths:
       - "backend/**"
       - ".github/workflows/backend-tests.yml"
+      # Входы бэкенд-тестов вне backend/: fixture-смета (парсер, e2e импорта)
+      # и два файла фронта, которые сверяются с бэкендом
+      # (test_event_labels_sync.py, test_semantic_queue_org_forms_sync.py).
+      # Новое чтение файла вне backend/ в тестах — строка сюда.
+      - "fixtures/**"
+      - "frontend/src/pages/families/labels.ts"
+      - "frontend/src/pages/families/matchRanges.ts"
   workflow_dispatch:
 
 # Новый пуш в тот же PR снимает незаконченный прогон старого коммита.
