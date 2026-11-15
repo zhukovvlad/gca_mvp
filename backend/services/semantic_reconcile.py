@@ -35,6 +35,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from decimal import Decimal
+from typing import TypedDict
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -871,36 +872,75 @@ def preview_values_plan(
 _UNBUILT_SCHEMA_ID = 0
 
 
-def _open_suggestion_state(db: Session) -> tuple[bool, set[int | None]]:
-    """Где единица ещё перезапрашивается (спека §2.6, «Когда ставятся»):
-    `(есть ли пачка mass с отпечатками предложений, единицы с заданиями
-    предложений в pending/running или с удержанной пачкой, касающейся их
-    отпечатками предложений)`. Пачка не-`mass` касается единицы контекстов своих
-    отпечатков: `unit_id` самой пачки у автоматических пуст. Отпечатки других
-    видов единицу не держат; задание открытия семей (`family_discovery`) в
-    `pending`/`running` её не занимает."""
-    units: set[int | None] = set(
+@dataclass(frozen=True)
+class SuggestionHold:
+    """Удержанная пачка, касающаяся единицы отпечатками предложений."""
+
+    batch_id: int
+    source: str
+    import_job_id: int | None
+
+
+@dataclass(frozen=True)
+class SuggestionHolds:
+    """Где единица ещё перезапрашивается: `mass` — пачки `mass` с отпечатками
+    предложений (держат все единицы); `by_unit` — прочие пачки по единицам
+    контекстов их отпечатков предложений; `live_jobs_by_unit` — число заданий
+    предложений в `pending`/`running`; `units` — единицы из заданий и удержаний."""
+
+    mass: tuple[SuggestionHold, ...]
+    units: frozenset[int | None]
+    by_unit: Mapping[int | None, tuple[SuggestionHold, ...]]
+    live_jobs_by_unit: Mapping[int | None, int]
+
+
+class BuildWaitBatch(TypedDict):
+    batch_id: int
+    source: str
+    import_job_id: int | None
+
+
+class BuildWait(TypedDict):
+    """Чего ждёт схема семьи: удержанные пачки и число живых заданий."""
+
+    held_batches: list[BuildWaitBatch]
+    live_jobs: int
+
+
+def open_suggestion_holds(db: Session) -> SuggestionHolds:
+    """Где единица ещё перезапрашивается (спека §2.6, «Когда ставятся»).
+    Пачка не-`mass` касается единицы контекстов своих отпечатков предложений:
+    `unit_id` самой пачки у автоматических пуст. Отпечатки других видов единицу
+    не держат; задание открытия семей (`family_discovery`) в `pending`/`running`
+    её не занимает. Пачки — по `batch_id`."""
+    live_jobs: dict[int | None, int] = dict(
         db.execute(
-            sa.select(SemanticJob.unit_id)
+            sa.select(SemanticJob.unit_id, sa.func.count())
             .where(
                 SemanticJob.kind == SemanticJobKind.family_suggestion.value,
                 SemanticJob.status.in_(
                     (SemanticJobStatus.pending.value, SemanticJobStatus.running.value)
                 ),
             )
-            .distinct()
+            .group_by(SemanticJob.unit_id)
         )
-        .scalars()
+        .tuples()
         .all()
     )
-    mass = False
-    held_contexts: set[int] = set()
+    units: set[int | None] = set(live_jobs)
+    mass: list[SuggestionHold] = []
+    others: list[tuple[SuggestionHold, set[int]]] = []
     batches = db.execute(
-        sa.select(SemanticReconcileBatch.source, SemanticReconcileBatch.held_fingerprints).where(
-            SemanticReconcileBatch.status == ReconcileBatchStatus.held.value
+        sa.select(
+            SemanticReconcileBatch.id,
+            SemanticReconcileBatch.source,
+            SemanticReconcileBatch.import_job_id,
+            SemanticReconcileBatch.held_fingerprints,
         )
+        .where(SemanticReconcileBatch.status == ReconcileBatchStatus.held.value)
+        .order_by(SemanticReconcileBatch.id)
     ).all()
-    for source, held in batches:
+    for batch_id, source, import_job_id, held in batches:
         contexts = {
             element["context_id"]
             for element in held
@@ -909,23 +949,77 @@ def _open_suggestion_state(db: Session) -> tuple[bool, set[int | None]]:
         }
         if not contexts:
             continue
+        hold = SuggestionHold(batch_id, source, import_job_id)
         if source == ReconcileBatchSource.mass.value:
-            mass = True
-        held_contexts |= contexts
+            mass.append(hold)
+        others.append((hold, contexts))
+    by_unit: dict[int | None, list[SuggestionHold]] = {}
+    held_contexts = set().union(*(contexts for _hold, contexts in others)) if others else set()
     if held_contexts:
-        units |= set(
+        unit_of_context = dict(
             db.execute(
-                sa.select(CatalogPosition.unit_id)
+                sa.select(CatalogContext.id, CatalogPosition.unit_id)
                 .select_from(CatalogContext)
                 .join(ContextBucket, ContextBucket.id == CatalogContext.bucket_id)
                 .join(CatalogPosition, CatalogPosition.id == ContextBucket.catalog_position_id)
                 .where(CatalogContext.id.in_(held_contexts))
-                .distinct()
             )
-            .scalars()
+            .tuples()
             .all()
         )
-    return mass, units
+        for hold, contexts in others:
+            is_mass = hold.source == ReconcileBatchSource.mass.value
+            for context_id in contexts & unit_of_context.keys():
+                unit = unit_of_context[context_id]
+                units.add(unit)
+                if is_mass:
+                    continue  # `mass` держит все единицы и лежит в `mass`
+                bucket = by_unit.setdefault(unit, [])
+                if hold not in bucket:
+                    bucket.append(hold)
+    return SuggestionHolds(
+        mass=tuple(mass),
+        units=frozenset(units),
+        by_unit={unit: tuple(holds) for unit, holds in by_unit.items()},
+        live_jobs_by_unit=live_jobs,
+    )
+
+
+def _open_suggestion_state(db: Session) -> tuple[bool, set[int | None]]:
+    """`(есть ли пачка mass с отпечатками предложений, единицы с заданиями
+    предложений в pending/running или с удержанной пачкой, касающейся их
+    отпечатками предложений)` — тот же отбор, что у `open_suggestion_holds`."""
+    holds = open_suggestion_holds(db)
+    return bool(holds.mass), set(holds.units)
+
+
+def schema_build_wait(db: Session, family_id: int) -> BuildWait | None:
+    """Что мешает строить схему семьи: удержанные пачки (`mass` и касающиеся её
+    единицы, по `batch_id`) и число живых заданий предложений единицы. Семьи нет
+    или ожидания нет — `None`."""
+    unit = db.execute(
+        sa.select(WorkFamily.unit_id).where(WorkFamily.id == family_id)
+    ).one_or_none()
+    if unit is None:
+        return None
+    holds = open_suggestion_holds(db)
+    own = holds.by_unit.get(unit.unit_id, ())
+    batches: dict[int, SuggestionHold] = {
+        hold.batch_id: hold for hold in (*holds.mass, *own)
+    }
+    live = holds.live_jobs_by_unit.get(unit.unit_id, 0)
+    if not batches and not live:
+        return None
+    return BuildWait(
+        held_batches=[
+            BuildWaitBatch(
+                batch_id=hold.batch_id, source=hold.source,
+                import_job_id=hold.import_job_id,
+            )
+            for _id, hold in sorted(batches.items())
+        ],
+        live_jobs=live,
+    )
 
 
 def schema_ready_to_build(db: Session, family_id: int) -> bool:
@@ -933,14 +1027,13 @@ def schema_ready_to_build(db: Session, family_id: int) -> bool:
     §2.6): в единице нет заданий предложений в `pending`/`running` и нет
     удержанной пачки, касающейся её отпечатками предложений (`mass` касается
     всех единиц). Задержанные и ошибочные не считаются; пачка из одних значений
-    состав имён не меняет."""
-    unit = db.execute(
-        sa.select(WorkFamily.unit_id).where(WorkFamily.id == family_id)
+    состав имён не меняет. Несуществующая семья не готова."""
+    exists = db.execute(
+        sa.select(WorkFamily.id).where(WorkFamily.id == family_id)
     ).one_or_none()
-    if unit is None:
+    if exists is None:
         return False
-    mass, units = _open_suggestion_state(db)
-    return not mass and unit.unit_id not in units
+    return schema_build_wait(db, family_id) is None
 
 
 def _unbuilt_frozen_exists() -> sa.ColumnElement[bool]:

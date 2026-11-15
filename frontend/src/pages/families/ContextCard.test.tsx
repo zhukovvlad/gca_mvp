@@ -2,7 +2,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient } from "@tanstack/react-query";
 import { http, HttpResponse } from "msw";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ContextCard } from "@/pages/families/ContextCard";
 import {
@@ -50,6 +50,15 @@ const BIG_GROUP_EXPECTED_IDS = Array.from({ length: 520 }, (_, i) => 80001 + i);
 function contextFixture(id: number) {
   return handlerState.semanticContexts.find((c) => c.id === id)!;
 }
+
+// Контекст 601 стоит в единице активной семьи фикстуры («Кровельные работы», м³): список «Назначить
+// семью» берёт семьи строго единицы контекста (спека provider-budget-pause §2.7 п. 1).
+beforeEach(() => {
+  const context = contextFixture(ORDINARY_CONTEXT_ID);
+  context.unit_id = 3;
+  context.unit_code = "M3";
+  context.unit_symbol = "м³";
+});
 
 /**
  * Коды полей и событий, которых на экране быть не должно (Global Constraints
@@ -716,7 +725,7 @@ describe("ContextCard", () => {
     const familyDialog = await screen.findByRole("dialog");
     await user.click(within(familyDialog).getByRole("combobox", { name: "Семья" }));
     // id 43 — единственная активная семья фикстуры.
-    await user.click(await screen.findByRole("option", { name: "Кровельные работы" }));
+    await user.click(await screen.findByRole("option", { name: "Кровельные работы · м³" }));
     await user.click(within(familyDialog).getByRole("button", { name: "Назначить семью" }));
     await waitFor(() =>
       expect(handlerState.lastAssignFamilyRequest).toEqual({
@@ -741,7 +750,7 @@ describe("ContextCard", () => {
       await user.click(screen.getByRole("button", { name: "Другая семья…" }));
       const familyDialog = await screen.findByRole("dialog");
       await user.click(within(familyDialog).getByRole("combobox", { name: "Семья" }));
-      expect(await screen.findByRole("option", { name: "Кровельные работы" })).toBeInTheDocument();
+      expect(await screen.findByRole("option", { name: "Кровельные работы · м³" })).toBeInTheDocument();
       return { user, familyDialog };
     }
 
@@ -752,10 +761,10 @@ describe("ContextCard", () => {
 
       await user.type(screen.getByPlaceholderText("Найти семью…"), "ЯЖКИ П");
 
-      expect(await screen.findByRole("option", { name: "Устройство стяжки пола" })).toBeInTheDocument();
-      expect(screen.queryByRole("option", { name: "Окраска стен" })).not.toBeInTheDocument();
-      expect(screen.queryByRole("option", { name: "Кровельные работы" })).not.toBeInTheDocument();
-      await user.click(screen.getByRole("option", { name: "Устройство стяжки пола" }));
+      expect(await screen.findByRole("option", { name: "Устройство стяжки пола · м³" })).toBeInTheDocument();
+      expect(screen.queryByRole("option", { name: "Окраска стен · м³" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("option", { name: "Кровельные работы · м³" })).not.toBeInTheDocument();
+      await user.click(screen.getByRole("option", { name: "Устройство стяжки пола · м³" }));
       await user.click(within(familyDialog).getByRole("button", { name: "Назначить семью" }));
       await waitFor(() =>
         expect(handlerState.lastAssignFamilyRequest).toEqual({
@@ -771,9 +780,9 @@ describe("ContextCard", () => {
       await openFamilyDialog();
 
       expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual([
-        "Армирование",
-        "Кровельные работы",
-        "Штукатурка",
+        "Армирование · м³",
+        "Кровельные работы · м³",
+        "Штукатурка · м³",
       ]);
     });
 
@@ -798,7 +807,7 @@ describe("ContextCard", () => {
     // Семья выбрана в селекте — «Снять» обязан слать null, а не выбранную
     // (на пустом селекте подмена тела неотличима).
     await user.click(within(familyDialog).getByRole("combobox", { name: "Семья" }));
-    await user.click(await screen.findByRole("option", { name: "Кровельные работы" }));
+    await user.click(await screen.findByRole("option", { name: "Кровельные работы · м³" }));
     await user.click(within(familyDialog).getByRole("button", { name: "Снять семью" }));
     await waitFor(() =>
       expect(handlerState.lastAssignFamilyRequest).toEqual({
@@ -2001,7 +2010,7 @@ describe("ContextCard — вариант, ожидание, смена семь�
     await user.click(screen.getByRole("button", { name: "Другая семья…" }));
     const dialog = await screen.findByRole("dialog");
     await user.click(within(dialog).getByRole("combobox", { name: "Семья" }));
-    await user.click(await screen.findByRole("option", { name: title }));
+    await user.click(await screen.findByRole("option", { name: `${title} · м³` }));
     return dialog;
   }
 
@@ -2704,5 +2713,101 @@ describe("ContextCard — заголовок окна семьи", () => {
     const dialog = await screen.findByRole("dialog");
 
     expect(within(dialog).getByRole("heading", { name: "Назначить семью" })).toBeInTheDocument();
+  });
+});
+
+describe("ContextCard — список семей строго по единице контекста", () => {
+  const LATER = { timeout: 8000 };
+
+  function setContextUnit(unit: { id: number; code: string; symbol: string } | null) {
+    const context = contextFixture(ORDINARY_CONTEXT_ID);
+    context.unit_id = unit?.id ?? null;
+    context.unit_code = unit?.code ?? null;
+    context.unit_symbol = unit?.symbol ?? null;
+  }
+
+  function addActiveFamily(id: number, title: string, unit: { id: number; code: string; symbol: string } | null) {
+    const base = handlerState.workFamilies.find((f) => f.id === 43)!;
+    handlerState.workFamilies.push({
+      ...base,
+      id,
+      title,
+      unit_id: unit?.id ?? null,
+      unit_code: unit?.code ?? null,
+      unit_symbol: unit?.symbol ?? null,
+    });
+  }
+
+  const M3 = { id: 3, code: "M3", symbol: "м³" };
+  const M2 = { id: 5, code: "M2", symbol: "м²" };
+
+  async function openList() {
+    const user = userEvent.setup();
+    renderWithProviders(<ContextCard contextId={ORDINARY_CONTEXT_ID} />);
+    await screen.findByText("Штукатурка стен цементно-песчаным раствором", {}, LATER);
+    await user.click(screen.getByRole("button", { name: "Другая семья…" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("combobox", { name: "Семья" }));
+    return { user, dialog };
+  }
+
+  it("контекст в м³: нет семей в м² и без единицы, одноимённые семьи м³ и м² не стоят рядом, подпись «… · м³»", async () => {
+    setContextUnit(M3);
+    addActiveFamily(61, "Подбетонка", M3);
+    addActiveFamily(62, "Подбетонка", M2);
+    addActiveFamily(63, "Семья без единицы", null);
+    await openList();
+
+    await screen.findByRole("option", { name: "Подбетонка · м³" });
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "Кровельные работы · м³",
+      "Подбетонка · м³",
+    ]);
+  });
+
+  it("выбор из списка шлёт id семьи нужной единицы, а не одноимённой другой", async () => {
+    setContextUnit(M3);
+    addActiveFamily(61, "Подбетонка", M3);
+    addActiveFamily(62, "Подбетонка", M2);
+    const { user, dialog } = await openList();
+
+    await user.click(await screen.findByRole("option", { name: "Подбетонка · м³" }));
+    await user.click(within(dialog).getByRole("button", { name: "Назначить семью" }));
+
+    await waitFor(() =>
+      expect(handlerState.lastAssignFamilyRequest).toEqual({
+        contextId: ORDINARY_CONTEXT_ID,
+        body: { family_id: 61 },
+      })
+    );
+  });
+
+  it("контекст без единицы: только семьи без единицы, подпись «… · без единицы»", async () => {
+    setContextUnit(null);
+    addActiveFamily(63, "Семья без единицы", null);
+    addActiveFamily(64, "Другая без единицы", null);
+    await openList();
+
+    await screen.findByRole("option", { name: "Семья без единицы · без единицы" });
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "Другая без единицы · без единицы",
+      "Семья без единицы · без единицы",
+    ]);
+  });
+
+  it("в единице нет активных семей — «Нет активных семей в единице «м³»»", async () => {
+    setContextUnit(M3);
+    handlerState.workFamilies = handlerState.workFamilies.filter((f) => f.id !== 43);
+    await openList();
+
+    expect(await screen.findByText("Нет активных семей в единице «м³»")).toBeInTheDocument();
+    expect(screen.queryAllByRole("option")).toHaveLength(0);
+  });
+
+  it("у контекста без единицы пустой список — «Нет активных семей без единицы»", async () => {
+    setContextUnit(null);
+    await openList();
+
+    expect(await screen.findByText("Нет активных семей без единицы")).toBeInTheDocument();
   });
 });

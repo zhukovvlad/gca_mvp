@@ -310,7 +310,9 @@ semantic_job_attempts            -- одна строка на вызов про
   id, job_id NOT NULL → semantic_jobs ON DELETE CASCADE
   claim_token uuid NOT NULL, retry_generation int NOT NULL, started_at timestamptz NOT NULL
   # Известно ТОЛЬКО ПОСЛЕ завершения попытки — все NULL до этого момента:
-  finished_at, outcome ('ok|transient_error|permanent_error|schema_error|lost_claim') NULL,
+  finished_at, outcome ('ok|transient_error|permanent_error|schema_error|lost_claim|budget_refused') NULL,
+  #   budget_refused — 0026: провайдер отказал по деньгам (402/403), задание вернулось в pending
+  #   без штрафа попытки; cost_usd — сумма выполненных порций (нет — 0, хоть одна неизвестна — NULL)
   error_class, error_text, raw_response, validation_error,
   actual_model, provider, prompt_tokens, completion_tokens, cache_write_tokens, cached_tokens
   reserve_usd numeric NOT NULL, cost_usd numeric NULL, reserve_exceeded bool NOT NULL DEFAULT false
@@ -337,6 +339,13 @@ semantic_worker_state             -- РОВНО одна строка (id=1); ф
   id smallint PK CHECK (id=1), claim_paused bool NOT NULL DEFAULT false
   paused_reason NULL, paused_attempt_id NULL → semantic_job_attempts ON DELETE RESTRICT, paused_at NULL
   last_resumed_by NULL → users, last_resumed_at NULL
+  # Пауза по времени до сброса лимита провайдера (0026):
+  budget_paused_until timestamptz NULL, budget_pause_attempt_id NULL → semantic_job_attempts ON DELETE RESTRICT,
+  budget_pause_source text NULL (limit_source отказа), budget_limit_usd numeric NULL, budget_spend_usd numeric NULL
+  # CHECK срок, попытка и источник — все NULL или все заданы; CHECK суммы без срока не бывают.
+  # Захват до срока не идёт; срок прошёл — поля обнуляет первый захват. Остановка (claim_paused)
+  #   сильнее паузы: снимает её и не даёт её поставить. paused_reason — reserve_exceeded либо
+  #   provider_credits | provider_budget_no_reset | provider_refusal_unknown (0026, отказ провайдера).
   # Остановлен ⟺ paused_reason/paused_attempt_id/paused_at заполнены ВСЕ три; идёт ⟺ все три пусты.
   # CHECK claim_paused = (paused_reason IS NOT NULL) — и так же для paused_attempt_id, paused_at
   # CHECK (last_resumed_by IS NULL) = (last_resumed_at IS NULL)

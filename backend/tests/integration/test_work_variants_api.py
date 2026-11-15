@@ -410,8 +410,9 @@ class TestSchemaRead:
         body = response.json()
         assert set(body) == {
             "family_id", "status", "version", "ready_to_build", "building",
-            "values_jobs_live", "parameters", "revision",
+            "values_jobs_live", "parameters", "revision", "build_wait",
         }
+        assert body["build_wait"] is None
         assert body["family_id"] == scene.family.id
         assert (body["status"], body["version"], body["building"]) == ("frozen", 1, False)
         assert [p["ordinal"] for p in body["parameters"]] == [1, 2]

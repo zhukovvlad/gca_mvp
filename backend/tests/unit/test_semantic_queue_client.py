@@ -8,15 +8,18 @@ cache_out.jsonl`), стоимость идёт в теле JSON-числом `0.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import httpx
 import pytest
 
 from services.semantic_client import (
+    BudgetAction,
     ModelResponse,
     OpenRouterClient,
     PermanentModelError,
+    ProviderBudgetError,
     TransientModelError,
 )
 
@@ -237,7 +240,7 @@ class TestErrors:
 
         assert info.value.error_class == f"http_{status}"
 
-    @pytest.mark.parametrize("status", [400, 401, 402, 403, 404, 422])
+    @pytest.mark.parametrize("status", [400, 401, 403, 404, 422])
     def test_other_4xx_are_permanent(self, status):
         with pytest.raises(PermanentModelError) as info:
             _client(_respond(status, "нельзя")).complete(BODY, timeout_s=1)
@@ -271,6 +274,226 @@ class TestErrors:
             _client(_respond(401, "bad key")).complete(BODY, timeout_s=1)
 
         assert "sk-test" not in str(info.value) and "привет" not in str(info.value)
+
+
+def _refusal(status, source="__none__", *, headers=None, **metadata):
+    """Ответ-отказ провайдера по деньгам: `error.metadata.limit_source` и
+    прочие поля метаданных; `source=None` опускает ключ `limit_source`."""
+    meta = dict(metadata)
+    if source != "__none__" and source is not None:
+        meta["limit_source"] = source
+    text = json.dumps({"error": {"code": status, "message": "лимит", "metadata": meta}})
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, content=text.encode("utf-8"), headers=headers or {})
+
+    return handler
+
+
+def _refused(handler) -> ProviderBudgetError:
+    with pytest.raises(ProviderBudgetError) as info:
+        _client(handler).complete(BODY, timeout_s=1)
+    return info.value
+
+
+RESETS = "2026-11-16T00:00:00.000Z"
+RESETS_DT = datetime(2026, 11, 16, 0, 0, tzinfo=UTC)
+BUDGET_403 = [
+    ("openrouter_key_limit", "budget_key_limit"),
+    ("openrouter_guardrail_budget", "budget_guardrail"),
+    ("openrouter_workspace_budget", "budget_workspace"),
+]
+
+
+class TestProviderBudget:
+    def test_provider_budget_error_is_a_transient_subclass(self):
+        assert issubclass(ProviderBudgetError, TransientModelError)
+        assert not issubclass(ProviderBudgetError, PermanentModelError)
+
+    def test_provider_budget_402_in_flight_pauses_for_retry_after(self):
+        err = _refused(_refusal(402, "openrouter_in_flight_budget", headers={"Retry-After": "30"}))
+
+        assert err.action is BudgetAction.pause
+        assert err.retry_after_s == 30
+        assert err.resets_at is None and err.stop_reason is None
+        assert err.error_class == "budget_in_flight"
+        assert err.limit_source == "openrouter_in_flight_budget"
+
+    def test_provider_budget_402_credits_stops(self):
+        err = _refused(_refusal(402, "openrouter_credits"))
+
+        assert err.action is BudgetAction.stop
+        assert err.stop_reason == "provider_credits"
+        assert err.error_class == "budget_credits"
+        assert err.resets_at is None and err.retry_after_s is None
+
+    def test_provider_budget_error_text_is_the_http_text(self):
+        err = _refused(_refusal(402, "openrouter_credits", filler="я" * 1000))
+
+        assert str(err).startswith("HTTP 402: ")
+        assert len(str(err)) == len("HTTP 402: ") + 500
+
+    @pytest.mark.parametrize(
+        "handler",
+        [
+            _respond(402, "нельзя"),
+            _respond(402, ""),
+            _respond(402, "[1, 2]"),
+            _respond(402, '{"x": 1}'),
+            _respond(402, '{"error": "строка"}'),
+            _respond(402, '{"error": {"code": 402}}'),
+            _respond(402, '{"error": {"metadata": []}}'),
+            _respond(402, '{"error": {"metadata": {}}}'),
+            _refusal(402, None, resets_at=RESETS),
+            _refusal(402, "openrouter_key_limit"),
+            _refusal(402, "something_new"),
+            _refusal(402, 7),
+        ],
+    )
+    def test_provider_budget_402_unrecognised_stops_as_unknown(self, handler):
+        err = _refused(handler)
+
+        assert err.action is BudgetAction.stop
+        assert err.stop_reason == "provider_refusal_unknown"
+        assert err.error_class == "budget_unknown"
+
+    @pytest.mark.parametrize(("source", "error_class"), BUDGET_403)
+    def test_provider_budget_403_pauses_until_resets_at(self, source, error_class):
+        err = _refused(_refusal(403, source, resets_at=RESETS))
+
+        assert err.action is BudgetAction.pause
+        assert err.resets_at == RESETS_DT
+        assert err.resets_at.utcoffset() == timedelta(0)
+        assert err.stop_reason is None and err.retry_after_s is None
+        assert err.error_class == error_class
+        assert err.limit_source == source
+
+    @pytest.mark.parametrize(("source", "error_class"), BUDGET_403)
+    def test_provider_budget_403_null_resets_at_stops_without_reset(self, source, error_class):
+        err = _refused(_refusal(403, source, resets_at=None))
+
+        assert err.action is BudgetAction.stop
+        assert err.stop_reason == "provider_budget_no_reset"
+        assert err.resets_at is None
+        assert err.error_class == error_class
+
+    @pytest.mark.parametrize(("source", "error_class"), BUDGET_403)
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            {},
+            {"resets_at": "2026-11-16 00:00"},
+            {"resets_at": "2026-11-16T00:00:00"},
+            {"resets_at": "когда-нибудь"},
+            {"resets_at": ""},
+            {"resets_at": 1763251200},
+            {"resets_at": True},
+            {"resets_at": ["2026-11-16T00:00:00Z"]},
+            {"resets_at": 1763251200.5},
+        ],
+    )
+    def test_provider_budget_403_unusable_resets_at_stops_as_unknown(
+        self, source, error_class, extra
+    ):
+        err = _refused(_refusal(403, source, **extra))
+
+        assert err.action is BudgetAction.stop
+        assert err.stop_reason == "provider_refusal_unknown"
+        assert err.resets_at is None
+        assert err.error_class == error_class
+
+    def test_provider_budget_403_resets_at_with_offset_is_converted_to_utc(self):
+        err = _refused(_refusal(403, "openrouter_key_limit", resets_at="2026-11-16T03:00:00+03:00"))
+
+        assert err.resets_at == RESETS_DT
+        assert err.resets_at.utcoffset() == timedelta(0)
+
+    @pytest.mark.parametrize(
+        "source", [None, "moderation", "openrouter_credits", "openrouter_in_flight_budget"]
+    )
+    def test_provider_budget_403_without_budget_source_is_permanent(self, source):
+        handler = _refusal(403, source, reasons=["spam"], resets_at=RESETS)
+
+        with pytest.raises(PermanentModelError) as info:
+            _client(handler).complete(BODY, timeout_s=1)
+
+        assert info.value.error_class == "http_403"
+
+    @pytest.mark.parametrize("body", ["нельзя", "", "[]", '{"error": {"metadata": null}}'])
+    def test_provider_budget_403_unparseable_body_is_permanent(self, body):
+        with pytest.raises(PermanentModelError) as info:
+            _client(_respond(403, body)).complete(BODY, timeout_s=1)
+
+        assert info.value.error_class == "http_403"
+
+    @pytest.mark.parametrize(
+        ("header", "expected"),
+        [
+            ("30", 30),
+            ("1", 1),
+            ("3600", 3600),
+            ("0", 60),
+            ("4000", 60),
+            ("3601", 60),
+            ("-5", 60),
+            ("Wed, 21 Oct 2026 07:28:00 GMT", 60),
+            ("abc", 60),
+            ("", 60),
+            ("1.5", 60),
+            (None, 60),
+        ],
+    )
+    def test_provider_budget_retry_after_is_bounded(self, header, expected):
+        headers = {} if header is None else {"Retry-After": header}
+
+        err = _refused(_refusal(402, "openrouter_in_flight_budget", headers=headers))
+
+        assert err.retry_after_s == expected
+
+    def test_provider_budget_amounts_are_decimal_from_json_numbers(self):
+        err = _refused(_refusal(402, "openrouter_credits", limit_usd=5, spend_usd=5.0001))
+
+        assert err.limit_usd == Decimal("5") and isinstance(err.limit_usd, Decimal)
+        assert err.spend_usd == Decimal("5.0001") and isinstance(err.spend_usd, Decimal)
+
+    def test_provider_budget_amounts_keep_precision_beyond_float(self):
+        text = (
+            '{"error": {"code": 403, "metadata": {"limit_source": "openrouter_key_limit", '
+            f'"resets_at": "{RESETS}", "limit_usd": 5.123456789012345678, "spend_usd": 0.1}}}}}}'
+        )
+
+        err = _refused(_respond(403, text))
+
+        assert err.limit_usd == Decimal("5.123456789012345678")
+        assert err.spend_usd == Decimal("0.1")
+
+    @pytest.mark.parametrize("value", ["5", "5.0", None, True, [5], {"v": 5}])
+    def test_provider_budget_amounts_not_json_numbers_are_none(self, value):
+        err = _refused(
+            _refusal(403, "openrouter_key_limit", resets_at=RESETS, limit_usd=value, spend_usd=value)
+        )
+
+        assert err.limit_usd is None and err.spend_usd is None
+
+    def test_provider_budget_amounts_absent_are_none(self):
+        err = _refused(_refusal(402, "openrouter_credits"))
+
+        assert err.limit_usd is None and err.spend_usd is None
+
+    @pytest.mark.parametrize("status", [400, 401, 404, 422])
+    def test_provider_budget_other_permanent_statuses_are_unchanged(self, status):
+        with pytest.raises(PermanentModelError) as info:
+            _client(_refusal(status, "openrouter_credits")).complete(BODY, timeout_s=1)
+
+        assert info.value.error_class == f"http_{status}"
+
+    @pytest.mark.parametrize("status", [429, 500])
+    def test_provider_budget_other_transient_statuses_are_unchanged(self, status):
+        with pytest.raises(TransientModelError) as info:
+            _client(_refusal(status, "openrouter_credits")).complete(BODY, timeout_s=1)
+
+        assert not isinstance(info.value, ProviderBudgetError)
+        assert info.value.error_class == f"http_{status}"
 
 
 class TestClose:

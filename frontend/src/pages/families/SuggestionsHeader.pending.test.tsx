@@ -15,6 +15,7 @@ function status(overrides: Partial<QueueStatus> = {}): QueueStatus {
     spent_24h_usd: "4.2",
     daily_budget_usd: "30",
     claim_paused: null,
+    budget_pause: null,
     held_batches: [],
     stale_units: [],
     config_stale: null,
@@ -49,7 +50,7 @@ describe("SuggestionsHeader — ожидание действий", () => {
     const hold = holdRequests("post", "/api/v1/semantic/worker/resume");
     renderWithProviders(
       <SuggestionsHeader
-        status={status({ claim_paused: { reason: "reserve_below_actual", attempt_id: 5, paused_at: "2026-09-28T09:00:00+00:00" } })}
+        status={status({ claim_paused: { reason: "reserve_exceeded", attempt_id: 5, paused_at: "2026-09-28T09:00:00+00:00" } })}
         onPreview={vi.fn()}
       />
     );

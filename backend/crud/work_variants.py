@@ -49,7 +49,7 @@ from services.semantic_cost import (
     reserve_for_known_prefix,
     tariffs_from,
 )
-from services.semantic_reconcile import schema_ready_to_build
+from services.semantic_reconcile import BuildWait, schema_build_wait
 from services.semantic_request import RenderedRequest
 from services.variant_request import (
     load_schema_material,
@@ -151,6 +151,7 @@ class SchemaOut(TypedDict):
     status: str | None
     version: int | None
     ready_to_build: bool
+    build_wait: BuildWait | None
     building: bool
     values_jobs_live: int
     parameters: list[ParameterOut]
@@ -291,6 +292,7 @@ def schema_out(db: Session, family_id: int) -> SchemaOut | None:
     ).all()
     frozen = next((row for row in versions if row.status == SchemaStatus.frozen.value), None)
     building = any(row.status == SchemaStatus.building.value for row in versions)
+    build_wait = schema_build_wait(db, family_id)
 
     parameters: list[ParameterOut] = []
     if frozen is not None:
@@ -312,7 +314,8 @@ def schema_out(db: Session, family_id: int) -> SchemaOut | None:
         family_id=family_id,
         status=frozen.status if frozen is not None else None,
         version=frozen.version if frozen is not None else None,
-        ready_to_build=schema_ready_to_build(db, family_id),
+        ready_to_build=build_wait is None,
+        build_wait=build_wait,
         building=building,
         values_jobs_live=_values_jobs_live(db, frozen.id) if frozen is not None else 0,
         parameters=parameters,

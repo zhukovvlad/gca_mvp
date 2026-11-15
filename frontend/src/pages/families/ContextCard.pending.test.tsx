@@ -1,6 +1,6 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
 import { ContextCard } from "@/pages/families/ContextCard";
 import {
@@ -17,6 +17,15 @@ import { renderWithProviders } from "@/test/utils";
 const ORDINARY_CONTEXT_ID = 601;
 const STALE_CONTEXT_ID = 602;
 const ORDINARY_TITLE = "Штукатурка стен цементно-песчаным раствором";
+
+// Контекст 601 стоит в единице активной семьи фикстуры («Кровельные работы», м³): список «Назначить
+// семью» берёт семьи строго единицы контекста (спека provider-budget-pause §2.7 п. 1).
+beforeEach(() => {
+  const context = handlerState.semanticContexts.find((c) => c.id === ORDINARY_CONTEXT_ID)!;
+  context.unit_id = 3;
+  context.unit_code = "M3";
+  context.unit_symbol = "м³";
+});
 
 describe("ContextCard — ожидание действий", () => {
   it("«Подтвердить вид» в окне: кнопка занята на время запроса, ответ пришёл — окно закрыто", async () => {
@@ -248,7 +257,7 @@ describe("ContextCard — ожидание остальных действий",
     await user.click(screen.getByRole("button", { name: "Другая семья…" }));
     const dialog = await screen.findByRole("dialog");
     await user.click(within(dialog).getByRole("combobox", { name: "Семья" }));
-    await user.click(await screen.findByRole("option", { name: "Кровельные работы" }));
+    await user.click(await screen.findByRole("option", { name: "Кровельные работы · м³" }));
     const hold = holdRequests("post", "/api/v1/semantic/contexts/:id/family");
 
     await user.click(within(dialog).getByRole("button", { name: "Назначить семью" }));

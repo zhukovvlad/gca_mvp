@@ -80,9 +80,11 @@ from services.releasable import (
 )
 from services.semantic_answer import AnswerSchemaError, parse_model_answer
 from services.semantic_client import (
+    BudgetAction,
     ModelClient,
     ModelResponse,
     PermanentModelError,
+    ProviderBudgetError,
     TransientModelError,
 )
 from services.semantic_cost import event_cap_from, reserve_for, spent_last_24h, tariffs_from
@@ -158,6 +160,15 @@ __all__ = [
 _RETRY_BASE_SECONDS = 30
 
 PAUSE_REASON_RESERVE_EXCEEDED = "reserve_exceeded"
+#: Причины остановки при отказе провайдера по деньгам (спека паузы по лимиту §2.3);
+#: значения — `stop_reason` клиента, `semantic_worker_state.paused_reason` их хранит как есть.
+PAUSE_REASON_PROVIDER_CREDITS = "provider_credits"
+PAUSE_REASON_PROVIDER_BUDGET_NO_RESET = "provider_budget_no_reset"
+PAUSE_REASON_PROVIDER_REFUSAL_UNKNOWN = "provider_refusal_unknown"
+
+#: Пауза по времени не короче: `resets_at` в прошлом (расхождение часов) иначе дал бы
+#: мгновенный повтор и тот же отказ.
+BUDGET_PAUSE_FLOOR = timedelta(seconds=60)
 
 _ERROR_TEXT_LIMIT = 2000
 
@@ -216,13 +227,54 @@ def _apply_fuse(db: Session, attempt: SemanticJobAttempt, *, now: datetime) -> N
     # («состояние, затем задание»). Взаимной блокировки нет только потому, что
     # захват берёт задания через SKIP LOCKED и на занятой строке не ждёт.
     state = _lock_worker_state(db)
+    _stop_claim(state, reason=PAUSE_REASON_RESERVE_EXCEEDED, attempt_id=attempt.id, now=now)
+    db.flush()
+
+
+def _clear_budget_pause(state: SemanticWorkerState) -> None:
+    state.budget_paused_until = None
+    state.budget_pause_attempt_id = None
+    state.budget_pause_source = None
+    state.budget_limit_usd = None
+    state.budget_spend_usd = None
+
+
+def _stop_claim(
+    state: SemanticWorkerState, *, reason: str, attempt_id: int, now: datetime
+) -> None:
+    """Остановка захвата до человека (замок состояния держит вызывающий). Уже
+    остановленный захват не переписывается: остаётся первая остановка. Остановка
+    сильнее паузы по времени и снимает её."""
     if state.claim_paused:
         return
     state.claim_paused = True
-    state.paused_reason = PAUSE_REASON_RESERVE_EXCEEDED
-    state.paused_attempt_id = attempt.id
+    state.paused_reason = reason
+    state.paused_attempt_id = attempt_id
     state.paused_at = now
-    db.flush()
+    _clear_budget_pause(state)
+
+
+def _set_budget_pause(
+    state: SemanticWorkerState,
+    *,
+    until: datetime,
+    attempt_id: int,
+    source: str | None,
+    limit_usd: Decimal | None,
+    spend_usd: Decimal | None,
+) -> None:
+    """Пауза захвата по времени (замок состояния держит вызывающий). Стоит остановка
+    — не пишется: она сильнее. Стоит пауза с тем же или более поздним сроком —
+    остаётся целиком (срок, попытка, источник, суммы); более ранней не сокращается."""
+    if state.claim_paused:
+        return
+    if state.budget_paused_until is not None and state.budget_paused_until >= until:
+        return
+    state.budget_paused_until = until
+    state.budget_pause_attempt_id = attempt_id
+    state.budget_pause_source = source
+    state.budget_limit_usd = limit_usd
+    state.budget_spend_usd = spend_usd
 
 
 # ---------------------------------------------------------------------------
@@ -413,6 +465,13 @@ def claim_next(
     if state.claim_paused:
         db.commit()
         return None
+    if state.budget_paused_until is not None:
+        if now < state.budget_paused_until:
+            db.commit()
+            return None
+        # Срок паузы прошёл: поля снимаются под тем же замком, захват идёт дальше.
+        _clear_budget_pause(state)
+        db.flush()
 
     dictionary: PrivacyDictionary | None = None
     while True:
@@ -1197,6 +1256,10 @@ def record_failure(
         db.commit()
         return
     owned = _owns_job(job, claim)
+    if isinstance(error, ProviderBudgetError):
+        _record_budget_refusal(db, claim, job, attempt, error, owned=owned, now=now, completed=completed)
+        db.commit()
+        return
     transient = isinstance(error, TransientModelError)
     error_class = getattr(error, "error_class", None) or type(error).__name__
 
@@ -1221,6 +1284,70 @@ def record_failure(
         else:
             job.status = SemanticJobStatus.error.value
     db.commit()
+
+
+def _record_budget_refusal(
+    db: Session,
+    claim: Claim,
+    job: SemanticJob,
+    attempt: SemanticJobAttempt,
+    error: ProviderBudgetError,
+    *,
+    owned: bool,
+    now: datetime,
+    completed: Sequence[ModelResponse],
+) -> None:
+    """Отказ провайдера по деньгам (спека паузы по лимиту §2.2–§2.3); коммитит
+    вызывающий. Попытка закрывается `budget_refused` (`lost_claim`, если захват
+    не наш); её стоимость — сумма стоимостей выполненных порций (их нет — 0,
+    хоть одна неизвестна — `NULL`): отклонённый вызов ничего не стоил. Задание
+    возвращается в `pending` без штрафа попытки. Затем предохранитель сверяет
+    факт с резервом — до паузы: превышение ставит остановку, а она сильнее паузы."""
+    error_class = getattr(error, "error_class", None) or type(error).__name__
+    attempt.finished_at = now
+    if completed:
+        _fill_from_responses(attempt, completed, calls_total=len(completed) + 1)
+        costs = [r.cost_usd for r in completed]
+        attempt.cost_usd = None if None in costs else sum(costs, Decimal(0))
+    else:
+        attempt.cost_usd = Decimal(0)
+    attempt.error_class = error_class
+    attempt.error_text = str(error)[:_ERROR_TEXT_LIMIT]
+    if owned:
+        attempt.outcome = SemanticAttemptOutcome.budget_refused.value
+        job.status = SemanticJobStatus.pending.value
+        job.claim_token = None
+        job.attempts_in_generation = max(job.attempts_in_generation - 1, 0)
+        job.next_attempt_at = now
+        job.last_error_class = error_class
+    else:
+        attempt.outcome = SemanticAttemptOutcome.lost_claim.value
+    db.flush()
+    _apply_fuse(db, attempt, now=now)
+    # Порядок блокировок «задание, затем состояние» — как у предохранителя.
+    state = _lock_worker_state(db)
+    if error.action == BudgetAction.stop:
+        _stop_claim(
+            state,
+            reason=error.stop_reason or PAUSE_REASON_PROVIDER_REFUSAL_UNKNOWN,
+            attempt_id=attempt.id,
+            now=now,
+        )
+    else:
+        base = (
+            error.resets_at
+            if error.resets_at is not None
+            else now + timedelta(seconds=error.retry_after_s or 0)
+        )
+        _set_budget_pause(
+            state,
+            until=max(base, now + BUDGET_PAUSE_FLOOR),
+            attempt_id=attempt.id,
+            source=error.limit_source,
+            limit_usd=error.limit_usd,
+            spend_usd=error.spend_usd,
+        )
+    db.flush()
 
 
 # ---------------------------------------------------------------------------

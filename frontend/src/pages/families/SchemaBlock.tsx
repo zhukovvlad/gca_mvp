@@ -19,6 +19,7 @@ import { PreviewDialog } from "./PreviewDialog";
 import { compositePartTexts } from "./schema-edit/composite";
 import { SchemaEditDialog } from "./SchemaEditDialog";
 import {
+  buildWaitLabel,
   PARAMETER_KIND_LABEL,
   PARAMETER_ORIGIN_LABEL,
   PARAMETER_ROLE_GROUP_LABEL,
@@ -138,7 +139,7 @@ export function SchemaBlock({ family }: { family: WorkFamily }) {
             )}
             {!schema.ready_to_build && (
               <Badge variant="outline" className={MARK_TINT}>
-                схема ждёт перезапроса единицы
+                {buildWaitLabel(schema.build_wait)}
               </Badge>
             )}
           </div>

@@ -1322,6 +1322,7 @@ class TestStatus:
             "spent_24h_usd": "0",
             "daily_budget_usd": str(app_settings.SEMANTIC_DAILY_BUDGET_USD),
             "claim_paused": None,
+            "budget_pause": None,
             "held_batches": [],
             "stale_units": [],
             "config_stale": None,

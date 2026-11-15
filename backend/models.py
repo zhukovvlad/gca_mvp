@@ -2344,6 +2344,7 @@ class SemanticAttemptOutcome(str, enum.Enum):
     permanent_error = "permanent_error"
     schema_error = "schema_error"
     lost_claim = "lost_claim"
+    budget_refused = "budget_refused"
 
 
 class SuggestionUnpublishedReason(str, enum.Enum):
@@ -2466,6 +2467,18 @@ CK_WORKER_STATE_PAUSED_ATTEMPT_PAIR = "claim_paused = (paused_attempt_id IS NOT 
 CK_WORKER_STATE_PAUSED_AT_PAIR = "claim_paused = (paused_at IS NOT NULL)"
 CK_WORKER_STATE_RESUMED_PAIR = "(last_resumed_by IS NULL) = (last_resumed_at IS NULL)"
 CK_WORKER_STATE_SINGLETON_ID = "id = 1"
+# Пауза по времени (миграция 0026): срок, попытка и источник — все NULL или все заданы;
+# суммы без срока не бывают. Литералы дублируют миграцию побуквенно.
+CK_WORKER_STATE_BUDGET_PAUSE_TRIPLE = (
+    "(budget_paused_until IS NULL AND budget_pause_attempt_id IS NULL "
+    "AND budget_pause_source IS NULL) OR "
+    "(budget_paused_until IS NOT NULL AND budget_pause_attempt_id IS NOT NULL "
+    "AND budget_pause_source IS NOT NULL)"
+)
+CK_WORKER_STATE_BUDGET_SUMS = (
+    "budget_paused_until IS NOT NULL OR "
+    "(budget_limit_usd IS NULL AND budget_spend_usd IS NULL)"
+)
 
 
 class SemanticReconcileBatch(Base):
@@ -2764,6 +2777,10 @@ class SemanticWorkerState(Base):
     миграция 0018; при очистке доменных таблиц
     (`tests/conftest.py::_truncate_domain_tables`) она пересоздаётся в той же
     транзакции, иначе захват (задача 10) не работает.
+
+    Отдельно от остановки — пауза по времени (миграция 0026): отказ провайдера по деньгам
+    с известным сбросом лимита не останавливает захват, а откладывает его до
+    `budget_paused_until`. Срок, попытка и источник заданы вместе; суммы без срока не бывают.
     """
     __tablename__ = "semantic_worker_state"
 
@@ -2781,6 +2798,15 @@ class SemanticWorkerState(Base):
     paused_at = Column(DateTime(timezone=True), nullable=True)
     last_resumed_by = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
     last_resumed_at = Column(DateTime(timezone=True), nullable=True)
+    budget_paused_until = Column(DateTime(timezone=True), nullable=True)
+    budget_pause_attempt_id = Column(
+        BigInteger,
+        ForeignKey("semantic_job_attempts.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    budget_pause_source = Column(Text, nullable=True)
+    budget_limit_usd = Column(Numeric, nullable=True)
+    budget_spend_usd = Column(Numeric, nullable=True)
 
     __table_args__ = (
         CheckConstraint(CK_WORKER_STATE_SINGLETON_ID, name="ck_semantic_worker_state_singleton_id"),
@@ -2794,6 +2820,13 @@ class SemanticWorkerState(Base):
             CK_WORKER_STATE_PAUSED_AT_PAIR, name="ck_semantic_worker_state_paused_at_pair"
         ),
         CheckConstraint(CK_WORKER_STATE_RESUMED_PAIR, name="ck_semantic_worker_state_resumed_pair"),
+        CheckConstraint(
+            CK_WORKER_STATE_BUDGET_PAUSE_TRIPLE,
+            name="ck_semantic_worker_state_budget_pause_triple",
+        ),
+        CheckConstraint(
+            CK_WORKER_STATE_BUDGET_SUMS, name="ck_semantic_worker_state_budget_sums"
+        ),
     )
 
 

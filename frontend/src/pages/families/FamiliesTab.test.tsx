@@ -807,3 +807,48 @@ describe("FamiliesTab: окно слияния — состояние схемы
     expect(within(dialog).queryByRole("note")).not.toBeInTheDocument();
   });
 });
+
+describe("FamiliesTab — «Новая семья работ»: выбор единицы из справочника", () => {
+  async function openCreate() {
+    const user = userEvent.setup();
+    await renderTab();
+    await user.click(screen.getByRole("button", { name: /Новая семья/ }));
+    const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText("Название (обязательно)"), "Подбетонка");
+    return { user, dialog };
+  }
+
+  it("единица выбирается из справочника: подпись «символ — название», в запросе код", async () => {
+    const { user, dialog } = await openCreate();
+
+    expect(within(dialog).getByRole("combobox", { name: "Единица" })).toHaveTextContent("Без единицы");
+    await user.click(within(dialog).getByRole("combobox", { name: "Единица" }));
+    await user.click(await screen.findByRole("option", { name: "м³ — Куб. метр" }));
+    await user.click(within(dialog).getByRole("button", { name: "Создать" }));
+
+    await waitFor(() => expect(handlerState.lastCreateFamilyRequest).not.toBeNull());
+    expect(handlerState.lastCreateFamilyRequest).toMatchObject({ title: "Подбетонка", unit_name: "M3" });
+  });
+
+  it("«Без единицы» шлёт unit_name: null явно, и после выбора единицы к нему можно вернуться", async () => {
+    const { user, dialog } = await openCreate();
+
+    await user.click(within(dialog).getByRole("combobox", { name: "Единица" }));
+    await user.click(await screen.findByRole("option", { name: "м² — Кв. метр" }));
+    await user.click(within(dialog).getByRole("combobox", { name: "Единица" }));
+    await user.click(await screen.findByRole("option", { name: "Без единицы" }));
+    await user.click(within(dialog).getByRole("button", { name: "Создать" }));
+
+    await waitFor(() => expect(handlerState.lastCreateFamilyRequest).not.toBeNull());
+    expect(handlerState.lastCreateFamilyRequest).toHaveProperty("unit_name", null);
+  });
+
+  it("единицу не трогали — тоже unit_name: null", async () => {
+    const { user, dialog } = await openCreate();
+
+    await user.click(within(dialog).getByRole("button", { name: "Создать" }));
+
+    await waitFor(() => expect(handlerState.lastCreateFamilyRequest).not.toBeNull());
+    expect(handlerState.lastCreateFamilyRequest).toHaveProperty("unit_name", null);
+  });
+});
