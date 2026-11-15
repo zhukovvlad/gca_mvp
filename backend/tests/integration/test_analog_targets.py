@@ -887,7 +887,10 @@ class TestSeriesOfTheRequest:
     def test_the_series_is_not_stored_with_the_choice(self, db_session):
         columns = {column.name for column in KpLineTarget.__table__.columns}
 
-        assert columns == {"position_item_id", "kind", "analog_position_item_id", "set_by", "set_at"}
+        assert columns == {
+            "position_item_id", "kind", "analog_position_item_id", "set_by", "set_at",
+            "ref_origin", "ref_method", "ref_factor", "ref_basis", "ref_link_id", "ref_without_analogs",
+        }
 
 
 # ---------------------------------------------------------------------------
