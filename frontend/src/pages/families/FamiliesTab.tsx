@@ -651,13 +651,21 @@ function FamilyPanel({
   );
 }
 
+const NO_UNIT_ID = 0;
+
 function CreateFamilyDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const [title, setTitle] = useState("");
-  const [unitName, setUnitName] = useState("");
+  // Единица — из справочника; 0 — «Без единицы» (запись списка, чтобы к ней можно было вернуться).
+  const [unitId, setUnitId] = useState<number>(NO_UNIT_ID);
   const [definition, setDefinition] = useState("");
   const [categoryId, setCategoryId] = useState<number | null>(null);
   const categoriesQ = useFamilyCategories();
+  const unitsQ = useUnits();
   const create = useCreateWorkFamily();
+  const unitItems = [
+    { id: NO_UNIT_ID, code: null as string | null, label: "Без единицы" },
+    ...(unitsQ.data ?? []).map((u) => ({ id: u.id, code: u.code as string | null, label: `${u.symbol} — ${u.name}` })),
+  ];
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -665,13 +673,14 @@ function CreateFamilyDialog({ open, onOpenChange }: { open: boolean; onOpenChang
     try {
       await create.mutateAsync({
         title: title.trim(),
-        unit_name: unitName.trim() || null,
+        // Резолвер сервера принимает код единицы; «Без единицы» — null.
+        unit_name: unitItems.find((u) => u.id === unitId)?.code ?? null,
         definition: definition.trim() || null,
         // Категория при создании необязательна (спека 3б §2.9); активация потребует её.
         ...(categoryId !== null ? { family_category_id: categoryId } : {}),
       });
       setTitle("");
-      setUnitName("");
+      setUnitId(NO_UNIT_ID);
       setDefinition("");
       setCategoryId(null);
       onOpenChange(false);
@@ -697,7 +706,14 @@ function CreateFamilyDialog({ open, onOpenChange }: { open: boolean; onOpenChang
             </div>
             <div className="grid gap-2">
               <Label htmlFor="new-family-unit">Единица</Label>
-              <Input id="new-family-unit" value={unitName} onChange={(e) => setUnitName(e.target.value)} />
+              <EntitySelect
+                id="new-family-unit"
+                items={unitItems}
+                value={unitId}
+                onChange={(id) => setUnitId(id ?? NO_UNIT_ID)}
+                getLabel={(u) => u.label}
+                placeholder="Без единицы"
+              />
             </div>
             <div className="grid gap-2">
               <Label htmlFor="new-family-definition">Определение</Label>

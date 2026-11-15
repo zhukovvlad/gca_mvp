@@ -1,6 +1,6 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { handlerState } from "@/test/handlers";
 import { renderWithProviders } from "@/test/utils";
@@ -19,6 +19,7 @@ function status(overrides: Partial<QueueStatus> = {}): QueueStatus {
     spent_24h_usd: "4.2",
     daily_budget_usd: "30",
     claim_paused: null,
+    budget_pause: null,
     held_batches: [],
     stale_units: [],
     config_stale: null,
@@ -91,7 +92,7 @@ describe("SuggestionsHeader — плашки, каждая при своём у�
   });
 
   it.each([
-    ["остановка захвата", status({ claim_paused: { reason: "reserve_below_actual", attempt_id: 5, paused_at: "2026-09-28T09:00:00+00:00" } }), ["banner-paused"]],
+    ["остановка захвата", status({ claim_paused: { reason: "reserve_exceeded", attempt_id: 5, paused_at: "2026-09-28T09:00:00+00:00" } }), ["banner-paused"]],
     ["удержанная пачка", status({ held_batches: [heldBatch()] }), ["banner-held"]],
     ["конфигурация изменена", status({ config_stale: { stale_count: 12, prompt_version_current: 4 } }), ["banner-config"]],
     ["список семей единицы изменён", status({ stale_units: [{ unit_id: 5, unit_code: "M2", stale_count: 82 }] }), ["banner-stale-unit"]],
@@ -104,7 +105,7 @@ describe("SuggestionsHeader — плашки, каждая при своём у�
     const user = userEvent.setup();
     renderWithProviders(
       <SuggestionsHeader
-        status={status({ claim_paused: { reason: "reserve_below_actual", attempt_id: 5, paused_at: "2026-09-28T09:00:00+00:00" } })}
+        status={status({ claim_paused: { reason: "reserve_exceeded", attempt_id: 5, paused_at: "2026-09-28T09:00:00+00:00" } })}
         onPreview={vi.fn()}
       />
     );
@@ -228,7 +229,7 @@ describe("SuggestionsHeader — плашки, каждая при своём у�
     renderWithProviders(
       <SuggestionsHeader
         status={status({
-          claim_paused: { reason: "reserve_below_actual", attempt_id: 5, paused_at: "2026-09-28T09:00:00+00:00" },
+          claim_paused: { reason: "reserve_exceeded", attempt_id: 5, paused_at: "2026-09-28T09:00:00+00:00" },
           held_batches: [heldBatch()],
           config_stale: { stale_count: 12, prompt_version_current: 4 },
           stale_units: [{ unit_id: 5, unit_code: "M2", stale_count: 82 }],
@@ -290,5 +291,178 @@ describe("SuggestionsHeader — счётчики промоушена", () => {
     expect(document.body.textContent).not.toMatch(
       /catalog_to_review|catalog_position|contexts_with_variant|contexts_pending|families_without_schema/
     );
+  });
+});
+
+describe("SuggestionsHeader — пауза по времени и причины остановки", () => {
+  /** Местное время: тест не зависит от пояса машины. */
+  function local(day: number, h: number, m: number, s = 0): Date {
+    return new Date(2026, 10, day, h, m, s);
+  }
+
+  function pause(overrides: Partial<NonNullable<QueueStatus["budget_pause"]>>) {
+    return status({
+      budget_pause: {
+        until: local(15, 3, 0).toISOString(),
+        source: "openrouter_key_limit",
+        limit_usd: "5",
+        spend_usd: "5",
+        attempt_id: 9,
+        ...overrides,
+      },
+    });
+  }
+
+  function atNow(date: Date) {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(date);
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("403-бюджет с суммами: «Лимит OpenRouter исчерпан ($5,00 из $5,00). Продолжим в 03:00.», без кнопок", () => {
+    atNow(local(15, 1, 0));
+    renderWithProviders(<SuggestionsHeader status={pause({})} onPreview={vi.fn()} />);
+
+    const banner = screen.getByTestId("banner-budget-pause");
+    expect(banner).toHaveTextContent("Лимит OpenRouter исчерпан ($5,00 из $5,00). Продолжим в 03:00.");
+    expect(within(banner).queryAllByRole("button")).toHaveLength(0);
+    expect(screen.queryByTestId("banner-paused")).not.toBeInTheDocument();
+  });
+
+  it.each(["openrouter_key_limit", "openrouter_guardrail_budget", "openrouter_workspace_budget"])(
+    "403-источник %s печатается одной формулировкой",
+    (source) => {
+      atNow(local(15, 1, 0));
+      renderWithProviders(<SuggestionsHeader status={pause({ source })} onPreview={vi.fn()} />);
+
+      expect(screen.getByTestId("banner-budget-pause")).toHaveTextContent(
+        "Лимит OpenRouter исчерпан ($5,00 из $5,00). Продолжим в 03:00."
+      );
+    }
+  );
+
+  it.each([
+    ["нет обеих сумм", { limit_usd: null, spend_usd: null }],
+    ["нет суммы расхода", { spend_usd: null }],
+    ["нет суммы лимита", { limit_usd: null }],
+  ])("403-бюджет: %s — без скобки", (_name, overrides) => {
+    atNow(local(15, 1, 0));
+    renderWithProviders(<SuggestionsHeader status={pause(overrides)} onPreview={vi.fn()} />);
+
+    const text = screen.getByTestId("banner-budget-pause").textContent;
+    expect(text).toContain("Лимит OpenRouter исчерпан. Продолжим в 03:00.");
+    expect(text).not.toContain("(");
+  });
+
+  it("суммы по-русски: запятая и два знака", () => {
+    atNow(local(15, 1, 0));
+    renderWithProviders(
+      <SuggestionsHeader status={pause({ limit_usd: "5", spend_usd: "4.5" })} onPreview={vi.fn()} />
+    );
+
+    expect(screen.getByTestId("banner-budget-pause")).toHaveTextContent("($4,50 из $5,00)");
+  });
+
+  it("«бюджет на лету»: «OpenRouter просит подождать. Продолжим в 00:21:15.» — с секундами", () => {
+    atNow(local(15, 0, 20, 0));
+    renderWithProviders(
+      <SuggestionsHeader
+        status={pause({
+          until: local(15, 0, 21, 15).toISOString(),
+          source: "openrouter_in_flight_budget",
+          limit_usd: null,
+          spend_usd: null,
+        })}
+        onPreview={vi.fn()}
+      />
+    );
+
+    const banner = screen.getByTestId("banner-budget-pause");
+    expect(banner).toHaveTextContent("OpenRouter просит подождать. Продолжим в 00:21:15.");
+    expect(within(banner).queryAllByRole("button")).toHaveLength(0);
+  });
+
+  it("срок не сегодня — с датой: «Продолжим 16.11 в 03:00.»", () => {
+    atNow(local(15, 23, 0));
+    renderWithProviders(
+      <SuggestionsHeader status={pause({ until: local(16, 3, 0).toISOString() })} onPreview={vi.fn()} />
+    );
+
+    expect(screen.getByTestId("banner-budget-pause")).toHaveTextContent(
+      "Лимит OpenRouter исчерпан ($5,00 из $5,00). Продолжим 16.11 в 03:00."
+    );
+  });
+
+  it("«бюджет на лету» не сегодня — дата и секунды", () => {
+    atNow(local(15, 23, 59, 50));
+    renderWithProviders(
+      <SuggestionsHeader
+        status={pause({ until: local(16, 0, 0, 5).toISOString(), source: "openrouter_in_flight_budget" })}
+        onPreview={vi.fn()}
+      />
+    );
+
+    expect(screen.getByTestId("banner-budget-pause")).toHaveTextContent(
+      "OpenRouter просит подождать. Продолжим 16.11 в 00:00:05."
+    );
+  });
+
+  it("budget_pause = null — плашки паузы нет", () => {
+    renderWithProviders(<SuggestionsHeader status={status()} onPreview={vi.fn()} />);
+
+    expect(screen.queryByTestId("banner-budget-pause")).not.toBeInTheDocument();
+  });
+
+  const STOP_TEXTS: Array<[string, number, string]> = [
+    [
+      "reserve_exceeded",
+      5,
+      "Захват остановлен: резерв оказался ниже факта. Новые задания не берутся, пока остановка не снята.",
+    ],
+    [
+      "provider_credits",
+      5,
+      "На счёте OpenRouter не хватает денег на запрос. Пополните счёт и снимите остановку.",
+    ],
+    [
+      "provider_budget_no_reset",
+      5,
+      "Бюджет OpenRouter без сброса исчерпан. Увеличьте его и снимите остановку.",
+    ],
+    [
+      "provider_refusal_unknown",
+      17,
+      "OpenRouter отказал по деньгам, причина не распознана (попытка 17). Проверьте ключ и счёт, затем снимите остановку.",
+    ],
+    ["some_future_reason", 5, "Захват остановлен (причина: some_future_reason)."],
+  ];
+
+  it.each(STOP_TEXTS)("остановка %s: свой текст и кнопка «Снять остановку»", async (reason, attemptId, text) => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <SuggestionsHeader
+        status={status({ claim_paused: { reason, attempt_id: attemptId, paused_at: "2026-11-15T09:00:00+00:00" } })}
+        onPreview={vi.fn()}
+      />
+    );
+
+    const banner = screen.getByTestId("banner-paused");
+    expect(banner).toHaveTextContent(text);
+    await user.click(within(banner).getByRole("button", { name: "Снять остановку" }));
+    await waitFor(() => expect(handlerState.resumeWorkerCalls).toBe(1));
+  });
+
+  it("тексты разных причин не путаются: у provider_credits нет текста про резерв", () => {
+    renderWithProviders(
+      <SuggestionsHeader
+        status={status({ claim_paused: { reason: "provider_credits", attempt_id: 5, paused_at: "2026-11-15T09:00:00+00:00" } })}
+        onPreview={vi.fn()}
+      />
+    );
+
+    expect(screen.getByTestId("banner-paused")).not.toHaveTextContent("резерв оказался ниже факта");
   });
 });

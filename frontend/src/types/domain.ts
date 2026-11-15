@@ -2844,10 +2844,26 @@ export interface ConfigStaleInfo {
   prompt_version_current: number;
 }
 
+/**
+ * Пауза по времени после отказа провайдера по деньгам (спека provider-budget-pause §2.4):
+ * `until` — ISO с поясом; `source` — `limit_source` ответа (`openrouter_in_flight_budget` для 402,
+ * `openrouter_key_limit`/`openrouter_guardrail_budget`/`openrouter_workspace_budget` для 403);
+ * суммы — строками, `null`, если провайдер их не назвал.
+ */
+export interface BudgetPause {
+  until: string;
+  source: string | null;
+  limit_usd: string | null;
+  spend_usd: string | null;
+  attempt_id: number;
+}
+
 export interface QueueStatus {
   spent_24h_usd: string;
   daily_budget_usd: string;
   claim_paused: PausedInfo | null;
+  /** Пауза по времени; `null` — паузы нет или её срок прошёл. */
+  budget_pause: BudgetPause | null;
   held_batches: HeldBatchInfo[];
   stale_units: StaleUnitInfo[];
   config_stale: ConfigStaleInfo | null;
@@ -2966,6 +2982,17 @@ export interface ReleasableProposal {
   reason: string;
 }
 
+export interface BuildWaitBatch {
+  batch_id: number;
+  source: BatchSource;
+  import_job_id: number | null;
+}
+
+export interface BuildWait {
+  held_batches: BuildWaitBatch[];
+  live_jobs: number;
+}
+
 /**
  * `GET /families/:id/schema`. `status`/`version` — у текущей (замороженной) версии,
  * `null` — текущей нет. `building` — идёт пересборка, показанная версия остаётся прежней;
@@ -2976,6 +3003,11 @@ export interface FamilySchema {
   status: string | null;
   version: number | null;
   ready_to_build: boolean;
+  /**
+   * Что держит схему: удержанные пачки предложений и живые задания единицы семьи; `null` —
+   * ничто (`ready_to_build === (build_wait === null)`).
+   */
+  build_wait: BuildWait | null;
   building: boolean;
   /** Заданий значений в `pending`/`running` по текущей версии: пока не ноль, счётчики вариантов меняются. */
   values_jobs_live: number;

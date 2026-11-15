@@ -10,7 +10,7 @@ import {
   useResumeWorker,
   useUnits,
 } from "@/services/queries";
-import type { PreviewTarget, QueueStatus, StaleUnitInfo } from "@/types/domain";
+import type { BudgetPause, PausedInfo, PreviewTarget, QueueStatus, StaleUnitInfo } from "@/types/domain";
 
 import { BATCH_SOURCE_LABEL, pluralRu } from "./labels";
 
@@ -47,6 +47,62 @@ function Counter({ testId, label, value }: { testId: string; label: string; valu
       {label}: <b className="font-semibold text-fg tabular-nums">{value.toLocaleString("ru-RU")}</b>
     </span>
   );
+}
+
+/** Источник отказа 402 «бюджет на лету»: срок короткий, потому у времени печатаются секунды. */
+const IN_FLIGHT_BUDGET_SOURCE = "openrouter_in_flight_budget";
+
+function twoDigits(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+/**
+ * Срок продолжения из `until` (местное время): «03:00», не сегодня — «16.11 в 03:00»; у «бюджета на
+ * лету» с секундами. Своего таймера нет: статус перечитывается тем же опросом, что и всё остальное.
+ */
+function resumeAt(untilIso: string, withSeconds: boolean): string {
+  const until = new Date(untilIso);
+  const now = new Date();
+  const clock = `${twoDigits(until.getHours())}:${twoDigits(until.getMinutes())}${
+    withSeconds ? `:${twoDigits(until.getSeconds())}` : ""
+  }`;
+  const sameDay =
+    until.getFullYear() === now.getFullYear() &&
+    until.getMonth() === now.getMonth() &&
+    until.getDate() === now.getDate();
+  return sameDay ? `в ${clock}` : `${twoDigits(until.getDate())}.${twoDigits(until.getMonth() + 1)} в ${clock}`;
+}
+
+function budgetPauseText(pause: BudgetPause): string {
+  if (pause.source === IN_FLIGHT_BUDGET_SOURCE) {
+    return `OpenRouter просит подождать. Продолжим ${resumeAt(pause.until, true)}.`;
+  }
+  const sums =
+    pause.limit_usd !== null && pause.spend_usd !== null
+      ? ` (${formatUsd(pause.spend_usd)} из ${formatUsd(pause.limit_usd)})`
+      : "";
+  return `Лимит OpenRouter исчерпан${sums}. Продолжим ${resumeAt(pause.until, false)}.`;
+}
+
+/** Текст плашки остановки по причине (спека provider-budget-pause §2.5). */
+function stopText(paused: PausedInfo): ReactNode {
+  switch (paused.reason) {
+    case "reserve_exceeded":
+      return (
+        <>
+          <b>Захват остановлен:</b> резерв оказался ниже факта. Новые задания не берутся, пока
+          остановка не снята.
+        </>
+      );
+    case "provider_credits":
+      return "На счёте OpenRouter не хватает денег на запрос. Пополните счёт и снимите остановку.";
+    case "provider_budget_no_reset":
+      return "Бюджет OpenRouter без сброса исчерпан. Увеличьте его и снимите остановку.";
+    case "provider_refusal_unknown":
+      return `OpenRouter отказал по деньгам, причина не распознана (попытка ${paused.attempt_id}). Проверьте ключ и счёт, затем снимите остановку.`;
+    default:
+      return `Захват остановлен (причина: ${paused.reason}).`;
+  }
 }
 
 interface SuggestionsHeaderProps {
@@ -114,8 +170,18 @@ export function SuggestionsHeader({ status, onPreview }: SuggestionsHeaderProps)
             </Button>
           }
         >
-          <b>Захват остановлен:</b> резерв оказался ниже факта. Новые задания не берутся, пока
-          остановка не снята.
+          {stopText(status.claim_paused)}
+        </Banner>
+      )}
+
+      {status.budget_pause && (
+        <Banner
+          testId="banner-budget-pause"
+          tint={WARN_TINT}
+          icon={<PauseCircle className="size-[18px]" aria-hidden />}
+          actions={null}
+        >
+          {budgetPauseText(status.budget_pause)}
         </Banner>
       )}
 

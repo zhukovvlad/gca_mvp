@@ -152,7 +152,7 @@ class TestSchemaForm:
 
         assert set(body) == {
             "family_id", "status", "version", "ready_to_build", "building",
-            "values_jobs_live", "parameters", "revision",
+            "values_jobs_live", "parameters", "revision", "build_wait",
         }
         assert set(body["parameters"][0]) == {
             "id", "ordinal", "name", "values", "role", "value_kind", "closed", "range",

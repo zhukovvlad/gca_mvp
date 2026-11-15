@@ -996,3 +996,74 @@ describe("SchemaBlock: составные значения", () => {
     expect(within(editor).queryByRole("button", { name: /Действия со значением «профнастил \+ металлочерепица»/ })).not.toBeInTheDocument();
   });
 });
+
+describe("SchemaBlock: причина ожидания схемы (build_wait)", () => {
+  function waiting(buildWait: NonNullable<(typeof handlerState.familySchemas)[number]["build_wait"]>) {
+    const schema = handlerState.familySchemas[SCHEMA_FAMILY_ID];
+    schema.ready_to_build = false;
+    schema.build_wait = buildWait;
+  }
+
+  it("одна удержанная пачка: номер, источник словом и job, куда идти", async () => {
+    waiting({ held_batches: [{ batch_id: 8, source: "import", import_job_id: 46 }], live_jobs: 0 });
+    renderBlock();
+
+    expect(
+      await screen.findByText(
+        "схема ждёт удержанную пачку №8 (импорт, job 46) — поставьте или отбросьте её на вкладке «Предложения»",
+        {},
+        LATER
+      )
+    ).toBeInTheDocument();
+    expect(screen.queryByText("схема ждёт перезапроса единицы")).not.toBeInTheDocument();
+  });
+
+  it("пачка без job: скобка без номера job", async () => {
+    waiting({ held_batches: [{ batch_id: 9, source: "unit_reask", import_job_id: null }], live_jobs: 0 });
+    renderBlock();
+
+    expect(
+      await screen.findByText(
+        "схема ждёт удержанную пачку №9 (перезапрос единицы) — поставьте или отбросьте её на вкладке «Предложения»",
+        {},
+        LATER
+      )
+    ).toBeInTheDocument();
+  });
+
+  it("две пачки: номера через запятую, у каждой источник", async () => {
+    waiting({
+      held_batches: [
+        { batch_id: 8, source: "import", import_job_id: 46 },
+        { batch_id: 11, source: "mass", import_job_id: null },
+      ],
+      live_jobs: 2,
+    });
+    renderBlock();
+
+    expect(
+      await screen.findByText(
+        "схема ждёт удержанные пачки №8 (импорт, job 46), №11 (массовая постановка) — поставьте или отбросьте их на вкладке «Предложения»",
+        {},
+        LATER
+      )
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/заданий предложений/)).not.toBeInTheDocument();
+  });
+
+  it("пачек нет, есть задания: число заданий", async () => {
+    waiting({ held_batches: [], live_jobs: 3 });
+    renderBlock();
+
+    expect(
+      await screen.findByText("схема ждёт 3 заданий предложений в этой единице", {}, LATER)
+    ).toBeInTheDocument();
+  });
+
+  it("без ожидания (build_wait = null) метки нет", async () => {
+    renderBlock();
+    await shown();
+
+    expect(screen.queryByText(/схема ждёт/)).not.toBeInTheDocument();
+  });
+});

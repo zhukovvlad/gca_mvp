@@ -2,6 +2,7 @@ import type {
   SectionChainFilter,
   SectionZone,
   BatchSource,
+  BuildWait,
   ComparabilityReason,
   ContextValueSource,
   DecisionSource,
@@ -612,6 +613,36 @@ export const BATCH_SOURCE_LABEL: Record<BatchSource, string> = {
   unit_reask: "Перезапрос единицы",
   config_reask: "Перезапрос по конфигурации",
 };
+
+/** Источник пачки внутри фразы («пачку №8 (импорт, job 46)»): строчными, в отличие от `BATCH_SOURCE_LABEL`. */
+export const BATCH_SOURCE_SHORT_LABEL: Record<BatchSource, string> = {
+  import: "импорт",
+  operation: "операция над контекстами",
+  mass: "массовая постановка",
+  unit_reask: "перезапрос единицы",
+  config_reask: "перезапрос по конфигурации",
+};
+
+/**
+ * Метка ожидания схемы семьи (спека provider-budget-pause §2.7 п. 3): что именно держит схему.
+ * `null` при `ready_to_build = false` — прежняя общая формулировка (сервер так не отвечает, но
+ * метка не должна пропадать из-за этого).
+ */
+export function buildWaitLabel(wait: BuildWait | null): string {
+  if (wait === null) return "схема ждёт перезапроса единицы";
+  if (wait.held_batches.length > 0) {
+    const batches = wait.held_batches
+      .map((batch) => {
+        const job = batch.import_job_id !== null ? `, job ${batch.import_job_id}` : "";
+        return `№${batch.batch_id} (${BATCH_SOURCE_SHORT_LABEL[batch.source]}${job})`;
+      })
+      .join(", ");
+    return wait.held_batches.length === 1
+      ? `схема ждёт удержанную пачку ${batches} — поставьте или отбросьте её на вкладке «Предложения»`
+      : `схема ждёт удержанные пачки ${batches} — поставьте или отбросьте их на вкладке «Предложения»`;
+  }
+  return `схема ждёт ${wait.live_jobs} ${pluralRu(wait.live_jobs, "задания", "заданий", "заданий")} предложений в этой единице`;
+}
 
 /**
  * Место совпадения проверки приватности (`where` задания в `privacy_hold`,

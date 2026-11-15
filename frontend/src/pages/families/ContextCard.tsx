@@ -299,6 +299,10 @@ export function ContextCard({ contextId }: ContextCardProps) {
     setRoleChoice(card.name_role);
   }
 
+  // Назначить можно только семью той же единицы (`check_family_assignable`): строгое равенство,
+  // у контекста без единицы — только семьи без единицы (спека provider-budget-pause §2.7 п. 1).
+  const assignableFamilies = (activeFamilies.data ?? []).filter((f) => f.unit_id === card.unit_id);
+
   let familyCaption: string;
   let familySourceCaption: string | null = null;
   if (card.work_family_id !== null) {
@@ -1142,13 +1146,20 @@ export function ContextCard({ contextId }: ContextCardProps) {
             <Label htmlFor="context-family-select">Семья</Label>
             <EntityCombobox
               id="context-family-select"
-              items={activeFamilies.data ?? []}
+              items={assignableFamilies}
               value={familyChoice}
               onChange={(f) => setFamilyChoice(f?.id ?? null)}
-              getLabel={(f) => f.title}
+              getLabel={(f) => `${f.title} · ${f.unit_symbol ?? f.unit_code ?? "без единицы"}`}
+              getSearchText={(f) => f.title}
               placeholder="Выбрать семью"
               searchPlaceholder="Найти семью…"
-              emptyText="Ничего не найдено"
+              emptyText={
+                assignableFamilies.length === 0
+                  ? card.unit_id === null
+                    ? "Нет активных семей без единицы"
+                    : `Нет активных семей в единице «${card.unit_symbol ?? card.unit_code}»`
+                  : "Ничего не найдено"
+              }
             />
             {familyOutcome && (
               <p role="status" className="text-sm text-fg">

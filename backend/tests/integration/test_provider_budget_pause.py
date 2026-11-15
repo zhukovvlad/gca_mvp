@@ -13,6 +13,7 @@ import dataclasses
 import datetime as dt
 import uuid
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 import sqlalchemy as sa
@@ -25,6 +26,11 @@ from models import SemanticJob, SemanticJobAttempt
 from services.semantic_client import BudgetAction, ProviderBudgetError
 from services.semantic_cost import spent_last_24h
 from services.semantic_decisions import resume_worker
+from services.semantic_reconcile import (
+    open_suggestion_holds,
+    schema_build_wait,
+    schema_ready_to_build,
+)
 from services.semantic_worker import claim_next, process_one, record_failure
 from tests.factories import seed_category_id
 from tests.integration.test_catalog_discovery_scope import world  # noqa: F401 — фикстура
@@ -54,6 +60,16 @@ from tests.integration.test_semantic_queue_worker import (
 from tests.integration.test_simplify_auto_split import _all_contexts
 from tests.integration.test_simplify_auto_split import _job as _split_job
 from tests.integration.test_simplify_auto_split import _scene as _auto_split_scene
+from tests.integration.test_work_variants_material import _unit_id
+from tests.integration.test_work_variants_reconcile import (
+    _SUGGESTION,
+    _VALUES,
+    _active_family,
+    _context,
+    _fp,
+    _held,
+)
+from tests.integration.test_work_variants_reconcile import _job as _reconcile_job
 from tests.integration.test_work_variants_worker import NOW as SPLIT_NOW
 from tests.integration.test_work_variants_worker import S as SPLIT_S
 
@@ -799,3 +815,152 @@ class TestProviderBudgetStatus:
         assert status["claim_paused"]["reason"] == reason
         assert status["claim_paused"]["attempt_id"] == claim.attempt_id
         assert status["budget_pause"] is None
+
+
+# ---------------------------------------------------------------------------
+#  Причина ожидания схемы (спека §2.7 п. 3, проверки 19, 19а)
+# ---------------------------------------------------------------------------
+
+class TestBuildWait:
+    def _scene(self, db, factories):
+        unit = _unit_id(db, "M2")
+        other = _unit_id(db, "PCS")
+        return SimpleNamespace(
+            unit=unit, other=other, family=_active_family(db, unit_id=unit),
+            ctx=_context(db, factories, unit_id=unit),
+            other_ctx=_context(db, factories, unit_id=other),
+        )
+
+    def _agree(self, db, family_id):
+        wait = schema_build_wait(db, family_id)
+        assert schema_ready_to_build(db, family_id) is (wait is None)
+        return wait
+
+    def test_a_held_batch_of_the_unit_gives_its_number_source_and_job(self, db_session, factories):
+        scene = self._scene(db_session, factories)
+        job = factories.ImportJobFactory.create()
+        batch = _held(db_session, factories, [_fp(_SUGGESTION, context_id=scene.ctx)])
+        batch.import_job_id = job.id
+        db_session.flush()
+
+        wait = self._agree(db_session, scene.family.id)
+
+        assert wait == {
+            "held_batches": [
+                {"batch_id": batch.id, "source": "import", "import_job_id": job.id},
+            ],
+            "live_jobs": 0,
+        }
+
+    def test_a_mass_batch_with_suggestions_is_in_every_unit(self, db_session, factories):
+        scene = self._scene(db_session, factories)
+        batch = _held(
+            db_session, factories, [_fp(_SUGGESTION, context_id=scene.other_ctx)], source="mass",
+        )
+
+        wait = self._agree(db_session, scene.family.id)
+
+        assert wait is not None
+        assert [(b["batch_id"], b["source"], b["import_job_id"]) for b in wait["held_batches"]] == [
+            (batch.id, "mass", None),
+        ]
+
+    def test_only_live_jobs_give_their_exact_count(self, db_session, factories):
+        scene = self._scene(db_session, factories)
+        for index, status in enumerate(("pending", "running", "pending")):
+            _reconcile_job(
+                db_session, kind=_SUGGESTION, request_hash=f"s{index}", status=status,
+                context_id=scene.ctx, unit_id=scene.unit,
+            )
+        _reconcile_job(
+            db_session, kind=_SUGGESTION, request_hash="e", status="error",
+            context_id=scene.ctx, unit_id=scene.unit,
+        )
+        _reconcile_job(
+            db_session, kind=_SUGGESTION, request_hash="o", status="pending",
+            context_id=scene.other_ctx, unit_id=scene.other,
+        )
+
+        wait = self._agree(db_session, scene.family.id)
+
+        assert wait == {"held_batches": [], "live_jobs": 3}
+
+    def test_two_batches_are_listed_by_number_without_duplicates(self, db_session, factories):
+        scene = self._scene(db_session, factories)
+        mass = _held(
+            db_session, factories, [_fp(_SUGGESTION, context_id=scene.other_ctx)], source="mass",
+        )
+        own = _held(db_session, factories, [_fp(_SUGGESTION, context_id=scene.ctx)])
+        both = _held(
+            db_session, factories,
+            [_fp(_SUGGESTION, context_id=scene.ctx), _fp(_SUGGESTION, context_id=scene.other_ctx)],
+            source="mass",
+        )
+
+        wait = self._agree(db_session, scene.family.id)
+
+        assert wait is not None
+        assert [b["batch_id"] for b in wait["held_batches"]] == sorted(
+            [mass.id, own.id, both.id]
+        )
+
+    @pytest.mark.parametrize("source", ["import", "mass"])
+    def test_a_values_only_batch_is_not_a_wait(self, db_session, factories, source):
+        scene = self._scene(db_session, factories)
+        _held(db_session, factories, [_fp(_VALUES, context_id=scene.ctx, schema_id=5)],
+              source=source)
+        assert self._agree(db_session, scene.family.id) is None
+
+    @pytest.mark.parametrize("source", ["import", "mass"])
+    def test_a_schema_only_batch_is_not_a_wait(self, db_session, factories, source):
+        scene = self._scene(db_session, factories)
+        _held(db_session, factories, [_fp("family_schema", family_id=scene.family.id)],
+              source=source)
+        assert self._agree(db_session, scene.family.id) is None
+
+    def test_suggestions_of_another_unit_are_not_a_wait(self, db_session, factories):
+        scene = self._scene(db_session, factories)
+        _held(db_session, factories, [_fp(_SUGGESTION, context_id=scene.other_ctx)])
+        assert self._agree(db_session, scene.family.id) is None
+
+    def test_a_mixed_batch_of_other_unit_suggestions_and_own_values_is_not_a_wait(
+        self, db_session, factories
+    ):
+        scene = self._scene(db_session, factories)
+        _held(
+            db_session, factories,
+            [_fp(_SUGGESTION, context_id=scene.other_ctx),
+             _fp(_VALUES, context_id=scene.ctx, schema_id=5)],
+        )
+        assert self._agree(db_session, scene.family.id) is None
+
+    def test_an_unknown_family_has_no_wait_and_is_not_ready(self, db_session):
+        assert schema_build_wait(db_session, 987654321) is None
+        assert schema_ready_to_build(db_session, 987654321) is False
+
+    def test_the_holds_keep_the_old_selection_rule(self, db_session, factories):
+        scene = self._scene(db_session, factories)
+        own = _held(db_session, factories, [_fp(_SUGGESTION, context_id=scene.ctx)])
+        _reconcile_job(
+            db_session, kind=_SUGGESTION, request_hash="s", status="pending",
+            context_id=scene.other_ctx, unit_id=scene.other,
+        )
+
+        holds = open_suggestion_holds(db_session)
+
+        assert holds.mass == ()
+        assert holds.units == frozenset({scene.unit, scene.other})
+        assert [h.batch_id for h in holds.by_unit[scene.unit]] == [own.id]
+        assert dict(holds.live_jobs_by_unit) == {scene.other: 1}
+
+    def test_the_route_carries_the_wait(self, admin_client, db_session, factories):
+        scene = self._scene(db_session, factories)
+        batch = _held(db_session, factories, [_fp(_SUGGESTION, context_id=scene.ctx)])
+
+        body = admin_client.get(f"/api/v1/semantic/families/{scene.family.id}/schema").json()
+
+        assert body["ready_to_build"] is False
+        assert body["build_wait"] == {
+            "held_batches": [{"batch_id": batch.id, "source": "import", "import_job_id": None}],
+            "live_jobs": 0,
+        }
