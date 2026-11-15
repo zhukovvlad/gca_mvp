@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Справочные аналоги — макет</title>
+<style>
+:root {
+  --bg-page:#F4F2EC; --surface:#FFFFFF; --sunken:#F7F6F2; --hover:#FAFAF7;
+  --fg:#1F2128; --fg2:#5A5D66; --fg3:#8E8B82;
+  --border:rgba(0,0,0,.08); --border2:rgba(0,0,0,.14);
+  --accent:#5F8568; --accent-soft:#E8F0EA; --accent-text:#3D5443;
+  --action:#2D3A30; --action-text:#F7F6F2;
+  --dear:#C2410C; --dear-soft:#FCEBDD; --dear-text:#7C2D12;
+  --cheap:#2563A8; --cheap-soft:#E2EDF8; --cheap-text:#1E3A5F;
+  --neutral-soft:#EFEEE6; --neutral-border:#D8D4C8; --neutral-text:#5F5E5A;
+  --warn:#B5642E; --warn-soft:#FAF1E1; --warn-border:#E8C8A8; --warn-text:#6B3915;
+  --shadow:0 1px 2px rgba(0,0,0,.05),0 8px 24px rgba(0,0,0,.05);
+  --font-serif:"Cormorant Garamond","Source Serif Pro",Georgia,serif;
+  --font-sans:"Geist","Inter",-apple-system,"Segoe UI",Roboto,sans-serif;
+  --font-mono:"JetBrains Mono","SF Mono",Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg-page:#1A1D24; --surface:#232730; --sunken:#1F232B; --hover:#262B35;
+  --fg:#E8E6E0; --fg2:#B4B2AC; --fg3:#8A8880;
+  --border:#2D323D; --border2:#3A4148;
+  --accent:#8FAB91; --accent-soft:#2A352D; --accent-text:#B8C4BB;
+  --action:#D9E2DA; --action-text:#1A1D24;
+  --dear:#F08A5D; --dear-soft:#3D2A20; --dear-text:#F4B08F;
+  --cheap:#6DA7EC; --cheap-soft:#22334A; --cheap-text:#A9CBF2;
+  --neutral-soft:#2A2D33; --neutral-border:#3A3E46; --neutral-text:#B4B2AC;
+  --warn:#D49A6E; --warn-soft:#353027; --warn-border:#4A3D2E; --warn-text:#E0AE86;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.25); color-scheme:dark; } }
+:root[data-theme="dark"] {
+  --bg-page:#1A1D24; --surface:#232730; --sunken:#1F232B; --hover:#262B35;
+  --fg:#E8E6E0; --fg2:#B4B2AC; --fg3:#8A8880;
+  --border:#2D323D; --border2:#3A4148;
+  --accent:#8FAB91; --accent-soft:#2A352D; --accent-text:#B8C4BB;
+  --action:#D9E2DA; --action-text:#1A1D24;
+  --dear:#F08A5D; --dear-soft:#3D2A20; --dear-text:#F4B08F;
+  --cheap:#6DA7EC; --cheap-soft:#22334A; --cheap-text:#A9CBF2;
+  --neutral-soft:#2A2D33; --neutral-border:#3A3E46; --neutral-text:#B4B2AC;
+  --warn:#D49A6E; --warn-soft:#353027; --warn-border:#4A3D2E; --warn-text:#E0AE86;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.25); color-scheme:dark; }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg-page); color:var(--fg); font-family:var(--font-sans); font-size:14px; line-height:1.5; }
+.wrap { max-width:1240px; margin:0 auto; padding:32px 24px 64px; }
+@media (max-width:640px){ .wrap{ padding:20px 16px 48px; } }
+h1,h2,h3 { margin:0; text-wrap:balance; } p { margin:0; }
+.serif { font-family:var(--font-serif); font-weight:600; letter-spacing:-.01em; }
+.eyebrow { font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--fg3); font-weight:500; }
+.num { font-family:var(--font-mono); font-variant-numeric:tabular-nums; white-space:nowrap; }
+.t2{color:var(--fg2)} .t3{color:var(--fg3)} .small{font-size:12px} .xs{font-size:11px}
+.intro { display:grid; gap:10px; max-width:84ch; }
+.intro h1 { font-size:clamp(30px,4.5vw,42px); line-height:1.05; }
+.intro .lead { color:var(--fg2); font-size:15px; }
+.tabs { display:flex; gap:4px; flex-wrap:wrap; background:var(--neutral-soft); padding:4px; border-radius:10px; width:fit-content; max-width:100%; margin:28px 0 14px; }
+.tab { border:0; background:transparent; color:var(--fg2); font:inherit; font-size:13px; font-weight:500; padding:7px 14px; border-radius:7px; cursor:pointer; }
+.tab[aria-selected="true"] { background:var(--surface); color:var(--fg); box-shadow:0 1px 2px rgba(0,0,0,.08); }
+button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.tabnote { color:var(--fg2); font-size:13px; margin-bottom:14px; max-width:92ch; }
+.view[hidden] { display:none; }
+.app { background:var(--bg-page); border:1px solid var(--border2); border-radius:12px; overflow:hidden; box-shadow:var(--shadow); }
+.appbar { display:flex; align-items:center; gap:18px; padding:10px 16px; background:var(--surface); border-bottom:1px solid var(--border); overflow-x:auto; }
+.appbar .logo { font-family:var(--font-serif); font-weight:600; font-size:18px; }
+.appbar nav { display:flex; gap:14px; font-size:13px; color:var(--fg2); white-space:nowrap; }
+.appbar nav .on { color:var(--fg); font-weight:500; }
+.page { padding:18px 20px 24px; display:grid; gap:16px; min-width:0; }
+@media (max-width:640px){ .page{ padding:14px 12px 20px; } }
+.btn { height:30px; padding:0 11px; border-radius:7px; border:1px solid var(--border2); background:var(--surface); color:var(--fg); font:inherit; font-size:12.5px; cursor:pointer; white-space:nowrap; display:inline-flex; align-items:center; gap:6px; }
+.btn.primary { background:var(--action); color:var(--action-text); border-color:transparent; }
+.btn.ghost { border-color:transparent; background:transparent; color:var(--fg2); }
+.btn.sm { height:26px; padding:0 8px; font-size:12px; }
+.badge { display:inline-flex; align-items:center; gap:4px; font-size:11px; line-height:1; padding:4px 7px; border-radius:999px; border:1px solid var(--neutral-border); background:var(--neutral-soft); color:var(--neutral-text); white-space:nowrap; }
+.badge.accent { background:var(--accent-soft); color:var(--accent-text); border-color:transparent; }
+.badge.warn { background:var(--warn-soft); color:var(--warn-text); border-color:var(--warn-border); }
+.badge.cheap { background:var(--cheap-soft); color:var(--cheap-text); border-color:transparent; }
+.badge.dear { background:var(--dear-soft); color:var(--dear-text); border-color:transparent; }
+.card { background:var(--surface); border:1px solid var(--border); border-radius:10px; }
+/* разбор: фон и лист панели */
+.split { display:grid; grid-template-columns:minmax(0,1fr) 560px; min-height:640px; }
+@media (max-width:1100px){ .split{ grid-template-columns:1fr; } .behind{ display:none; } }
+.behind { padding:18px 20px; opacity:.45; pointer-events:none; display:grid; gap:12px; align-content:start; }
+.sheet { background:var(--surface); border-left:1px solid var(--border2); padding:18px 20px 24px; display:grid; gap:18px; align-content:start; min-width:0; }
+@media (max-width:640px){ .sheet{ padding:14px 12px; } }
+.sheet h3 { font-size:17px; font-weight:600; line-height:1.3; }
+.sec { display:grid; gap:8px; min-width:0; }
+.sheet > *, .fig, .kv > div { min-width:0; }
+.sec > .eyebrow { border-bottom:1px solid var(--border); padding-bottom:6px; }
+.kv { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px 14px; }
+@media (max-width:640px){ .kv{ grid-template-columns:repeat(2,minmax(0,1fr)); } }
+.kv div { display:grid; gap:2px; } .kv .k { font-size:11px; color:var(--fg3); } .kv .v { font-size:13px; }
+.figs { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+@media (max-width:520px){ .figs{ grid-template-columns:1fr; } }
+.fig { border:1px solid var(--border); border-radius:10px; padding:10px 12px; display:grid; gap:4px; background:var(--sunken); }
+.fig .price { font-size:20px; font-weight:600; }
+.fig .diff { font-size:12px; white-space:normal; }
+.up { color:var(--dear); } .down { color:var(--cheap); }
+.rungline { display:flex; flex-wrap:wrap; gap:6px; align-items:center; font-size:13px; }
+table.list { width:100%; border-collapse:collapse; font-size:12.5px; }
+table.list th { text-align:left; font-weight:500; color:var(--fg3); font-size:11px; padding:6px 6px; border-bottom:1px solid var(--border2); white-space:nowrap; }
+table.list td { padding:7px 6px; border-bottom:1px solid var(--border); vertical-align:top; }
+table.list td.r, table.list th.r { text-align:right; }
+table.list tr.out td { background:var(--warn-soft); }
+table.list .badge { white-space:normal; line-height:1.3; border-radius:6px; }
+table.list td:nth-child(2) { min-width:160px; }
+table.list tr.more td { color:var(--fg2); }
+.chain { font-size:11px; color:var(--fg3); }
+.scroll { overflow-x:auto; }
+.target { border:1px solid var(--accent); background:var(--accent-soft); border-radius:10px; padding:10px 12px; display:grid; gap:8px; }
+.row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; justify-content:space-between; }
+.warnbox { border:1px solid var(--warn-border); background:var(--warn-soft); color:var(--warn-text); border-radius:8px; padding:8px 10px; font-size:12.5px; }
+/* очереди */
+.qtabs { display:flex; gap:2px; border-bottom:1px solid var(--border2); flex-wrap:wrap; }
+.qtab { padding:7px 12px; font-size:13px; color:var(--fg2); border-bottom:2px solid transparent; }
+.qtab.on { color:var(--fg); border-color:var(--action); font-weight:500; }
+.filters { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+.select, .input { height:30px; border:1px solid var(--border2); border-radius:7px; background:var(--surface); padding:0 10px; font-size:12.5px; color:var(--fg); display:inline-flex; align-items:center; }
+.input { min-width:220px; color:var(--fg3); }
+.toggle { align-self:start; display:inline-flex; border:1px solid var(--border2); border-radius:7px; overflow:hidden; }
+.toggle span { padding:4px 9px; font-size:12px; border-right:1px solid var(--border2); white-space:nowrap; cursor:pointer; }
+.toggle span:last-child { border-right:0; }
+.toggle span.on { background:var(--action); color:var(--action-text); }
+.qitem { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px 16px; padding:12px 14px; border-bottom:1px solid var(--border); }
+@media (max-width:760px){ .qitem{ grid-template-columns:1fr; } }
+.qitem:last-child { border-bottom:0; }
+.qitem .titles { font-size:13px; } .qitem .titles b { font-weight:600; }
+.model { font-size:12px; color:var(--fg2); }
+.param { display:grid; grid-template-columns:200px minmax(0,1fr) auto; gap:6px 14px; padding:10px 14px; border-bottom:1px solid var(--border); align-items:start; }
+@media (max-width:760px){ .param{ grid-template-columns:1fr; } }
+.param:last-child { border-bottom:0; }
+.vals { display:flex; flex-wrap:wrap; gap:4px; }
+.fam { padding:10px 14px; background:var(--sunken); border-bottom:1px solid var(--border); display:flex; gap:10px; align-items:baseline; flex-wrap:wrap; }
+.dialog { max-width:760px; margin:0 auto; }
+.check { display:inline-flex; gap:6px; align-items:center; font-size:13px; }
+.box { width:15px; height:15px; border:1.5px solid var(--fg2); border-radius:3px; display:inline-grid; place-items:center; font-size:11px; line-height:1; }
+.box.on { background:var(--action); border-color:var(--action); color:var(--action-text); }
+.legend { display:grid; gap:6px; font-size:12.5px; color:var(--fg2); margin-top:18px; max-width:92ch; }
+</style>
+<style>
+.refbox { border:1px dashed var(--neutral-border); border-radius:10px; padding:10px 12px; display:grid; gap:8px; background:var(--sunken); }
+.refbox .head { display:flex; flex-wrap:wrap; gap:6px 10px; align-items:baseline; justify-content:space-between; }
+.kprow { display:grid; grid-template-columns:minmax(0,1fr) 50px 90px 100px 150px 100px 200px; gap:10px; padding:12px 14px; align-items:start; font-size:13px; border-bottom:1px solid var(--border); background:var(--surface); }
+.kprow.hdr { font-size:11px; color:var(--fg3); font-weight:500; padding:8px 14px; }
+@media (max-width:900px){ .kprow{ grid-template-columns:1fr; } .kprow.hdr{ display:none; } }
+.kprow .sub { font-size:11.5px; color:var(--fg3); }
+.pill { display:inline-block; border:1px solid var(--border2); border-radius:8px; padding:4px 8px; font-size:12px; line-height:1.35; background:var(--surface); }
+.diffbad { color:var(--dear); }
+.q { border:1px solid var(--cheap); background:var(--cheap-soft); color:var(--cheap-text); border-radius:8px; padding:8px 10px; font-size:12.5px; }
+.searchbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+.searchbar .input { min-width:240px; color:var(--fg); }
+.btn[disabled] { opacity:.45; cursor:not-allowed; }
+.filecell { font-size:12px; }
+table.list tr.picked td { background:var(--accent-soft); }
+.split { grid-template-columns:minmax(0,1fr) 860px; }
+@media (max-width:1100px){ .split{ grid-template-columns:1fr; } }
+table.list td:nth-child(2) { min-width:0; }
+table.list td:first-child { min-width:220px; }
+table.list td:has(> .btn) { white-space:nowrap; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="intro">
+    <span class="eyebrow">Гейт 1 · макет · 15.11.2026</span>
+    <h1 class="serif">Справочные аналоги</h1>
+    <p class="lead">Когда своих аналогов у строки КП нет: та же работа в другой зоне — справочно и автоматически; поиск по строкам договоров — вручную. Любую найденную цифру можно выбрать целью строки. Данные — настоящие со стенда: КП C5/MIND (тендер 7, этап 23, оффер 76), строка «Бетонная подготовка, толщиной 100 мм В12,5». Цены — без НДС, без приведения по ИПЦ.</p>
+  </div>
+
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" aria-selected="true" data-v="row">1 · Строка в таблице</button>
+    <button class="tab" role="tab" aria-selected="false" data-v="zone">2 · Панель: другая зона</button>
+    <button class="tab" role="tab" aria-selected="false" data-v="search">3 · Панель: поиск по договорам</button>
+    <button class="tab" role="tab" aria-selected="false" data-v="picked">4 · Цель выбрана и файл подрядчику</button>
+  </div>
+
+  <section class="view" id="v-row">
+    <p class="tabnote">Подпись строки говорит, что аналоги есть, но в другой зоне, и сколько их. Колонки «Наши договоры: вилка», «Самая низкая» и «К самой низкой» не меняются — справочное в расчёт не идёт.</p>
+    <div class="app">
+      <div class="appbar"><span class="logo">База расценок ГП</span><nav><span>Главная</span><span>Договоры</span><span class="on">Тендеры</span><span>Семьи</span><span>Нормативы</span></nav></div>
+      <div>
+        <div class="kprow hdr"><span>Работа в КП · вариант</span><span>Ед.</span><span>Объём</span><span>Цена КП</span><span>Наши договоры: вилка, ₽</span><span>Самая низкая</span><span>К самой низкой</span></div>
+        <div class="kprow"><div>Бетонная подготовка, толщиной 100 мм В12,5<div class="sub">Устройство бетонной подготовки (подбетонки) · В12,5 · 100 мм</div></div><span>м³</span><span class="num">1 973,29</span><span class="num">23 650,94<div class="sub">₽/м³</div></span><span class="t3">—</span><span class="t3">—</span><span><span class="pill">нет аналога в зоне «подземная часть»</span><div class="sub" style="margin-top:4px">есть в зоне «территория»: 9 строк, 1 договор</div></span></div>
+        <div class="kprow"><div>Силовая армированная бетонная подготовка B40 - 250мм<div class="sub">Устройство бетонной подготовки (подбетонки) · B40 · 250 мм</div></div><span>м³</span><span class="num">493,97</span><span class="num">29 418,36<div class="sub">₽/м³</div></span><span class="t3">—</span><span class="t3">—</span><span><span class="pill">нет аналога в зоне «подземная часть»</span><div class="sub" style="margin-top:4px">есть в зоне «территория»: 9 строк, 1 договор</div></span></div>
+        <div class="kprow"><div>Подготовка из гравийного щебня фракции 20-40 мм (плотность 1,5 г/см3), толщиной 200 мм<div class="sub">Устройство щебеночного основания · щебень гравийный · 20-40 мм · не уточнено</div></div><span>м³</span><span class="num">3 946,57</span><span class="num">6 623,34<div class="sub">₽/м³</div></span><span class="t3">—</span><span class="t3">—</span><span><span class="pill">нет аналога с этими параметрами</span><div class="sub" style="margin-top:4px">в других зонах тоже нет — поиск в панели строки</div></span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="view" id="v-zone" hidden>
+    <p class="tabnote">Блок «Справочно: та же работа в другой зоне» появляется, только когда в своей зоне аналогов нет. Строки сгруппированы по договору и разделу; ступень — та же, что у лестницы (здесь с отпущенным классом бетона). Приведение по ИПЦ — то же, что у обычных аналогов.</p>
+    <div class="app">
+      <div class="appbar"><span class="logo">База расценок ГП</span><nav><span>Главная</span><span>Договоры</span><span class="on">Тендеры</span><span>Семьи</span></nav></div>
+      <div class="split">
+        <div class="behind"><div class="card" style="height:60px"></div><div class="card" style="height:60px"></div><div class="card" style="height:60px"></div></div>
+        <div class="sheet">
+          <div><span class="eyebrow">Строка КП · C5/MIND · этап 23</span><h3>Бетонная подготовка, толщиной 100 мм В12,5</h3></div>
+          <div class="kv"><div><span class="k">Семья</span><span class="v">Устройство бетонной подготовки (подбетонки)</span></div><div><span class="k">Вариант</span><span class="v">В12,5 · 100 мм</span></div><div><span class="k">Зона</span><span class="v">подземная часть</span></div><div><span class="k">Цена КП</span><span class="v num">23 650,94 ₽/м³</span></div></div>
+          <div class="sec"><span class="eyebrow">Аналоги</span><div class="warnbox">Нет аналога в зоне «подземная часть»: строки с этими параметрами есть только в другой зоне.</div></div>
+          <div class="sec">
+            <span class="eyebrow">Справочно: та же работа в другой зоне</span>
+            <div class="refbox">
+              <div class="head"><span><b>TOP TOWER</b> · договор № Д-2026-27002 · 2026 · Жилые – люкс · АО «РЕНКОНС»</span><span class="badge">зона: территория</span></div>
+              <div class="rungline"><span class="badge">отпущен: класс бетона</span><span class="t3 small">у договора В7,5 · 100 мм</span></div>
+              <div class="scroll"><table class="list">
+                <thead><tr><th>Раздел · строка договора</th><th class="r">Строк</th><th class="r">Цена, ₽/м³</th><th class="r">К цене КП</th><th></th></tr></thead>
+                <tbody>
+                  <tr><td>Благоустройство → МАФ и наружное освещение → Уровень 1 этажа – МАФ<div class="chain">«Подготовка из бетона В7,5, Н=0,10 м»</div></td><td class="r num">6</td><td class="r num">8 372,92</td><td class="r num diffbad">КП +182 %</td><td><button class="btn sm">сделать целью</button></td></tr>
+                  <tr><td>Благоустройство → МАФ и наружное освещение → Уровень 1 и 6 этажа – наружное освещение<div class="chain">«Подготовка из бетона В7,5, Н=0,10 м»</div></td><td class="r num">3</td><td class="r num">8 372,92</td><td class="r num diffbad">КП +182 %</td><td><button class="btn sm">сделать целью</button></td></tr>
+                </tbody></table></div>
+            </div>
+            <p class="xs t3">Справочные строки не входят в вилку, «Самую низкую» и итоги статей. Целью становятся только по вашему выбору.</p>
+          </div>
+          <div class="sec"><span class="eyebrow">Найти в договорах</span><div class="searchbar"><span class="input">бетонная подготовка</span><button class="btn">Найти</button></div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="view" id="v-search" hidden>
+    <p class="tabnote">Ручной второй круг: слова из наименования, по строкам смет всех договоров (кроме договоров этого же объекта — как у лестницы). Видны раздел, зона, единица, договор и цена. Строки в другой единице видны, но целью сразу не выбираются — см. вопрос внизу.</p>
+    <div class="app">
+      <div class="appbar"><span class="logo">База расценок ГП</span><nav><span>Главная</span><span>Договоры</span><span class="on">Тендеры</span><span>Семьи</span></nav></div>
+      <div class="split">
+        <div class="behind"><div class="card" style="height:60px"></div><div class="card" style="height:60px"></div></div>
+        <div class="sheet">
+          <div><span class="eyebrow">Строка КП · м³ · 23 650,94 ₽/м³</span><h3>Бетонная подготовка, толщиной 100 мм В12,5</h3></div>
+          <div class="sec">
+            <span class="eyebrow">Найти в договорах</span>
+            <div class="searchbar"><span class="input">бетонная подготовка 100</span><button class="btn primary">Найти</button><span class="toggle"><span>только м³</span><span class="on">все единицы</span></span></div>
+            <p class="small t2">Найдено 17 строк в 7 договорах.</p>
+            <div class="scroll"><table class="list">
+              <thead><tr><th>Строка договора · раздел</th><th>Ед.</th><th>Зона</th><th>Договор</th><th class="r">Цена</th><th></th></tr></thead>
+              <tbody>
+                <tr><td>Подготовка из бетона В7,5, Н=0,10 м <span class="t3">×9</span><div class="chain">Благоустройство → МАФ и наружное освещение</div></td><td>м³</td><td>территория</td><td>TOP TOWER, Д-2026-27002, 2026</td><td class="r num">8 372,92</td><td><button class="btn sm">сделать целью</button></td></tr>
+                <tr><td>Бетонная подготовка B7,5, 100мм, армированная сеткой 5 ВрI яч. 100×100<div class="chain">Гидроизоляция подземной части → Подготовка под фундаментную плиту</div></td><td>м²</td><td>подземная</td><td>TOP TOWER, Д-2026-27002, 2026</td><td class="r num">1 107,24</td><td><button class="btn sm" disabled title="Другая единица">сделать целью</button></td></tr>
+                <tr><td>Бетонная подготовка из бетона класса В10 – 100 мм<div class="chain">Гидроизоляция подземной части → Подготовка под фундаментную плиту</div></td><td>м²</td><td>подземная</td><td>Jois 1, ДГП-3С10, 2024</td><td class="r num">1 372,42</td><td><button class="btn sm" disabled>сделать целью</button></td></tr>
+                <tr><td>Бетонная подготовка - класс B15, толщина 100 мм; армирована сеткой<div class="chain">Гидроизоляция подземной части → Подготовка основания</div></td><td>м²</td><td>подземная</td><td>VEER 1 оч UB9, ВЕР1-ГП, 2024</td><td class="r num">1 452,07</td><td><button class="btn sm" disabled>сделать целью</button></td></tr>
+                <tr><td>Бетонная подготовка В10, армир. сеткой 100х100/ ᴓ4мм - 100 мм<div class="chain">Гидроизоляция подземной части → Подготовка основания</div></td><td>м²</td><td>подземная</td><td>МИРА, СДП-1-МР, 2025</td><td class="r num">1 548,42</td><td><button class="btn sm" disabled>сделать целью</button></td></tr>
+                <tr><td>Бетонная подготовка В15, армир. сеткой 100х100/ ᴓ4мм - 100 мм<div class="chain">Гидроизоляция подземной части → Подготовка основания</div></td><td>м²</td><td>подземная</td><td>VEER 1 оч UB2, UB2-CIW, 2024</td><td class="r num">1 548,87</td><td><button class="btn sm" disabled>сделать целью</button></td></tr>
+                <tr><td>Бетонная подготовка В15, армир. сеткой 100х100/ ᴓ4мм - 100 мм <span class="t3">×2</span><div class="chain">Гидроизоляция подземной части → Урбан блок UB1a / UB1b</div></td><td>м²</td><td>подземная</td><td>Тушино 1 оч. Cityzen, ТУШ-1-СМР, 2024</td><td class="r num">1 869,24</td><td><button class="btn sm" disabled>сделать целью</button></td></tr>
+                <tr><td>Бетонная подготовка (подбетонка В7.5) - 100мм<div class="chain">Гидроизоляция подземной части → Подготовка основания</div></td><td>м²</td><td>подземная</td><td>Cityzen Tr. 1 UB8b, 12-СИТ-МР, 2026</td><td class="r num">1 894,80</td><td><button class="btn sm" disabled>сделать целью</button></td></tr>
+              </tbody></table></div>
+            <div class="q"><b>Вопрос к вам:</b> строки в м² для строки КП в м³ — только посмотреть, или выбирать целью с пересчётом через толщину, которую вводите вы (здесь 100 мм: 1 м² = 0,1 м³, цена ×10)?</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="view" id="v-picked" hidden>
+    <p class="tabnote">Выбранная справочная цифра становится целью строки, как обычный аналог, но с пометкой, откуда она. В файле подрядчику — тот же «Источник», что и сейчас: объект, договор, год, цена.</p>
+    <div class="app">
+      <div class="appbar"><span class="logo">База расценок ГП</span><nav><span>Главная</span><span>Договоры</span><span class="on">Тендеры</span><span>Семьи</span></nav></div>
+      <div class="split">
+        <div class="behind"><div class="card" style="height:60px"></div></div>
+        <div class="sheet">
+          <div><span class="eyebrow">Строка КП · м³</span><h3>Бетонная подготовка, толщиной 100 мм В12,5</h3></div>
+          <div class="target">
+            <div class="row"><b>Цель строки</b><span class="badge warn">справочная · другая зона</span></div>
+            <div class="small">TOP TOWER, договор № Д-2026-27002, 2026 г. · «Подготовка из бетона В7,5, Н=0,10 м» · Благоустройство → МАФ</div>
+            <div class="row"><span class="num" style="font-size:18px;font-weight:600">8 372,92 ₽/м³</span><span class="num diffbad">КП дороже на 15 278,02 ₽/м³ (+182 %)</span></div>
+            <div class="row"><span class="xs t3">Выбрал администратор 15.11.2026</span><button class="btn sm ghost">вернуть «самую низкую»</button></div>
+          </div>
+          <div class="sec">
+            <span class="eyebrow">Строка в файле подрядчику</span>
+            <div class="scroll"><table class="list filecell">
+              <thead><tr><th>Наименование</th><th>Ед.</th><th class="r">Цена за ед.</th><th class="r">Наша расценка</th><th class="r">Откл.</th><th>Источник</th></tr></thead>
+              <tbody><tr class="picked"><td>Бетонная подготовка, толщиной 100 мм В12,5</td><td>м³</td><td class="r num">28 381,13</td><td class="r num">10 047,50</td><td class="r num">+182 %</td><td>TOP TOWER, договор № Д-2026-27002, 2026 г.: 10 047,50 ₽ за м³ с НДС</td></tr></tbody>
+            </table></div>
+            <div class="q"><b>Вопрос к вам:</b> говорить ли подрядчику, что цифра из другого раздела («сопоставимая работа, благоустройство»), или источник остаётся как у обычного аналога?</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="legend">
+    <span><b>Что не меняется:</b> лестница аналогов, вилка, «Самая низкая», «К самой низкой», итоги статей — справочное в них не входит.</span>
+    <span><b>Пунктир</b> — справочное: другая зона.</span>
+  </div>
+</div>
+<script>
+document.querySelectorAll('.tab').forEach(function (t) { t.addEventListener('click', function () {
+  document.querySelectorAll('.tab').forEach(function (x) { x.setAttribute('aria-selected', String(x === t)); });
+  document.querySelectorAll('.view').forEach(function (v) { v.hidden = v.id !== 'v-' + t.dataset.v; });
+}); });
+</script>
+</body>
+</html>
