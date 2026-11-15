@@ -79,12 +79,24 @@ def _migration_0025():
     return module
 
 
-#: Литералы, которые миграция 0025 переписала: текущее значение живёт в ней (вид цели
-#: строки КП и список видов заданий), а 0024 хранит прежнее.
-_REWRITTEN_BY_0025 = frozenset({"CK_KP_TARGET_KIND", "SEMANTIC_JOB_KINDS"})
+def _migration_0027():
+    path = next(BACKEND_ROOT.glob("alembic/versions/*0027-reference_analogs.py"))
+    spec = importlib.util.spec_from_file_location("_migration_0027_analog_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+#: Литералы, которые миграции 0025 и 0027 переписали: текущее значение живёт в последней
+#: переписавшей (вид и аналог цели строки КП — в 0027, список видов заданий — в 0025), а
+#: 0024 хранит прежнее.
+_REWRITTEN_BY_0025 = frozenset({"SEMANTIC_JOB_KINDS"})
+_REWRITTEN_BY_0027 = frozenset({"CK_KP_TARGET_KIND", "CK_KP_TARGET_ANALOG"})
 
 
 def _owner_of(name: str):
+    if name in _REWRITTEN_BY_0027:
+        return _migration_0027()
     return _migration_0025() if name in _REWRITTEN_BY_0025 else _migration_0024()
 
 
@@ -160,6 +172,11 @@ _EXPECTED_CONSTRAINTS = {
     "kp_line_targets": {
         "pk_kp_line_targets", "fk_kp_line_targets_position_item", "fk_kp_line_targets_set_by",
         "ck_kp_line_targets_kind", "ck_kp_line_targets_analog",
+        # Миграция 0027 (справочные аналоги): внешний ключ и CHECK снимка цели.
+        "fk_kp_line_targets_ref_link", "ck_kp_line_targets_ref_origin_present",
+        "ck_kp_line_targets_ref_without_analogs_present", "ck_kp_line_targets_ref_origin",
+        "ck_kp_line_targets_ref_method", "ck_kp_line_targets_ref_conversion",
+        "ck_kp_line_targets_ref_link",
     },
 }
 
@@ -218,7 +235,7 @@ class TestTablesColumnsAndConstraintNames:
     def test_the_closed_sets(self):
         assert ZONES == ("underground", "aboveground", "territory", "whole")
         assert ZONE_SOURCES == ("rule", "model", "human")
-        assert KP_TARGET_KINDS == ("freshest", "analog", "contractor")
+        assert KP_TARGET_KINDS == ("freshest", "analog", "contractor", "reference")
         assert {kind.value for kind in SemanticJobKind} == {
             "family_suggestion", "family_schema", "context_values", "family_discovery",
             "section_zone", "releasable_params", "auto_split",
@@ -566,9 +583,10 @@ class TestParityWithMigration:
         (CK_FAMILY_PARAMETER_RELEASABLE_MAIN, "CK_FAMILY_PARAMETER_RELEASABLE_MAIN",
          "releasable IS NULL OR role = 'main'"),
         (CK_RELEASABLE_CONFIDENCE, "CK_RELEASABLE_CONFIDENCE", "confidence BETWEEN 0 AND 1"),
-        (CK_KP_TARGET_KIND, "CK_KP_TARGET_KIND", "kind IN ('freshest', 'analog', 'contractor')"),
+        (CK_KP_TARGET_KIND, "CK_KP_TARGET_KIND",
+         "kind IN ('freshest', 'analog', 'contractor', 'reference')"),
         (CK_KP_TARGET_ANALOG, "CK_KP_TARGET_ANALOG",
-         "(kind = 'analog') = (analog_position_item_id IS NOT NULL)"),
+         "(kind IN ('analog', 'reference')) = (analog_position_item_id IS NOT NULL)"),
         (SEMANTIC_JOB_KINDS, "SEMANTIC_JOB_KINDS",
          "'family_suggestion', 'family_schema', 'context_values', 'family_discovery', "
          "'section_zone', 'releasable_params', 'auto_split'"),
@@ -624,7 +642,7 @@ class TestParityWithMigration:
         declared = {
             c.name: str(c.sqltext)
             for c in Base.metadata.tables[table].constraints
-            if isinstance(c, sa.CheckConstraint)
+            if isinstance(c, sa.CheckConstraint) and c.name in self._MODEL_CHECKS[table]
         }
         expected = {
             name: getattr(_owner_of(constant), constant)

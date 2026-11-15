@@ -580,6 +580,8 @@ _DOMAIN_TABLES = (
     "composite_veto_parts",
     "value_not_duplicates",
     "catalog_auto_actions",
+    # Справочные аналоги (миграция 0027): связи семей — ЯВНО; порядок в списке значения не имеет.
+    "family_links",
     "position_items",
     "estimate_additional_works",
     "proposal_summary_lines",
