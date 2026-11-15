@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -143,6 +143,12 @@ def load_reference_lines(
     if not contracts or not ids:
         return {}
     rows = db.execute(reference_lines_query(contracts).where(PositionItem.id.in_(sorted(set(ids))))).all()
+    return reference_lines_from_rows(rows, factors)
+
+
+def reference_lines_from_rows(rows: Iterable, factors: Mapping[int, Decimal] | None) -> dict[int, ReferenceLine]:
+    """Строки результата `reference_lines_query` (с любыми дополнительными условиями) -> справочные
+    строки: условие 6 §2.3 и приведение по ИПЦ. Порядок словаря — порядок строк."""
     lines: dict[int, ReferenceLine] = {}
     for row in rows:
         nominal = gross_to_net(row.unit_cost_total, row.vat_base)

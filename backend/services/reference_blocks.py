@@ -198,6 +198,28 @@ def _number(
     return link_number(state.link.kind, text.text, text.parameter_name, source=text.source, composite=text.composite)
 
 
+def link_units(states: Sequence[LinkState]) -> dict[int, str]:
+    """Символы единиц по id для сторон заданных связей — вход `conversion_for`."""
+    return {
+        unit_id: symbol
+        for state in states
+        for unit_id, symbol in (
+            (state.link.unit_lo_id, None if state.lo is None else state.lo.unit),
+            (state.link.unit_hi_id, None if state.hi is None else state.hi.unit),
+        )
+        if symbol is not None
+    }
+
+
+def link_param_id(links: Sequence[LinkState], contract_family_id: int | None, kp_family_id: int | None) -> int | None:
+    """Параметр стороны семьи строки договора у действующей связи с семьёй строки КП; `None` — связи
+    нет или у вида нет параметра (`constant`)."""
+    state = _link_between(links, contract_family_id, kp_family_id)
+    if state is None or contract_family_id is None:
+        return None
+    return _side(state, contract_family_id)[0]
+
+
 def _unlisted_text(text: ParamText) -> str:
     if text.source == "path_conflict":
         return "конфликт по разделам"

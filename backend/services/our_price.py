@@ -698,6 +698,39 @@ def kp_work_of(line: KpLine, net: Decimal) -> KpWork:
     )
 
 
+def work_ladder_of(
+    line: KpLine,
+    *,
+    kp_vat_base: Decimal | None,
+    work_history: WorkHistory,
+    tender_class_id: int,
+    tender_contractor_id: int,
+    target_month: YearMonth | None,
+) -> tuple[Decimal | None, WorkLadder | None]:
+    """Нетто цены за единицу строки КП и её лестница — те, что считает `evaluate_offer`; лестницы
+    нет (`None`), если строка до неё не доходит: в работе, без базы НДС, система, без цены или веса,
+    без варианта или зоны."""
+    kp_unit_net = _net(line.unit_price, kp_vat_base)
+    if (
+        line.in_progress
+        or kp_vat_base is None
+        or line.is_system
+        or not (is_price(line.unit_price) and is_weight(line.weight))
+        or line.key is None
+        or line.zone is None
+    ):
+        return kp_unit_net, None
+    assert kp_unit_net is not None
+    ladder = ladder_for(
+        kp_work_of(line, kp_unit_net),
+        work_history,
+        tender_class_id=tender_class_id,
+        tender_contractor_id=tender_contractor_id,
+        target_month=target_month,
+    )
+    return kp_unit_net, ladder
+
+
 def _evaluate_work(
     line: KpLine,
     *,

@@ -27,6 +27,7 @@ from crud import kp_decisions as crud_kp_decisions
 from crud import kp_sent_files as crud_kp_sent_files
 from crud import our_price as crud_our_price
 from crud import position_drilldown as crud_position_drilldown
+from crud import reference_search as crud_reference_search
 from crud import round_unallocated as crud_ru
 from crud import stage_summary as crud_stage_summary
 from crud import tender_awards as crud_tender_awards
@@ -226,6 +227,21 @@ def _write_decision(db: Session, write: Callable[[], None]) -> Response:
 
 
 _LINE = "/{tender_id}/rounds/{round_id}/our-price/offers/{offer_id}/lines/{position_item_id}"
+
+
+@router.get(_LINE + "/reference-search")
+def search_line_reference(tender_id: int, round_id: int, offer_id: int, position_item_id: int,
+                          q: str = Query(default=""), units: Literal["all", "kp"] = Query(default="all"),
+                          inflation_series_id: int | None = Query(default=None), db: Session = Depends(get_db)):
+    """Поиск справочных строк договоров по словам из панели строки (спека справочных аналогов §2.12):
+    только чтение, читает любой вошедший. Система — 422 `reference_not_applicable`, плохой запрос — 422
+    `search_query_invalid`."""
+    try:
+        return decimal_json(crud_reference_search.search_reference(
+            db, tender_id, round_id, offer_id, position_item_id, q=q, units=units,
+            inflation_series_id=inflation_series_id))
+    except DomainError as e:
+        raise_domain_error(e)
 
 
 @router.put(_LINE + "/agreed", status_code=status.HTTP_204_NO_CONTENT)

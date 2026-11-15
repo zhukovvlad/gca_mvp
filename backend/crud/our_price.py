@@ -106,6 +106,7 @@ from services.reference_blocks import (
     ZoneGroup,
     fold_group_rows,
     link_groups,
+    link_units,
     link_value_pairs,
     other_zones,
     zone_groups,
@@ -680,15 +681,49 @@ def _offer_context(
             сметы КП (разбирать нечего) или нет ряда ИПЦ.
         DomainError 422: отказы приведения по ИПЦ, как у экрана этапа.
     """
+    head, raw = _offer_raw(db, tender_id, round_id, offer_id)
+    scene = _build_scene(db, head, [raw], inflation_series_id=inflation_series_id, require_line=require_line)
+    participant = scene.participants[0]
+    return scene, participant, _evaluate(scene, participant)
+
+
+def _offer_raw(
+    db: Session, tender_id: int, round_id: int, offer_id: int
+) -> tuple[_Head, tuple[int, int, str, int | None]]:
+    """Шапка тендера и запись участника этапа с сметой КП.
+
+    Raises:
+        DomainError 404: тендера, этапа или оффера этого этапа нет, у оффера нет сметы КП.
+    """
     head = _load_head(db, tender_id, round_id)
     raw = next((r for r in _load_participants(db, head.round_id) if r[0] == offer_id), None)
     if raw is None:
         raise DomainError(404, f"Оффер {offer_id} не найден в этапе {round_id} тендера {tender_id}.")
     if raw[3] is None:
         raise DomainError(404, f"У оффера {offer_id} нет сметы КП — разбирать нечего.")
-    scene = _build_scene(db, head, [raw], inflation_series_id=inflation_series_id, require_line=require_line)
-    participant = scene.participants[0]
-    return scene, participant, _evaluate(scene, participant)
+    return head, raw
+
+
+@dataclass(frozen=True)
+class SearchContext:
+    """Участник этапа без сцены: всё, что нужно поиску справочных строк (спека справочных аналогов §2.20)."""
+
+    head: _Head
+    participant: _Participant
+    estimate_id: int
+
+
+def search_context(db: Session, tender_id: int, round_id: int, offer_id: int) -> SearchContext:
+    """Шапка и участник с базой НДС его КП, без выборки истории и строк.
+
+    Raises:
+        DomainError 404: как у разбора участника.
+    """
+    head, raw = _offer_raw(db, tender_id, round_id, offer_id)
+    estimate_id = raw[3]
+    assert estimate_id is not None
+    participant = _Participant(*raw, base=kp_vat_bases(db, [estimate_id]).get(estimate_id))
+    return SearchContext(head=head, participant=participant, estimate_id=estimate_id)
 
 
 def _is_waiting_admin(line: KpLine) -> bool:
@@ -1393,21 +1428,12 @@ def _reference_blocks(
     if not any(state.active for state in states):
         return _ReferenceBlocks(zones=zones, states=states)
     values = load_link_values(db, link_value_pairs(kp, scene.work_history, states))
-    units = {
-        unit_id: symbol
-        for state in states
-        for unit_id, symbol in (
-            (state.link.unit_lo_id, None if state.lo is None else state.lo.unit),
-            (state.link.unit_hi_id, None if state.hi is None else state.hi.unit),
-        )
-        if symbol is not None
-    }
     links = link_groups(
         kp,
         row.unit_id,
         scene.work_history,
         states,
-        units,
+        link_units(states),
         values,
         tender_class_id=scene.head.rate_class_id,
         target_month=scene.target_month,
@@ -1437,53 +1463,73 @@ def _reference_rows_view(
 ) -> list[dict]:
     """Строки группы после свёртки (спека §2.11): `ids` — свёрнутые строки, `chapter_paths` — различающиеся
     пути их разделов; деньги — пары `{net, shown}` в ставке участника."""
-    rate = participant.base
     titles = {row.position_item_id: details[row.position_item_id][0] for row in rows}
-    view = []
-    for row, ids in fold_group_rows(rows, titles):
-        title, unit, _titles, _category, _chapter = details[row.position_item_id]
-        contract = scene.index.contract(row.contract_id)
-        paths: list[list[dict]] = []
-        seen: set[int | None] = set()
-        for analog_id in ids:
-            chapter_item_id = details[analog_id][4]
-            if chapter_item_id not in seen:
-                seen.add(chapter_item_id)
-                paths.append(_path_view(steps.get(chapter_item_id, ())))
-        deviation = None
-        if result.kp_unit_net is not None and row.kp_unit_net is not None:
-            with localcontext(_CONTEXT):
-                deviation = (result.kp_unit_net / row.kp_unit_net - 1) * 100
-        view.append(
-            {
-                "analog_id": row.position_item_id,
-                "ids": list(ids),
-                "title": title,
-                "unit": unit,
-                "zone": row.zone,
-                "contract": {
-                    "id": contract.contract_id,
-                    "object_title": contract.object_title,
-                    "number": contract.number,
-                    "year": contract.year,
-                    "rate_class": {"id": contract.rate_class_id, "title": contract.rate_class_title},
-                    "contractor_id": contract.contractor_id,
-                    "contractor_title": contract.contractor_title,
-                },
-                "period": _period_text(contract.period),
-                "chapter_paths": paths,
-                "price": money_pair(row.net, rate, unit=True),
-                "nominal": money_pair(row.nominal, rate, unit=True),
-                "conversion": _conversion_view(row),
-                "no_conversion_reason": row.no_conversion_reason,
-                "kp_unit_price": money_pair(row.kp_unit_net, rate, unit=True),
-                "deviation_pct": deviation,
-                "outlier_ratio": row.outlier_ratio,
-                "with_this_contractor": contract.contractor_id == participant.contractor_id,
-                "param_value": row.param_value,
-            }
+    return [
+        reference_row_view(
+            row,
+            ids,
+            contract=scene.index.contract(row.contract_id),
+            participant=participant,
+            kp_unit_net=result.kp_unit_net,
+            details=details,
+            steps=steps,
         )
-    return view
+        for row, ids in fold_group_rows(rows, titles)
+    ]
+
+
+def reference_row_view(
+    row: RefRow,
+    ids: Sequence[int],
+    *,
+    contract: HistoryContract,
+    participant: _Participant,
+    kp_unit_net: Decimal | None,
+    details: _Details,
+    steps: Mapping[int, tuple[ChapterStep, ...]],
+) -> dict:
+    """Строка справочного блока или выдачи поиска (спека справочных аналогов §2.16): `ids` — свёрнутые
+    строки, `kp_unit_net` — нетто цены строки КП за единицу для отклонения."""
+    rate = participant.base
+    title, unit, _titles, _category, _chapter = details[row.position_item_id]
+    paths: list[list[dict]] = []
+    seen: set[int | None] = set()
+    for analog_id in ids:
+        chapter_item_id = details[analog_id][4]
+        if chapter_item_id not in seen:
+            seen.add(chapter_item_id)
+            paths.append(_path_view(steps.get(chapter_item_id, ())))
+    deviation = None
+    if kp_unit_net is not None and row.kp_unit_net is not None:
+        with localcontext(_CONTEXT):
+            deviation = (kp_unit_net / row.kp_unit_net - 1) * 100
+    return {
+        "analog_id": row.position_item_id,
+        "ids": list(ids),
+        "title": title,
+        "unit": unit,
+        "zone": row.zone,
+        "contract": {
+            "id": contract.contract_id,
+            "object_title": contract.object_title,
+            "number": contract.number,
+            "year": contract.year,
+            "rate_class": {"id": contract.rate_class_id, "title": contract.rate_class_title},
+            "contractor_id": contract.contractor_id,
+            "contractor_title": contract.contractor_title,
+        },
+        "period": _period_text(contract.period),
+        "chapter_paths": paths,
+        "price": money_pair(row.net, rate, unit=True),
+        "nominal": money_pair(row.nominal, rate, unit=True),
+        "conversion": _conversion_view(row),
+        "no_conversion_reason": row.no_conversion_reason,
+        "kp_unit_price": money_pair(row.kp_unit_net, rate, unit=True),
+        "deviation_pct": deviation,
+        "outlier_ratio": row.outlier_ratio,
+        "with_this_contractor": contract.contractor_id == participant.contractor_id,
+        "param_value": row.param_value,
+    }
 
 
 def _reference_zones_view(

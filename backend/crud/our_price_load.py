@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Literal
@@ -97,9 +97,9 @@ class _Row:
     unit_id: int | None
 
 
-def _rows_of(db: Session, estimate_ids: Sequence[int]) -> list[_Row]:
+def _rows_of(db: Session, estimate_ids: Sequence[int], only_position_item_id: int | None = None) -> list[_Row]:
     """Все не-главы смет с контекстом, семьёй контекста и единицей каталожной
-    строки его корзины (`NULL` у строки без членства)."""
+    строки его корзины (`NULL` у строки без членства); `only_position_item_id` — одна строка."""
     stmt = (
         sa.select(
             PositionItem.id,
@@ -116,6 +116,8 @@ def _rows_of(db: Session, estimate_ids: Sequence[int]) -> list[_Row]:
         .outerjoin(CatalogPosition, CatalogPosition.id == ContextBucket.catalog_position_id)
         .where(Lot.estimate_id.in_(list(estimate_ids)), PositionItem.is_chapter.is_(False))
     )
+    if only_position_item_id is not None:
+        stmt = stmt.where(PositionItem.id == only_position_item_id)
     return [_Row(*r) for r in db.execute(stmt).all()]
 
 
@@ -198,7 +200,9 @@ def _claim_paused(db: Session) -> bool:
     return bool(paused)
 
 
-def catalog_signal(db: Session, estimate_ids: Sequence[int]) -> dict[int, CatalogSignal]:
+def catalog_signal(
+    db: Session, estimate_ids: Sequence[int], *, only_position_item_id: int | None = None
+) -> dict[int, CatalogSignal]:
     """`position_item_id` → сигнал для каждой строки (не главы) заданных смет.
 
     `in_progress` — у контекста строки `family_suggestion`/`context_values`, у
@@ -214,7 +218,7 @@ def catalog_signal(db: Session, estimate_ids: Sequence[int]) -> dict[int, Catalo
     """
     if not estimate_ids:
         return {}
-    rows = _rows_of(db, estimate_ids)
+    rows = _rows_of(db, estimate_ids, only_position_item_id)
     if not rows:
         return {}
     by_context, by_family, by_unit = _jobs_by_subject(db, rows)
@@ -602,7 +606,7 @@ def _conflicts_of(
 
 
 def load_work_history(
-    db: Session, *, estimate_of: Mapping[int, int]
+    db: Session, *, estimate_of: Mapping[int, int], family_ids: Collection[int] | None = None
 ) -> tuple[list[WorkHistoryLine], dict[int, FamilyLadderInfo]]:
     """Строки смет договоров по работам для лестницы аналогов и сведения семей.
 
@@ -615,7 +619,8 @@ def load_work_history(
     цепочкой, у которой зона определена: аналог без зоны не аналог (спека §2.8). Строка с
     неизвестной базой НДС остаётся — ядро называет по ней выпавший договор. Строки читаются
     по идентификаторам смет. Число запросов фиксировано: строки, три запроса вариантов,
-    конфликтные параметры контекстов, семьи.
+    конфликтные параметры контекстов, семьи. `family_ids` — только строки этих семей (поиск
+    справочных строк берёт семью строки КП и связанные с ней); `None` — все семьи.
     """
     contract_of = {estimate_id: contract_id for contract_id, estimate_id in estimate_of.items()}
     is_system = CatalogContext.semantic_kind == "SYSTEM"
@@ -650,6 +655,7 @@ def load_work_history(
             sa.not_(is_system),
             _price_ok(PositionItem.unit_cost_total),
             _weight_ok(_WEIGHT),
+            *([] if family_ids is None else [CatalogContext.work_family_id.in_(sorted(set(family_ids)))]),
         )
         .order_by(Estimate.contract_id, PositionItem.id)
     ).all()
@@ -798,8 +804,13 @@ def _releasable_live(db: Session, current_schema_of: Mapping[int, int]) -> set[i
     }
 
 
-def load_kp_lines(db: Session, estimate_ids: Sequence[int]) -> dict[int, list[KpLineRow]]:
+def load_kp_lines(
+    db: Session, estimate_ids: Sequence[int], *, only_position_item_id: int | None = None
+) -> dict[int, list[KpLineRow]]:
     """Строки КП заданных смет (не главы) с семантикой и сигналом каталога.
+
+    `only_position_item_id` — только эта строка (поиск справочных строк не читает всю смету);
+    её `KpLineRow` равна той, что даёт полный вызов.
 
     Строки отдаются все, без предикатов цены и веса: пригодность решает ядро.
     Число запросов не зависит от числа строк: строки, сигнал каталога, три
@@ -842,10 +853,14 @@ def load_kp_lines(db: Session, estimate_ids: Sequence[int]) -> dict[int, list[Kp
         .outerjoin(WorkFamily, WorkFamily.id == CatalogContext.work_family_id)
         .outerjoin(ContextBucket, ContextBucket.id == CatalogContext.bucket_id)
         .outerjoin(CatalogPosition, CatalogPosition.id == ContextBucket.catalog_position_id)
-        .where(Lot.estimate_id.in_(list(estimate_ids)), PositionItem.is_chapter.is_(False))
+        .where(
+            Lot.estimate_id.in_(list(estimate_ids)),
+            PositionItem.is_chapter.is_(False),
+            *([] if only_position_item_id is None else [PositionItem.id == only_position_item_id]),
+        )
         .order_by(Lot.estimate_id, PositionItem.id)
     ).all()
-    signals = catalog_signal(db, estimate_ids)
+    signals = catalog_signal(db, estimate_ids, only_position_item_id=only_position_item_id)
     infos = _variant_infos(db, [row[11] for row in rows if row[11] is not None])
     secondary = _secondary_values(db, [row[10] for row in rows if row[10] is not None])
     conflicts = _conflicted_parameters(db, [row[10] for row in rows if row[10] is not None])
