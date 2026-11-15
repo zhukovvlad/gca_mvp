@@ -45,8 +45,8 @@ CODE_LINK_EXISTS: Final = "link_exists"
 CODE_FAMILY_NOT_FOUND: Final = "family_not_found"
 CODE_LINK_NOT_FOUND: Final = "link_not_found"
 
-#: Причины `422 link_invalid` (поле `reason`). `pair_changed` — сверх перечня спеки §2.16:
-#: `PUT` назвал другую пару семей.
+#: Причины `422 link_invalid` (поле `reason`, спека §2.16); `pair_changed` — `PUT` назвал
+#: другую пару семей.
 REASONS: Final = (
     "same_family",
     "family_inactive",

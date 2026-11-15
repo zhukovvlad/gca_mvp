@@ -11,6 +11,7 @@ import pytest
 import sqlalchemy as sa
 
 from models import FamilyLink, KpLineTarget
+from services.reference_math import constant_factor
 from services.work_families import archive_family, merge_families, set_unit
 from tests.integration.test_analog_schema import _target
 from tests.integration.test_work_variants_schema import (
@@ -115,6 +116,14 @@ def _created(client, body) -> int:
     return response.json()["id"]
 
 
+def _n_both_ways(row: FamilyLink, a, b) -> dict[int, Decimal]:
+    """`N` постоянной связи по хранимой строке, когда семья договора — `a` и когда `b`."""
+    return {
+        f.id: constant_factor(row.factor, from_is_contract_family=row.factor_from_id == f.id)
+        for f in (a, b)
+    }
+
+
 def _refused(response, status: int, code: str, reason: str | None = None) -> None:
     assert response.status_code == status, response.text
     detail = response.json()["detail"]
@@ -210,7 +219,7 @@ class TestCreate:
 
 
 # ---------------------------------------------------------------------------
-#  Направление множителя не обращается (К8)
+#  Направление множителя не обращается
 # ---------------------------------------------------------------------------
 
 class TestFactorDirection:
@@ -245,13 +254,23 @@ class TestFactorDirection:
         (from_a,) = _links_of(admin_client, a)
         assert from_a["shown"]["factor"] == "0,667"
 
+    @pytest.mark.parametrize("created_from_higher", [False, True])
     @pytest.mark.parametrize("from_card", ["a", "b"])
     @pytest.mark.parametrize("swap_sides", [False, True])
     def test_a_put_with_the_stored_fields_keeps_factor_and_direction_to_the_digit(
-        self, admin_client, db_session, factories, from_card, swap_sides
+        self, admin_client, db_session, factories, created_from_higher, from_card, swap_sides
     ):
-        a, b = _fam(db_session, "м²"), _fam(db_session, "м³")
+        first, second = _fam(db_session, "м²"), _fam(db_session, "м³")
+        # a — карточка, с которой связь заведена; у старшей по id пара при записи переставляется
+        a, b = (second, first) if created_from_higher else (first, second)
         link_id = _created(admin_client, _constant(a, b, from_family=a, factor="0.667"))
+        shown_before = {f.id: _links_of(admin_client, f)[0]["shown"] for f in (a, b)}
+        assert shown_before == {
+            a.id: {"from_family_id": a.id, "factor": "0,667"},
+            b.id: {"from_family_id": b.id, "factor": "≈1,4993"},
+        }
+        n_before = _n_both_ways(_row(db_session, link_id), a, b)
+        assert n_before[a.id] == Decimal("0.667")
         card, other = (a, b) if from_card == "a" else (b, a)
         (item,) = _links_of(admin_client, card)
         # форма правки берёт хранимые поля, не `shown`
@@ -265,6 +284,9 @@ class TestFactorDirection:
         row = _row(db_session, link_id)
         assert str(row.factor) == "0.667"
         assert row.factor_from_id == a.id
+        # `N` в обе стороны (семья договора — a или b) прежний до последнего знака
+        assert _n_both_ways(row, a, b) == n_before
+        assert {f.id: _links_of(admin_client, f)[0]["shown"] for f in (a, b)} == shown_before
 
 
 # ---------------------------------------------------------------------------
@@ -280,13 +302,15 @@ class TestRefusals:
         a, _, pa = _fam_with_param(db_session, factories, "м²")
         self._refused_without_rows(admin_client, db_session, _thickness(a, a, pa, pa), "same_family")
 
+    @pytest.mark.parametrize("side", ["a", "b"])
     @pytest.mark.parametrize("status", ["draft", "archived"])
-    def test_a_family_that_is_not_active(self, admin_client, db_session, factories, status):
+    def test_a_family_that_is_not_active(self, admin_client, db_session, factories, status, side):
         a, _, pa = _fam_with_param(db_session, factories, "м²")
         b, _, pb = _fam_with_param(db_session, factories, "м³")
-        b.status = status
+        inactive = a if side == "a" else b
+        inactive.status = status
         if status == "archived":
-            b.archived_at = _now()
+            inactive.archived_at = _now()
         db_session.commit()
         self._refused_without_rows(
             admin_client, db_session, _thickness(a, b, pa, pb), "family_inactive"
@@ -331,6 +355,18 @@ class TestRefusals:
         _, _, stranger = _fam_with_param(db_session, factories, "м²")
         self._refused_without_rows(
             admin_client, db_session, _thickness(a, b, stranger, pb), "param_invalid"
+        )
+
+    @pytest.mark.parametrize("a_is_lower", [True, False])
+    def test_a_parameter_of_another_family_on_side_b(
+        self, admin_client, db_session, factories, a_is_lower
+    ):
+        first, _, first_param = _fam_with_param(db_session, factories, "м²")
+        second, _, second_param = _fam_with_param(db_session, factories, "м³")
+        _, _, stranger = _fam_with_param(db_session, factories, "м³")
+        a, pa, b = (first, first_param, second) if a_is_lower else (second, second_param, first)
+        self._refused_without_rows(
+            admin_client, db_session, _thickness(a, b, pa, stranger), "param_invalid"
         )
 
     def test_an_archived_parameter(self, admin_client, db_session, factories):
@@ -415,11 +451,13 @@ class TestRefusals:
             admin_client, db_session, _constant(a, b, param_a_id=pa.id), "constant_invalid"
         )
 
-    def test_a_factor_on_a_parameter_kind(self, admin_client, db_session, factories):
+    @pytest.mark.parametrize("field", ["factor", "basis", "factor_from_family_id"])
+    def test_a_constant_field_on_a_parameter_kind(self, admin_client, db_session, factories, field):
         a, _, pa = _fam_with_param(db_session, factories, "м²")
         b, _, pb = _fam_with_param(db_session, factories, "м³")
+        value = {"factor": "0.1", "basis": "основание", "factor_from_family_id": a.id}[field]
         self._refused_without_rows(
-            admin_client, db_session, _thickness(a, b, pa, pb, factor="0.1"), "constant_invalid"
+            admin_client, db_session, _thickness(a, b, pa, pb, **{field: value}), "constant_invalid"
         )
 
     def test_the_first_violation_in_the_fixed_order_wins(self, admin_client, db_session, factories):
@@ -496,7 +534,7 @@ class TestUpdateAndDelete:
 
 
 # ---------------------------------------------------------------------------
-#  Права (К7)
+#  Права
 # ---------------------------------------------------------------------------
 
 class TestRights:
@@ -552,15 +590,17 @@ class TestState:
         (item,) = _links_of(admin_client, other)
         assert (item["state"], item["inactive_reason"]) == ("inactive", "family_inactive")
 
+    @pytest.mark.parametrize("archived_side", ["lo", "hi"])
     def test_an_archived_family_makes_the_link_inactive_and_the_row_stays(
-        self, admin_client, db_session, factories
+        self, admin_client, db_session, factories, archived_side
     ):
         user = factories.UserFactory.create()
-        a, b = _fam(db_session, "м²"), _fam(db_session, "м³")
-        _created(admin_client, _constant(a, b))
-        archive_family(db_session, family_id=a.id, actor_id=user.id)
+        lo, hi = _fam(db_session, "м²"), _fam(db_session, "м³")
+        _created(admin_client, _constant(lo, hi))
+        gone, kept = (lo, hi) if archived_side == "lo" else (hi, lo)
+        archive_family(db_session, family_id=gone.id, actor_id=user.id)
         db_session.commit()
-        (item,) = _links_of(admin_client, b)
+        (item,) = _links_of(admin_client, kept)
         assert (item["state"], item["inactive_reason"]) == ("inactive", "family_inactive")
         assert len(_links_in_db(db_session)) == 1
 
