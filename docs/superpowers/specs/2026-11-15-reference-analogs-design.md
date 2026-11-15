@@ -1,6 +1,7 @@
 # Справочные аналоги: другая зона, поиск по договорам, пересчёт единиц — спека (гейт 2)
 
-**Редакция 4, 16.11.2026.** По реализации: причина `pair_changed` у `PUT` связи с другой парой (§2.16).
+**Редакция 4, 16.11.2026.** По реализации: причина `pair_changed` у `PUT` связи с другой парой;
+поле `conversion_kind` у строки поиска (§2.16).
 
 **Редакция 3, 15.11.2026.** По ревью плана (Codex на `8386040`): пересчёт
 строки в панели и поиске у `method = link` несёт `link_id` — иначе строке
@@ -478,7 +479,8 @@ confirm_outlier: bool = false
   тогда, когда она не в блоках.
 
 **Поиск** — `GET …/lines/{pid}/reference-search?q=&units=all|kp&inflation_series_id=`
-→ `{rows, total_lines, truncated}`; `rows` — в форме выше.
+→ `{rows, total_lines, truncated}`; `rows` — в форме выше и с полем
+`conversion_kind: none | link | manual_needed` (пересчёт §2.12).
 
 **Цель** — `PUT …/lines/{pid}/target` (§2.13); `DELETE` — прежний.
 

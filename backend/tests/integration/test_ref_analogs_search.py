@@ -16,11 +16,12 @@ import sqlalchemy as sa
 from crud.common import DomainError
 from crud.our_price_load import load_history, load_kp_lines, load_work_history
 from crud.reference_search import SEARCH_LIMIT, parse_query
-from models import CatalogPosition, PositionItem
+from models import CatalogPosition, ContextMember, PositionItem
 from parser.sanitize_text import NormalizationUnavailableError
 from tests.integration.test_our_price_load import World
 from tests.integration.test_our_price_offer_api import _inflation_scene, _json, _panel, _put, _url
 from tests.integration.test_our_price_round_api import Stage, count_statements
+from tests.integration.test_our_price_signal import _job
 from tests.integration.test_ref_analogs_panel import (
     Linked,
     _contract_row,
@@ -143,6 +144,18 @@ def test_ref_analogs_search_finds_word_forms_by_the_lemma_and_the_text(member_cl
     _normalized(stage, other, "засыпка щебень")
     rnd, part, item = _kp_scene(stage)
     assert set(_ids(_search(member_client, stage, rnd, part, item, "засыпка песком"))) == {by_lemma.id, by_text.id}
+
+
+def test_ref_analogs_search_each_word_may_match_in_its_own_column(member_client, stage, lemmas) -> None:
+    """Слово «засыпка» есть только в наименовании сметы, «песком» — только леммой в каталожной позиции:
+    строка подходит. Условие «все слова в одном столбце» её бы потеряло."""
+    lemmas({"песком": "песок"})
+    _, mixed = _contract_row(stage, D("100"), title="Засыпка пазух")
+    _normalized(stage, mixed, "песок обратный")
+    _, half = _contract_row(stage, D("100"), title="Засыпка пазух")
+    _normalized(stage, half, "щебень обратный")
+    rnd, part, item = _kp_scene(stage)
+    assert _ids(_search(member_client, stage, rnd, part, item, "засыпка песком")) == [mixed.id]
 
 
 def test_ref_analogs_search_every_word_must_be_found(member_client, stage, lemmas) -> None:
@@ -365,6 +378,7 @@ def test_ref_analogs_search_rows_of_a_zone_group_equal_the_panel_rows(member_cli
     body = _search(member_client, stage, rnd, part, item, "Подготовка")
     panel_rows = {row["analog_id"]: row for row in group["rows"]}
     assert set(panel_rows) == {row.id for row in rows}
+    assert set(_ids(body)) == set(panel_rows)
     for found in body["rows"]:
         assert _without_kind(found) == panel_rows[found["analog_id"]]
     assert panel_rows[rows[3].id]["outlier_ratio"] == "10"
@@ -383,6 +397,50 @@ def test_ref_analogs_search_rows_of_the_own_rung_carry_the_ladder_mark(member_cl
     assert analogs[rows[3].id]["outlier_ratio"] == "10"
     for found in body["rows"]:
         assert found["price"] == analogs[found["analog_id"]]["price"]
+
+
+def test_ref_analogs_search_other_zone_rows_carry_no_mark_while_the_own_rung_exists(member_client, stage) -> None:
+    """У строки КП своя ступень есть — блока А в панели нет, строки другой зоны вне наборов: в поиске
+    без пометки даже при цене в десять раз выше соседей своей зоны."""
+    for price in ("100", "100", "100"):
+        _contract_row(stage, D(price), title="Подготовка")
+    chain = _underground(stage)
+    under = [_contract_row(stage, D(price), chain=chain, title="Подготовка")[1] for price in ("100", "100", "100", "1000")]
+    rnd, part, item = _kp_scene(stage)
+    panel = _panel(member_client, stage.tender, rnd, part, item)
+    assert panel["reference_zones"] == []
+    assert len(panel["analogs"]) == 3
+    found = {row["analog_id"]: row for row in _search(member_client, stage, rnd, part, item, "Подготовка")["rows"]}
+    assert {row.id for row in under} <= set(found)
+    assert [found[row.id]["outlier_ratio"] for row in under] == [None, None, None, None]
+
+
+def test_ref_analogs_search_does_not_build_the_stage_scene(member_client, stage, monkeypatch) -> None:
+    """Сцена этапа и разбор оффера поиску не нужны: подменённые на отказ, они его не роняют."""
+    rows = [_contract_row(stage, D(price), title="Подготовка")[1] for price in ("100", "100", "100", "1000")]
+    rnd, part, item = _kp_scene(stage)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("поиск строит сцену этапа")
+
+    monkeypatch.setattr("crud.our_price._build_scene", forbidden)
+    monkeypatch.setattr("crud.our_price._evaluate", forbidden)
+    body = _search(member_client, stage, rnd, part, item, "Подготовка")
+    assert {row["analog_id"]: row["outlier_ratio"] for row in body["rows"]} == {
+        rows[0].id: None,
+        rows[1].id: None,
+        rows[2].id: None,
+        rows[3].id: "10",
+    }
+
+
+def test_ref_analogs_search_works_from_a_kp_row_without_a_family(member_client, stage) -> None:
+    """Строка КП без варианта до лестницы не доходит: поиск отвечает, наборов нет — пометок нет."""
+    rows = [_contract_row(stage, D(price), title="Подготовка")[1] for price in ("100", "100", "100", "1000")]
+    rnd, part = _kp_part(stage)
+    item = stage.kp(part, D("144"), variant=False)
+    body = _search(member_client, stage, rnd, part, item, "Подготовка")
+    assert {row["analog_id"]: row["outlier_ratio"] for row in body["rows"]} == {row.id: None for row in rows}
 
 
 def test_ref_analogs_search_row_outside_every_set_has_no_mark(member_client, stage) -> None:
@@ -515,6 +573,30 @@ def test_ref_analogs_load_kp_lines_for_one_row_equals_the_row_of_the_full_call(s
         only = load_kp_lines(db_session, [estimate_id], only_position_item_id=row.line.position_item_id)
         assert only == {estimate_id: [row]}
     assert load_kp_lines(db_session, [estimate_id], only_position_item_id=987654321) == {estimate_id: []}
+
+
+def test_ref_analogs_load_kp_lines_for_one_row_keeps_the_catalog_signal_of_the_full_call(stage, db_session) -> None:
+    """Сигнал каталога одной строки равен сигналу полного вызова и тогда, когда он поднят: строка с живым
+    заданием — «в работе», с заданием в ошибке — «ждёт администратора»."""
+    rnd, part = _kp_part(stage)
+    busy = stage.kp(part, D("144"))
+    failed = stage.kp(part, D("150"))
+    quiet = stage.kp(part, D("160"))
+    db_session.flush()
+
+    def context_of(item) -> int:
+        return db_session.execute(
+            sa.select(ContextMember.context_id).where(ContextMember.position_item_id == item.id)
+        ).scalar_one()
+
+    _job(db_session, "family_suggestion", "pending", context_id=context_of(busy))
+    _job(db_session, "family_suggestion", "error", context_id=context_of(failed))
+    estimate_id = part.estimate.id
+    full = {row.line.position_item_id: row for row in load_kp_lines(db_session, [estimate_id])[estimate_id]}
+    assert (full[busy.id].line.in_progress, full[failed.id].line.waiting_admin) == (True, True)
+    assert (full[quiet.id].line.in_progress, full[quiet.id].line.waiting_admin) == (False, False)
+    for pid, row in full.items():
+        assert load_kp_lines(db_session, [estimate_id], only_position_item_id=pid) == {estimate_id: [row]}
 
 
 def test_ref_analogs_load_work_history_family_filter_keeps_only_the_named_families(stage, db_session) -> None:
