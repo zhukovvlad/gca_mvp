@@ -45,6 +45,7 @@ from crud.our_price_load import (
     load_kp_lines,
     load_work_history,
 )
+from crud.reference_lines import load_link_values
 from crud.stage_summary import pct_str
 from models import (
     Contractor,
@@ -62,6 +63,7 @@ from money.price import is_price
 from services.analog_ladder import FamilyLadderInfo, Figure, WorkHistory, parts_reference
 from services.context_routing import ChapterStep, chapter_steps
 from services.excel import iso_date_to_ru
+from services.family_links import LinkState, links_of_families
 from services.kp_comment import CommentInputs, InflationLabel, target_net, template_text
 from services.kp_file import FileContext, KpSourceLine, line_comment_inputs
 from services.our_price import (
@@ -97,6 +99,16 @@ from services.our_price_money import (
     node_totals,
     pct_to_median,
     per_sqm,
+)
+from services.reference_blocks import (
+    LinkGroup,
+    RefRow,
+    ZoneGroup,
+    fold_group_rows,
+    link_groups,
+    link_value_pairs,
+    other_zones,
+    zone_groups,
 )
 
 #: Подпись строки «Итого на м² объекта» в форме статьи.
@@ -1032,6 +1044,7 @@ def _line_with_decisions(
     return {
         **_line_view(row, result, participant.base, scene.index, scene.families, steps),
         **_decision_fields(scene, participant, row, result, template),
+        **_other_zones_field(other_zones(_zone_groups_of(scene, participant, row, result))),
     }
 
 
@@ -1164,6 +1177,28 @@ def _rung_choice(level: str | None, scope: str | None, position_item_id: int, au
             code=CODE_UNKNOWN_RUNG,
         )
     return RungChoice(position_item_id, rung)
+
+
+def _zone_groups_of(
+    scene: _Scene, participant: _Participant, row: KpLineRow, result: LineResult
+) -> tuple[ZoneGroup, ...]:
+    """Блок А строки на `WorkHistory` сцены, без запросов (спека справочных аналогов §2.20); у строки не
+    в состоянии `no_history` с причиной `no_zone_match` — пусто."""
+    ladder = result.ladder
+    if ladder is None or ladder.no_history_reason != "no_zone_match" or result.kp_unit_net is None:
+        return ()
+    return zone_groups(
+        kp_work_of(row.line, result.kp_unit_net),
+        scene.work_history,
+        tender_class_id=scene.head.rate_class_id,
+        tender_contractor_id=participant.contractor_id,
+        target_month=scene.target_month,
+    )
+
+
+def _other_zones_field(found: list[dict]) -> dict:
+    """Поле `other_zones` — только у строки с группами блока А (спека §2.5)."""
+    return {"other_zones": found} if found else {}
 
 
 def line_for_rung_check(
@@ -1323,6 +1358,180 @@ def _parts_reference_view(
     return view
 
 
+_Details = Mapping[int, tuple[str, str | None, list[str], int | None, int | None]]
+
+
+@dataclass(frozen=True)
+class _ReferenceBlocks:
+    """Блоки А и Г панели и состояния связей строки (спека справочных аналогов §2.4, §2.9)."""
+
+    zones: tuple[ZoneGroup, ...] = ()
+    links: tuple[LinkGroup, ...] = ()
+    states: tuple[LinkState, ...] = ()
+
+    def ids(self) -> list[int]:
+        return [row.position_item_id for group in (*self.zones, *self.links) for row in group.rows]
+
+
+def _reference_blocks(
+    db: Session, scene: _Scene, participant: _Participant, row: KpLineRow, result: LineResult
+) -> _ReferenceBlocks:
+    """Блоки А и Г строки: оба — только у работы в состоянии `no_history`. Новые запросы — связи семьи
+    и значения параметров связей, по одному набору на ответ (спека §2.20); сами блоки считаются на
+    `WorkHistory` сцены."""
+    ladder = result.ladder
+    if (
+        ladder is None
+        or ladder.rung_no is not None
+        or result.state is not LineState.no_history
+        or result.kp_unit_net is None
+    ):
+        return _ReferenceBlocks()
+    kp = kp_work_of(row.line, result.kp_unit_net)
+    states = tuple(links_of_families(db, [kp.family_id]))
+    zones = _zone_groups_of(scene, participant, row, result)
+    if not any(state.active for state in states):
+        return _ReferenceBlocks(zones=zones, states=states)
+    values = load_link_values(db, link_value_pairs(kp, scene.work_history, states))
+    units = {
+        unit_id: symbol
+        for state in states
+        for unit_id, symbol in (
+            (state.link.unit_lo_id, None if state.lo is None else state.lo.unit),
+            (state.link.unit_hi_id, None if state.hi is None else state.hi.unit),
+        )
+        if symbol is not None
+    }
+    links = link_groups(
+        kp,
+        row.unit_id,
+        scene.work_history,
+        states,
+        units,
+        values,
+        tender_class_id=scene.head.rate_class_id,
+        target_month=scene.target_month,
+    )
+    return _ReferenceBlocks(zones=zones, links=links, states=states)
+
+
+def _conversion_view(row: RefRow) -> dict | None:
+    """Пересчёт строки: `factor` — точная десятичная запись `N` (клиент вернёт её в `expected_factor`),
+    `link_id` — связь, давшая `N` (спека §2.16)."""
+    conversion = row.conversion
+    if conversion is None:
+        return None
+    view = {"method": conversion.method, "factor": format(conversion.factor, "f"), "basis": conversion.basis}
+    if conversion.method == "link":
+        view["link_id"] = conversion.link_id
+    return view
+
+
+def _reference_rows_view(
+    scene: _Scene,
+    participant: _Participant,
+    result: LineResult,
+    rows: Sequence[RefRow],
+    details: _Details,
+    steps: Mapping[int, tuple[ChapterStep, ...]],
+) -> list[dict]:
+    """Строки группы после свёртки (спека §2.11): `ids` — свёрнутые строки, `chapter_paths` — различающиеся
+    пути их разделов; деньги — пары `{net, shown}` в ставке участника."""
+    rate = participant.base
+    titles = {row.position_item_id: details[row.position_item_id][0] for row in rows}
+    view = []
+    for row, ids in fold_group_rows(rows, titles):
+        title, unit, _titles, _category, _chapter = details[row.position_item_id]
+        contract = scene.index.contract(row.contract_id)
+        paths: list[list[dict]] = []
+        seen: set[int | None] = set()
+        for analog_id in ids:
+            chapter_item_id = details[analog_id][4]
+            if chapter_item_id not in seen:
+                seen.add(chapter_item_id)
+                paths.append(_path_view(steps.get(chapter_item_id, ())))
+        deviation = None
+        if result.kp_unit_net is not None and row.kp_unit_net is not None:
+            with localcontext(_CONTEXT):
+                deviation = (result.kp_unit_net / row.kp_unit_net - 1) * 100
+        view.append(
+            {
+                "analog_id": row.position_item_id,
+                "ids": list(ids),
+                "title": title,
+                "unit": unit,
+                "zone": row.zone,
+                "contract": {
+                    "id": contract.contract_id,
+                    "object_title": contract.object_title,
+                    "number": contract.number,
+                    "year": contract.year,
+                    "rate_class": {"id": contract.rate_class_id, "title": contract.rate_class_title},
+                    "contractor_id": contract.contractor_id,
+                    "contractor_title": contract.contractor_title,
+                },
+                "period": _period_text(contract.period),
+                "chapter_paths": paths,
+                "price": money_pair(row.net, rate, unit=True),
+                "nominal": money_pair(row.nominal, rate, unit=True),
+                "conversion": _conversion_view(row),
+                "no_conversion_reason": row.no_conversion_reason,
+                "kp_unit_price": money_pair(row.kp_unit_net, rate, unit=True),
+                "deviation_pct": deviation,
+                "outlier_ratio": row.outlier_ratio,
+                "with_this_contractor": contract.contractor_id == participant.contractor_id,
+                "param_value": row.param_value,
+            }
+        )
+    return view
+
+
+def _reference_zones_view(
+    scene: _Scene,
+    participant: _Participant,
+    result: LineResult,
+    reference: _ReferenceBlocks,
+    details: _Details,
+    steps: Mapping[int, tuple[ChapterStep, ...]],
+) -> list[dict]:
+    return [
+        {
+            "zone": group.zone,
+            "rung_no": group.rung_no,
+            "released": list(group.released),
+            "other_class": group.other_class,
+            "rows": _reference_rows_view(scene, participant, result, group.rows, details, steps),
+        }
+        for group in reference.zones
+    ]
+
+
+def _reference_links_view(
+    scene: _Scene,
+    participant: _Participant,
+    result: LineResult,
+    reference: _ReferenceBlocks,
+    details: _Details,
+    steps: Mapping[int, tuple[ChapterStep, ...]],
+) -> list[dict]:
+    states = {state.link.id: state for state in reference.states}
+    view = []
+    for group in reference.links:
+        state = states[group.link_id]
+        side = state.lo if state.link.family_lo_id == group.family_id else state.hi
+        assert side is not None
+        view.append(
+            {
+                "link_id": group.link_id,
+                "family": {"id": group.family_id, "title": side.title, "unit": side.unit},
+                "kind": group.kind,
+                "other_class": group.other_class,
+                "rows": _reference_rows_view(scene, participant, result, group.rows, details, steps),
+            }
+        )
+    return view
+
+
 def build_line_view(
     db: Session,
     tender_id: int,
@@ -1365,8 +1574,9 @@ def build_line_view(
         family_id = evaluation.groups[result.group_index].family_id
         members = {pid for g in evaluation.groups if g.family_id == family_id for pid in g.lines}
         group_rows = [r for r in rows if r.line.position_item_id in members]
+    reference = _reference_blocks(db, scene, participant, row, result)
     # пути разделов строки КП, её группы и аналогов — одним запросом на ответ
-    analog_details = load_analog_details(db, _analog_ids(result))
+    analog_details = load_analog_details(db, [*_analog_ids(result), *reference.ids()])
     chapter_ids = {r.chapter_item_id for r in [row, *group_rows]} | {d[4] for d in analog_details.values()}
     steps = chapter_steps(db, chapter_ids - {None})
     _, tree = category_tree(db)
@@ -1397,6 +1607,8 @@ def build_line_view(
 
     vat_dropped = _vat_dropped_view(scene, row, result)
     analogs = _analogs_view(scene, participant, result, analog_details, tree, steps)
+    reference_zones = _reference_zones_view(scene, participant, result, reference, analog_details, steps)
+    reference_links = _reference_links_view(scene, participant, result, reference, analog_details, steps)
 
     template = _template_text(scene, participant, row, result, unit_texts[position_item_id])
     own_comment = scene.decisions[participant.estimate_id].comments.get(position_item_id)
@@ -1405,12 +1617,15 @@ def build_line_view(
         **_decision_fields(scene, participant, row, result, template),
         "file_ours": _file_ours(scene, participant, row, result, unit_texts[position_item_id]),
         "article": _article_ref(tree, row.category_id),
+        **_other_zones_field(other_zones(reference.zones)),
     }
     return {
         "line": line,
         "group_lines": group_lines,
         "contracts": contracts,
         "analogs": analogs,
+        "reference_zones": reference_zones,
+        "reference_links": reference_links,
         "parts_reference": _parts_reference_view(db, scene, participant, row, result),
         "vat_dropped": vat_dropped,
         "comment": {

@@ -631,6 +631,7 @@ def load_work_history(
             PositionItem.unit_cost_total,
             _WEIGHT,
             sa.func.coalesce(Estimate.vat_rate_base_override, Proposal.vat_rate),
+            CatalogPosition.unit_id,
         )
         .select_from(PositionItem)
         .join(Proposal, Proposal.id == PositionItem.proposal_id)
@@ -639,6 +640,7 @@ def load_work_history(
         .join(SectionChain, SectionChain.id == PositionItem.section_chain_id)
         .join(ContextMember, ContextMember.position_item_id == PositionItem.id)
         .join(CatalogContext, CatalogContext.id == ContextMember.context_id)
+        .outerjoin(CatalogPosition, CatalogPosition.id == PositionItem.catalog_position_id)
         .where(
             Estimate.id.in_(list(contract_of)),
             PositionItem.is_chapter.is_(False),
@@ -655,7 +657,9 @@ def load_work_history(
     conflicts = _conflicted_parameters(db, [row[6] for row in rows])
     titles_of: dict[int, frozenset[str]] = {}
     lines: list[WorkHistoryLine] = []
-    for item_id, estimate_id, chain_id, zone, titles, variant_id, context_id, unit_price, weight, vat_base in rows:
+    for (
+        item_id, estimate_id, chain_id, zone, titles, variant_id, context_id, unit_price, weight, vat_base, unit_id
+    ) in rows:
         if chain_id not in titles_of:
             titles_of[chain_id] = frozenset(normalize_title(title) for title in titles)
         info = infos[variant_id]
@@ -675,6 +679,7 @@ def load_work_history(
                 vat_base=vat_base,
                 conflicted=_conflicts_of(conflicts, context_id, info.schema_id),
                 forms=info.forms,
+                unit_id=unit_id,
             )
         )
     return lines, _family_ladder_infos(db)

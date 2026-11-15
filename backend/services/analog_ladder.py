@@ -79,6 +79,8 @@ class WorkHistoryLine:
     conflicted: frozenset[int] = frozenset()
     #: parameter_id -> форма значения, как у строки КП.
     forms: Mapping[int, Form] = field(default_factory=dict)
+    #: Единица строки — `catalog_positions.unit_id` её каталожной позиции; нужна справочным блокам для пересчёта.
+    unit_id: int | None = None
 
 
 @dataclass(frozen=True)
