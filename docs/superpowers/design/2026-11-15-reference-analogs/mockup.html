@@ -172,6 +172,7 @@ table.list td:has(> .btn) { white-space:nowrap; }
     <button class="tab" role="tab" aria-selected="false" data-v="zone">2 · Панель: другая зона</button>
     <button class="tab" role="tab" aria-selected="false" data-v="search">3 · Панель: поиск по договорам</button>
     <button class="tab" role="tab" aria-selected="false" data-v="picked">4 · Цель выбрана и файл подрядчику</button>
+    <button class="tab" role="tab" aria-selected="false" data-v="link">5 · Пересчёт и связь семей</button>
   </div>
 
   <section class="view" id="v-row">
@@ -227,8 +228,8 @@ table.list td:has(> .btn) { white-space:nowrap; }
           <div><span class="eyebrow">Строка КП · м³ · 23 650,94 ₽/м³</span><h3>Бетонная подготовка, толщиной 100 мм В12,5</h3></div>
           <div class="sec">
             <span class="eyebrow">Найти в договорах</span>
-            <div class="searchbar"><span class="input">бетонная подготовка 100</span><button class="btn primary">Найти</button><span class="toggle"><span>только м³</span><span class="on">все единицы</span></span></div>
-            <p class="small t2">Найдено 17 строк в 7 договорах.</p>
+            <div class="searchbar"><span class="input">подготовка</span><button class="btn primary">Найти</button><span class="toggle"><span>только м³</span><span class="on">все единицы</span></span></div>
+            <p class="small t2">В макете показаны только строки подбетонки из найденного: 17 строк в 7 договорах.</p>
             <div class="scroll"><table class="list">
               <thead><tr><th>Строка договора · раздел</th><th>Ед.</th><th>Зона</th><th>Договор</th><th class="r">Цена</th><th></th></tr></thead>
               <tbody>
@@ -241,7 +242,7 @@ table.list td:has(> .btn) { white-space:nowrap; }
                 <tr><td>Бетонная подготовка В15, армир. сеткой 100х100/ ᴓ4мм - 100 мм <span class="t3">×2</span><div class="chain">Гидроизоляция подземной части → Урбан блок UB1a / UB1b</div></td><td>м²</td><td>подземная</td><td>Тушино 1 оч. Cityzen, ТУШ-1-СМР, 2024</td><td class="r num">1 869,24</td><td><button class="btn sm" disabled>сделать целью</button></td></tr>
                 <tr><td>Бетонная подготовка (подбетонка В7.5) - 100мм<div class="chain">Гидроизоляция подземной части → Подготовка основания</div></td><td>м²</td><td>подземная</td><td>Cityzen Tr. 1 UB8b, 12-СИТ-МР, 2026</td><td class="r num">1 894,80</td><td><button class="btn sm" disabled>сделать целью</button></td></tr>
               </tbody></table></div>
-            <div class="q"><b>Вопрос к вам:</b> строки в м² для строки КП в м³ — только посмотреть, или выбирать целью с пересчётом через толщину, которую вводите вы (здесь 100 мм: 1 м² = 0,1 м³, цена ×10)?</div>
+            <p class="xs t3">Строку в другой единице целью выбирают через пересчёт — вкладка 5.</p>
           </div>
         </div>
       </div>
@@ -266,9 +267,57 @@ table.list td:has(> .btn) { white-space:nowrap; }
             <span class="eyebrow">Строка в файле подрядчику</span>
             <div class="scroll"><table class="list filecell">
               <thead><tr><th>Наименование</th><th>Ед.</th><th class="r">Цена за ед.</th><th class="r">Наша расценка</th><th class="r">Откл.</th><th>Источник</th></tr></thead>
-              <tbody><tr class="picked"><td>Бетонная подготовка, толщиной 100 мм В12,5</td><td>м³</td><td class="r num">28 381,13</td><td class="r num">10 047,50</td><td class="r num">+182 %</td><td>TOP TOWER, договор № Д-2026-27002, 2026 г.: 10 047,50 ₽ за м³ с НДС</td></tr></tbody>
+              <tbody><tr class="picked"><td>Бетонная подготовка, толщиной 100 мм В12,5</td><td>м³</td><td class="r num">28 381,13</td><td class="r num">10 047,50</td><td class="r num">+182 %</td><td>TOP TOWER, договор № Д-2026-27002, 2026 г.: сопоставимая работа (Благоустройство → МАФ), 10 047,50 ₽ за м³ с НДС<div class="chain" style="margin-top:4px">при пересчёте: «… 1 328,69 ₽ за м² при толщине 100 мм = 13 286,90 ₽ за м³ с НДС»</div></td></tr></tbody>
             </table></div>
-            <div class="q"><b>Вопрос к вам:</b> говорить ли подрядчику, что цифра из другого раздела («сопоставимая работа, благоустройство»), или источник остаётся как у обычного аналога?</div>
+            <p class="xs t3">Решение 15.11.2026: подрядчику пишем, откуда цифра — другой раздел, пересчёт и его основание. Точные формулировки — в спеке.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="view" id="v-link" hidden>
+    <p class="tabnote">Слева — диалог пересчёта, который открывается, когда целью выбирают строку в другой единице (здесь строку в м² из поиска). Множитель берётся из параметра строки договора «Толщина, мм»; можно сразу запомнить связь для пары семей. Справа — что получают строки КП, когда связь уже есть: второй справочный блок, пересчитанный по толщине каждой строки договора.</p>
+    <div class="app">
+      <div class="appbar"><span class="logo">База расценок ГП</span><nav><span>Главная</span><span>Договоры</span><span class="on">Тендеры</span><span>Семьи</span></nav></div>
+      <div style="display:grid; grid-template-columns:minmax(0,440px) minmax(0,1fr); gap:0; min-height:560px">
+        <div style="padding:18px 20px; border-right:1px solid var(--border2); background:var(--bg-page)">
+          <div class="card" style="padding:16px; display:grid; gap:12px; box-shadow:var(--shadow)">
+            <b>Пересчёт в единицу строки КП</b>
+            <div class="small t2">TOP TOWER, Д-2026-27002, 2026 · «Бетонная подготовка B7,5, 100мм, армированная сеткой…» · 1 107,24 ₽/м²</div>
+            <div class="rungline"><span>1 м² договора =</span><span class="select num" style="min-width:70px">0,1</span><span>м³ строки КП</span></div>
+            <div class="small"><span class="t3">Основание:</span> толщина 100 мм — параметр строки договора «Толщина, мм»</div>
+            <div class="target" style="padding:8px 10px"><span class="num">1 107,24 ₽/м² ÷ 0,1 = <b>11 072,40 ₽/м³</b></span><span class="small diffbad">КП дороже на 113,6 %</span></div>
+            <label class="check"><span class="box on">✓</span>Запомнить для семей «Устройство бетонной подготовки (подбетонки)»: м² ↔ м³ через толщину</label>
+            <div class="row"><span class="xs t3">Без основания пересчёт не сохраняется</span><span style="display:flex;gap:6px"><button class="btn sm ghost">Отмена</button><button class="btn sm primary">Сделать целью</button></span></div>
+          </div>
+          <div class="card" style="padding:14px 16px; display:grid; gap:8px; margin-top:16px">
+            <b class="small">Если параметра нет — постоянный множитель связи</b>
+            <div class="small">Щебень гравийный: 1 т = <span class="num">0,667</span> м³</div>
+            <div class="small"><span class="t3">Основание:</span> насыпная плотность 1,5 т/м³ — по паспорту поставщика</div>
+            <div class="xs t3">Пишет человек один раз при создании связи. Живёт в связи этой пары семей, а не в общем справочнике.</div>
+          </div>
+        </div>
+        <div class="sheet" style="border-left:0">
+          <div><span class="eyebrow">Строка КП · м³ · 23 650,94 ₽/м³ · толщина 100 мм</span><h3>Бетонная подготовка, толщиной 100 мм В12,5</h3></div>
+          <div class="sec">
+            <span class="eyebrow">Справочно: семья в м², пересчёт через толщину</span>
+            <div class="refbox">
+              <div class="head"><span>Устройство бетонной подготовки (подбетонки) · м² · зона: подземная часть</span><span class="badge">связь: м² ↔ м³ через толщину</span></div>
+              <div class="xs t3">Первыми — строки с той же толщиной, что у строки КП (100 мм).</div>
+              <div class="scroll"><table class="list">
+                <thead><tr><th>Строка договора · договор</th><th class="r">₽/м²</th><th class="r">Толщина</th><th class="r">≈ ₽/м³</th><th class="r">К цене КП</th><th></th></tr></thead>
+                <tbody>
+                  <tr><td>Бетонная подготовка B7,5, 100мм, армированная сеткой<div class="chain">TOP TOWER, Д-2026-27002, 2026</div></td><td class="r num">1 107,24</td><td class="r num">100 мм</td><td class="r num">11 072,40</td><td class="r num diffbad">КП +114 %</td><td><button class="btn sm">сделать целью</button></td></tr>
+                  <tr><td>Бетонная подготовка из бетона класса В10 – 100 мм<div class="chain">Jois 1, ДГП-3С10, 2024</div></td><td class="r num">1 372,42</td><td class="r num">100 мм</td><td class="r num">13 724,20</td><td class="r num diffbad">КП +72 %</td><td><button class="btn sm">сделать целью</button></td></tr>
+                  <tr><td>Бетонная подготовка - класс B15, толщина 100 мм; армирована сеткой<div class="chain">VEER 1 оч UB9, ВЕР1-ГП, 2024</div></td><td class="r num">1 452,07</td><td class="r num">100 мм</td><td class="r num">14 520,70</td><td class="r num diffbad">КП +63 %</td><td><button class="btn sm">сделать целью</button></td></tr>
+                  <tr><td>Бетонная подготовка В10, армир. сеткой - 100 мм<div class="chain">МИРА, СДП-1-МР, 2025</div></td><td class="r num">1 548,42</td><td class="r num">100 мм</td><td class="r num">15 484,20</td><td class="r num diffbad">КП +53 %</td><td><button class="btn sm">сделать целью</button></td></tr>
+                  <tr><td>Бетонная подготовка В15, армир. сеткой - 100 мм<div class="chain">VEER 1 оч UB2, UB2-CIW, 2024</div></td><td class="r num">1 548,87</td><td class="r num">100 мм</td><td class="r num">15 488,70</td><td class="r num diffbad">КП +53 %</td><td><button class="btn sm">сделать целью</button></td></tr>
+                  <tr><td>Бетонная подготовка В15, армир. сеткой - 100 мм <span class="t3">×2</span><div class="chain">Тушино 1 оч. Cityzen, ТУШ-1-СМР, 2024</div></td><td class="r num">1 869,24</td><td class="r num">100 мм</td><td class="r num">18 692,40</td><td class="r num diffbad">КП +27 %</td><td><button class="btn sm">сделать целью</button></td></tr>
+                  <tr><td>Бетонная подготовка (подбетонка В7.5) - 100мм<div class="chain">Cityzen Tr. 1 UB8b, 12-СИТ-МР, 2026</div></td><td class="r num">1 894,80</td><td class="r num">100 мм</td><td class="r num">18 948,00</td><td class="r num diffbad">КП +25 %</td><td><button class="btn sm">сделать целью</button></td></tr>
+                </tbody></table></div>
+            </div>
+            <p class="xs t3">Как и блок «другая зона», в вилку, «Самую низкую» и итоги не входит.</p>
           </div>
         </div>
       </div>
@@ -277,7 +326,7 @@ table.list td:has(> .btn) { white-space:nowrap; }
 
   <div class="legend">
     <span><b>Что не меняется:</b> лестница аналогов, вилка, «Самая низкая», «К самой низкой», итоги статей — справочное в них не входит.</span>
-    <span><b>Пунктир</b> — справочное: другая зона.</span>
+    <span><b>Пунктир</b> — справочное: другая зона и семья в другой единице по связи.</span>
   </div>
 </div>
 <script>
