@@ -457,6 +457,15 @@ class TestReferenceTargetChecks:
         with rejected_by(db_session, "ck_kp_line_targets_ref_conversion"):
             _reference(db_session, factories, ref_basis="основание")
 
+    def test_a_factor_and_basis_without_a_method_is_rejected(self, db_session, factories):
+        """Обратная сторона равносильности: множитель и основание допустимы, нет только
+        способа. Два входа выше нарушают ещё и пару «множитель — основание», поэтому
+        условие «способ обязателен» само по себе держит только этот вход."""
+        with rejected_by(db_session, "ck_kp_line_targets_ref_conversion"):
+            _reference(
+                db_session, factories, ref_factor=Decimal("2"), ref_basis="основание"
+            )
+
     def test_a_link_with_a_manual_method_is_rejected(self, db_session, factories):
         link = _link(db_session, _Pair(db_session, factories))
         with rejected_by(db_session, "ck_kp_line_targets_ref_link"):
@@ -578,13 +587,15 @@ class TestParityWithMigration:
     @pytest.mark.parametrize("table", list(_MODEL_CHECKS))
     def test_the_model_declares_the_migration_checks(self, table):
         """`alembic check` CHECK-выражения не сравнивает: что модель объявляет те же
-        ограничения с теми же текстами, что миграция, держит только этот тест."""
+        ограничения с теми же текстами, что миграция, держит только этот тест. Перечень
+        полный (все CHECK обеих таблиц), поэтому фильтра по именам нет: лишнее CHECK
+        модели, которого нет в миграциях, тоже красное."""
         from models import Base
 
         declared = {
             c.name: str(c.sqltext)
             for c in Base.metadata.tables[table].constraints
-            if isinstance(c, sa.CheckConstraint) and c.name in self._MODEL_CHECKS[table]
+            if isinstance(c, sa.CheckConstraint)
         }
         migration = _migration_0027()
         expected = {

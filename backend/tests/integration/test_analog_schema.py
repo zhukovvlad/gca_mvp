@@ -632,6 +632,10 @@ class TestParityWithMigration:
             "ck_kp_line_targets_analog": "CK_KP_TARGET_ANALOG",
         },
     }
+    #: Таблицы, чьи CHECK дописывали более поздние миграции: здесь сверяются только
+    #: перечисленные имена, полный перечень держит тест той миграции
+    #: (`kp_line_targets` — `test_ref_analogs_schema.py`). Остальные — целиком.
+    _SHARED_TABLES = frozenset({"kp_line_targets"})
 
     @pytest.mark.parametrize("table", list(_MODEL_CHECKS))
     def test_the_model_declares_the_migration_checks(self, table):
@@ -642,7 +646,8 @@ class TestParityWithMigration:
         declared = {
             c.name: str(c.sqltext)
             for c in Base.metadata.tables[table].constraints
-            if isinstance(c, sa.CheckConstraint) and c.name in self._MODEL_CHECKS[table]
+            if isinstance(c, sa.CheckConstraint)
+            and (table not in self._SHARED_TABLES or c.name in self._MODEL_CHECKS[table])
         }
         expected = {
             name: getattr(_owner_of(constant), constant)
