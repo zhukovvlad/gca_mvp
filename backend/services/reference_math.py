@@ -85,7 +85,7 @@ def link_number(
     """`x` строки из значения параметра её стороны связи; `None` — «не число».
 
     Единица — последнее слово текста после числа, иначе часть имени параметра после
-    последней запятой. В основании `n` и единица остаются как в источнике."""
+    последней запятой. В основании `n` пишется с десятичной запятой, единица остаётся как в источнике."""
     if kind not in _SCALE or composite or source in _NOT_A_NUMBER_SOURCES or not value_text:
         return None
     number = parse_single_number(value_text)
@@ -102,7 +102,7 @@ def link_number(
         return None
     with localcontext(_CONTEXT):
         x = number * scale
-    return LinkNumber(x=x, basis=f"{_BASIS_WORD[kind]} {match.group('number')} {unit}")
+    return LinkNumber(x=x, basis=f"{_BASIS_WORD[kind]} {match.group('number').replace('.', ',')} {unit}")
 
 
 def link_factor(kind: LinkKind, x: Decimal, *, contract_unit_is_smaller: bool) -> Decimal:
