@@ -1,10 +1,14 @@
 # План: справочные аналоги — другая зона, поиск по договорам, пересчёт единиц
 
-**Спека:** `docs/superpowers/specs/2026-11-15-reference-analogs-design.md` (редакция 2, `c4ad52e`; гейт 2 — Codex на `c4ad52e` замечаний не имеет)
+**Спека:** `docs/superpowers/specs/2026-11-15-reference-analogs-design.md` (редакция 3; гейт 2 — Codex на `c4ad52e` замечаний не имел, ред. 3 добавила `link_id` в пересчёт строки по ревью плана)
 **Дизайн:** `docs/superpowers/design/2026-11-15-reference-analogs.md` (редакция 4), макет — `.../2026-11-15-reference-analogs/mockup.html`
 **Стоит на:** спеки 4а, 4б, лестницы аналогов, упрощения каталога — все в `main`
 **Ветка:** `feat/reference-analogs`, черновой PR #85
-**Статус:** редакция 1, 15.11.2026, на гейт 3.
+**Статус:** редакция 2, 15.11.2026, на гейт 3. По первому кругу Codex (на
+`8386040`): запись и снятие цели — только `admin`, как сегодня (Task 7, К7,
+Task 9–10); `link_id` в пересчёте строки — и в поиске (спека §2.16 ред. 3,
+Task 5, 6, 9); К9 разделено между Task 3 и Task 7; экранирование поиска —
+на запросе «a_».
 
 > Исполнителю: задачи идут по порядку; каждая — цикл TDD
 > (`superpowers:test-driven-development`: тесты первыми, красный прогон
@@ -61,8 +65,8 @@
   входят ни в блоки, ни в поиск, ни в цель (§2.3).
 - **Чтение не пишет**: `GET` панели, разбора, поиска и связей.
 - **Права:** связи — запись только `require_admin` (свой `Depends` на каждом
-  маршруте); поиск и блоки — любой вошедший; цель — права нынешнего
-  `PUT …/target`. Сторож `tests/test_auth_coverage.py` зелёный после каждой
+  маршруте); поиск и блоки — любой вошедший; запись и снятие цели —
+  `require_admin`, как сегодня у `PUT`/`DELETE …/target` (§2.19). Сторож `tests/test_auth_coverage.py` зелёный после каждой
   задачи с маршрутами.
 - **Наружу ничего нового:** поиск, связи и пересчёт во внешнюю модель не
   уходят (§2.19).
@@ -84,9 +88,9 @@
 | К4 | снимок пересчёта | 7 | читать `N` из связи вместо `ref_factor` → тест «связь поправлена, цель прежняя, `link_now` есть» |
 | К5 | сброс цели | 7 | убрать проверку справочности при чтении → тест «смета договора заменена допсоглашением → `reference_unavailable`» |
 | К6 | состав истории | 6 | убрать `exclude_object_id` из поиска → тест «строка договора объекта тендера не находится» |
-| К7 | права | 3, 7 | снять `require_admin` с `POST /family-links` → `403` у `member`; цель `member` — как нынешний `PUT …/target` |
+| К7 | права | 3, 7 | снять `require_admin` с `POST /family-links` → тест `403` у `member` (Task 3); снять `require_admin` с `PUT …/target` → тест «`member` пишет справочную цель → `403`» (Task 7) |
 | К8 | направление множителя связи | 3 | обращать `factor` при упорядочивании пары → тест «создать с карточки `hi`, прочитать и сохранить с обеих карточек — `factor`, `factor_from` и `N` прежние» |
-| К9 | единица семьи после связи | 3 | убрать сверку `unit_lo/hi` с текущими → тест «т → кг: связь `units_changed`, блока Г нет, снимок цели прежний» |
+| К9 | единица семьи после связи | 3, 7 | Task 3: убрать сверку `unit_lo/hi` с текущими → тест «т → кг: связь `units_changed`». **Окончательное снятие — Task 7:** та же мутация → сквозной тест «цель по связи сохранена → единица семьи т → кг → блока Г в панели нет, значение цели и `ref_factor` прежние» |
 | К10 | подтверждённый пересчёт | 7 | убрать сверку `expected_factor` → тест «значение 100 → 200 мм после чтения панели, запись с прежним `expected_factor` → `409 conversion_stale`, цели нет» |
 
 ## Review Focus
@@ -363,7 +367,8 @@ class LinkInput(BaseModel):   # family_a_id, family_b_id, kind, param_a_id, para
   вторая связь пары — `409 link_exists`; `PUT` с другой парой — `422`,
   несуществующей — `404`;
 - состояние: семья `merged`/`archived` → `family_inactive`; единица семьи
-  сменена `set_unit` т → кг → `units_changed` (К9), `PUT` без изменений
+  сменена `set_unit` т → кг → `units_changed` (К9, часть Task 3: только
+  состояние связи; блок Г и снимок — Task 7), `PUT` без изменений
   возвращает `active` и перезапоминает единицы; схема стороны пересобрана →
   сторона не живая, у вида с параметром обе мёртвые → `no_live_side`;
 - `DELETE` → `204`, у цели со ссылкой `ref_link_id = NULL`;
@@ -461,7 +466,7 @@ class RefRow:
     unit_id: int | None
     nominal: Decimal
     net: Decimal
-    conversion: Conversion | None
+    conversion: Conversion | None        # у method = link — с link_id (спека §2.16 ред. 3)
     no_conversion_reason: str | None
     kp_unit_net: Decimal | None
     outlier_ratio: Decimal | None
@@ -513,6 +518,7 @@ def reference_marks(ladder: WorkLadder | None, zones: Sequence[ZoneGroup],
   свёрткой и `chapter_paths`; деньги — пары `{net, shown}`; `with_this_contractor`;
   `conversion.factor` — точная запись `N` (у `1 / x` — в точности `_CONTEXT`),
   не печатная форма: её же клиент вернёт в `expected_factor` (§2.13);
+  у `conversion.method = link` есть `link_id` связи, давшей `N`;
 - сценарий подбетонки (условные данные): строка КП в м³ без своих аналогов,
   связь `thickness` с 98-подобной семьёй в м², значение «100 мм» → строка
   блока Г `1 107,24 ₽/м² → 11 072,40 ₽/м³`, основание «толщина 100 мм».
@@ -546,8 +552,10 @@ def search_reference(db: Session, tender_id: int, round_id: int, offer_id: int, 
 
 **Утверждения**
 - запрос: « а » и «x» → `422 search_query_invalid`; 101 знак → `422`; семь
-  слов → `422`; «засыпка песком» находит «Засыпка песок» (лемма) и «засыпка
-  песком» (текст); «100%» и «_» ищутся буквально, не шаблоном;
+  слов → `422`; «_» → `422` (после отбрасывания коротких слов искать
+  нечего); «засыпка песком» находит «Засыпка песок» (лемма) и «засыпка
+  песком» (текст); экранирование: при строках «a_» и «ab» запрос «a_» находит
+  только первую, «100%» при «100%» и «1005» — только первую;
   лемматизатор недоступен (подмена) — ищет по тексту;
 - каждое слово обязано найтись (в тексте **или** в леммах);
 - состав: строки §2.3 сцены; строка договора объекта тендера не находится
@@ -555,8 +563,10 @@ def search_reference(db: Session, tender_id: int, round_id: int, offer_id: int, 
   находится с `zone = None`;
 - `units = kp` — только `unit_id` строки КП; `all` — все, сначала своя
   единица, затем своя зона, место, цена, `position_item_id`;
-- пересчёт строки выдачи: `none` | `link` | `manual_needed` по §2.8; цена в
-  единице КП только при пересчёте или равных единицах;
+- пересчёт строки выдачи: `none` | `link` | `manual_needed` по §2.8; у
+  `link` — `link_id`, точный `factor` и `basis`, ровно те, что примет
+  `PUT …/target` без `409`; цена в единице КП только при пересчёте или
+  равных единицах;
 - пометка выброса — та же, что в справке своей ступени и в блоках панели на
   той же строке договора (сравнение ответов поиска и панели);
 - 51 строка после свёртки → 50, `truncated = true`, `total_lines = 51`
@@ -622,6 +632,10 @@ class ReferenceTargetInput(BaseModel):  # analog_id, origin, conversion, confirm
   `manual_conversion_invalid`; помеченная строка без `confirm_outlier` →
   `409 outlier_confirmation_required` с `ratio` — на строке блока А **и** на
   строке из поиска (К3); с `confirm_outlier` — сохраняется;
+- строка **поиска** с пересчётом `link`: тело `PUT` собрано из её
+  `conversion` (`link_id`, `factor` → `expected_factor`, `basis` →
+  `expected_basis`) без изменений → цель записана, `ref_link_id` и
+  `ref_factor` равны отданным поиском;
 - справочная цель принимается у `comparable`, `no_history`, `no_variant`,
   `no_zone`, `unit_mismatch`, `no_price`;
 - снимок: `ref_method`, `ref_factor` (точный `N`), `ref_basis`,
@@ -640,7 +654,11 @@ class ReferenceTargetInput(BaseModel):  # analog_id, origin, conversion, confirm
   договора в форме `rows`), и тогда, когда строки нет в блоках;
 - итоги оффера, итоги строки, `to_lowest`, `to_freshest`, вилка, корзины и
   плитки равны со справочной целью и без (К1);
-- `member` записывает и снимает цель, как сегодня; анонимный — `401`;
+- `member`: `PUT` справочной цели и `DELETE` цели → `403` (К7); `admin` —
+  обе операции проходят; анонимный — `401`; поиск и панель `member` читает;
+- сквозной К9: цель по связи сохранена, затем единица семьи `F'` т → кг —
+  блока Г в панели нет, связь `units_changed`, значение цели и `ref_factor`
+  прежние, подсказка `link_gone`;
 - прежние виды цели: тела и ответы `PUT …/target` прежние до поля
   (`test_analog_targets.py`, `test_simplify_target.py` — без правок).
 
@@ -715,7 +733,10 @@ class ReferenceSource:
 - Производит:
 
 ```ts
-type RefConversion = { method: "link" | "manual"; factor: string; basis: string } | null
+type RefConversion =
+  | { method: "link"; link_id: number; factor: string; basis: string }
+  | { method: "manual"; factor: string; basis: string }
+  | null
 interface RefRow { analog_id: number; ids: number[]; title: string; unit: string | null; zone: Zone | null;
   contract: RefContract; period: string | null; chapter_paths: string[][]; price: MoneyPair; nominal: MoneyPair;
   conversion: RefConversion; no_conversion_reason: string | null; kp_unit_price: MoneyPair | null;
@@ -739,8 +760,14 @@ function usePutReferenceTarget(...): UseMutationResult<void, ApiError, Reference
 - поиск: короче двух знаков — запроса нет; переключатель «все единицы / как у
   строки КП»; подсказка «ищите по корням слов»; `truncated` — «показаны первые
   50, уточните запрос»; `422 reference_not_applicable` — поля нет у системы;
+- «сделать целью» и диалог — только у `admin`; `member` видит блоки и поиск
+  без кнопок выбора;
 - «сделать целью» у помеченной строки — сначала подтверждение, затем
   `confirm_outlier = true`;
+- сквозной: строка **поиска** (не блока Г) с пересчётом `link` → диалог →
+  `PUT` с `conversion = {method: "link", link_id, expected_factor, expected_basis}`
+  — значения ровно из `conversion` строки, `factor` строкой без
+  преобразования;
 - диалог пересчёта открывается при разных единицах: `link` — только
   просмотр `N` и основания; иначе ручной ввод; без основания кнопка
   неактивна; `409 conversion_stale` подменяет `N`, основание и цену из ответа
@@ -781,7 +808,8 @@ function useFamilyLinks(familyId: number): UseQueryResult<FamilyLinkView[]>
 - карточка цели: «справочная · другая зона | из поиска | по связи»; при
   пересчёте «пересчёт из м²», основание, исходная и пересчитанная цена;
   подсказки `link_now`, `link_gone`, `own_analogs` текстами §2.14; «вернуть
-  самую низкую» — прежний `DELETE`; сброшенная — причина сброса;
+  самую низкую» — прежний `DELETE`, только у `admin`; сброшенная — причина
+  сброса;
 - `ExportBlock` показывает источник справочной цели;
 - «Связи» на карточке семьи: список (показ — `shown`), «не действует: единица
   семьи изменилась — подтвердите связь заново», «параметр устарел — укажите

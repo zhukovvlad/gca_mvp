@@ -1,5 +1,9 @@
 # Справочные аналоги: другая зона, поиск по договорам, пересчёт единиц — спека (гейт 2)
 
+**Редакция 3, 15.11.2026.** По ревью плана (Codex на `8386040`): пересчёт
+строки в панели и поиске у `method = link` несёт `link_id` — иначе строке
+поиска не из чего собрать тело записи цели (§2.16).
+
 **Редакция 2, 15.11.2026.** По первому кругу Codex: направление постоянного
 множителя хранится и не обращается при записи (§2.6, §2.16); связь запоминает
 единицы семей и перестаёт действовать при их смене (§2.6); запись цели по
@@ -463,8 +467,8 @@ confirm_outlier: bool = false
   kind, other_class, rows}`;
 - строка `rows`: `{analog_id, ids, title, unit, zone, contract {id,
   object_title, number, year, rate_class, contractor_id, contractor_title},
-  period, chapter_paths, price, nominal, conversion {method, factor, basis} |
-  null, no_conversion_reason, kp_unit_price, deviation_pct, outlier_ratio,
+  period, chapter_paths, price, nominal, conversion {method, factor, basis,
+  link_id (только у `link`)} | null, no_conversion_reason, kp_unit_price, deviation_pct, outlier_ratio,
   with_this_contractor, param_value}`;
 - `line.choice` при `kind = reference`: `{kind, analog_id, origin, conversion,
   active, reset_reason, hints {link_now, link_gone, own_analogs}, reference
