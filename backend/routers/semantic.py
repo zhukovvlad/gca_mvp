@@ -68,7 +68,7 @@ import crud.section_chains as crud_section_chains
 import crud.semantic as crud_semantic
 import crud.semantic_queue as crud_semantic_queue
 import crud.work_variants as crud_work_variants
-from auth import require_admin
+from auth import get_current_user, require_admin
 from config import settings as app_settings
 from crud.common import DomainError
 from database import get_db
@@ -89,6 +89,7 @@ from services import (
     family_categories,
     family_change,
     family_discovery,
+    family_links,
     schema_edit,
     semantic_decisions,
     work_families,
@@ -99,6 +100,7 @@ from services import review as review_service
 from services.context_operations import ContextOperationError
 from services.context_routing import RoutingError
 from services.family_change import AutoAcceptError, FamilyLockMismatch
+from services.family_links import LinkInput
 from services.semantic_decisions import CODE_PREVIEW_CHANGED, DecisionConflict
 from services.semantic_reconcile import NO_CAP
 from services.status_cache import status_cache
@@ -725,6 +727,56 @@ def _serialize_category(db: Session, category_id: int) -> dict:
     row = crud_semantic.get_family_category_row(db, category_id=category_id)
     assert row is not None, f"категория {category_id} исчезла между мутацией и сериализацией"
     return row
+
+
+# ---------------------------------------------------------------------------
+#  Связи семей (спека справочных аналогов §2.16)
+# ---------------------------------------------------------------------------
+
+@router.get("/families/{family_id}/links")
+def family_links_route(
+    family_id: int,
+    _user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Связи семьи, развёрнутые от неё; читают все. Чтение не пишет."""
+    try:
+        return {"items": family_links.family_links_view(db, family_id)}
+    except DomainError as exc:
+        raise_domain_error(exc)
+
+
+@router.post("/family-links", status_code=status.HTTP_201_CREATED)
+def create_family_link_route(
+    body: LinkInput,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _mutating(db):
+        link_id = family_links.create_link(db, body=body, actor_id=admin.id)
+    return {"id": link_id}
+
+
+@router.put("/family-links/{link_id}")
+def update_family_link_route(
+    link_id: int,
+    body: LinkInput,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _mutating(db):
+        family_links.update_link(db, link_id, body=body, actor_id=admin.id)
+    return {"id": link_id}
+
+
+@router.delete("/family-links/{link_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_family_link_route(
+    link_id: int,
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    with _mutating(db):
+        family_links.delete_link(db, link_id)
 
 
 @router.get("/family-categories")
