@@ -1060,6 +1060,17 @@ describe("SchemaBlock: причина ожидания схемы (build_wait)",
     ).toBeInTheDocument();
   });
 
+  it("ответ без поля build_wait (бэкенд до правки): прежняя общая метка, не падение", async () => {
+    const schema = handlerState.familySchemas[SCHEMA_FAMILY_ID] as Partial<
+      (typeof handlerState.familySchemas)[number]
+    >;
+    schema.ready_to_build = false;
+    delete schema.build_wait;
+    renderBlock();
+
+    expect(await screen.findByText("схема ждёт перезапроса единицы", {}, LATER)).toBeInTheDocument();
+  });
+
   it("без ожидания (build_wait = null) метки нет", async () => {
     renderBlock();
     await shown();

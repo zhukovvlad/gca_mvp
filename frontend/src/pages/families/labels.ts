@@ -626,10 +626,11 @@ export const BATCH_SOURCE_SHORT_LABEL: Record<BatchSource, string> = {
 /**
  * Метка ожидания схемы семьи (спека provider-budget-pause §2.7 п. 3): что именно держит схему.
  * `null` при `ready_to_build = false` — прежняя общая формулировка (сервер так не отвечает, но
- * метка не должна пропадать из-за этого).
+ * метка не должна пропадать из-за этого). `undefined` — ответ бэкенда до этой правки, без поля
+ * (новый фронт со старым бэкендом при обновлении стенда): та же общая формулировка, а не падение.
  */
-export function buildWaitLabel(wait: BuildWait | null): string {
-  if (wait === null) return "схема ждёт перезапроса единицы";
+export function buildWaitLabel(wait: BuildWait | null | undefined): string {
+  if (wait == null) return "схема ждёт перезапроса единицы";
   if (wait.held_batches.length > 0) {
     const batches = wait.held_batches
       .map((batch) => {
