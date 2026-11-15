@@ -34,6 +34,10 @@ def test_ref_analogs_link_kinds_match_models() -> None:
         ("density", "1500 кг/м³", "Плотность", "1.5", "плотность 1500 кг/м³"),
         ("density", "2,4 г/см³", "Плотность", "2.4", "плотность 2,4 г/см³"),
         ("density", "1500", "Плотность, кг/м3", "1.5", "плотность 1500 кг/м3"),
+        # единица текста главнее единицы имени, когда обе есть и различны
+        ("thickness", "12 см", "Толщина, мм", "0.12", "толщина 12 см"),
+        # единица имени — после последней запятой, а не после первой
+        ("thickness", "100", "Толщина слоя, утеплитель, мм", "0.1", "толщина 100 мм"),
     ],
 )
 def test_ref_analogs_link_number_is_a_number(kind, text, name, x, basis) -> None:
@@ -115,6 +119,19 @@ def test_ref_analogs_constant_factor_direction() -> None:
 
 def test_ref_analogs_price_in_kp_unit_divides() -> None:
     assert rm.price_in_kp_unit(Decimal("1107.24"), Decimal("0.1")) == Decimal("11072.40")
+
+
+def test_ref_analogs_price_by_link_both_directions() -> None:
+    # толщина 100 мм: договор в м² (меньшая), КП в м³ — и зеркально договор в м³, КП в м²
+    x = rm.link_number("thickness", "100 мм", "Толщина", source=None, composite=False).x
+    per_m3 = rm.price_in_kp_unit(
+        Decimal("1107.24"), rm.link_factor("thickness", x, contract_unit_is_smaller=True)
+    )
+    per_m2 = rm.price_in_kp_unit(
+        Decimal("11072.40"), rm.link_factor("thickness", x, contract_unit_is_smaller=False)
+    )
+    assert per_m3 == Decimal("11072.40")
+    assert per_m2 == Decimal("1107.24")
 
 
 def test_ref_analogs_price_uses_exact_factor_not_printed() -> None:
