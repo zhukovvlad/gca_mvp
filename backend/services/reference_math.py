@@ -138,6 +138,13 @@ def format_factor(n: Decimal) -> tuple[str, bool]:
     return text, rounded != n
 
 
+def factor_shown(n: Decimal) -> str:
+    """Печатная форма `N` для ответов API (спека справочных аналогов §2.8): запятая, до 4 знаков,
+    «≈ » перед числом, если округление его изменило."""
+    text, approximate = format_factor(n)
+    return f"≈ {text}" if approximate else text
+
+
 def parse_manual_factor(text: str) -> Decimal | None:
     """Ручной `N` (§2.13): десятичная запятая или точка, > 0, не более 6 знаков, ≤ 10⁶."""
     cleaned = text.strip().replace(",", ".")

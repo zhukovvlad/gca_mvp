@@ -411,6 +411,7 @@ def test_ref_analogs_target_changed_parameter_value_gives_the_stale_conversion_a
 
     detail = _refused(ctx.put(admin_client, _body(scene.ref_item.id, "link", seen)), 409, "conversion_stale")
     assert D(detail["factor"]) == D("0.2")
+    assert detail["factor_shown"] == "0,2"
     assert detail["basis"] == "толщина 200 мм"
     assert _no_row(ctx)
 
@@ -782,7 +783,10 @@ def test_ref_analogs_target_the_card_of_a_link_target_carries_the_converted_valu
     assert (choice["kind"], choice["analog_id"], choice["active"], choice["reset_reason"], choice["origin"]) == (
         "reference", scene.ref_item.id, True, None, "link",
     )
-    assert choice["conversion"] == {"method": "link", "factor": seen["expected_factor"], "basis": "толщина 100 мм", "link_id": scene.link_id}
+    assert choice["conversion"] == {
+        "method": "link", "factor": seen["expected_factor"], "factor_shown": "0,1", "basis": "толщина 100 мм",
+        "link_id": scene.link_id,
+    }
     assert choice["hints"] == {"link_now": None, "link_gone": False, "own_analogs": False}
     assert choice["set_by"]["id"] == admin_client.user.id
     reference = choice["reference"]
@@ -823,7 +827,7 @@ def test_ref_analogs_target_a_row_outside_the_blocks_still_has_its_row_in_the_ca
     assert other.id not in {r["analog_id"] for g in panel["reference_zones"] for r in g["rows"]}
     reference = panel["line"]["choice"]["reference"]
     assert reference["analog_id"] == other.id
-    assert reference["conversion"] == {"method": "manual", "factor": "2", "basis": "по справке"}
+    assert reference["conversion"] == {"method": "manual", "factor": "2", "factor_shown": "2", "basis": "по справке"}
     assert _net(reference["kp_unit_price"]) == D("350")
     assert reference["outlier_ratio"] is None
     assert ctx.offer_line(admin_client)["choice"]["reference"] == reference
@@ -851,6 +855,7 @@ def test_ref_analogs_target_edited_parameter_value_does_not_change_the_value_but
     assert _net(choice["reference"]["kp_unit_price"]) == D("11072.4")
     assert D(choice["conversion"]["factor"]) == D("0.1")
     assert D(choice["hints"]["link_now"]["factor"]) == D("0.2")
+    assert choice["hints"]["link_now"]["factor_shown"] == "0,2"
     assert choice["hints"]["link_now"]["basis"] == "толщина 200 мм"
     assert choice["hints"]["link_gone"] is False
     assert ctx.stored().ref_factor == D("0.1")

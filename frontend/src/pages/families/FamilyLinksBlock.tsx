@@ -88,8 +88,8 @@ function LinkItem({
         </Badge>
       ))}
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="text-xs text-fg-tertiary">
-          {link.updated_by !== null && link.updated_at !== null
+        <span data-testid={`family-link-${link.id}-author`} className="text-xs text-fg-tertiary">
+          {link.updated_by !== null && link.updated_at !== null && link.updated_at !== link.created_at
             ? `Правил ${link.updated_by.email ?? "—"}, ${formatDate(link.updated_at)}`
             : `Завёл ${link.created_by.email ?? "—"}, ${formatDate(link.created_at)}`}
         </span>

@@ -116,7 +116,7 @@ from services.reference_blocks import (
     reference_marks,
     zone_groups,
 )
-from services.reference_math import Conversion
+from services.reference_math import Conversion, factor_shown
 
 #: Подпись строки «Итого на м² объекта» в форме статьи.
 TOTAL_ROW_TITLE = "Итого на м² объекта"
@@ -1085,7 +1085,11 @@ def _reference_hints(
                 position_item_id=line.position_item_id,
             )
             if conversion is not None and conversion.link_id == snapshot.link_id and conversion.factor != snapshot.factor:
-                link_now = {"factor": format(conversion.factor, "f"), "basis": conversion.basis}
+                link_now = {
+                    "factor": format(conversion.factor, "f"),
+                    "factor_shown": factor_shown(conversion.factor),
+                    "basis": conversion.basis,
+                }
     ladder = result.ladder
     own_analogs = snapshot.without_analogs and ladder is not None and ladder.rung_no is not None
     return {"link_now": link_now, "link_gone": link_gone, "own_analogs": own_analogs}
@@ -1215,7 +1219,12 @@ def _snapshot_conversion_view(snapshot: ReferenceSnapshot) -> dict | None:
     if snapshot.method is None:
         return None
     assert snapshot.factor is not None
-    view = {"method": snapshot.method, "factor": format(snapshot.factor, "f"), "basis": snapshot.basis}
+    view = {
+        "method": snapshot.method,
+        "factor": format(snapshot.factor, "f"),
+        "factor_shown": factor_shown(snapshot.factor),
+        "basis": snapshot.basis,
+    }
     if snapshot.method == "link":
         view["link_id"] = snapshot.link_id
     return view
@@ -1735,7 +1744,12 @@ def _conversion_view(row: RefRow) -> dict | None:
     conversion = row.conversion
     if conversion is None:
         return None
-    view = {"method": conversion.method, "factor": format(conversion.factor, "f"), "basis": conversion.basis}
+    view = {
+        "method": conversion.method,
+        "factor": format(conversion.factor, "f"),
+        "factor_shown": factor_shown(conversion.factor),
+        "basis": conversion.basis,
+    }
     if conversion.method == "link":
         view["link_id"] = conversion.link_id
     return view

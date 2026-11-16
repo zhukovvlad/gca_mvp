@@ -56,7 +56,7 @@ function plainRow(overrides: Partial<RefRow> = {}): RefRow {
 /** Та же строка после создания связи: пересчёт отдаёт сервер (N отличается от всего, что набрал бы клиент). */
 function linkedRow(overrides: Partial<RefRow> = {}): RefRow {
   return plainRow({
-    conversion: { method: "link", link_id: 900, factor: "0.125", basis: "толщина 125 мм" },
+    conversion: { method: "link", link_id: 900, factor: "0.125", factor_shown: "0,125", basis: "толщина 125 мм" },
     no_conversion_reason: null,
     ...overrides,
   });

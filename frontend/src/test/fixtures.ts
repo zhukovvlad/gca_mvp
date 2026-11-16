@@ -3580,7 +3580,7 @@ export function refLinkRowFixture(overrides: Partial<RefRow> = {}): RefRow {
     zone: "underground",
     price: pair("1107.24", "1350.83"),
     nominal: pair("1107.24", "1350.83"),
-    conversion: { method: "link", link_id: 41, factor: "0.100", basis: "толщина 100 мм" },
+    conversion: { method: "link", link_id: 41, factor: "0.100", factor_shown: "0,1", basis: "толщина 100 мм" },
     kp_unit_price: pair("11072.40", "13508.33"),
     deviation_pct: "113.6",
     param_value: "100",

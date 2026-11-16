@@ -312,7 +312,7 @@ def test_ref_analogs_search_row_carries_the_conversion_the_target_will_accept(me
     assert link["conversion_kind"] == "link"
     conversion = dict(link["conversion"])
     assert D(conversion.pop("factor")) == D("0.1")
-    assert conversion == {"method": "link", "basis": "толщина 100 мм", "link_id": scene.link_id}
+    assert conversion == {"method": "link", "factor_shown": "0,1", "basis": "толщина 100 мм", "link_id": scene.link_id}
     assert D(link["kp_unit_price"]["net"]) == D("11072.4")
     assert link["param_value"] == "100 мм"
 

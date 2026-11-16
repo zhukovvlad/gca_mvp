@@ -773,7 +773,7 @@ export const REF_LINK_KIND_TEXT: Record<"thickness" | "width" | "density", strin
 export function refLinkTitle(
   family: { title: string; unit: string | null },
   kind: "thickness" | "width" | "density" | "constant",
-  constant: { factor: string; unit: string | null } | null
+  constant: { factorShown: string; unit: string | null } | null
 ): string {
   const unit = family.unit === null ? "" : ` · ${family.unit}`;
   let through: string;
@@ -781,7 +781,7 @@ export function refLinkTitle(
     through =
       constant === null
         ? "постоянный"
-        : `постоянный: 1 ${family.unit ?? "ед."} = ${constant.factor.replace(".", ",")} ${constant.unit ?? "ед."}`;
+        : `постоянный: 1 ${family.unit ?? "ед."} = ${constant.factorShown} ${constant.unit ?? "ед."}`;
   } else {
     through = REF_LINK_KIND_TEXT[kind];
   }
@@ -792,7 +792,7 @@ export function refLinkTitle(
 export function refConversionText(row: Pick<RefRow, "unit" | "conversion">, kpUnit: string | null): string | null {
   const conversion = row.conversion;
   if (conversion === null) return null;
-  return `1 ${row.unit ?? "ед."} = ${conversion.factor.replace(".", ",")} ${kpUnit ?? "ед."}`;
+  return `1 ${row.unit ?? "ед."} = ${conversion.factor_shown} ${kpUnit ?? "ед."}`;
 }
 
 export function refDeviation(text: string): string {
@@ -890,15 +890,15 @@ export function refTargetConvertedFrom(unit: string | null): string {
 export function refTargetConversionLine(
   contractUnit: string | null,
   kpUnit: string | null,
-  factor: Decimal,
+  factorShown: string,
   basis: string
 ): string {
-  return `1 ${contractUnit ?? "ед."} = ${factor.replace(".", ",")} ${kpUnit ?? "ед."} — ${basis}`;
+  return `1 ${contractUnit ?? "ед."} = ${factorShown} ${kpUnit ?? "ед."} — ${basis}`;
 }
 
 /** Подсказка `link_now`: связь сегодня даёт другой множитель, цифра цели прежняя. */
-export function refTargetLinkNow(contractUnit: string | null, kpUnit: string | null, factor: Decimal): string {
-  return `По связи сейчас 1 ${contractUnit ?? "ед."} = ${factor.replace(".", ",")} ${kpUnit ?? "ед."}; чтобы пересчитать — выберите цель заново.`;
+export function refTargetLinkNow(contractUnit: string | null, kpUnit: string | null, factorShown: string): string {
+  return `По связи сейчас 1 ${contractUnit ?? "ед."} = ${factorShown} ${kpUnit ?? "ед."}; чтобы пересчитать — выберите цель заново.`;
 }
 
 export function refTargetInactive(reason: TargetResetReason | null): string {
@@ -918,7 +918,7 @@ export function refExportSource(row: {
   quote: string | null;
   unit: string | null;
   vat: string;
-  conversion: { factor: Decimal; basis: string; kpUnit: string | null; converted: string | null } | null;
+  conversion: { factorShown: string; basis: string; kpUnit: string | null; converted: string | null } | null;
 }): string {
   const unit = row.unit ?? "ед.";
   const path = row.path === null ? "" : ` (${row.path})`;
@@ -927,7 +927,7 @@ export function refExportSource(row: {
   if (row.conversion !== null) {
     const kp = row.conversion.kpUnit ?? "ед.";
     const converted = row.conversion.converted === null ? "" : `: ${row.conversion.converted} ₽ за ${kp} ${row.vat}`;
-    text += `; 1 ${unit} = ${row.conversion.factor.replace(".", ",")} ${kp} (${row.conversion.basis})${converted}`;
+    text += `; 1 ${unit} = ${row.conversion.factorShown} ${kp} (${row.conversion.basis})${converted}`;
   }
   return text;
 }

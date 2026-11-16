@@ -338,6 +338,12 @@ export function ReferenceTargetCard({ line, vat, canEdit, busy = false, onReset 
   const target = row === null ? null : pick(row.kp_unit_price ?? row.price, vat);
   const source = row === null ? null : pick(row.price, vat);
   const deviation = row === null ? null : roundDecimalPercent(row.deviation_pct, 0);
+  const where =
+    row === null
+      ? ""
+      : `${row.contract.object_title}, договор № ${row.contract.number}, ${row.contract.year} г. · «${row.title}»${
+          row.chapter_paths.length > 0 ? ` · ${pathText(row.chapter_paths[0])}` : ""
+        }`;
   return (
     <div
       data-testid="reference-target"
@@ -353,9 +359,8 @@ export function ReferenceTargetCard({ line, vat, canEdit, busy = false, onReset 
         <p className="text-fg-secondary">{REF_TARGET.rowGone}</p>
       ) : (
         <>
-          <p data-testid="reference-target-where" className="text-xs text-fg-secondary">
-            {row.contract.object_title}, договор № {row.contract.number}, {row.contract.year} г. · «{row.title}»
-            {row.chapter_paths.length > 0 && ` · ${pathText(row.chapter_paths[0])}`}
+          <p data-testid="reference-target-where" className="line-clamp-2 text-xs text-fg-secondary" title={where}>
+            {where}
           </p>
           <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
             <span data-testid="reference-target-price" className="font-mono text-lg font-semibold tabular-nums">
@@ -376,7 +381,7 @@ export function ReferenceTargetCard({ line, vat, canEdit, busy = false, onReset 
                 <Badge variant="secondary" className="mr-1.5 h-auto py-0.5">
                   {refTargetConvertedFrom(row.unit)}
                 </Badge>
-                {refTargetConversionLine(row.unit, line.unit, conversion.factor, conversion.basis)}
+                {refTargetConversionLine(row.unit, line.unit, conversion.factor_shown, conversion.basis)}
               </p>
               <p className="font-mono tabular-nums">
                 {REF_TARGET.sourcePrice}: {source === null ? FIGURE_NONE : `${formatUnitPrice(source)} ${priceUnitLabel(row.unit)}`}
@@ -389,7 +394,7 @@ export function ReferenceTargetCard({ line, vat, canEdit, busy = false, onReset 
       )}
       {hints?.link_now != null && (
         <p data-testid="reference-hint-link-now" className="rounded-md bg-info-soft px-2 py-1 text-xs text-info-text">
-          {refTargetLinkNow(row?.unit ?? null, line.unit, hints.link_now.factor)}
+          {refTargetLinkNow(row?.unit ?? null, line.unit, hints.link_now.factor_shown)}
         </p>
       )}
       {hints?.link_gone === true && (

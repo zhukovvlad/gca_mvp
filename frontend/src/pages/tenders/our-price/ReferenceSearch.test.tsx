@@ -128,7 +128,7 @@ describe("поиск по договорам: выдача", () => {
         analog_id: 9302,
         unit: "м2",
         zone: null,
-        conversion: { method: "link", link_id: 41, factor: "0.100", basis: "толщина 100 мм" },
+        conversion: { method: "link", link_id: 41, factor: "0.100", factor_shown: "0,1", basis: "толщина 100 мм" },
         conversion_kind: "link",
       }),
       referenceSearchRowFixture({ analog_id: 9303, unit: "м2", conversion_kind: "manual_needed" }),
@@ -260,7 +260,7 @@ describe("поиск по договорам: выбор цели", () => {
     await search("подготовка");
     await userEvent.click(within(await screen.findByTestId("ref-row-search-9501")).getByRole("button", { name: /сделать целью/ }));
     const dialog = await screen.findByTestId("reference-dialog");
-    expect(within(dialog).getByTestId("reference-dialog-factor")).toHaveTextContent("0,100");
+    expect(within(dialog).getByTestId("reference-dialog-factor")).toHaveTextContent("0,1");
     await userEvent.click(within(dialog).getByTestId("reference-dialog-submit"));
     await waitFor(() => expect(targets()).toHaveLength(1));
     expect(targets()[0].body).toEqual({

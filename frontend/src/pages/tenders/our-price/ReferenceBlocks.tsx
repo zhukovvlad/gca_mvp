@@ -160,7 +160,7 @@ function linkTitle(group: ReferenceLinkGroup, kpUnit: string | null): string {
   return refLinkTitle(
     group.family,
     group.kind,
-    group.kind === "constant" && withConversion !== null ? { factor: withConversion.factor, unit: kpUnit } : null
+    group.kind === "constant" && withConversion !== null ? { factorShown: withConversion.factor_shown, unit: kpUnit } : null
   );
 }
 

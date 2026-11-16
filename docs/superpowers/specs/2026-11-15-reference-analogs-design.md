@@ -1,7 +1,7 @@
 # Справочные аналоги: другая зона, поиск по договорам, пересчёт единиц — спека (гейт 2)
 
 **Редакция 4, 16.11.2026.** По реализации: причина `pair_changed` у `PUT` связи с другой парой;
-поле `conversion_kind` у строки поиска; `family_id` у строк и строки КП (§2.16); пример шаблона §2.15 — «с НДС 20 %», как общая подпись НДС шаблонов 4б.
+поле `conversion_kind` у строки поиска; `family_id` у строк и строки КП (§2.16); пример шаблона §2.15 — «с НДС 20 %», как общая подпись НДС шаблонов 4б; factor_shown — печатная форма N.
 
 **Редакция 3, 15.11.2026.** По ревью плана (Codex на `8386040`): пересчёт
 строки в панели и поиске у `method = link` несёт `link_id` — иначе строке
@@ -470,7 +470,7 @@ confirm_outlier: bool = false
   kind, other_class, rows}`;
 - строка `rows`: `{analog_id, ids, title, unit, zone, contract {id,
   object_title, number, year, rate_class, contractor_id, contractor_title},
-  period, chapter_paths, price, nominal, conversion {method, factor, basis,
+  period, chapter_paths, price, nominal, conversion {method, factor, factor_shown, basis,
   link_id (только у `link`)} | null, no_conversion_reason, kp_unit_price, deviation_pct, outlier_ratio,
   with_this_contractor, param_value, family_id}`; у строки КП (`line`) — тоже
   `family_id` (параметры для «Запомнить для семей» фронт берёт прежним

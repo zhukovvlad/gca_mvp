@@ -3532,7 +3532,7 @@ export type TargetResetReason =
 /** Подсказки карточки справочной цели (спека справочных аналогов §2.14): на цифры не влияют. */
 export interface ReferenceHints {
   /** Связь действует и сегодня даёт другой `N`: показываем новый множитель, цифра цели прежняя. */
-  link_now: { factor: Decimal; basis: string } | null;
+  link_now: { factor: Decimal; factor_shown: string; basis: string } | null;
   /** Связь удалена или не действует: цифра - по снимку. */
   link_gone: boolean;
   /** У строки появились свои аналоги. */
@@ -3756,10 +3756,13 @@ export interface OtherZone {
   contracts: number;
 }
 
-/** Пересчёт строки договора в единицу строки КП: `factor` — точная десятичная запись `N`, как пришла. */
+/**
+ * Пересчёт строки договора в единицу строки КП: `factor` — точная десятичная запись `N`, как пришла;
+ * `factor_shown` — её печатная форма с сервера («0,1», «≈ 3,3333»), клиент `N` сам не форматирует.
+ */
 export type RefConversion =
-  | { method: "link"; link_id: number; factor: Decimal; basis: string }
-  | { method: "manual"; factor: Decimal; basis: string }
+  | { method: "link"; link_id: number; factor: Decimal; factor_shown: string; basis: string }
+  | { method: "manual"; factor: Decimal; factor_shown: string; basis: string }
   | null;
 
 export interface RefContract {

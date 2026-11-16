@@ -183,7 +183,7 @@ def test_ref_analogs_subbase_scenario_panel_gives_11072_40_per_cubic_metre(membe
     assert _pair(row["price"])[0] == D("1107.24")
     conversion = dict(row["conversion"])
     assert D(conversion.pop("factor")) == D("0.1")
-    assert conversion == {"method": "link", "basis": "толщина 100 мм", "link_id": scene.link_id}
+    assert conversion == {"method": "link", "factor_shown": "0,1", "basis": "толщина 100 мм", "link_id": scene.link_id}
     assert _pair(row["kp_unit_price"])[0] == D("11072.4")
     assert row["no_conversion_reason"] is None
     assert row["param_value"] == "100 мм"
@@ -220,6 +220,7 @@ def test_ref_analogs_panel_factor_is_the_exact_n_and_round_trips_for_the_inverse
     with localcontext(_CONTEXT):
         assert D(factor) == D(1) / D("0.3")
     assert row["conversion"]["basis"] == "толщина 300 мм"
+    assert row["conversion"]["factor_shown"] == "≈ 3,3333"
     with localcontext(_CONTEXT):
         assert D(row["kp_unit_price"]["net"]) == D("5000") / (D(1) / D("0.3"))
 
@@ -227,7 +228,9 @@ def test_ref_analogs_panel_factor_is_the_exact_n_and_round_trips_for_the_inverse
 def test_ref_analogs_panel_a_whole_number_factor_is_not_written_with_an_exponent(member_client, stage) -> None:
     """1 / 0,1 = 10: запись `10`, не `1E+1`."""
     scene = Linked(stage, kp_unit="M2", ref_unit="M3", text="100 мм", price=D("5000"), kp_price=D("1200"))
-    assert _only_group(scene.panel(member_client))["rows"][0]["conversion"]["factor"] == "10"
+    conversion = _only_group(scene.panel(member_client))["rows"][0]["conversion"]
+    assert conversion["factor"] == "10"
+    assert conversion["factor_shown"] == "10"
 
 
 def test_ref_analogs_panel_a_value_that_is_not_a_number_gives_the_reason_and_no_price(member_client, stage) -> None:

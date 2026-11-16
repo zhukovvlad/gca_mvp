@@ -57,11 +57,11 @@ describe("блок «В файл подрядчику»: справочная ц
       referenceChoiceFixture({
         origin: "link",
         reference: refLinkRowFixture(),
-        conversion: { method: "link", link_id: 41, factor: "0.100", basis: "толщина 100 мм" },
+        conversion: { method: "link", link_id: 41, factor: "0.100", factor_shown: "0,1", basis: "толщина 100 мм" },
       })
     );
     expect(screen.getByTestId("export-reference-source")).toHaveTextContent(
-      "1 107,24 ₽ за м2 без НДС; 1 м2 = 0,100 м3 (толщина 100 мм): 11 072,40 ₽ за м3 без НДС"
+      "1 107,24 ₽ за м2 без НДС; 1 м2 = 0,1 м3 (толщина 100 мм): 11 072,40 ₽ за м3 без НДС"
     );
   });
 

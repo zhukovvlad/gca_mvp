@@ -101,7 +101,7 @@ function DialogBody({
   const row = freshRow(target.row.analog_id) ?? target.row;
   const convert = needsConversion(row, kpUnit);
   const link = row.conversion?.method === "link" ? row.conversion : null;
-  const [stale, setStale] = useState<{ factor: string; basis: string } | null>(null);
+  const [stale, setStale] = useState<{ factor: string; factorShown: string; basis: string } | null>(null);
   const [factorDraft, setFactorDraft] = useState("");
   const [basisDraft, setBasisDraft] = useState("");
   const [demandedRatio, setDemandedRatio] = useState<string | null>(target.ratio ?? null);
@@ -124,7 +124,7 @@ function DialogBody({
   const rememberOn = canRemember && remember.on;
   const paramKindOn = rememberOn && !remember.isConstant;
 
-  const shown = stale ?? (link === null ? null : { factor: link.factor, basis: link.basis });
+  const shown = stale ?? (link === null ? null : { factor: link.factor, factorShown: link.factor_shown, basis: link.basis });
   const outlierRatio = row.outlier_ratio ?? demandedRatio;
   const price = pick(row.price, vat);
   const inKp = pick(row.kp_unit_price, vat);
@@ -159,8 +159,10 @@ function DialogBody({
         onError: (error) => {
           const code = apiErrorCode(error);
           if (code === "conversion_stale") {
-            const current = apiErrorContext<{ factor: string; basis: string }>(error);
-            if (current !== undefined) setStale({ factor: current.factor, basis: current.basis });
+            const current = apiErrorContext<{ factor: string; factor_shown: string; basis: string }>(error);
+            if (current !== undefined) {
+              setStale({ factor: current.factor, factorShown: current.factor_shown, basis: current.basis });
+            }
           } else if (code === "outlier_confirmation_required") {
             setDemandedRatio(apiErrorContext<{ ratio: string }>(error)?.ratio ?? "1");
           } else if (code === "manual_conversion_invalid") {
@@ -250,7 +252,7 @@ function DialogBody({
                 <p>
                   <span className="text-fg-secondary">1 {row.unit ?? "ед."} = </span>
                   <span data-testid="reference-dialog-factor" className="font-mono tabular-nums">
-                    {shown.factor.replace(".", ",")}
+                    {shown.factorShown}
                   </span>
                   <span className="text-fg-secondary"> {kpUnit ?? "ед."}</span>
                 </p>

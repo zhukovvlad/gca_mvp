@@ -191,7 +191,7 @@ export function ExportBlock({
             reference.conversion == null
               ? null
               : {
-                  factor: reference.conversion.factor,
+                  factorShown: reference.conversion.factor_shown,
                   basis: reference.conversion.basis,
                   kpUnit: line.unit,
                   converted: convertedPrice === null ? null : formatUnitPrice(convertedPrice),

@@ -71,7 +71,7 @@ describe("needsConversion", () => {
 describe("диалог пересчёта: по связи", () => {
   it("показывает N и основание только для просмотра, полей ввода нет", async () => {
     const dialog = await openDialog();
-    expect(within(dialog).getByTestId("reference-dialog-factor")).toHaveTextContent("0,100");
+    expect(within(dialog).getByTestId("reference-dialog-factor")).toHaveTextContent("0,1");
     expect(within(dialog).getByTestId("reference-dialog-basis")).toHaveTextContent("толщина 100 мм");
     expect(within(dialog).queryByRole("textbox")).not.toBeInTheDocument();
   });
@@ -139,6 +139,7 @@ describe("диалог пересчёта: по связи", () => {
                 code: "conversion_stale",
                 message: "Пересчёт по связи изменился.",
                 factor: "0.125",
+                factor_shown: "0,125",
                 basis: "толщина 125 мм",
               },
             },
@@ -172,7 +173,7 @@ describe("диалог пересчёта: по связи", () => {
               refLinkRowFixture(
                 stale
                   ? {
-                      conversion: { method: "link", link_id: 41, factor: "0.125", basis: "толщина 125 мм" },
+                      conversion: { method: "link", link_id: 41, factor: "0.125", factor_shown: "0,125", basis: "толщина 125 мм" },
                       kp_unit_price: { net: "8857.92", shown: null },
                     }
                   : {}
@@ -186,7 +187,7 @@ describe("диалог пересчёта: по связи", () => {
       http.put(`${LINE_PATH}/target`, () => {
         stale = true;
         return HttpResponse.json(
-          { detail: { code: "conversion_stale", message: "Изменилось.", factor: "0.125", basis: "толщина 125 мм" } },
+          { detail: { code: "conversion_stale", message: "Изменилось.", factor: "0.125", factor_shown: "0,125", basis: "толщина 125 мм" } },
           { status: 409 }
         );
       })

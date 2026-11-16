@@ -133,6 +133,45 @@ describe("блок А: та же работа в другой зоне", () => {
     expect(paths).toHaveTextContent("Благоустройство → МАФ");
     expect(paths).toHaveTextContent("Благоустройство → Освещение");
     expect(paths).toHaveTextContent("Благоустройство → Дорожки");
+    expect(paths).toHaveClass("line-clamp-2");
+    expect(paths).toHaveAttribute("title", expect.stringContaining("Благоустройство → Дорожки"));
+  });
+
+  it("без пересчёта (единицы равны) цены в единице КП нет, отклонение и выброс остаются", async () => {
+    serve(() =>
+      referenceLineViewFixture({
+        zones: [
+          referenceZoneGroupFixture({
+            rows: [refRowFixture({ conversion: null, deviation_pct: "182.00", outlier_ratio: "12.00" })],
+          }),
+        ],
+      })
+    );
+    renderSheet();
+    const row = await screen.findByTestId("ref-row-zone-territory-9001");
+    expect(within(row).queryByTestId("ref-row-zone-territory-9001-kp-price")).not.toBeInTheDocument();
+    expect(within(row).getByTestId("ref-row-zone-territory-9001-deviation")).toHaveTextContent("КП +182 %");
+    expect(within(row).getByTestId("ref-row-zone-territory-9001-outlier")).toBeInTheDocument();
+  });
+
+  it("строка с обратным N: печать сервера «≈ 3,3333» без правки на клиенте", async () => {
+    serve(() =>
+      referenceLineViewFixture({
+        zones: [],
+        links: [
+          referenceLinkGroupFixture({
+            rows: [
+              refLinkRowFixture({
+                conversion: { method: "link", link_id: 41, factor: "3.33333333333333", factor_shown: "≈ 3,3333", basis: "толщина 300 мм" },
+              }),
+            ],
+          }),
+        ],
+      })
+    );
+    renderSheet();
+    const row = await screen.findByTestId("ref-row-link-41-9101");
+    expect(within(row).getByTestId("ref-row-link-41-9101-conversion")).toHaveTextContent("1 м2 = ≈ 3,3333 м3");
   });
 
   it("несвёрнутая строка: путь без «в N разделах» и без «×»", async () => {
@@ -141,6 +180,8 @@ describe("блок А: та же работа в другой зоне", () => {
     const paths = await screen.findByTestId("ref-row-zone-territory-9001-paths");
     expect(paths).toHaveTextContent("Благоустройство → МАФ");
     expect(paths).not.toHaveTextContent("в 1");
+    expect(paths).toHaveClass("line-clamp-2");
+    expect(paths).toHaveAttribute("title", "Благоустройство → МАФ");
     expect(screen.queryByTestId("ref-row-zone-territory-9001-folded")).not.toBeInTheDocument();
   });
 
@@ -194,7 +235,7 @@ describe("блок Г: семья по связи", () => {
             rows: [
               refLinkRowFixture({
                 unit: "т",
-                conversion: { method: "link", link_id: 41, factor: "0.667", basis: "насыпная плотность 1,5 т/м3" },
+                conversion: { method: "link", link_id: 41, factor: "0.667", factor_shown: "0,667", basis: "насыпная плотность 1,5 т/м3" },
               }),
             ],
           }),
@@ -208,14 +249,15 @@ describe("блок Г: семья по связи", () => {
     );
   });
 
-  it("строка с пересчётом: «1 м2 = 0,100 м3», основание, цена в единице КП и отклонение", async () => {
+  it("строка с пересчётом: «1 м2 = 0,1 м3», основание, цена в единице КП и отклонение", async () => {
     serve(() => referenceLineViewFixture({ zones: [], links: [referenceLinkGroupFixture()] }));
     renderSheet();
     const row = await screen.findByTestId("ref-row-link-41-9101");
     expect(within(row).getByTestId("ref-row-link-41-9101-conversion")).toHaveTextContent(
-      "1 м2 = 0,100 м3 — толщина 100 мм"
+      "1 м2 = 0,1 м3 — толщина 100 мм"
     );
-    expect(within(row).getByTestId("ref-row-link-41-9101-kp-price")).toHaveTextContent("≈ 11 072,40 ₽/м3");
+    expect(within(row).getByTestId("ref-row-link-41-9101-kp-price")).toHaveTextContent("11 072,40 ₽/м3");
+    expect(within(row).getByTestId("ref-row-link-41-9101-kp-price")).not.toHaveTextContent("≈");
     expect(within(row).getByTestId("ref-row-link-41-9101-deviation")).toHaveTextContent("КП +114 %");
     expect(within(row).getByTestId("ref-row-link-41-9101-price")).toHaveTextContent("1 107,24 ₽/м2");
   });

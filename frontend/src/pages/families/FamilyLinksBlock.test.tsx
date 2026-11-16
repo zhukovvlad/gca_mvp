@@ -79,6 +79,21 @@ describe("раздел «Связи» карточки семьи", () => {
     expect(screen.queryByTestId("family-link-41-stale")).not.toBeInTheDocument();
   });
 
+  it("подпись автора: «Завёл», пока связь не правилась (updated_at = created_at), иначе «Правил»", async () => {
+    const created = "2026-11-14T10:00:00+00:00";
+    const editor = { id: 4, email: "editor@example.test" };
+    serve([
+      familyLinkFixture({ id: 41, created_at: created, updated_by: familyLinkFixture().created_by, updated_at: created }),
+      familyLinkFixture({ id: 43, created_at: created, updated_by: editor, updated_at: "2026-11-15T12:00:00+00:00" }),
+    ]);
+    const untouched = await screen.findByTestId("family-link-41-author");
+    expect(untouched).toHaveTextContent("Завёл admin@example.test");
+    expect(untouched).not.toHaveTextContent("Правил");
+    const edited = await screen.findByTestId("family-link-43-author");
+    expect(edited).toHaveTextContent("Правил editor@example.test");
+    expect(edited).not.toHaveTextContent("Завёл");
+  });
+
   it("у семьи без связей — «Связей нет.»", async () => {
     serve([]);
     expect(await screen.findByText("Связей нет.")).toBeInTheDocument();

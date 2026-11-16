@@ -120,6 +120,12 @@ function ReferenceRowCard({
   const conversion = refConversionText(row, kpUnit);
   const outlier = row.outlier_ratio !== null;
   const folded = row.ids.length > 1;
+  const allPaths =
+    row.chapter_paths.length > 1
+      ? `${refSections(row.chapter_paths.length)} ${row.chapter_paths.map(pathText).join("; ")}`
+      : row.chapter_paths.length === 1
+        ? pathText(row.chapter_paths[0])
+        : "";
   const contract = row.contract;
   return (
     <div
@@ -160,13 +166,13 @@ function ReferenceRowCard({
         )}
       </p>
       {row.chapter_paths.length > 1 ? (
-        <div data-testid={`${testId}-paths`} className="text-xs text-fg-tertiary">
-          {refSections(row.chapter_paths.length)} {row.chapter_paths.map(pathText).join("; ")}
+        <div data-testid={`${testId}-paths`} className="line-clamp-2 text-xs text-fg-tertiary" title={allPaths}>
+          {allPaths}
         </div>
       ) : (
         row.chapter_paths.length === 1 && (
-          <div data-testid={`${testId}-paths`} className="text-xs text-fg-tertiary">
-            {pathText(row.chapter_paths[0])}
+          <div data-testid={`${testId}-paths`} className="line-clamp-2 text-xs text-fg-tertiary" title={allPaths}>
+            {allPaths}
           </div>
         )
       )}
@@ -184,9 +190,9 @@ function ReferenceRowCard({
       )}
       {(inKp !== null || deviation !== null || outlier) && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          {inKp !== null && (
+          {inKp !== null && row.conversion !== null && (
             <span data-testid={`${testId}-kp-price`} className="font-mono text-xs tabular-nums">
-              ≈ {formatUnitPrice(inKp)} {priceUnitLabel(kpUnit)}
+              {formatUnitPrice(inKp)} {priceUnitLabel(kpUnit)}
             </span>
           )}
           {deviation !== null && (

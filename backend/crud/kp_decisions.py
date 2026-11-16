@@ -58,7 +58,7 @@ from services.our_price import (
     SavedRungs,
 )
 from services.reference_blocks import conversion_for, link_param_id, link_units
-from services.reference_math import parse_manual_factor
+from services.reference_math import factor_shown, parse_manual_factor
 
 CODE_INVALID_AGREED = "invalid_agreed"
 CODE_COMMENT_TOO_LONG = "comment_too_long"
@@ -701,7 +701,7 @@ def put_reference_target(
                 409,
                 "Пересчёт по связи изменился, пока диалог был открыт: проверьте новое значение.",
                 code=CODE_CONVERSION_STALE,
-                context={"factor": format(found.factor, "f"), "basis": found.basis},
+                context={"factor": format(found.factor, "f"), "factor_shown": factor_shown(found.factor), "basis": found.basis},
             )
         method, factor, basis, link_id = "link", found.factor, found.basis, found.link_id
     elif isinstance(conversion, ManualConversionInput):

@@ -26,7 +26,7 @@ const linkChoice = (over: Partial<TargetChoice> = {}) =>
     origin: "link",
     analog_id: 9101,
     reference: refLinkRowFixture(),
-    conversion: { method: "link", link_id: 41, factor: "0.100", basis: "толщина 100 мм" },
+    conversion: { method: "link", link_id: 41, factor: "0.100", factor_shown: "0,1", basis: "толщина 100 мм" },
     ...over,
   });
 
@@ -53,7 +53,7 @@ describe("карточка справочной цели: откуда и циф
     renderCard(linkChoice());
     const conversion = screen.getByTestId("reference-target-conversion");
     expect(conversion).toHaveTextContent("пересчёт из м2");
-    expect(conversion).toHaveTextContent("1 м2 = 0,100 м3 — толщина 100 мм");
+    expect(conversion).toHaveTextContent("1 м2 = 0,1 м3 — толщина 100 мм");
     expect(conversion).toHaveTextContent("в договоре: 1 107,24 ₽/м2");
     expect(conversion).toHaveTextContent("в единице строки КП: 11 072,40 ₽/м3");
     expect(screen.getByTestId("reference-target-price")).toHaveTextContent("11 072,40 ₽/м3");
@@ -72,7 +72,7 @@ describe("карточка справочной цели: откуда и циф
 
 describe("карточка справочной цели: подсказки", () => {
   it("link_now: новый множитель в единицах строки, цифра цели прежняя", () => {
-    renderCard(linkChoice({ hints: { link_now: { factor: "0.125", basis: "толщина 125 мм" }, link_gone: false, own_analogs: false } }));
+    renderCard(linkChoice({ hints: { link_now: { factor: "0.125", factor_shown: "0,125", basis: "толщина 125 мм" }, link_gone: false, own_analogs: false } }));
     expect(screen.getByTestId("reference-hint-link-now")).toHaveTextContent(
       "По связи сейчас 1 м2 = 0,125 м3; чтобы пересчитать — выберите цель заново."
     );
