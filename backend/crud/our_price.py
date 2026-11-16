@@ -64,7 +64,7 @@ from services.analog_ladder import FamilyLadderInfo, Figure, WorkHistory, parts_
 from services.context_routing import ChapterStep, chapter_steps
 from services.excel import iso_date_to_ru
 from services.family_links import LinkState, links_of_families
-from services.kp_comment import CommentInputs, InflationLabel, target_net, template_text
+from services.kp_comment import CommentInputs, InflationLabel, ReferenceSource, target_net, template_text
 from services.kp_file import FileContext, KpSourceLine, line_comment_inputs
 from services.our_price import (
     _CONTEXT,
@@ -962,8 +962,10 @@ def _comment_inputs(
     unit_text: str,
     *,
     agreed_net: Decimal | None,
+    references: _ReferenceTargets | None = None,
 ) -> CommentInputs:
-    """Вход комментария строки; собирает та же функция, что у файла."""
+    """Вход комментария строки; собирает та же функция, что у файла. `references` — справочные цели
+    сметы: без них справочная цель строки считается недоступной."""
     return line_comment_inputs(
         kp_source_line(row, unit_text),
         result,
@@ -975,6 +977,7 @@ def _comment_inputs(
         inflation=_inflation_label(scene.plan),
         agreed_net=agreed_net,
         saved_target=_saved_target(scene.decisions[participant.estimate_id], row.line.position_item_id),
+        reference=None if references is None else references.sources.get(row.line.position_item_id),
     )
 
 
@@ -984,7 +987,12 @@ def _saved_target(decisions: EstimateDecisions, pid: int) -> SavedTarget | None:
 
 
 def _template_text(
-    scene: _Scene, participant: _Participant, row: KpLineRow, result: LineResult, unit_text: str
+    scene: _Scene,
+    participant: _Participant,
+    row: KpLineRow,
+    result: LineResult,
+    unit_text: str,
+    references: _ReferenceTargets | None = None,
 ) -> str | None:
     """Шаблонный комментарий строки; вход собирает та же функция, что у файла. У КП с
     неизвестной базой НДС шаблона нет: нетто цены КП посчитать не из чего."""
@@ -994,13 +1002,24 @@ def _template_text(
     agreed = scene.decisions[participant.estimate_id].agreements.get(pid)
     return template_text(
         _comment_inputs(
-            scene, participant, row, result, unit_text, agreed_net=agreed[0] if agreed is not None else None
+            scene,
+            participant,
+            row,
+            result,
+            unit_text,
+            agreed_net=agreed[0] if agreed is not None else None,
+            references=references,
         )
     )
 
 
 def _file_ours(
-    scene: _Scene, participant: _Participant, row: KpLineRow, result: LineResult, unit_text: str
+    scene: _Scene,
+    participant: _Participant,
+    row: KpLineRow,
+    result: LineResult,
+    unit_text: str,
+    references: _ReferenceTargets | None = None,
 ) -> dict | None:
     """Автоматическая цель строки за единицу строки КП: то, что файл поставил бы в «Нашу расценку
     за ед.» без договорённости. У системы `line.ours` — ставка за м² объекта, а не цена за единицу
@@ -1008,7 +1027,7 @@ def _file_ours(
     НДС вход комментария не собрать, как и шаблон: целей нет."""
     if participant.base is None:
         return None
-    inputs = _comment_inputs(scene, participant, row, result, unit_text, agreed_net=None)
+    inputs = _comment_inputs(scene, participant, row, result, unit_text, agreed_net=None, references=references)
     return money_pair(target_net(inputs), participant.base, unit=True)
 
 
@@ -1024,6 +1043,8 @@ class _ReferenceTargets:
     lines: Mapping[int, ReferenceLine] = field(default_factory=dict)
     rows: Mapping[int, dict] = field(default_factory=dict)
     hints: Mapping[int, dict] = field(default_factory=dict)
+    #: По строке КП — источник цели для текстов и файла (договор, путь разделов, цена, снимок).
+    sources: Mapping[int, ReferenceSource] = field(default_factory=dict)
 
 
 def reference_mark_of(
@@ -1133,9 +1154,18 @@ def _reference_targets(
 
     rows: dict[int, dict] = {}
     hints: dict[int, dict] = {}
+    sources: dict[int, ReferenceSource] = {}
     for pid, analog in live.items():
         snapshot = decisions.references[pid]
         line = lines[analog]
+        sources[pid] = ReferenceSource(
+            contract=scene.index.contract(line.contract_id),
+            chapter_path=tuple(step.title for step in steps.get(details[analog][4], ())),
+            unit_text=details[analog][1] or line.unit_symbol or "",
+            nominal=line.nominal,
+            net=line.net,
+            snapshot=snapshot,
+        )
         row = kp_rows[pid]
         result = evaluation.lines[pid]
         conversion = (
@@ -1174,7 +1204,7 @@ def _reference_targets(
             steps=steps,
         )
         hints[pid] = _reference_hints(snapshot, row, result, line, states, values)
-    return _ReferenceTargets(lines=lines, rows=rows, hints=hints)
+    return _ReferenceTargets(lines=lines, rows=rows, hints=hints, sources=sources)
 
 
 _NO_HINTS = {"link_now": None, "link_gone": False, "own_analogs": False}
@@ -1285,7 +1315,7 @@ def _line_with_decisions(
 ) -> dict:
     # Строке разбора нужен только вид комментария, а не его текст, поэтому
     # единицу КП не читаем: вид от неё не зависит.
-    template = _template_text(scene, participant, row, result, "")
+    template = _template_text(scene, participant, row, result, "", references)
     return {
         **_line_view(row, result, participant.base, scene.index, scene.families, steps),
         **_decision_fields(scene, participant, row, result, template, references),
@@ -1923,12 +1953,12 @@ def build_line_view(
     reference_zones = _reference_zones_view(scene, participant, result, reference, analog_details, steps)
     reference_links = _reference_links_view(scene, participant, result, reference, analog_details, steps)
 
-    template = _template_text(scene, participant, row, result, unit_texts[position_item_id])
+    template = _template_text(scene, participant, row, result, unit_texts[position_item_id], references)
     own_comment = scene.decisions[participant.estimate_id].comments.get(position_item_id)
     line = {
         **_line_view(row, result, rate, scene.index, scene.families, steps),
         **_decision_fields(scene, participant, row, result, template, references),
-        "file_ours": _file_ours(scene, participant, row, result, unit_texts[position_item_id]),
+        "file_ours": _file_ours(scene, participant, row, result, unit_texts[position_item_id], references),
         "article": _article_ref(tree, row.category_id),
         **_other_zones_field(other_zones(reference.zones)),
     }
@@ -1963,6 +1993,8 @@ class FileInputs:
     agreements: dict[int, tuple[Decimal, str]]
     #: position_item_id -> выбор цели работы `(вид, аналог | None)`.
     targets: dict[int, SavedTarget]
+    #: position_item_id -> источник справочной цели строки (только там, где строка договора справочная).
+    references: dict[int, ReferenceSource]
 
 
 def build_file_inputs(
@@ -2027,4 +2059,5 @@ def build_file_inputs(
         comments={pid: record[0] for pid, record in decisions.comments.items()},
         agreements={pid: (record[0], iso_date_to_ru(iso(record[1]))) for pid, record in decisions.agreements.items()},
         targets={pid: (record[0], record[1]) for pid, record in decisions.targets.items()},
+        references=dict(_reference_targets(db, scene, participant, evaluation).sources),
     )

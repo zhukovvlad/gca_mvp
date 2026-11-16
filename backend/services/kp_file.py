@@ -26,8 +26,10 @@ from services.excel import PRICE_LEVEL_NOMINAL, safe_str
 from services.kp_comment import (
     CommentInputs,
     InflationLabel,
+    ReferenceSource,
     SourceContract,
     pick_source,
+    reference_conversion,
     rub_in_base,
     target_net,
     target_sum_net,
@@ -36,6 +38,7 @@ from services.kp_comment import (
     work_source,
 )
 from services.our_price import (
+    ContractRate,
     HistoryIndex,
     LineResult,
     LineState,
@@ -172,18 +175,23 @@ def line_comment_inputs(
     inflation: InflationLabel | None,
     agreed_net: Decimal | None,
     saved_target: SavedTarget | None = None,
+    reference: ReferenceSource | None = None,
 ) -> CommentInputs:
     """Вход комментария строки: единственное место, где он собирается.
 
     Файл, строки разбора и панель зовут эту функцию, поэтому случай комментария
     везде один. Система или работа — по строке сметы. Источник работы — аналог цели (действующий
-    выбор `saved_target`, иначе самая низкая), системы — договор самой низкой ставки.
+    выбор `saved_target`, иначе самая низкая), системы — договор самой низкой ставки. `reference` —
+    строка договора, которую сцена чтения признала справочной для этой строки КП; цель она даёт,
+    только если сохранённый выбор — справочная цель (спека справочных аналогов §2.14, §2.15).
     """
+    choice = resolve_target(saved_target, result, is_system=line.is_system, reference_available=reference is not None)
+    active_reference = reference if choice is not None and choice.active and choice.kind == "reference" else None
     if line.is_system:
         level = result.rung.level if result.rung is not None else None
         source = pick_source(result, history, tender_class_id=tender_class_id, tender_contractor_id=tender_contractor_id)
     else:
-        analog = target_analog(result, resolve_target(saved_target, result, is_system=False))
+        analog = target_analog(result, choice)
         level = None if result.ladder is None or result.ladder.rung_no is None else (
             "v" if result.ladder.rung_no in (1, 3) else "p"
         )
@@ -202,6 +210,7 @@ def line_comment_inputs(
         tender_area=tender_area,
         inflation=inflation,
         vat_base=kp_vat_base,
+        reference=active_reference,
     )
 
 
@@ -247,6 +256,23 @@ def _source_text(inp: CommentInputs) -> str:
     return text
 
 
+def _reference_source_text(inp: CommentInputs) -> str:
+    """«Источник» справочной цели (спека справочных аналогов §2.15): цитата — номинал в базе НДС КП,
+    путь разделов — как в смете договора; строка вне разделов — без скобок."""
+    ref = inp.reference
+    vat = vat_words(inp.vat_base)
+    path = f" ({' → '.join(ref.chapter_path)})" if ref.chapter_path else ""
+    text = (
+        f"{ref.contract.object_title}, договор № {ref.contract.number}, {ref.contract.year} г.: "
+        f"сопоставимая работа{path}, {rub_in_base(inp, ref.nominal)} ₽ за {ref.unit_text} {vat}"
+    )
+    conversion = reference_conversion(inp)
+    if conversion is not None:
+        head, per_kp_unit = conversion
+        text += f"; {head}: {per_kp_unit} ₽ за {inp.unit_text} {vat}"
+    return text
+
+
 def _inflation_text(inp: CommentInputs, label: InflationLabel) -> str:
     if inp.is_system and not is_weight(inp.quantity):
         amount = f"{rub_in_base(inp, target_sum_net(inp))} ₽ за весь объём"
@@ -262,6 +288,7 @@ def _file_line(
     comments: Mapping[int, str],
     agreements: Mapping[int, tuple[Decimal, str]],
     targets: Mapping[int, SavedTarget],
+    references: Mapping[int, ReferenceSource],
     context: FileContext,
 ) -> FileLine:
     agreed = agreements.get(src.position_item_id)
@@ -276,6 +303,7 @@ def _file_line(
         inflation=context.inflation,
         agreed_net=agreed[0] if agreed is not None else None,
         saved_target=targets.get(src.position_item_id),
+        reference=references.get(src.position_item_id),
     )
     target = target_net(inp)
 
@@ -284,6 +312,14 @@ def _file_line(
     inflation_source: SourceContract | None = None
     if agreed is not None:
         source = f"Договорились {agreed[1]}"
+    elif inp.reference is not None:
+        ref = inp.reference
+        source = _reference_source_text(inp)
+        if context.inflation is not None and ref.net != ref.nominal:
+            inflation = _inflation_text(inp, context.inflation)
+            inflation_source = SourceContract(
+                ref.contract, ContractRate(contract_id=ref.contract.contract_id, net=ref.net, nominal=ref.nominal, lines=1)
+            )
     elif result.state is LineState.comparable:
         source = _source_text(inp)
         if context.inflation is not None and inp.source.rate.net != inp.source.rate.nominal:
@@ -324,10 +360,12 @@ def build_file_rows(
     comments: Mapping[int, str],
     agreements: Mapping[int, tuple[Decimal, str]],
     targets: Mapping[int, SavedTarget] | None = None,
+    references: Mapping[int, ReferenceSource] | None = None,
     context: FileContext,
 ) -> list[FileSection | FileLine]:
     """Строки файла в порядке входа; `agreements` — нетто и уже напечатанная дата `ДД.ММ.ГГГГ`;
-    `targets` — сохранённые выборы цели работ `(вид, аналог)`."""
+    `targets` — сохранённые выборы цели работ `(вид, аналог)`; `references` — строки договоров, признанные
+    справочными для строк КП (цель действует, только если сохранённый выбор — справочная цель)."""
     rows: list[FileSection | FileLine] = []
     for src in source_lines:
         if src.is_chapter:
@@ -340,6 +378,7 @@ def build_file_rows(
                     comments=comments,
                     agreements=agreements,
                     targets=targets or {},
+                    references=references or {},
                     context=context,
                 )
             )

@@ -1031,7 +1031,8 @@ def test_ref_analogs_target_the_value_takes_the_read_inflation_series(admin_clie
 # ---------------------------------------------------------------------------
 
 
-_TARGET_FIELDS = ("choice", "target_kind")
+#: Поля выбора цели и вида комментария: справочная цель меняет их по спеке §2.15 (шаблон `over`).
+_TARGET_FIELDS = ("choice", "target_kind", "comment_kind")
 
 
 def _without_target(line: dict) -> dict:

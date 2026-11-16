@@ -53,6 +53,7 @@ from services.zone_rules import Zone
 
 if TYPE_CHECKING:  # crud.reference_lines читает модели и импортирует этот модуль цепочкой загрузчиков
     from crud.reference_lines import ReferenceLine
+    from services.kp_comment import ReferenceSource
 
 Level = Literal["v", "p", "f"]
 Scope = Literal["cls", "all"]
@@ -247,9 +248,9 @@ class ReferenceSnapshot:
     without_analogs: bool
 
 
-def reference_value(line: ReferenceLine, snapshot: ReferenceSnapshot) -> Decimal:
+def reference_value(line: ReferenceLine | ReferenceSource, snapshot: ReferenceSnapshot) -> Decimal:
     """Значение справочной цели: цена строки договора (с рядом чтения), делённая на `N` из снимка;
-    без пересчёта — делённая на 1 (спека §2.14)."""
+    без пересчёта — делённая на 1 (спека §2.14). Цена — `net` строки справочных строк или источника файла."""
     if snapshot.factor is None:
         return line.net
     return price_in_kp_unit(line.net, snapshot.factor)
