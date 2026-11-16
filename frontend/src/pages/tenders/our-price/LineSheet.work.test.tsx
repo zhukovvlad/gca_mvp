@@ -25,7 +25,7 @@ import { ANALOG_UNAVAILABLE_TOAST } from "@/services/queries";
 import type { MoneyPair, OurPriceLine, OurPriceLineView, TargetChoice } from "@/types/domain";
 
 import { LineSheet, type LineSheetProps } from "./LineSheet";
-import { SAVING_LABEL, SHEET_SECTION, UNIT_WARN_ALL_OUTLIERS, zoneQueueHref } from "./ourPriceCopy";
+import { REF_SEARCH, SAVING_LABEL, SHEET_SECTION, UNIT_WARN_ALL_OUTLIERS, zoneQueueHref } from "./ourPriceCopy";
 
 const LINE_PATH = "/api/v1/tenders/:id/rounds/:roundId/our-price/offers/:offerId/lines/:positionItemId";
 const ADMIN = { id: 1, email: "admin@example.test", role: "admin" } as const;
@@ -264,7 +264,7 @@ describe("панель работы: ширина и порядок секций
       .getAllByRole("heading", { level: 4 })
       .map((h) => h.textContent);
 
-  it("работа: где строка, цены, сравнение, аналоги, в файл подрядчику", async () => {
+  it("работа: где строка, цены, сравнение, аналоги, поиск по договорам, в файл подрядчику", async () => {
     serve(() => workLineViewFixture());
     renderSheet();
     await screen.findByTestId("sheet-comparison");
@@ -273,11 +273,12 @@ describe("панель работы: ширина и порядок секций
       SHEET_SECTION.prices,
       SHEET_SECTION.comparison,
       SHEET_SECTION.analogs,
+      REF_SEARCH.title,
       SHEET_SECTION.export,
     ]);
   });
 
-  it("сборная строка: где строка, цены, сравнение, по частям, в файл подрядчику", async () => {
+  it("сборная строка: где строка, цены, сравнение, по частям, поиск по договорам, в файл подрядчику", async () => {
     serve(() => compositeLineViewFixture());
     renderSheet();
     await screen.findByTestId("composite-no-target");
@@ -286,6 +287,7 @@ describe("панель работы: ширина и порядок секций
       SHEET_SECTION.prices,
       SHEET_SECTION.comparison,
       SHEET_SECTION.parts,
+      REF_SEARCH.title,
       SHEET_SECTION.export,
     ]);
   });

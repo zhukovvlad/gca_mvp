@@ -213,6 +213,17 @@ export const qk = {
       seriesId: number | null
     ) =>
       ["tenders", "our-price", "line", tenderId, roundId, offerId, positionItemId, level, scope, seriesId] as const,
+    /** Поиск справочных строк строки КП: под префиксом панелей, решение по строке обновляет и его. */
+    ourPriceReferenceSearch: (
+      tenderId: number,
+      roundId: number,
+      offerId: number,
+      positionItemId: number,
+      query: string,
+      units: string,
+      seriesId: number | null
+    ) =>
+      ["tenders", "our-price", "line", tenderId, roundId, offerId, positionItemId, "reference-search", query, units, seriesId] as const,
     /** Префиксы по ряду ИПЦ: все ряды (и `null`) одного этапа, разбора, панелей. */
     ourPriceRoundAllSeries: (tenderId: number, roundId: number) =>
       ["tenders", "our-price", "round", tenderId, roundId] as const,

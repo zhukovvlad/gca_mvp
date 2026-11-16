@@ -677,4 +677,31 @@ describe("лестница аналогов: колонки и подписи с
     const link = within(screen.getByTestId("to-ours-2")).getByRole("link", { name: WAITING_ADMIN_LABEL });
     expect(link).toHaveAttribute("href", "/families?tab=suggestions&queue=zones&chain=91");
   });
+  it("строка без аналога в своей зоне, но с аналогами в других: подпись называет зоны и размер групп", () => {
+    renderTable([
+      line(1, {
+        state: "no_history",
+        no_history_reason: "no_zone_match",
+        zone: "aboveground",
+        other_zones: [
+          { zone: "underground", lines: 3, contracts: 2 },
+          { zone: "territory", lines: 1, contracts: 1 },
+        ],
+      }),
+    ]);
+    expect(screen.getByTestId("to-ours-1")).toHaveTextContent(
+      "нет аналога в зоне «Надземная» · есть в зоне «Подземная»: 3 строки, 2 договора, «Территория»: 1 строка, 1 договор"
+    );
+  });
+
+  it("без other_zones подпись прежняя", () => {
+    renderTable([line(1, { state: "no_history", no_history_reason: "no_zone_match", zone: "aboveground" })]);
+    expect(screen.getByTestId("to-ours-1")).toHaveTextContent("нет аналога в зоне «надземная часть»");
+  });
+
+  it("метка цели «справочная»", () => {
+    renderTable([line(1, { target_kind: "reference" })]);
+    expect(screen.getByTestId("target-mark-1")).toHaveTextContent("цель: справочная");
+  });
+
 });

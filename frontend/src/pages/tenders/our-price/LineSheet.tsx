@@ -13,6 +13,7 @@ import type { Decimal, OurPriceLine, OurPriceLineView, RungLevel, RungScope } fr
 import { AnalogsTable } from "./AnalogsTable";
 import { LineWhere } from "./LineWhere";
 import { PartsReference } from "./PartsReference";
+import { ReferencePanel } from "./ReferenceBlocks";
 import { TargetCards } from "./TargetCards";
 import { targetAnalogId, type TargetStrategy } from "./targetSelection";
 
@@ -295,6 +296,15 @@ function PanelContent({
           <PartsReference groups={data.parts_reference} vat={vat} unit={line.unit} />
         </Section>
       )}
+      <ReferencePanel
+        tenderId={tenderId}
+        roundId={roundId}
+        offerId={offerId}
+        seriesId={seriesId}
+        data={data}
+        vat={vat}
+        canEdit={canEdit}
+      />
       {data.group_lines.length > 0 && <Family line={line} groupLines={data.group_lines} vat={vat} />}
       {data.contracts.length > 0 && <Contracts contracts={data.contracts} vat={vat} />}
       {data.vat_dropped.length > 0 && (

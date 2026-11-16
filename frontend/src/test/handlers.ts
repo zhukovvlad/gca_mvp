@@ -45,6 +45,7 @@ import { initialJournal } from "./journalFixtures";
 import type {
   ContractCandidate,
   OurPriceLineState,
+  ReferenceSearchResult,
   RungLevel,
   RungScope,
   TenderAward,
@@ -485,6 +486,9 @@ interface HandlerState {
   ourPriceLineStates: OurPriceLineState[];
   /** Все запросы трёх эндпоинтов по порядку: вид и адрес с параметрами. */
   ourPriceRequests: Array<{ kind: "round" | "offer" | "line"; url: string }>;
+  /** Запросы `GET .../lines/:pid/reference-search` по порядку (адрес с параметрами) и ответ на них. */
+  referenceSearchRequests: string[];
+  referenceSearchResult: ReferenceSearchResult;
   /**
    * Исход `GET /api/v1/tenders/:id/changes-export` (спека
    * 2026-09-16-tender-changes-export-design.md §2.1, §2.11, план фичи, Task
@@ -2125,6 +2129,8 @@ export const handlerState: HandlerState = {
   ourPriceOfferInProgress: [0],
   ourPriceLineStates: ["comparable"],
   ourPriceRequests: [],
+  referenceSearchRequests: [],
+  referenceSearchResult: { rows: [], total_lines: 0, truncated: false },
   roundOverrideRequests: [],
   changesExportOutcome: "ok",
   lastChangesExportTenderId: null,
@@ -2801,6 +2807,8 @@ export function resetHandlerState() {
   handlerState.ourPriceOfferInProgress = [0];
   handlerState.ourPriceLineStates = ["comparable"];
   handlerState.ourPriceRequests = [];
+  handlerState.referenceSearchRequests = [];
+  handlerState.referenceSearchResult = { rows: [], total_lines: 0, truncated: false };
   handlerState.roundOverrideRequests = [];
   handlerState.changesExportOutcome = "ok";
   handlerState.lastChangesExportTenderId = null;
@@ -4645,6 +4653,13 @@ export const handlers = [
           rung: level && scope ? { level, scope } : null,
         })
       );
+    }
+  ),
+  http.get(
+    "/api/v1/tenders/:id/rounds/:roundId/our-price/offers/:offerId/lines/:positionItemId/reference-search",
+    ({ request }) => {
+      handlerState.referenceSearchRequests.push(request.url);
+      return HttpResponse.json(handlerState.referenceSearchResult);
     }
   ),
   /**

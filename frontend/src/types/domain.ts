@@ -3518,7 +3518,7 @@ export interface FreshestFigure {
   period: string | null;
 }
 
-export type TargetKind = "agreed" | "lowest" | "freshest" | "analog" | "contractor";
+export type TargetKind = "agreed" | "lowest" | "freshest" | "analog" | "contractor" | "reference";
 
 /** Почему выбор цели перестал действовать (спека лестницы аналогов §2.14, упрощения каталога §2.9). */
 export type TargetResetReason =
@@ -3529,8 +3529,12 @@ export type TargetResetReason =
   | "no_contractor";
 
 export interface TargetChoice {
-  kind: "freshest" | "analog" | "contractor";
+  kind: "freshest" | "analog" | "contractor" | "reference";
   analog_id: number | null;
+  /** Справочная цель (спека справочных аналогов §2.16): откуда выбрана, снимок пересчёта, строка договора. */
+  origin?: ReferenceOrigin;
+  conversion?: RefConversion;
+  reference?: RefRow | null;
   /** `false` - выбор сохранён, но не действует (см. `reset_reason`). */
   active: boolean;
   reset_reason: TargetResetReason | null;
@@ -3720,6 +3724,108 @@ export interface OurPriceLine {
   file_ours: MoneyPair | null;
   /** Статья раздела строки со своей цепочкой; есть только в ответе панели, `null` - «Нераспределённое». */
   article?: OurPriceArticleRef | null;
+  /** Блок А: зоны, где аналоги есть (спека справочных аналогов §2.5); поля нет, когда групп нет. */
+  other_zones?: OtherZone[];
+}
+
+// ---------------------------------------------------------------------------
+//  Справочные аналоги (спека справочных аналогов §2.16). Деньги и `factor` — строки.
+// ---------------------------------------------------------------------------
+
+/** Зона строки договора; имя типа — как в спеке. */
+export type Zone = SectionZone;
+
+/** Одна запись подписи строки: зона блока А и размер её группы до свёртки. */
+export interface OtherZone {
+  zone: Zone;
+  lines: number;
+  contracts: number;
+}
+
+/** Пересчёт строки договора в единицу строки КП: `factor` — точная десятичная запись `N`, как пришла. */
+export type RefConversion =
+  | { method: "link"; link_id: number; factor: Decimal; basis: string }
+  | { method: "manual"; factor: Decimal; basis: string }
+  | null;
+
+export interface RefContract {
+  id: number;
+  object_title: string;
+  number: string;
+  year: number;
+  rate_class: { id: number; title: string };
+  contractor_id: number;
+  contractor_title: string;
+}
+
+/** Строка справочного блока или выдачи поиска. */
+export interface RefRow {
+  analog_id: number;
+  /** Свёрнутые строки договора; у несвёрнутой — одна, она сама. */
+  ids: number[];
+  title: string;
+  unit: string | null;
+  zone: Zone | null;
+  contract: RefContract;
+  period: string | null;
+  /** Различающиеся пути разделов свёрнутых строк. */
+  chapter_paths: OurPriceChapterStep[][];
+  price: MoneyPair;
+  nominal: MoneyPair;
+  conversion: RefConversion;
+  no_conversion_reason: string | null;
+  kp_unit_price: MoneyPair | null;
+  deviation_pct: Decimal | null;
+  outlier_ratio: Decimal | null;
+  with_this_contractor: boolean;
+  param_value: string | null;
+}
+
+export type LinkKind = "thickness" | "width" | "density" | "constant";
+
+export interface ReferenceZoneGroup {
+  zone: Zone;
+  rung_no: number;
+  released: string[];
+  other_class: boolean;
+  rows: RefRow[];
+}
+
+export interface ReferenceLinkGroup {
+  link_id: number;
+  family: { id: number; title: string; unit: string | null };
+  kind: LinkKind;
+  other_class: boolean;
+  rows: RefRow[];
+}
+
+export type ReferenceOrigin = "zone" | "link" | "search";
+
+/** Строка выдачи поиска: форма строки блока и вид пересчёта (спека §2.12). */
+export interface ReferenceSearchRow extends RefRow {
+  conversion_kind: "none" | "link" | "manual_needed";
+}
+
+export interface ReferenceSearchResult {
+  rows: ReferenceSearchRow[];
+  total_lines: number;
+  truncated: boolean;
+}
+
+export type ReferenceUnits = "all" | "kp";
+
+/** Пересчёт в теле `PUT …/target`: `link` — ровно то, что видел человек; `manual` — ввод. */
+export type ReferenceConversionBody =
+  | { method: "link"; link_id: number; expected_factor: Decimal; expected_basis: string }
+  | { method: "manual"; factor: Decimal; basis: string }
+  | null;
+
+export interface ReferenceTargetBody {
+  kind: "reference";
+  analog_id: number;
+  origin: ReferenceOrigin;
+  conversion: ReferenceConversionBody;
+  confirm_outlier: boolean;
 }
 
 /** Автор решения: `id` и почта пользователя. */
@@ -3811,6 +3917,10 @@ export interface OurPriceLineView {
   analogs: OurPriceAnalog[];
   /** Справка «по частям» сборной строки; пусто у остальных. На цель и итоги не влияет. */
   parts_reference: OurPricePartsGroup[];
+  /** Блок А: та же работа в другой зоне; пусто, когда блока нет (спека справочных аналогов §2.4). */
+  reference_zones: ReferenceZoneGroup[];
+  /** Блок Г: семьи по связи (спека §2.9). */
+  reference_links: ReferenceLinkGroup[];
   vat_dropped: OurPriceVatDropped[];
   /**
    * Комментарий строки: `text` - свой, если задан, иначе шаблонный; `template_text` -
