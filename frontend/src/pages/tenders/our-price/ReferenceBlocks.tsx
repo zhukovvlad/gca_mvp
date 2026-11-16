@@ -137,8 +137,12 @@ export function ReferencePanel({ tenderId, roundId, offerId, seriesId, data, vat
         <ReferenceTargetDialog
           target={target}
           freshRow={freshRow}
+          tenderId={tenderId}
+          roundId={roundId}
+          offerId={offerId}
           positionItemId={line.position_item_id}
           kpUnit={kpUnit}
+          kpFamilyId={line.family_id}
           vat={vat}
           mutation={put}
           onClose={() => {

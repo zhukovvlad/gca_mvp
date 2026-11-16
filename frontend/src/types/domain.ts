@@ -3672,6 +3672,8 @@ export interface OurPriceLine {
   quantity: Decimal | null;
   section_ref: string | null;
   family: string | null;
+  /** Семья строки КП: сторона `a` связи при «Запомнить для семей» (спека справочных аналогов §2.16). */
+  family_id: number | null;
   variant_label: string | null;
   secondary: Array<{ name: string; value: string }>;
   state: OurPriceLineState;
@@ -3791,6 +3793,8 @@ export interface RefRow {
   outlier_ratio: Decimal | null;
   with_this_contractor: boolean;
   param_value: string | null;
+  /** Семья строки договора: сторона `b` связи при «Запомнить для семей». */
+  family_id: number | null;
 }
 
 export type LinkKind = "thickness" | "width" | "density" | "constant";

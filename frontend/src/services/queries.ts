@@ -35,9 +35,12 @@ import type {
   ActivateDiscoveryInput,
   AgreedBasis,
   KpFilePreview,
+  OurPriceLineView,
   ReferenceConversionBody,
   ReferenceOrigin,
+  ReferenceSearchResult,
   ReferenceUnits,
+  RefRow,
   RungLevel,
   RungScope,
   ArchiveContextInput,
@@ -3194,6 +3197,53 @@ export function useReferenceSearch(
     queryFn: () => tendersApi.referenceSearch(tenderId, roundId, offerId, positionItemId, text, units, seriesId),
     enabled: text.length >= REFERENCE_QUERY_MIN,
     retry: false,
+  });
+}
+
+/** Строка договора из открытых ответов панели и поиска; со связью - предпочтительнее, иначе первая найденная. */
+function readReferenceRow(
+  qc: ReturnType<typeof useQueryClient>,
+  tenderId: number,
+  roundId: number,
+  offerId: number,
+  positionItemId: number,
+  analogId: number
+): RefRow | null {
+  let found: RefRow | null = null;
+  const cached = qc.getQueriesData<OurPriceLineView | ReferenceSearchResult>({
+    queryKey: qk.tenders.ourPriceLinesOfOffer(tenderId, roundId, offerId),
+    type: "active",
+  });
+  for (const [key, data] of cached) {
+    if (data === undefined || key[6] !== positionItemId) continue;
+    const rows: RefRow[] =
+      "reference_zones" in data
+        ? [...data.reference_zones.flatMap((g) => g.rows), ...data.reference_links.flatMap((g) => g.rows)]
+        : data.rows;
+    for (const row of rows) {
+      if (row.analog_id !== analogId) continue;
+      if (row.conversion?.method === "link") return row;
+      found ??= row;
+    }
+  }
+  return found;
+}
+
+/**
+ * «Запомнить для семей» в диалоге справочной цели (спека справочных аналогов §2.13): создаёт связь и
+ * перечитывает открытые панели строки; результат - строка договора с пересчётом, который теперь отдаёт сервер
+ * (`null` - строки в ответах нет). `N` и основание клиент не считает.
+ */
+export function useCreateReferenceLink(tenderId: number, roundId: number, offerId: number, positionItemId: number) {
+  const qc = useQueryClient();
+  return useMutation<RefRow | null, AxiosError, { body: FamilyLinkBody; analogId: number }>({
+    mutationFn: async ({ body, analogId }) => {
+      await semanticApi.createFamilyLink(body);
+      await qc.refetchQueries({ queryKey: qk.tenders.ourPriceLinesOfOffer(tenderId, roundId, offerId), type: "active" });
+      return readReferenceRow(qc, tenderId, roundId, offerId, positionItemId, analogId);
+    },
+    onSuccess: () => invalidateFamilyLinks(qc),
+    onError: onFamilyLinkError,
   });
 }
 

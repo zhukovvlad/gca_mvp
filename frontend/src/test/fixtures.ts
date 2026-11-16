@@ -2921,6 +2921,7 @@ export function ourPriceLineFixture(overrides: Partial<OurPriceLine> = {}): OurP
     quantity: "100",
     section_ref: "1.1",
     family: "Семья 1",
+    family_id: null,
     variant_label: "Семья 1 · Вариант 1",
     secondary: [{ name: "Цвет", value: "серый" }],
     state: "comparable",
@@ -3564,6 +3565,7 @@ export function refRowFixture(overrides: Partial<RefRow> = {}): RefRow {
     outlier_ratio: null,
     with_this_contractor: false,
     param_value: null,
+    family_id: 72,
     ...overrides,
   };
 }
@@ -3582,6 +3584,7 @@ export function refLinkRowFixture(overrides: Partial<RefRow> = {}): RefRow {
     kp_unit_price: pair("11072.40", "13508.33"),
     deviation_pct: "113.6",
     param_value: "100",
+    family_id: 71,
     ...overrides,
   });
 }
@@ -3621,6 +3624,7 @@ export function referenceLineViewFixture(
   const base = workLineViewFixture({
     line: {
       unit: "м3",
+      family_id: 70,
       state: "no_history",
       no_history_reason: "no_zone_match",
       zone: "underground",
