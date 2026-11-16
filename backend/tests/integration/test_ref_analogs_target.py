@@ -1044,8 +1044,8 @@ def _offer_without_target(body: dict, item) -> dict:
 
 
 def test_ref_analogs_target_changes_no_offer_total_or_line_figure_of_a_comparable_row(admin_client, stage) -> None:
-    """Критическое свойство К1: разбор оффера со справочной целью и без неё равен целиком, кроме `choice` и
-    `target_kind` самой строки — итоги, `to_lowest`, `to_freshest`, вилка, состояния, корзины."""
+    """Справочное не входит в суммы: разбор оффера со справочной целью и без неё равен целиком, кроме `choice`,
+    `target_kind` и `comment_kind` самой строки — итоги, `to_lowest`, `to_freshest`, вилка, состояния, корзины."""
     ctx = _own_scene(stage)
     before = ctx.offer(admin_client)
     panel_before = ctx.panel(admin_client)

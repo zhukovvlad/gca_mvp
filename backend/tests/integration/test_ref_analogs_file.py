@@ -213,6 +213,8 @@ def test_ref_analogs_file_a_reset_target_goes_into_the_file_as_without_a_choice(
 def test_ref_analogs_file_agreed_stands_over_the_reference_target(admin_client, stage, db_session, admin_user) -> None:
     scene, ctx = _linked(stage, price=D("1107.24"), kp_price=D("14400"))
     _link_target(admin_client, ctx, scene)
+    # до договорённости справочная цель в файле действует — иначе «Договорились» нечего перекрывать
+    assert "сопоставимая работа" in _row(_preview(admin_client, ctx), ctx.item)["source"]
     _agree(db_session, ctx.item, D("10000"), admin_user)
 
     row = _row(_preview(admin_client, ctx), ctx.item)
@@ -254,6 +256,9 @@ def test_ref_analogs_file_the_inflation_column_and_the_header_years_follow_the_r
     row = _row(body, item)
 
     assert D(row["ours"]) == adjusted
+    # строка договора цели — тот же единственный аналог строки, поэтому цифры совпали бы и без справочной
+    # цели; что файл взял именно её, видно по форме «Источника»
+    assert "сопоставимая работа" in row["source"]
     assert row["inflation"].startswith(f"{SERIES_NAME}, к 08.2026: ")
     assert "инфляции" in row["comment"]
     # смета договора — 2025-02, цель 2026-08: годы 2025 и 2026
@@ -293,7 +298,9 @@ def test_ref_analogs_file_the_statement_count_does_not_grow_with_the_number_of_t
     with count_statements(stage.db) as two:
         body = _preview(admin_client, ctx)
 
-    assert _row(body, second)["source"] is not None
+    # обе цели действуют: «Источник» обеих строк — в форме справочной цели («сопоставимая работа»), а не
+    # своих аналогов, которые у обеих строк тоже есть; иначе вторая цель могла бы молча выпасть из файла
+    assert all("сопоставимая работа" in _row(body, item)["source"] for item in (ctx.item, second))
     assert len(two) == len(one)
 
 
