@@ -498,6 +498,19 @@ JOURNAL_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
 )
 assert len(JOURNAL_ROUTE_TEMPLATES) == 5
 
+#: Маршруты связей семей (спека справочных аналогов §2.16): чтение связей семьи и запись
+#: связи — ШАБЛОНАМИ пути, независимо от `app.routes`. Права на них перебирает
+#: `test_ref_analogs_links.py`.
+FAMILY_LINK_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("GET", f"{BASE}/families/{{family_id}}/links"),
+        ("POST", f"{BASE}/family-links"),
+        ("PUT", f"{BASE}/family-links/{{link_id}}"),
+        ("DELETE", f"{BASE}/family-links/{{link_id}}"),
+    }
+)
+assert len(FAMILY_LINK_ROUTE_TEMPLATES) == 4
+
 
 def test_route_set_under_prefix_equals_twenty_one_literal():
     """Множество путей под `/api/v1/semantic`, собранное из `app.routes`,
@@ -525,6 +538,7 @@ def test_route_set_under_prefix_equals_twenty_one_literal():
         | DISCOVERY_ROUTE_TEMPLATES
         | LADDER_ROUTE_TEMPLATES
         | JOURNAL_ROUTE_TEMPLATES
+        | FAMILY_LINK_ROUTE_TEMPLATES
     )
     # Возврата семьи из архива нет; «Вернуть» бывает только у черновиков открытия.
     assert not any(

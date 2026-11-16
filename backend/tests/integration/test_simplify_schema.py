@@ -79,6 +79,18 @@ def _migration_0025():
     return _load("*0025-catalog_simplify.py", "_migration_0025_simplify_test")
 
 
+def _migration_0027():
+    return _load("*0027-reference_analogs.py", "_migration_0027_simplify_test")
+
+
+#: Литералы цели строки КП, которые миграция 0027 переписала: текущее значение — в ней.
+_REWRITTEN_BY_0027 = frozenset({"CK_KP_TARGET_KIND", "CK_KP_TARGET_ANALOG"})
+
+
+def _owner_of(name: str):
+    return _migration_0027() if name in _REWRITTEN_BY_0027 else _migration_0025()
+
+
 # ---------------------------------------------------------------------------
 #  Помощники
 # ---------------------------------------------------------------------------
@@ -253,7 +265,7 @@ class TestTablesColumnsAndConstraintNames:
     def test_the_closed_sets(self):
         assert COMPOSITE_KINDS == ("all", "any")
         assert AUTO_ACTION_KINDS == ("split", "value_added", "composite", "equated")
-        assert KP_TARGET_KINDS == ("freshest", "analog", "contractor")
+        assert KP_TARGET_KINDS == ("freshest", "analog", "contractor", "reference")
         assert {kind.value for kind in SemanticJobKind} == {
             "family_suggestion", "family_schema", "context_values", "family_discovery",
             "section_zone", "releasable_params", "auto_split",
@@ -699,9 +711,10 @@ class TestParityWithMigration:
          "(undone_at IS NULL) = (undone_by IS NULL)"),
         (CK_CONTEXT_AUTO_SPLIT_BLOCKED_PAIR, "CK_CONTEXT_AUTO_SPLIT_BLOCKED_PAIR",
          "(auto_split_blocked_at IS NULL) = (auto_split_blocked_by IS NULL)"),
-        (CK_KP_TARGET_KIND, "CK_KP_TARGET_KIND", "kind IN ('freshest', 'analog', 'contractor')"),
+        (CK_KP_TARGET_KIND, "CK_KP_TARGET_KIND",
+         "kind IN ('freshest', 'analog', 'contractor', 'reference')"),
         (CK_KP_TARGET_ANALOG, "CK_KP_TARGET_ANALOG",
-         "(kind = 'analog') = (analog_position_item_id IS NOT NULL)"),
+         "(kind IN ('analog', 'reference')) = (analog_position_item_id IS NOT NULL)"),
         (SEMANTIC_JOB_KINDS, "SEMANTIC_JOB_KINDS",
          "'family_suggestion', 'family_schema', 'context_values', 'family_discovery', "
          "'section_zone', 'releasable_params', 'auto_split'"),
@@ -718,7 +731,7 @@ class TestParityWithMigration:
     def test_check_expression_matches_migration_and_independent_literal(
         self, model_expr, name, independent
     ):
-        assert model_expr == getattr(_migration_0025(), name)
+        assert model_expr == getattr(_owner_of(name), name)
         assert model_expr == independent
 
     def test_the_closed_sets_match_the_check_literals(self):
@@ -774,9 +787,8 @@ class TestParityWithMigration:
             for c in Base.metadata.tables[table].constraints
             if isinstance(c, sa.CheckConstraint) and c.name in self._MODEL_CHECKS[table]
         }
-        migration = _migration_0025()
         expected = {
-            name: getattr(migration, constant)
+            name: getattr(_owner_of(constant), constant)
             for name, constant in self._MODEL_CHECKS[table].items()
         }
         assert declared == expected

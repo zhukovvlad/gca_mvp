@@ -3518,7 +3518,7 @@ export interface FreshestFigure {
   period: string | null;
 }
 
-export type TargetKind = "agreed" | "lowest" | "freshest" | "analog" | "contractor";
+export type TargetKind = "agreed" | "lowest" | "freshest" | "analog" | "contractor" | "reference";
 
 /** Почему выбор цели перестал действовать (спека лестницы аналогов §2.14, упрощения каталога §2.9). */
 export type TargetResetReason =
@@ -3526,11 +3526,27 @@ export type TargetResetReason =
   | "not_comparable"
   | "analog_unavailable"
   | "no_freshest"
-  | "no_contractor";
+  | "no_contractor"
+  | "reference_unavailable";
+
+/** Подсказки карточки справочной цели (спека справочных аналогов §2.14): на цифры не влияют. */
+export interface ReferenceHints {
+  /** Связь действует и сегодня даёт другой `N`: показываем новый множитель, цифра цели прежняя. */
+  link_now: { factor: Decimal; factor_shown: string; basis: string } | null;
+  /** Связь удалена или не действует: цифра - по снимку. */
+  link_gone: boolean;
+  /** У строки появились свои аналоги. */
+  own_analogs: boolean;
+}
 
 export interface TargetChoice {
-  kind: "freshest" | "analog" | "contractor";
+  kind: "freshest" | "analog" | "contractor" | "reference";
   analog_id: number | null;
+  /** Справочная цель (спека справочных аналогов §2.16): откуда выбрана, снимок пересчёта, строка договора. */
+  origin?: ReferenceOrigin;
+  conversion?: RefConversion;
+  reference?: RefRow | null;
+  hints?: ReferenceHints;
   /** `false` - выбор сохранён, но не действует (см. `reset_reason`). */
   active: boolean;
   reset_reason: TargetResetReason | null;
@@ -3656,6 +3672,8 @@ export interface OurPriceLine {
   quantity: Decimal | null;
   section_ref: string | null;
   family: string | null;
+  /** Семья строки КП: сторона `a` связи при «Запомнить для семей» (спека справочных аналогов §2.16). */
+  family_id: number | null;
   variant_label: string | null;
   secondary: Array<{ name: string; value: string }>;
   state: OurPriceLineState;
@@ -3720,6 +3738,180 @@ export interface OurPriceLine {
   file_ours: MoneyPair | null;
   /** Статья раздела строки со своей цепочкой; есть только в ответе панели, `null` - «Нераспределённое». */
   article?: OurPriceArticleRef | null;
+  /** Блок А: зоны, где аналоги есть (спека справочных аналогов §2.5); поля нет, когда групп нет. */
+  other_zones?: OtherZone[];
+}
+
+// ---------------------------------------------------------------------------
+//  Справочные аналоги (спека справочных аналогов §2.16). Деньги и `factor` — строки.
+// ---------------------------------------------------------------------------
+
+/** Зона строки договора; имя типа — как в спеке. */
+export type Zone = SectionZone;
+
+/** Одна запись подписи строки: зона блока А и размер её группы до свёртки. */
+export interface OtherZone {
+  zone: Zone;
+  lines: number;
+  contracts: number;
+}
+
+/**
+ * Пересчёт строки договора в единицу строки КП: `factor` — точная десятичная запись `N`, как пришла;
+ * `factor_shown` — её печатная форма с сервера («0,1», «≈ 3,3333»), клиент `N` сам не форматирует.
+ */
+export type RefConversion =
+  | { method: "link"; link_id: number; factor: Decimal; factor_shown: string; basis: string }
+  | { method: "manual"; factor: Decimal; factor_shown: string; basis: string }
+  | null;
+
+export interface RefContract {
+  id: number;
+  object_title: string;
+  number: string;
+  year: number;
+  rate_class: { id: number; title: string };
+  contractor_id: number;
+  contractor_title: string;
+}
+
+/** Строка справочного блока или выдачи поиска. */
+export interface RefRow {
+  analog_id: number;
+  /** Свёрнутые строки договора; у несвёрнутой — одна, она сама. */
+  ids: number[];
+  title: string;
+  unit: string | null;
+  zone: Zone | null;
+  contract: RefContract;
+  period: string | null;
+  /** Различающиеся пути разделов свёрнутых строк. */
+  chapter_paths: OurPriceChapterStep[][];
+  price: MoneyPair;
+  nominal: MoneyPair;
+  /** Нужен ли пересчёт: единицы строки договора и строки КП не равны по id каталога (предикат сервера). */
+  needs_conversion: boolean;
+  conversion: RefConversion;
+  /** Номинал в единице КП: номинал ÷ точное `N` (как в файле); `null` - пересчёта нет. */
+  kp_unit_nominal: MoneyPair | null;
+  no_conversion_reason: string | null;
+  kp_unit_price: MoneyPair | null;
+  deviation_pct: Decimal | null;
+  outlier_ratio: Decimal | null;
+  with_this_contractor: boolean;
+  param_value: string | null;
+  /** Семья строки договора: сторона `b` связи при «Запомнить для семей». */
+  family_id: number | null;
+}
+
+export type LinkKind = "thickness" | "width" | "density" | "constant";
+
+export interface ReferenceZoneGroup {
+  zone: Zone;
+  rung_no: number;
+  released: string[];
+  other_class: boolean;
+  rows: RefRow[];
+}
+
+export interface ReferenceLinkGroup {
+  link_id: number;
+  family: { id: number; title: string; unit: string | null };
+  kind: LinkKind;
+  other_class: boolean;
+  rows: RefRow[];
+}
+
+export type ReferenceOrigin = "zone" | "link" | "search";
+
+// ---------------------------------------------------------------------------
+//  Связи семей (спека справочных аналогов §2.6, §2.16)
+// ---------------------------------------------------------------------------
+
+export type LinkInactiveReason = "family_inactive" | "units_changed" | "no_live_side";
+
+/** Причины отказа `422 link_invalid` (поле `reason`). */
+export type LinkInvalidReason =
+  | "same_family"
+  | "family_inactive"
+  | "units_mismatch"
+  | "param_invalid"
+  | "params_missing"
+  | "constant_invalid"
+  | "pair_changed";
+
+export interface FamilyRef {
+  id: number;
+  title: string;
+  unit: string | null;
+}
+
+export interface ParamRef {
+  id: number;
+  name: string;
+}
+
+/**
+ * Связь, развёрнутая от карточки семьи. `factor` и `factor_from_family_id` - как хранятся, форма правки
+ * берёт их, а не `shown`; `shown` - то же равенство от этой семьи, только для показа («≈» в начале - округление).
+ */
+export interface FamilyLinkView {
+  id: number;
+  other_family: FamilyRef;
+  kind: LinkKind;
+  this_param: ParamRef | null;
+  other_param: ParamRef | null;
+  factor_from_family_id: number | null;
+  factor: Decimal | null;
+  basis: string | null;
+  shown: { from_family_id: number; factor: string } | null;
+  state: "active" | "inactive";
+  inactive_reason: LinkInactiveReason | null;
+  /** Стороны, у которых параметр задан, но не жив. */
+  stale_sides: Array<"this" | "other">;
+  created_by: { id: number; email: string | null };
+  created_at: string;
+  updated_by: { id: number; email: string | null } | null;
+  updated_at: string | null;
+}
+
+/** Тело `POST /family-links` и `PUT /family-links/{id}`: `a` - эта семья, `b` - другая. */
+export interface FamilyLinkBody {
+  family_a_id: number;
+  family_b_id: number;
+  kind: LinkKind;
+  param_a_id: number | null;
+  param_b_id: number | null;
+  factor_from_family_id: number | null;
+  factor: Decimal | null;
+  basis: string | null;
+}
+
+/** Строка выдачи поиска: форма строки блока и вид пересчёта (спека §2.12). */
+export interface ReferenceSearchRow extends RefRow {
+  conversion_kind: "none" | "link" | "manual_needed";
+}
+
+export interface ReferenceSearchResult {
+  rows: ReferenceSearchRow[];
+  total_lines: number;
+  truncated: boolean;
+}
+
+export type ReferenceUnits = "all" | "kp";
+
+/** Пересчёт в теле `PUT …/target`: `link` — ровно то, что видел человек; `manual` — ввод. */
+export type ReferenceConversionBody =
+  | { method: "link"; link_id: number; expected_factor: Decimal; expected_basis: string }
+  | { method: "manual"; factor: Decimal; basis: string }
+  | null;
+
+export interface ReferenceTargetBody {
+  kind: "reference";
+  analog_id: number;
+  origin: ReferenceOrigin;
+  conversion: ReferenceConversionBody;
+  confirm_outlier: boolean;
 }
 
 /** Автор решения: `id` и почта пользователя. */
@@ -3811,6 +4003,10 @@ export interface OurPriceLineView {
   analogs: OurPriceAnalog[];
   /** Справка «по частям» сборной строки; пусто у остальных. На цель и итоги не влияет. */
   parts_reference: OurPricePartsGroup[];
+  /** Блок А: та же работа в другой зоне; пусто, когда блока нет (спека справочных аналогов §2.4). */
+  reference_zones: ReferenceZoneGroup[];
+  /** Блок Г: семьи по связи (спека §2.9). */
+  reference_links: ReferenceLinkGroup[];
   vat_dropped: OurPriceVatDropped[];
   /**
    * Комментарий строки: `text` - свой, если задан, иначе шаблонный; `template_text` -

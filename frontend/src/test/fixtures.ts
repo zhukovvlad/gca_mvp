@@ -35,6 +35,14 @@ import type {
   KpFilePreview,
   KpSentFileItem,
   OurPriceAnalog,
+  OtherZone,
+  FamilyLinkView,
+  RefRow,
+  ReferenceLinkGroup,
+  ReferenceSearchResult,
+  ReferenceSearchRow,
+  ReferenceZoneGroup,
+  TargetChoice,
   OurPriceArticleRef,
   OurPriceCategory,
   OurPriceCell,
@@ -2913,6 +2921,7 @@ export function ourPriceLineFixture(overrides: Partial<OurPriceLine> = {}): OurP
     quantity: "100",
     section_ref: "1.1",
     family: "Семья 1",
+    family_id: null,
     variant_label: "Семья 1 · Вариант 1",
     secondary: [{ name: "Цвет", value: "серый" }],
     state: "comparable",
@@ -3199,6 +3208,8 @@ export function ourPriceLineViewFixture(
     ],
     analogs: [],
     parts_reference: [],
+    reference_zones: [],
+    reference_links: [],
     vat_dropped: [],
     comment: { kind: "template", text: KP_FILE_TEMPLATE_TEXT, template_text: KP_FILE_TEMPLATE_TEXT },
   };
@@ -3519,4 +3530,202 @@ export function kpSentFilesFixture(): KpSentFileItem[] {
       size_bytes: 17920,
     },
   ];
+}
+
+// ---------------------------------------------------------------------------
+//  Справочные аналоги (спека справочных аналогов §2.16): форма провода, не тип TS.
+//  Единица строки КП в этих фикстурах — м3; `factor` — строка с хвостовым нулём, как отдаёт сервер.
+// ---------------------------------------------------------------------------
+
+/** Строка справочного блока: одна несвёрнутая строка договора в той же единице, что строка КП (м3). */
+export function refRowFixture(overrides: Partial<RefRow> = {}): RefRow {
+  return {
+    analog_id: 9001,
+    ids: [9001],
+    title: "Подготовка из бетона В7,5, Н=0,10 м",
+    unit: "м3",
+    zone: "territory",
+    contract: {
+      id: 301,
+      object_title: "Объект Т",
+      number: "Д-27",
+      year: 2026,
+      rate_class: { id: 2, title: "Класс 2" },
+      contractor_id: 501,
+      contractor_title: "Подрядчик В",
+    },
+    period: "2026-03",
+    chapter_paths: [chapterPathFixture("Благоустройство", "МАФ")],
+    price: pair("8372.92", "10215.96"),
+    nominal: pair("8372.92", "10215.96"),
+    needs_conversion: false,
+    conversion: null,
+    kp_unit_nominal: null,
+    no_conversion_reason: null,
+    kp_unit_price: pair("8372.92", "10215.96"),
+    deviation_pct: "182.4",
+    outlier_ratio: null,
+    with_this_contractor: false,
+    param_value: null,
+    family_id: 72,
+    ...overrides,
+  };
+}
+
+/** Строка договора в м2 с пересчётом по связи: 1 м2 = 0.100 м3 (толщина). */
+export function refLinkRowFixture(overrides: Partial<RefRow> = {}): RefRow {
+  return refRowFixture({
+    analog_id: 9101,
+    ids: [9101],
+    title: "Бетонная подготовка B7,5, 100мм, армированная сеткой",
+    unit: "м2",
+    zone: "underground",
+    price: pair("1107.24", "1350.83"),
+    nominal: pair("1107.24", "1350.83"),
+    needs_conversion: true,
+    conversion: { method: "link", link_id: 41, factor: "0.100", factor_shown: "0,1", basis: "толщина 100 мм" },
+    kp_unit_nominal: pair("11072.40", "13508.33"),
+    kp_unit_price: pair("11072.40", "13508.33"),
+    deviation_pct: "113.6",
+    param_value: "100",
+    family_id: 71,
+    ...overrides,
+  });
+}
+
+export function referenceZoneGroupFixture(overrides: Partial<ReferenceZoneGroup> = {}): ReferenceZoneGroup {
+  return {
+    zone: "territory",
+    rung_no: 1,
+    released: [],
+    other_class: false,
+    rows: [refRowFixture()],
+    ...overrides,
+  };
+}
+
+export function referenceLinkGroupFixture(overrides: Partial<ReferenceLinkGroup> = {}): ReferenceLinkGroup {
+  return {
+    link_id: 41,
+    family: { id: 71, title: "Устройство бетонной подготовки", unit: "м2" },
+    kind: "thickness",
+    other_class: false,
+    rows: [refLinkRowFixture()],
+    ...overrides,
+  };
+}
+
+/** Панель строки-работы без своих аналогов: причина `no_zone_match`, единица м3, блоки А и Г по параметрам. */
+export function referenceLineViewFixture(
+  opts: {
+    zones?: ReferenceZoneGroup[];
+    links?: ReferenceLinkGroup[];
+    line?: Partial<OurPriceLine>;
+  } = {}
+): OurPriceLineView {
+  const zones = opts.zones ?? [referenceZoneGroupFixture()];
+  const otherZones: OtherZone[] = zones.map((g) => ({ zone: g.zone, lines: g.rows.length, contracts: 1 }));
+  const base = workLineViewFixture({
+    line: {
+      unit: "м3",
+      family_id: 70,
+      state: "no_history",
+      no_history_reason: "no_zone_match",
+      zone: "underground",
+      work_rung: null,
+      lowest: null,
+      freshest: null,
+      contractor: null,
+      range: null,
+      position: null,
+      to_lowest: null,
+      to_freshest: null,
+      to_lowest_unit: null,
+      to_freshest_unit: null,
+      to_contractor: null,
+      to_contractor_unit: null,
+      over_lowest: null,
+      over_freshest: null,
+      target_kind: null,
+      analogs_count: 0,
+      file_ours: null,
+      ...(otherZones.length > 0 ? { other_zones: otherZones } : {}),
+      ...opts.line,
+    },
+    analogs: [],
+  });
+  return { ...base, reference_zones: zones, reference_links: opts.links ?? [] };
+}
+
+/** Строка выдачи поиска: форма строки блока плюс `conversion_kind`. */
+export function referenceSearchRowFixture(overrides: Partial<ReferenceSearchRow> = {}): ReferenceSearchRow {
+  const kind = overrides.conversion_kind ?? "none";
+  // `none` ровно когда пересчёт не нужен (как на сервере)
+  return { ...refRowFixture({ needs_conversion: kind !== "none" }), conversion_kind: kind, ...overrides };
+}
+
+export function referenceSearchFixture(
+  rows: ReferenceSearchRow[],
+  overrides: Partial<ReferenceSearchResult> = {}
+): ReferenceSearchResult {
+  return { rows, total_lines: rows.length, truncated: false, ...overrides };
+}
+
+/** Действующая справочная цель строки: по умолчанию из поиска, без пересчёта, подсказок нет. */
+export function referenceChoiceFixture(overrides: Partial<TargetChoice> = {}): TargetChoice {
+  return {
+    kind: "reference",
+    analog_id: 9001,
+    origin: "search",
+    conversion: null,
+    reference: refRowFixture(),
+    hints: { link_now: null, link_gone: false, own_analogs: false },
+    active: true,
+    reset_reason: null,
+    set_by: KP_FILE_AUTHOR,
+    set_at: "2026-11-15T09:30:00+00:00",
+    ...overrides,
+  };
+}
+
+/** Связь «м2 — м3 через толщину» с карточки семьи в м2 (id 71): параметр этой стороны жив. */
+export function familyLinkFixture(overrides: Partial<FamilyLinkView> = {}): FamilyLinkView {
+  return {
+    id: 41,
+    other_family: { id: 72, title: "Бетонная подготовка в кубах", unit: "м3" },
+    kind: "thickness",
+    this_param: { id: 801, name: "Толщина, мм" },
+    other_param: null,
+    factor_from_family_id: null,
+    factor: null,
+    basis: null,
+    shown: null,
+    state: "active",
+    inactive_reason: null,
+    stale_sides: [],
+    created_by: { id: 3, email: "admin@example.test" },
+    created_at: "2026-11-14T10:00:00+00:00",
+    updated_by: null,
+    updated_at: null,
+    ...overrides,
+  };
+}
+
+/**
+ * Постоянная связь: хранится «1 т = 0.6667 м3» (левая часть — семья 72, т), а с карточки семьи 71 (м3)
+ * `shown` обращён и округлён: «≈1,4999 т» — печатная форма сервера с «≈» в начале.
+ */
+export function constantLinkFixture(overrides: Partial<FamilyLinkView> = {}): FamilyLinkView {
+  return familyLinkFixture({
+    id: 42,
+    other_family: { id: 72, title: "Щебень гравийный, т", unit: "т" },
+    kind: "constant",
+    this_param: null,
+    other_param: null,
+    factor_from_family_id: 72,
+    factor: "0.6667",
+    basis: "насыпная плотность 1,5 т/м3 — по паспорту поставщика",
+    shown: { from_family_id: 71, factor: "≈1.4999" },
+    ...overrides,
+  });
 }

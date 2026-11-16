@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { ourPriceLineFixture } from "@/test/fixtures";
 
-import { formatRatio, linesCount, offerSubtitle, progressCaption, roundSubtitle, variantCaption, priceBasisLabel,VAT_NET_LABEL, VAT_UNKNOWN_LABEL, inflationCaptionOf, KP_NOT_ADJUSTED_NOTE, groupLinesCaption, ratioNote, unitWarnContracts, unitWarnKp, isWaitingAdminLine, LINE_STATE_LABEL, lineStateLabel, periodRu, targetInactiveNote, WAITING_ADMIN_LABEL, workRungCaption, workRungLabel, analogsMore, COMPOSITE_NO_TARGET, EXPORT_SOURCE, TARGET_CARD, TARGET_MARK, targetSameContract } from "./ourPriceCopy";
+import { formatRatio, linesCount, offerSubtitle, progressCaption, roundSubtitle, variantCaption, priceBasisLabel,VAT_NET_LABEL, VAT_UNKNOWN_LABEL, inflationCaptionOf, KP_NOT_ADJUSTED_NOTE, groupLinesCaption, ratioNote, unitWarnContracts, unitWarnKp, isWaitingAdminLine, LINE_STATE_LABEL, lineStateLabel, periodRu, targetInactiveNote, WAITING_ADMIN_LABEL, workRungCaption, workRungLabel, analogsMore, COMPOSITE_NO_TARGET, EXPORT_SOURCE, TARGET_CARD, TARGET_MARK, targetSameContract, otherZonesLabel, refLinkTitle, refSections, refTruncated } from "./ourPriceCopy";
 
 describe("groupLinesCaption", () => {
   it.each([
@@ -235,5 +235,75 @@ describe("тексты панели строки: сборная строка, �
 
   it("причина сброса выбора «нет договора с этим подрядчиком» названа", () => {
     expect(targetInactiveNote("no_contractor")).toContain("Выбор не действует:");
+  });
+});
+
+describe("подпись строки с другими зонами (спека справочных аналогов §2.5)", () => {
+  const group = (zone: "underground" | "aboveground" | "territory" | "whole", lines: number, contracts: number) => ({
+    zone,
+    lines,
+    contracts,
+  });
+
+  it("две зоны: первая с «есть в зоне», вторая через запятую, склонения 3 строки, 2 договора, 1 строка, 1 договор", () => {
+    expect(otherZonesLabel("aboveground", [group("underground", 3, 2), group("territory", 1, 1)])).toBe(
+      "нет аналога в зоне «Надземная» · есть в зоне «Подземная»: 3 строки, 2 договора, «Территория»: 1 строка, 1 договор"
+    );
+  });
+
+  it.each([
+    [1, 1, "1 строка, 1 договор"],
+    [2, 2, "2 строки, 2 договора"],
+    [5, 5, "5 строк, 5 договоров"],
+    [21, 21, "21 строка, 21 договор"],
+    [11, 12, "11 строк, 12 договоров"],
+    [22, 24, "22 строки, 24 договора"],
+  ])("склонение: %i строк, %i договоров", (lines, contracts, text) => {
+    expect(otherZonesLabel("whole", [group("territory", lines, contracts)])).toBe(
+      `нет аналога в зоне «Весь объект» · есть в зоне «Территория»: ${text}`
+    );
+  });
+
+  it("групп нет — прежняя подпись", () => {
+    expect(otherZonesLabel("underground", [])).toBe("нет аналога в зоне «подземная часть»");
+    expect(otherZonesLabel(null, [])).toBe("нет аналога в зоне строки");
+  });
+
+  it("зона строки не определена, группы есть", () => {
+    expect(otherZonesLabel(null, [group("territory", 2, 1)])).toBe(
+      "нет аналога в зоне строки · есть в зоне «Территория»: 2 строки, 1 договор"
+    );
+  });
+
+  it("lineStateLabel берёт other_zones только у no_zone_match", () => {
+    const base = ourPriceLineFixture({
+      state: "no_history",
+      zone: "underground",
+      other_zones: [group("territory", 3, 1)],
+    });
+    expect(lineStateLabel({ ...base, no_history_reason: "no_zone_match" })).toBe(
+      "нет аналога в зоне «Подземная» · есть в зоне «Территория»: 3 строки, 1 договор"
+    );
+    expect(lineStateLabel({ ...base, no_history_reason: "no_params" })).toBe("нет аналога с этими параметрами");
+  });
+});
+
+describe("тексты справочных блоков", () => {
+  it("метка цели: справочная", () => {
+    expect(TARGET_MARK.reference).toBe("цель: справочная");
+  });
+
+  it("разделы: 2, 5 и 21", () => {
+    expect(refSections(2)).toBe("в 2 разделах:");
+    expect(refSections(5)).toBe("в 5 разделах:");
+    expect(refSections(21)).toBe("в 21 разделе:");
+  });
+
+  it("заголовок блока Г: постоянный без пересчёта строк — без числа", () => {
+    expect(refLinkTitle({ title: "Щебень", unit: "т" }, "constant", null)).toBe("Справочно: Щебень · т · пересчёт постоянный");
+  });
+
+  it("предел поиска назван числом", () => {
+    expect(refTruncated(50)).toBe("показаны первые 50, уточните запрос");
   });
 });

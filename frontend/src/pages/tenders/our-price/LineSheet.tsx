@@ -13,7 +13,8 @@ import type { Decimal, OurPriceLine, OurPriceLineView, RungLevel, RungScope } fr
 import { AnalogsTable } from "./AnalogsTable";
 import { LineWhere } from "./LineWhere";
 import { PartsReference } from "./PartsReference";
-import { TargetCards } from "./TargetCards";
+import { ReferencePanel } from "./ReferenceBlocks";
+import { ReferenceTargetCard, TargetCards } from "./TargetCards";
 import { targetAnalogId, type TargetStrategy } from "./targetSelection";
 
 import { comparedKpPrice, comparedUnit, formatMoney, formatSigned, formatUnitPrice, pick, type VatView } from "./money";
@@ -245,6 +246,16 @@ function PanelContent({
           </p>
         </Section>
       )}
+      {line.kind === "work" && line.choice?.kind === "reference" && (
+        <ReferenceTarget
+          tenderId={tenderId}
+          roundId={roundId}
+          offerId={offerId}
+          line={line}
+          vat={vat}
+          canEdit={canEdit}
+        />
+      )}
       {line.kind === "work" && line.work_rung !== null && (
         <WorkComparison
           tenderId={tenderId}
@@ -295,6 +306,15 @@ function PanelContent({
           <PartsReference groups={data.parts_reference} vat={vat} unit={line.unit} />
         </Section>
       )}
+      <ReferencePanel
+        tenderId={tenderId}
+        roundId={roundId}
+        offerId={offerId}
+        seriesId={seriesId}
+        data={data}
+        vat={vat}
+        canEdit={canEdit}
+      />
       {data.group_lines.length > 0 && <Family line={line} groupLines={data.group_lines} vat={vat} />}
       {data.contracts.length > 0 && <Contracts contracts={data.contracts} vat={vat} />}
       {data.vat_dropped.length > 0 && (
@@ -387,6 +407,34 @@ function Prices({ line, vat, vatRate }: { line: OurPriceLine; vat: VatView; vatR
         )}
       </dl>
     </Section>
+  );
+}
+
+/** Карточка справочной цели: «вернуть самую низкую» — прежнее снятие выбора (`DELETE …/target`). */
+function ReferenceTarget({
+  tenderId,
+  roundId,
+  offerId,
+  line,
+  vat,
+  canEdit,
+}: {
+  tenderId: number;
+  roundId: number;
+  offerId: number;
+  line: OurPriceLine;
+  vat: VatView;
+  canEdit: boolean;
+}) {
+  const del = useDeleteTarget(tenderId, roundId, offerId);
+  return (
+    <ReferenceTargetCard
+      line={line}
+      vat={vat}
+      canEdit={canEdit}
+      busy={del.isPending}
+      onReset={() => del.mutate({ positionItemId: line.position_item_id })}
+    />
   );
 }
 

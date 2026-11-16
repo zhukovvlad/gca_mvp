@@ -9,6 +9,9 @@ import type {
   FamilyChangeKind,
   FamilySource,
   FamilyVariantStatus,
+  LinkInactiveReason,
+  LinkInvalidReason,
+  LinkKind,
   JournalKind,
   JournalLockedBy,
   JournalState,
@@ -724,4 +727,43 @@ export const ZONE_SOURCE_LABEL: Record<"rule" | "model" | "human", string> = {
 export function releasableLabel(value: boolean | null): string {
   if (value === null) return "не размечен";
   return value ? "можно отпустить" : "обязателен";
+}
+
+// ---------------------------------------------------------------------------
+//  Связи семей (спека справочных аналогов §2.6, §2.16, §2.18)
+// ---------------------------------------------------------------------------
+
+export const LINK_KIND_LABEL: Record<LinkKind, string> = {
+  thickness: "м² ↔ м³ через толщину",
+  width: "м ↔ м² через ширину",
+  density: "м³ ↔ т через плотность",
+  constant: "постоянный множитель",
+};
+
+export const LINK_INACTIVE_LABEL: Record<LinkInactiveReason, string> = {
+  family_inactive: "одна из семей не активна",
+  units_changed: "единица семьи изменилась — подтвердите связь заново",
+  no_live_side: "параметр устарел — укажите заново",
+};
+
+export const LINK_STALE_LABEL = "параметр устарел — укажите заново";
+export const LINK_EXISTS_TEXT = "связь этой пары уже есть";
+
+export const LINK_INVALID_TEXT: Record<LinkInvalidReason, string> = {
+  same_family: "Связь держит две разные семьи.",
+  family_inactive: "Связь заводится между активными семьями.",
+  units_mismatch: "Единицы семей не подходят к виду связи.",
+  param_invalid: "Параметр не годится: нужен действующий параметр точных значений своей семьи.",
+  params_missing: "Укажите параметр хотя бы одной стороны.",
+  constant_invalid: "Постоянная связь: множитель — число больше нуля, основание — не пустое.",
+  pair_changed: "Пара семей связи не меняется: заведите новую связь.",
+};
+
+/** Текст отказа записи связи: `link_exists` или причина `link_invalid`; `null` — отказ диалог не объясняет. */
+export function linkRefusalText(code: string | undefined, reason: string | undefined): string | null {
+  if (code === "link_exists") return LINK_EXISTS_TEXT;
+  if (code === "link_invalid" && reason !== undefined && reason in LINK_INVALID_TEXT) {
+    return LINK_INVALID_TEXT[reason as LinkInvalidReason];
+  }
+  return null;
 }

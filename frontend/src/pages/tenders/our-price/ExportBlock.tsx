@@ -29,6 +29,8 @@ import {
   EXPORT_NOTHING_NOTE,
   EXPORT_OURS_NOTE,
   EXPORT_SOURCE,
+  REF_TARGET,
+  refExportSource,
   SAVE_LABEL,
   TARGET_CARD,
   VAT_NET_LABEL,
@@ -66,6 +68,7 @@ function commentTag(comment: OurPriceLineView["comment"]): string | null {
 function targetLabel(line: OurPriceLine): string {
   const choice = line.choice;
   if (choice === null || !choice.active) return TARGET_CARD.lowest;
+  if (choice.kind === "reference") return REF_TARGET.origin[choice.origin ?? "search"];
   return choice.kind === "analog" ? TARGET_CARD.pinned : TARGET_CARD[choice.kind];
 }
 
@@ -166,6 +169,35 @@ export function ExportBlock({
         : line.kind === "work"
           ? EXPORT_SOURCE.target(targetLabel(line))
           : EXPORT_SOURCE.ours;
+  // Справочная цель: «Источник» файла называет договор, раздел и пересчёт (спека §2.15).
+  const reference = line.choice !== null && line.choice.active && line.choice.kind === "reference" ? line.choice : null;
+  const refRow = reference?.reference ?? null;
+  const quoted = refRow === null ? null : pick(refRow.nominal, basis);
+  // Как в файле (`price_in_kp_unit(номинал, N)`): номинал ÷ точное N, а не цена после инфляции.
+  const convertedPrice = refRow === null ? null : pick(refRow.kp_unit_nominal, basis);
+  const vatLabel = shownRate !== null ? vatShownLabel(shownRate) : VAT_NET_LABEL;
+  const referenceSource =
+    line.agreed !== null || reference === null || refRow === null
+      ? null
+      : refExportSource({
+          object: refRow.contract.object_title,
+          number: refRow.contract.number,
+          year: refRow.contract.year,
+          path:
+            refRow.chapter_paths.length === 0 ? null : refRow.chapter_paths[0].map((step) => step.title).join(" → "),
+          quote: quoted === null ? null : formatUnitPrice(quoted),
+          unit: refRow.unit,
+          vat: vatLabel,
+          conversion:
+            reference.conversion == null
+              ? null
+              : {
+                  factorShown: reference.conversion.factor_shown,
+                  basis: reference.conversion.basis,
+                  kpUnit: line.unit,
+                  converted: convertedPrice === null ? null : formatUnitPrice(convertedPrice),
+                },
+        });
   const sourceNote = line.agreed !== null ? null : ours === null ? EXPORT_NOTHING_NOTE : EXPORT_OURS_NOTE;
 
   return (
@@ -183,6 +215,11 @@ export function ExportBlock({
           </Badge>
           {sourceNote !== null && <span className="text-xs text-fg-secondary">{sourceNote}</span>}
         </p>
+        {referenceSource !== null && (
+          <p data-testid="export-reference-source" className="text-xs text-fg-secondary">
+            {referenceSource}
+          </p>
+        )}
       </div>
 
       <div className="space-y-1">

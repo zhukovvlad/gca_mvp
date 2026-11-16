@@ -13,16 +13,19 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
+from typing import Annotated, Literal
 
 import sqlalchemy as sa
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from crud.common import DomainError
 from crud.our_price_load import KpLineRow, kp_vat_bases, load_kp_lines
+from crud.reference_lines import load_link_values, load_reference_lines
 from models import (
     KP_COMMENT_MAX,
     Estimate,
@@ -44,8 +47,18 @@ from money.price import is_price
 from money.vat import gross_to_net
 from parser.constants import JSON_KEY_LOTS, JSON_KEY_UNIT
 from services.estimate_import import extract_positions, extract_single_proposal
+from services.family_links import links_of_families
 from services.kp_file import KpSourceLine
-from services.our_price import RUNG_ORDER, LineState, Rung, SavedFamilyRung, SavedRungs, TargetKind
+from services.our_price import (
+    RUNG_ORDER,
+    LineState,
+    ReferenceSnapshot,
+    Rung,
+    SavedFamilyRung,
+    SavedRungs,
+)
+from services.reference_blocks import conversion_for, link_param_id, link_units
+from services.reference_math import factor_shown, parse_manual_factor, units_equal
 
 CODE_INVALID_AGREED = "invalid_agreed"
 CODE_COMMENT_TOO_LONG = "comment_too_long"
@@ -65,6 +78,26 @@ CODE_ANALOG_UNAVAILABLE = "analog_unavailable"
 #: Код отказа `PUT …/target` «самая свежая»: самой свежей у строки нет.
 CODE_NO_FRESHEST = "no_freshest"
 CODE_NO_CONTRACTOR_ANALOG = "no_contractor_analog"
+#: Коды отказов справочной цели (спека справочных аналогов §2.13).
+CODE_REFERENCE_UNAVAILABLE = "reference_unavailable"
+CODE_CONVERSION_NOT_NEEDED = "conversion_not_needed"
+CODE_CONVERSION_REQUIRED = "conversion_required"
+CODE_LINK_NOT_APPLICABLE = "link_not_applicable"
+CODE_CONVERSION_STALE = "conversion_stale"
+CODE_MANUAL_CONVERSION_INVALID = "manual_conversion_invalid"
+CODE_OUTLIER_CONFIRMATION_REQUIRED = "outlier_confirmation_required"
+#: Предел основания ручного пересчёта, знаков.
+MANUAL_BASIS_MAX = 300
+
+#: Снимок справочной цели пуст: цель другого вида его не несёт.
+_NO_REFERENCE_SNAPSHOT = {
+    "ref_origin": None,
+    "ref_method": None,
+    "ref_factor": None,
+    "ref_basis": None,
+    "ref_link_id": None,
+    "ref_without_analogs": None,
+}
 
 
 @dataclass(frozen=True)
@@ -80,6 +113,8 @@ class EstimateDecisions:
     targets: dict[int, tuple[str, int | None, datetime, int, str]]
     #: ("line", position_item_id) | ("family", family_id) -> (когда, кто, почта)
     rung_meta: dict[tuple[str, int], tuple[datetime, int, str]]
+    #: position_item_id -> снимок справочной цели (только у строк с `kind = 'reference'`)
+    references: dict[int, ReferenceSnapshot] = field(default_factory=dict)
 
 
 def _by_estimate(model, estimate_ids: Sequence[int], *columns: sa.ColumnElement) -> sa.Select:
@@ -106,6 +141,7 @@ def load_decisions(db: Session, estimate_ids: Sequence[int]) -> dict[int, Estima
     targets: dict[int, dict[int, tuple[str, int | None, datetime, int, str]]] = {i: {} for i in ids}
     family: dict[int, dict[int, SavedFamilyRung]] = {i: {} for i in ids}
     meta: dict[int, dict[tuple[str, int], tuple[datetime, int, str]]] = {i: {} for i in ids}
+    references: dict[int, dict[int, ReferenceSnapshot]] = {i: {} for i in ids}
 
     for estimate_id, pid, net, at, user_id, email in db.execute(
         _by_estimate(KpLineAgreement, ids, KpLineAgreement.net_price)
@@ -113,10 +149,32 @@ def load_decisions(db: Session, estimate_ids: Sequence[int]) -> dict[int, Estima
         agreements[estimate_id][pid] = (net, at, user_id, email)
     for estimate_id, pid, text, at, user_id, email in db.execute(_by_estimate(KpLineComment, ids, KpLineComment.text)):
         comments[estimate_id][pid] = (text, at, user_id, email)
-    for estimate_id, pid, kind, analog_id, at, user_id, email in db.execute(
-        _by_estimate(KpLineTarget, ids, KpLineTarget.kind, KpLineTarget.analog_position_item_id)
+    for estimate_id, pid, kind, analog_id, origin, method, factor, basis, link_id, without_analogs, at, user_id, email in (
+        db.execute(
+            _by_estimate(
+                KpLineTarget,
+                ids,
+                KpLineTarget.kind,
+                KpLineTarget.analog_position_item_id,
+                KpLineTarget.ref_origin,
+                KpLineTarget.ref_method,
+                KpLineTarget.ref_factor,
+                KpLineTarget.ref_basis,
+                KpLineTarget.ref_link_id,
+                KpLineTarget.ref_without_analogs,
+            )
+        )
     ):
         targets[estimate_id][pid] = (kind, analog_id, at, user_id, email)
+        if kind == "reference":
+            references[estimate_id][pid] = ReferenceSnapshot(
+                origin=origin,
+                method=method,
+                factor=factor,
+                basis=basis,
+                link_id=link_id,
+                without_analogs=without_analogs,
+            )
     for estimate_id, family_id, level, scope, parameter_id, at, user_id, email in db.execute(
         sa.select(
             KpFamilyRung.estimate_id,
@@ -141,6 +199,7 @@ def load_decisions(db: Session, estimate_ids: Sequence[int]) -> dict[int, Estima
             targets=targets[i],
             saved=SavedRungs(family=family[i]),
             rung_meta=meta[i],
+            references=references[i],
         )
         for i in ids
     }
@@ -470,7 +529,7 @@ def put_target(
     offer_id: int,
     pid: int,
     *,
-    kind: TargetKind,
+    kind: Literal["freshest", "analog", "contractor"],
     analog_id: int | None,
     inflation_series_id: int | None,
     actor_id: int,
@@ -519,6 +578,178 @@ def put_target(
                 "analog_position_item_id": stmt.excluded.analog_position_item_id,
                 "set_by": stmt.excluded.set_by,
                 "set_at": stmt.excluded.set_at,
+                # перезапись цели другим видом снимает снимок справочной цели
+                **_NO_REFERENCE_SNAPSHOT,
+            },
+        )
+    )
+    db.flush()
+
+
+class LinkConversionInput(BaseModel):
+    """Пересчёт по связи: тот, что человек видел в диалоге (`factor` и `basis` из ответа панели или поиска
+    без изменений); число считает сервер, ожидаемые значения — только проверка актуальности."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    method: Literal["link"]
+    link_id: int
+    expected_factor: str
+    expected_basis: str
+
+
+class ManualConversionInput(BaseModel):
+    """Ручной пересчёт: `N` и основание вводит человек (спека справочных аналогов §2.13)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    method: Literal["manual"]
+    factor: str
+    basis: str
+
+
+class ReferenceTargetInput(BaseModel):
+    """Тело `PUT …/target` с `kind = "reference"` (спека справочных аналогов §2.13)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["reference"]
+    analog_id: int
+    origin: Literal["zone", "link", "search"]
+    conversion: Annotated[LinkConversionInput | ManualConversionInput, Field(discriminator="method")] | None = None
+    confirm_outlier: bool = False
+
+
+def _same_factor(current: Decimal, expected: str) -> bool:
+    """Ожидаемое клиентом `N` равно текущему как `Decimal`; нечисловая строка — не равно."""
+    try:
+        return Decimal(expected) == current
+    except InvalidOperation:
+        return False
+
+
+def put_reference_target(
+    db: Session,
+    tender_id: int,
+    round_id: int,
+    offer_id: int,
+    pid: int,
+    *,
+    body: ReferenceTargetInput,
+    inflation_series_id: int | None,
+    actor_id: int,
+) -> None:
+    """Сохранить справочную цель строки-работы: строку договора с пересчётом единиц, записанным снимком.
+
+    Строка проверяется той же сценой и с тем же рядом ИПЦ, что чтение. Отказы по таблице спеки
+    справочных аналогов §2.13, по порядку: система (`target_not_applicable`); строка договора не
+    справочная (`reference_unavailable`); пересчёт при равных единицах (`conversion_not_needed`); различны
+    единицы, а пересчёта нет (`conversion_required`); связь не годится (`link_not_applicable`); `N` или
+    основание по связи сменились (`409 conversion_stale`); ручной пересчёт неверен
+    (`manual_conversion_invalid`); пара помечена выбросом без подтверждения
+    (`409 outlier_confirmation_required`). Пометка — та же функция, что у панели и поиска.
+    """
+    from crud.our_price import (  # crud.our_price читает решения из этого модуля
+        line_with_scene,
+        reference_mark_of,
+    )
+
+    scene, participant, row, result = line_with_scene(
+        db, tender_id, round_id, offer_id, pid, inflation_series_id=inflation_series_id
+    )
+    if row.line.is_system:
+        raise DomainError(422, "Справочная цель есть только у строки-работы.", code=CODE_TARGET_NOT_APPLICABLE)
+    factors = scene.plan.factor_by_estimate if scene.plan is not None else None
+    line = load_reference_lines(db, scene.contracts, [body.analog_id], factors=factors).get(body.analog_id)
+    if line is None:
+        raise DomainError(
+            422, "Эта строка договора не годится как справочная цель.", code=CODE_REFERENCE_UNAVAILABLE
+        )
+
+    same_unit = units_equal(line.unit_id, row.unit_id)
+    conversion = body.conversion
+    if same_unit and conversion is not None:
+        raise DomainError(422, "Единицы совпадают: пересчёт не нужен.", code=CODE_CONVERSION_NOT_NEEDED)
+    if not same_unit and conversion is None:
+        raise DomainError(422, "Единицы различны: нужен пересчёт.", code=CODE_CONVERSION_REQUIRED)
+
+    method: str | None = None
+    factor: Decimal | None = None
+    basis: str | None = None
+    link_id: int | None = None
+    if isinstance(conversion, LinkConversionInput):
+        kp_family = None if row.line.key is None else row.line.key.family_id
+        states = links_of_families(db, [] if kp_family is None else [kp_family])
+        param_id = link_param_id(states, line.family_id, kp_family)
+        values = load_link_values(db, set() if param_id is None else {(line.position_item_id, param_id)})
+        found, _reason, _needed = conversion_for(
+            contract_unit_id=line.unit_id,
+            kp_unit_id=row.unit_id,
+            contract_family_id=line.family_id,
+            kp_family_id=kp_family,
+            links=states,
+            units=link_units(states),
+            values=values,
+            position_item_id=line.position_item_id,
+        )
+        if found is None or found.link_id != conversion.link_id:
+            raise DomainError(
+                422, "Эта связь не даёт пересчёта для выбранной строки.", code=CODE_LINK_NOT_APPLICABLE
+            )
+        if not _same_factor(found.factor, conversion.expected_factor) or found.basis != conversion.expected_basis:
+            raise DomainError(
+                409,
+                "Пересчёт по связи изменился, пока диалог был открыт: проверьте новое значение.",
+                code=CODE_CONVERSION_STALE,
+                context={"factor": format(found.factor, "f"), "factor_shown": factor_shown(found.factor), "basis": found.basis},
+            )
+        method, factor, basis, link_id = "link", found.factor, found.basis, found.link_id
+    elif isinstance(conversion, ManualConversionInput):
+        manual = parse_manual_factor(conversion.factor)
+        text = conversion.basis.strip()
+        if manual is None or not text or len(text) > MANUAL_BASIS_MAX:
+            raise DomainError(
+                422,
+                "Ручной пересчёт: множитель — число больше нуля, не более 10⁶, до шести знаков после "
+                f"запятой; основание — не пустое, до {MANUAL_BASIS_MAX} знаков.",
+                code=CODE_MANUAL_CONVERSION_INVALID,
+            )
+        method, factor, basis = "manual", manual, text
+
+    ratio = reference_mark_of(db, scene, participant, row, result, body.analog_id)
+    if ratio is not None and not body.confirm_outlier:
+        raise DomainError(
+            409,
+            "Строка помечена выбросом: подтвердите выбор.",
+            code=CODE_OUTLIER_CONFIRMATION_REQUIRED,
+            context={"ratio": format(ratio, "f")},
+        )
+
+    snapshot = {
+        "ref_origin": body.origin,
+        "ref_method": method,
+        "ref_factor": factor,
+        "ref_basis": basis,
+        "ref_link_id": link_id,
+        "ref_without_analogs": result.ladder is None or result.ladder.rung_no is None,
+    }
+    stmt = pg_insert(KpLineTarget).values(
+        position_item_id=pid,
+        kind="reference",
+        analog_position_item_id=body.analog_id,
+        set_by=actor_id,
+        set_at=sa.func.now(),
+        **snapshot,
+    )
+    db.execute(
+        stmt.on_conflict_do_update(
+            index_elements=[KpLineTarget.position_item_id],
+            set_={
+                "kind": stmt.excluded.kind,
+                "analog_position_item_id": stmt.excluded.analog_position_item_id,
+                "set_by": stmt.excluded.set_by,
+                "set_at": stmt.excluded.set_at,
+                **snapshot,
             },
         )
     )

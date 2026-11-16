@@ -3390,8 +3390,15 @@ class KpSentFile(Base):
 #: Зона цепочки разделов, источник решения и вид выбора цели строки КП.
 ZONES = ("underground", "aboveground", "territory", "whole")
 ZONE_SOURCES = ("rule", "model", "human")
-#: `contractor` — число подрядчика участника КП (миграция 0025, спека упрощения каталога §2.9).
-KP_TARGET_KINDS = ("freshest", "analog", "contractor")
+#: `contractor` — число подрядчика участника КП (миграция 0025, спека упрощения каталога §2.9);
+#: `reference` — справочная строка (миграция 0027, спека справочных аналогов §2.17).
+KP_TARGET_KINDS = ("freshest", "analog", "contractor", "reference")
+
+#: Справочные аналоги (миграция 0027, спека справочных аналогов §2.6, §2.17). Литералы CHECK
+#: продублированы в миграции 0027; паритет держит `test_ref_analogs_schema.py`.
+LINK_KINDS = ("thickness", "width", "density", "constant")
+REF_ORIGINS = ("zone", "link", "search")
+REF_METHODS = ("link", "manual")
 
 #: Литералы CHECK продублированы в миграции 0024 (она не импортирует `models.py`);
 #: паритет держит `test_analog_schema.py`. Предикаты тотальны при `NULL` операндах
@@ -3413,7 +3420,40 @@ CK_SECTION_CHAIN_HUMAN_DECIDED_BY = (
 )
 CK_RELEASABLE_CONFIDENCE = "confidence BETWEEN 0 AND 1"
 CK_KP_TARGET_KIND = "kind IN (" + ", ".join(f"'{v}'" for v in KP_TARGET_KINDS) + ")"
-CK_KP_TARGET_ANALOG = "(kind = 'analog') = (analog_position_item_id IS NOT NULL)"
+CK_KP_TARGET_ANALOG = (
+    "(kind IN ('analog', 'reference')) = (analog_position_item_id IS NOT NULL)"
+)
+#: Справочная цель (миграция 0027): снимок `ref_*` задан ровно у `kind = 'reference'`.
+CK_KP_TARGET_REF_ORIGIN_PRESENT = "(kind = 'reference') = (ref_origin IS NOT NULL)"
+CK_KP_TARGET_REF_WITHOUT_ANALOGS_PRESENT = (
+    "(kind = 'reference') = (ref_without_analogs IS NOT NULL)"
+)
+CK_KP_TARGET_REF_ORIGIN = "ref_origin IN (" + ", ".join(f"'{v}'" for v in REF_ORIGINS) + ")"
+CK_KP_TARGET_REF_METHOD = "ref_method IN (" + ", ".join(f"'{v}'" for v in REF_METHODS) + ")"
+#: Пересчёт — способ, множитель и основание вместе или все пусты. Предикат тотален
+#: (`docs/pitfalls/db.md`): ветвь с `IS NOT NULL` перед сравнением.
+CK_KP_TARGET_REF_CONVERSION = (
+    "(ref_method IS NULL AND ref_factor IS NULL AND ref_basis IS NULL) OR "
+    "(ref_method IS NOT NULL AND ref_factor IS NOT NULL AND ref_factor > 0 "
+    f"AND ref_basis IS NOT NULL AND btrim(ref_basis, {TITLE_BLANK_CHARS_SQL}) <> '')"
+)
+CK_KP_TARGET_REF_LINK = "ref_link_id IS NULL OR ref_method IS NOT DISTINCT FROM 'link'"
+
+#: Связь семей (миграция 0027, спека справочных аналогов §2.6, §2.17).
+CK_FAMILY_LINK_ORDER = "family_lo_id < family_hi_id"
+CK_FAMILY_LINK_UNITS_DIFFER = "unit_lo_id <> unit_hi_id"
+CK_FAMILY_LINK_KIND = "kind IN (" + ", ".join(f"'{v}'" for v in LINK_KINDS) + ")"
+#: `constant` — множитель, основание и направление, параметров нет; прочие виды —
+#: множитель, основание и направление пусты и задан хотя бы один параметр.
+CK_FAMILY_LINK_SHAPE = (
+    "(kind = 'constant' AND factor IS NOT NULL AND factor > 0 "
+    f"AND basis IS NOT NULL AND btrim(basis, {TITLE_BLANK_CHARS_SQL}) <> '' "
+    "AND factor_from_id IS NOT NULL "
+    "AND (factor_from_id = family_lo_id OR factor_from_id = family_hi_id) "
+    "AND param_lo_id IS NULL AND param_hi_id IS NULL) OR "
+    "(kind <> 'constant' AND factor IS NULL AND basis IS NULL AND factor_from_id IS NULL "
+    "AND (param_lo_id IS NOT NULL OR param_hi_id IS NOT NULL))"
+)
 
 
 class SectionChain(Base):
@@ -3489,6 +3529,14 @@ class KpLineTarget(Base):
     analog_position_item_id = Column(BigInteger, nullable=True)
     set_by = Column(Integer, nullable=False)
     set_at = Column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
+    # Снимок справочной цели (миграция 0027, спека справочных аналогов §2.13): заданы
+    # у `kind = 'reference'`; `ref_method`, `ref_factor`, `ref_basis` — пересчёт единиц.
+    ref_origin = Column(Text, nullable=True)
+    ref_method = Column(Text, nullable=True)
+    ref_factor = Column(Numeric, nullable=True)
+    ref_basis = Column(Text, nullable=True)
+    ref_link_id = Column(BigInteger, nullable=True)
+    ref_without_analogs = Column(Boolean, nullable=True)
 
     __table_args__ = (
         PrimaryKeyConstraint("position_item_id", name="pk_kp_line_targets"),
@@ -3499,8 +3547,87 @@ class KpLineTarget(Base):
         ForeignKeyConstraint(
             ["set_by"], ["users.id"], ondelete="RESTRICT", name="fk_kp_line_targets_set_by"
         ),
+        ForeignKeyConstraint(
+            ["ref_link_id"], ["family_links.id"], ondelete="SET NULL",
+            name="fk_kp_line_targets_ref_link",
+        ),
         CheckConstraint(CK_KP_TARGET_KIND, name="ck_kp_line_targets_kind"),
         CheckConstraint(CK_KP_TARGET_ANALOG, name="ck_kp_line_targets_analog"),
+        CheckConstraint(
+            CK_KP_TARGET_REF_ORIGIN_PRESENT, name="ck_kp_line_targets_ref_origin_present"
+        ),
+        CheckConstraint(
+            CK_KP_TARGET_REF_WITHOUT_ANALOGS_PRESENT,
+            name="ck_kp_line_targets_ref_without_analogs_present",
+        ),
+        CheckConstraint(CK_KP_TARGET_REF_ORIGIN, name="ck_kp_line_targets_ref_origin"),
+        CheckConstraint(CK_KP_TARGET_REF_METHOD, name="ck_kp_line_targets_ref_method"),
+        CheckConstraint(CK_KP_TARGET_REF_CONVERSION, name="ck_kp_line_targets_ref_conversion"),
+        CheckConstraint(CK_KP_TARGET_REF_LINK, name="ck_kp_line_targets_ref_link"),
+    )
+
+
+class FamilyLink(Base):
+    """Связь двух семей работ: как пересчитать единицу одной в единицу другой (спека
+    справочных аналогов §2.6). Пара упорядочена (`family_lo_id < family_hi_id`) и
+    уникальна; единицы сторон запоминаются на момент записи. Множитель
+    (`factor`, у `constant`) хранится как ввёл человек, направление — `factor_from_id`;
+    у прочих видов сторона даёт множитель параметром (`param_lo_id`/`param_hi_id`)."""
+    __tablename__ = "family_links"
+
+    id = Column(BigInteger, nullable=False)
+    family_lo_id = Column(BigInteger, nullable=False)
+    family_hi_id = Column(BigInteger, nullable=False)
+    unit_lo_id = Column(Integer, nullable=False)
+    unit_hi_id = Column(Integer, nullable=False)
+    kind = Column(Text, nullable=False)
+    param_lo_id = Column(BigInteger, nullable=True)
+    param_hi_id = Column(BigInteger, nullable=True)
+    factor_from_id = Column(BigInteger, nullable=True)
+    factor = Column(Numeric, nullable=True)
+    basis = Column(Text, nullable=True)
+    created_by = Column(Integer, nullable=False)
+    created_at = _created_at()
+    updated_by = Column(Integer, nullable=False)
+    updated_at = _updated_at()
+
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_family_links"),
+        UniqueConstraint("family_lo_id", "family_hi_id", name="uq_family_links_pair"),
+        ForeignKeyConstraint(
+            ["family_lo_id"], ["work_families.id"], ondelete="RESTRICT",
+            name="fk_family_links_family_lo",
+        ),
+        ForeignKeyConstraint(
+            ["family_hi_id"], ["work_families.id"], ondelete="RESTRICT",
+            name="fk_family_links_family_hi",
+        ),
+        ForeignKeyConstraint(
+            ["unit_lo_id"], ["units_of_measure.id"], ondelete="RESTRICT",
+            name="fk_family_links_unit_lo",
+        ),
+        ForeignKeyConstraint(
+            ["unit_hi_id"], ["units_of_measure.id"], ondelete="RESTRICT",
+            name="fk_family_links_unit_hi",
+        ),
+        ForeignKeyConstraint(
+            ["param_lo_id"], ["family_parameters.id"], ondelete="RESTRICT",
+            name="fk_family_links_param_lo",
+        ),
+        ForeignKeyConstraint(
+            ["param_hi_id"], ["family_parameters.id"], ondelete="RESTRICT",
+            name="fk_family_links_param_hi",
+        ),
+        ForeignKeyConstraint(
+            ["created_by"], ["users.id"], ondelete="RESTRICT", name="fk_family_links_created_by"
+        ),
+        ForeignKeyConstraint(
+            ["updated_by"], ["users.id"], ondelete="RESTRICT", name="fk_family_links_updated_by"
+        ),
+        CheckConstraint(CK_FAMILY_LINK_ORDER, name="ck_family_links_order"),
+        CheckConstraint(CK_FAMILY_LINK_UNITS_DIFFER, name="ck_family_links_units_differ"),
+        CheckConstraint(CK_FAMILY_LINK_KIND, name="ck_family_links_kind"),
+        CheckConstraint(CK_FAMILY_LINK_SHAPE, name="ck_family_links_shape"),
     )
 
 

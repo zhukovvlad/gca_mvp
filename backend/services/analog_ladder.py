@@ -20,6 +20,7 @@ from money.inflation import YearMonth, adjust_amount
 from money.price import is_price, is_weight
 from money.vat import gross_to_net
 from services.price_basis import _CONTEXT, HistoryContract, median, outside
+from services.reference_math import outlier_ratios_of
 from services.zone_rules import Zone
 
 #: Нетто за единицу без приведения меньше этого — цена символическая, не аналог (§2.8 п. 4).
@@ -78,6 +79,8 @@ class WorkHistoryLine:
     conflicted: frozenset[int] = frozenset()
     #: parameter_id -> форма значения, как у строки КП.
     forms: Mapping[int, Form] = field(default_factory=dict)
+    #: Единица строки — `catalog_positions.unit_id` её каталожной позиции; нужна справочным блокам для пересчёта.
+    unit_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -511,17 +514,7 @@ def ladder_for(
 def _outlier_ratios(picked: Sequence[_Candidate]) -> dict[int, Decimal | None]:
     """position_item_id -> отношение цены кандидата к медиане цен остальных, если оно за границами
     (выброс); иначе `None`. Один кандидат выбросом не бывает."""
-    ratios: dict[int, Decimal | None] = {}
-    with localcontext(_CONTEXT):
-        for index, cand in enumerate(picked):
-            ratio: Decimal | None = None
-            if len(picked) >= 2:
-                others = [c.net for i, c in enumerate(picked) if i != index]
-                candidate_ratio = cand.net / median(others)
-                if outside(candidate_ratio):
-                    ratio = candidate_ratio
-            ratios[cand.line.position_item_id] = ratio
-    return ratios
+    return outlier_ratios_of([(c.line.position_item_id, c.net) for c in picked])
 
 
 def _lowest_of(

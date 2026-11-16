@@ -26,7 +26,10 @@ from services.our_price import (
     Level,
     LineResult,
     LineState,
+    ReferenceSnapshot,
+    reference_value,
 )
+from services.reference_math import format_factor, price_in_kp_unit
 
 CommentCase = Literal["agreed", "kp_unit", "history_unit", "below", "over"]
 
@@ -42,6 +45,23 @@ class SourceContract:
     contract: HistoryContract
     #: `net` — цель (с рядом), `nominal` — цитата, `lines` — строк в ставке.
     rate: ContractRate
+
+
+@dataclass(frozen=True)
+class ReferenceSource:
+    """Справочная цель строки: строка договора, с которой выбрана цена (спека справочных аналогов §2.15)."""
+
+    contract: HistoryContract
+    #: Разделы сметы договора над строкой, от корня сметы; пусто — строка вне разделов.
+    chapter_path: tuple[str, ...]
+    #: Единица строки договора.
+    unit_text: str
+    #: Нетто без ИПЦ.
+    nominal: Decimal
+    #: Нетто с рядом ИПЦ, если ряд выбран; иначе равно номиналу.
+    net: Decimal
+    #: Пересчёт единиц — только отсюда, правки связи и значения его не меняют.
+    snapshot: ReferenceSnapshot
 
 
 @dataclass(frozen=True)
@@ -72,6 +92,8 @@ class CommentInputs:
     inflation: InflationLabel | None
     #: База НДС КП: в ней печатаются все суммы текстов.
     vat_base: Decimal
+    #: Действующая справочная цель строки; `None` — цели нет или она сброшена.
+    reference: ReferenceSource | None = None
 
 
 def pick_source(
@@ -122,6 +144,8 @@ def target_net(inp: CommentInputs) -> Decimal | None:
     """Цель строки за единицу строки КП (спека 4б §2.2)."""
     if inp.agreed_net is not None:
         return inp.agreed_net
+    if inp.reference is not None:
+        return reference_value(inp.reference, inp.reference.snapshot)
     if inp.result.state is not LineState.comparable:
         return None
     if not inp.is_system:
@@ -143,6 +167,10 @@ def comment_case(inp: CommentInputs) -> CommentCase | None:
         if is_price(inp.kp_unit_net) and _above(inp.kp_unit_net, inp.agreed_net):
             return "agreed"
         return None
+    if inp.reference is not None:
+        # свои аналоги строки справочная цель не описывает: из случаев остаётся только «выше цели»
+        target = target_net(inp)
+        return "over" if is_price(inp.kp_unit_net) and is_price(target) and _above(inp.kp_unit_net, target) else None
     res = inp.result
     if res.state is LineState.unit_mismatch:
         return "kp_unit" if res.mismatch.kp_ratio is not None else "history_unit"
@@ -214,7 +242,43 @@ def _what(inp: CommentInputs) -> tuple[str, str]:
     return "сопоставимые системы", "стоили"
 
 
+def reference_conversion(inp: CommentInputs) -> tuple[str, str] | None:
+    """Пересчёт справочной цели для текстов: «1 м² = 0,1 м³ (основание)» и цитата ÷ `N` в базе КП
+    (`34 154,00`); `None` — без пересчёта. `N` печатается по `format_factor` («≈» у округлённого),
+    деньги считаются по точному `N` из снимка (спека справочных аналогов §2.8, §2.15)."""
+    ref = inp.reference
+    factor = ref.snapshot.factor
+    if factor is None:
+        return None
+    printed, approximate = format_factor(factor)
+    sign = "≈" if approximate else "="
+    head = f"1 {ref.unit_text} {sign} {printed} {inp.unit_text} ({ref.snapshot.basis})"
+    return head, rub_in_base(inp, price_in_kp_unit(ref.nominal, factor))
+
+
+def _reference_over_text(inp: CommentInputs) -> str:
+    """Шаблон `over` справочной цели (спека справочных аналогов §2.15)."""
+    ref = inp.reference
+    vat = vat_words(inp.vat_base)
+    with_you = "с вами " if ref.contract.contractor_id == inp.tender_contractor_id else ""
+    goal = rub_in_base(inp, target_net(inp))
+    text = (
+        f"Ваша цена — {_kp_phrase(inp)} {vat}. "
+        f"В нашем договоре {with_you}по объекту {ref.contract.object_title}, {ref.contract.year} г., "
+        f"сопоставимая работа стоила {rub_in_base(inp, ref.nominal)} ₽ за {ref.unit_text} {vat}"
+    )
+    conversion = reference_conversion(inp)
+    if conversion is not None:
+        head, per_kp_unit = conversion
+        text += f"; {head}, то есть {per_kp_unit} ₽ за {inp.unit_text}"
+    if inp.inflation is not None and ref.net != ref.nominal:
+        text += f"; с учётом инфляции ({inp.inflation.series_name}, к {inp.inflation.month}) — {goal} ₽"
+    return f"{text}. Просим снизить до {goal} ₽ или обосновать разницу."
+
+
 def _over_text(inp: CommentInputs) -> str | None:
+    if inp.reference is not None:
+        return _reference_over_text(inp)
     src = inp.source
     if src is None:
         return None

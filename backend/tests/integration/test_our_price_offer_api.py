@@ -45,6 +45,7 @@ D = Decimal
 LINE_KEYS = {
     "position_item_id",
     "context_id",
+    "family_id",
     "unit_id",
     "article_id",
     "category_id",
@@ -91,7 +92,10 @@ LINE_KEYS = {
     "comment_kind",
     "manual_rung",
 }
-PANEL_KEYS = {"line", "group_lines", "contracts", "analogs", "parts_reference", "vat_dropped", "comment"}
+PANEL_KEYS = {
+    "line", "group_lines", "contracts", "analogs", "reference_zones", "reference_links", "parts_reference",
+    "vat_dropped", "comment",
+}
 TOLERANCE = D("1e-20")
 
 

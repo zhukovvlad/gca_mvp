@@ -35,6 +35,12 @@ import type {
   ActivateDiscoveryInput,
   AgreedBasis,
   KpFilePreview,
+  OurPriceLineView,
+  ReferenceConversionBody,
+  ReferenceOrigin,
+  ReferenceSearchResult,
+  ReferenceUnits,
+  RefRow,
   RungLevel,
   RungScope,
   ArchiveContextInput,
@@ -58,6 +64,7 @@ import type {
   DraftMergeTarget,
   FamilyCategoryFilter,
   FamilyCategoryInput,
+  FamilyLinkBody,
   FamilySchema,
   ManualKind,
   MoveMembersInput,
@@ -2419,6 +2426,62 @@ export function useFamilyVariants(familyId: number) {
   });
 }
 
+/** Связи семьи, развёрнутые от неё (спека справочных аналогов §2.16): читают все. */
+export function useFamilyLinks(familyId: number) {
+  return useQuery({
+    queryKey: qk.workFamilies.links(familyId),
+    queryFn: () => semanticApi.familyLinks(familyId),
+  });
+}
+
+/** Отказы записи связи, которые объясняет диалог на месте: тоста у них нет. */
+const FAMILY_LINK_DIALOG_CODES: ReadonlySet<string> = new Set(["link_invalid", "link_exists"]);
+
+/** Причина отказа `422 link_invalid` (поле `reason` рядом с `code`). */
+export function linkInvalidReason(error: unknown): string | undefined {
+  return apiErrorCode(error) === "link_invalid" ? apiErrorContext<{ reason?: string }>(error)?.reason : undefined;
+}
+
+function invalidateFamilyLinks(qc: ReturnType<typeof useQueryClient>) {
+  // Связь одна на пару: перечитываются связи обеих семей.
+  return qc.invalidateQueries({ queryKey: qk.workFamilies.linksAll });
+}
+
+function onFamilyLinkError(error: unknown) {
+  if (!FAMILY_LINK_DIALOG_CODES.has(apiErrorCode(error) ?? "")) toastApiError(error);
+}
+
+export function useCreateFamilyLink() {
+  const qc = useQueryClient();
+  return useMutation<{ id: number }, AxiosError, FamilyLinkBody>({
+    mutationFn: (body) => semanticApi.createFamilyLink(body),
+    onSuccess: () => invalidateFamilyLinks(qc),
+    onError: onFamilyLinkError,
+  });
+}
+
+export function useUpdateFamilyLink() {
+  const qc = useQueryClient();
+  return useMutation<{ id: number }, AxiosError, { id: number; body: FamilyLinkBody }>({
+    mutationFn: ({ id, body }) => semanticApi.updateFamilyLink(id, body),
+    onSuccess: () => invalidateFamilyLinks(qc),
+    onError: onFamilyLinkError,
+  });
+}
+
+export function useDeleteFamilyLink() {
+  const qc = useQueryClient();
+  return useMutation<void, AxiosError, number>({
+    mutationFn: (id) => semanticApi.deleteFamilyLink(id),
+    onSuccess: () => invalidateFamilyLinks(qc),
+    onError: (error) => {
+      // Связи уже нет (удалил другой админ): список перечитывается.
+      void invalidateFamilyLinks(qc);
+      toastApiError(error);
+    },
+  });
+}
+
 /** Схема, варианты и всё, что от них зависит на экране: значения контекстов, шапка очереди. */
 function invalidateSchema(qc: ReturnType<typeof useQueryClient>, familyId: number) {
   qc.invalidateQueries({ queryKey: qk.workFamilies.schema(familyId) });
@@ -3054,6 +3117,138 @@ export function usePutTarget(tenderId: number, roundId: number, offerId: number,
     },
   });
 }
+
+/** Отказы `PUT …/target` справочной цели, которые решает диалог на месте: тоста у них нет. */
+const REFERENCE_DIALOG_CODES: ReadonlySet<string> = new Set([
+  "conversion_stale",
+  "outlier_confirmation_required",
+  "manual_conversion_invalid",
+]);
+
+/** Коды, после которых панель устарела: строка договора или пересчёт уже не те, что на экране. */
+const REFERENCE_DRIFT_CODES: ReadonlySet<string> = new Set([
+  "reference_unavailable",
+  "conversion_not_needed",
+  "conversion_required",
+  "link_not_applicable",
+]);
+
+export interface PutReferenceTargetInput {
+  positionItemId: number;
+  analogId: number;
+  origin: ReferenceOrigin;
+  conversion: ReferenceConversionBody;
+  confirmOutlier: boolean;
+}
+
+/**
+ * Запись справочной цели (спека справочных аналогов §2.13). Ключ мутации и обновление экрана — как у
+ * решений 4б, поэтому серый слой панели закрывается вместе с новыми цифрами. `conversion_stale`,
+ * `outlier_confirmation_required` и `manual_conversion_invalid` объясняет диалог, остальные отказы - тост;
+ * после отказа «строка больше не годится» панель перезапрашивается.
+ */
+export function usePutReferenceTarget(tenderId: number, roundId: number, offerId: number, seriesId: number | null) {
+  const qc = useQueryClient();
+  return useMutation<void, AxiosError, PutReferenceTargetInput>({
+    mutationKey: kpDecisionMutationKey(tenderId, roundId, offerId),
+    mutationFn: (input) =>
+      tendersApi.putReferenceTarget(
+        tenderId,
+        roundId,
+        offerId,
+        input.positionItemId,
+        {
+          kind: "reference",
+          analog_id: input.analogId,
+          origin: input.origin,
+          conversion: input.conversion,
+          confirm_outlier: input.confirmOutlier,
+        },
+        seriesId
+      ),
+    onSuccess: () => invalidateAfterDecision(qc, tenderId, roundId, offerId),
+    onError: (error) => {
+      const code = apiErrorCode(error) ?? "";
+      // Пересчёт по связи изменился: диалог подменит N и основание, а цену подтянет перезапрос панелей.
+      if (code === "conversion_stale") void invalidateAfterDecision(qc, tenderId, roundId, offerId);
+      if (REFERENCE_DIALOG_CODES.has(code)) return;
+      if (REFERENCE_DRIFT_CODES.has(code)) void invalidateAfterDecision(qc, tenderId, roundId, offerId);
+      toastApiError(error);
+    },
+  });
+}
+
+/**
+ * Поиск справочных строк договоров. Запрос короче двух знаков не отправляется (спека §2.12); результат
+ * лежит под префиксом панелей строки, поэтому любое решение по строке его перезапрашивает.
+ */
+export function useReferenceSearch(
+  tenderId: number,
+  roundId: number,
+  offerId: number,
+  positionItemId: number,
+  query: string,
+  units: ReferenceUnits,
+  seriesId: number | null
+) {
+  const text = query.trim();
+  return useQuery({
+    queryKey: qk.tenders.ourPriceReferenceSearch(tenderId, roundId, offerId, positionItemId, text, units, seriesId),
+    queryFn: () => tendersApi.referenceSearch(tenderId, roundId, offerId, positionItemId, text, units, seriesId),
+    enabled: text.length >= REFERENCE_QUERY_MIN,
+    retry: false,
+  });
+}
+
+/** Строка договора из открытых ответов панели и поиска; со связью - предпочтительнее, иначе первая найденная. */
+function readReferenceRow(
+  qc: ReturnType<typeof useQueryClient>,
+  tenderId: number,
+  roundId: number,
+  offerId: number,
+  positionItemId: number,
+  analogId: number
+): RefRow | null {
+  let found: RefRow | null = null;
+  const cached = qc.getQueriesData<OurPriceLineView | ReferenceSearchResult>({
+    queryKey: qk.tenders.ourPriceLinesOfOffer(tenderId, roundId, offerId),
+    type: "active",
+  });
+  for (const [key, data] of cached) {
+    if (data === undefined || key[6] !== positionItemId) continue;
+    const rows: RefRow[] =
+      "reference_zones" in data
+        ? [...data.reference_zones.flatMap((g) => g.rows), ...data.reference_links.flatMap((g) => g.rows)]
+        : data.rows;
+    for (const row of rows) {
+      if (row.analog_id !== analogId) continue;
+      if (row.conversion?.method === "link") return row;
+      found ??= row;
+    }
+  }
+  return found;
+}
+
+/**
+ * «Запомнить для семей» в диалоге справочной цели (спека справочных аналогов §2.13): создаёт связь и
+ * перечитывает открытые панели строки; результат - строка договора с пересчётом, который теперь отдаёт сервер
+ * (`null` - строки в ответах нет). `N` и основание клиент не считает.
+ */
+export function useCreateReferenceLink(tenderId: number, roundId: number, offerId: number, positionItemId: number) {
+  const qc = useQueryClient();
+  return useMutation<RefRow | null, AxiosError, { body: FamilyLinkBody; analogId: number }>({
+    mutationFn: async ({ body, analogId }) => {
+      await semanticApi.createFamilyLink(body);
+      await qc.refetchQueries({ queryKey: qk.tenders.ourPriceLinesOfOffer(tenderId, roundId, offerId), type: "active" });
+      return readReferenceRow(qc, tenderId, roundId, offerId, positionItemId, analogId);
+    },
+    onSuccess: () => invalidateFamilyLinks(qc),
+    onError: onFamilyLinkError,
+  });
+}
+
+/** Наименьшая длина запроса поиска (спека справочных аналогов §2.12). */
+export const REFERENCE_QUERY_MIN = 2;
 
 export function useDeleteTarget(tenderId: number, roundId: number, offerId: number) {
   return useKpDecision(tenderId, roundId, offerId, ({ positionItemId }: { positionItemId: number }) =>

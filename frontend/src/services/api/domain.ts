@@ -37,6 +37,8 @@ import type {
   FamilyCategoryFilter,
   FamilyCategoryInput,
   FamilyChangeResult,
+  FamilyLinkBody,
+  FamilyLinkView,
   FamilySchema,
   FamilyVariant,
   JobsResponse,
@@ -108,6 +110,9 @@ import type {
   KpFilePreview,
   KpSentFileItem,
   OurPriceLineView,
+  ReferenceSearchResult,
+  ReferenceTargetBody,
+  ReferenceUnits,
   OurPriceOffer,
   OurPriceRound,
   RungLevel,
@@ -521,6 +526,39 @@ export const tendersApi = {
         params: seriesId === null ? undefined : { inflation_series_id: seriesId },
       })
       .then(() => undefined),
+  /** Справочная цель (спека справочных аналогов §2.13): `factor` и `expected_factor` уходят строкой, как пришли. */
+  putReferenceTarget: (
+    tenderId: number,
+    roundId: number,
+    offerId: number,
+    positionItemId: number,
+    body: ReferenceTargetBody,
+    seriesId: number | null
+  ): Promise<void> =>
+    api
+      .put(`${lineDecisionUrl(tenderId, roundId, offerId, positionItemId)}/target`, body, {
+        params: seriesId === null ? undefined : { inflation_series_id: seriesId },
+      })
+      .then(() => undefined),
+  /** Поиск справочных строк договоров (спека справочных аналогов §2.12); запрос короче двух знаков не отправляют. */
+  referenceSearch: (
+    tenderId: number,
+    roundId: number,
+    offerId: number,
+    positionItemId: number,
+    query: string,
+    units: ReferenceUnits,
+    seriesId: number | null
+  ): Promise<ReferenceSearchResult> =>
+    api
+      .get<ReferenceSearchResult>(`${lineDecisionUrl(tenderId, roundId, offerId, positionItemId)}/reference-search`, {
+        params: {
+          q: query,
+          units,
+          ...(seriesId === null ? {} : { inflation_series_id: seriesId }),
+        },
+      })
+      .then((r) => r.data),
   deleteTarget: (tenderId: number, roundId: number, offerId: number, positionItemId: number): Promise<void> =>
     api.delete(`${lineDecisionUrl(tenderId, roundId, offerId, positionItemId)}/target`).then(() => undefined),
   /** Предпросмотр файла подрядчику; `seriesId = null` - без приведения по ИПЦ. */
@@ -960,6 +998,20 @@ export const semanticApi = {
     api
       .post<{ batch_id: number; status: string }>(`/v1/semantic/batches/${batchId}/discard`)
       .then((r) => r.data),
+
+  familyLinks: (familyId: number): Promise<FamilyLinkView[]> =>
+    api
+      .get<{ items: FamilyLinkView[] }>(`/v1/semantic/families/${familyId}/links`)
+      .then((r) => r.data.items),
+
+  createFamilyLink: (body: FamilyLinkBody): Promise<{ id: number }> =>
+    api.post<{ id: number }>("/v1/semantic/family-links", body).then((r) => r.data),
+
+  updateFamilyLink: (id: number, body: FamilyLinkBody): Promise<{ id: number }> =>
+    api.put<{ id: number }>(`/v1/semantic/family-links/${id}`, body).then((r) => r.data),
+
+  deleteFamilyLink: (id: number): Promise<void> =>
+    api.delete(`/v1/semantic/family-links/${id}`).then(() => undefined),
 
   getFamilySchema: (familyId: number): Promise<FamilySchema> =>
     api.get<FamilySchema>(`/v1/semantic/families/${familyId}/schema`).then((r) => r.data),

@@ -7,7 +7,7 @@ export type TargetStrategy = "lowest" | "freshest" | "contractor";
  * Что сейчас выбрано целью: стратегия, закреплённый аналог либо `null` — цели нет (строка не сравнима).
  * «Договорились» цель не меняет, а перекрывает: выбор считается по сохранённому выбору человека.
  */
-export function selectedTarget(line: OurPriceLine): TargetStrategy | "analog" | null {
+export function selectedTarget(line: OurPriceLine): TargetStrategy | "analog" | "reference" | null {
   if (line.target_kind === null) return null;
   const choice = line.choice;
   return choice !== null && choice.active ? choice.kind : "lowest";
@@ -19,6 +19,6 @@ export function targetAnalogId(line: OurPriceLine): number | null {
   if (selected === "lowest") return line.lowest?.analog_id ?? null;
   if (selected === "freshest") return line.freshest?.analog_id ?? null;
   if (selected === "contractor") return line.contractor?.analog_id ?? null;
-  if (selected === "analog") return line.choice?.analog_id ?? null;
+  if (selected === "analog" || selected === "reference") return line.choice?.analog_id ?? null;
   return null;
 }

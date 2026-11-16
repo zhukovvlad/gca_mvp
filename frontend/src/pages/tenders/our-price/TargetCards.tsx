@@ -2,16 +2,24 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { compareDecimalStrings } from "@/lib/decimal";
+import { formatDate, roundDecimalPercent } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { MoneyPair, OurPriceAnalog, OurPriceLine } from "@/types/domain";
 
 import { absDecimal, formatSigned, formatUnitPrice, pick, priceUnitLabel, type VatView } from "./money";
 import {
+  analogOutlierNote,
   FIGURE_KP_ABOVE,
   FIGURE_KP_BELOW,
   FIGURE_KP_EQUAL,
   FIGURE_NONE,
   periodRu,
+  REF_TARGET,
+  refDeviation,
+  refTargetConversionLine,
+  refTargetConvertedFrom,
+  refTargetInactive,
+  refTargetLinkNow,
   TARGET_CARD,
   targetInactiveNote,
   targetSameContract,
@@ -124,7 +132,8 @@ function Diff({ testId, unit, vat, total, perUnit }: {
 export function TargetCards({ line, analogs, vat, canEdit, busy = false, onChoose }: TargetCardsProps) {
   const choice = line.choice;
   const active = choice !== null && choice.active ? choice : null;
-  const inactive = choice !== null && !choice.active ? choice : null;
+  // Сброшенную справочную цель объясняет её карточка, а не плашка «самая низкая».
+  const inactive = choice !== null && !choice.active && choice.kind !== "reference" ? choice : null;
   const selected = selectedTarget(line);
   const interactive = canEdit && line.state === "comparable";
   const { lowest, freshest, contractor } = line;
@@ -288,6 +297,136 @@ export function TargetCards({ line, analogs, vat, canEdit, busy = false, onChoos
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+export interface ReferenceTargetCardProps {
+  line: OurPriceLine;
+  vat: VatView;
+  /** «Вернуть самую низкую» — только `admin`. */
+  canEdit: boolean;
+  /** Выбор снимается: кнопка погашена. */
+  busy?: boolean;
+  onReset: () => void;
+}
+
+const pathText = (steps: { title: string }[]) => steps.map((step) => step.title).join(" → ");
+
+/**
+ * Карточка справочной цели строки (спека справочных аналогов §2.14): откуда выбрана, строка договора,
+ * при пересчёте — «пересчёт из {ед}», основание, исходная и пересчитанная цена; подсказки на цифры не влияют.
+ * Сброшенная цель называет причину сброса. Деньги — готовые пары сервера.
+ */
+export function ReferenceTargetCard({ line, vat, canEdit, busy = false, onReset }: ReferenceTargetCardProps) {
+  const choice = line.choice;
+  if (choice === null || choice.kind !== "reference") return null;
+  if (!choice.active) {
+    return (
+      <div
+        role="note"
+        data-testid="reference-target-inactive"
+        className="rounded-lg border border-warning-border bg-warning-soft px-3 py-2 text-sm text-warning-text"
+      >
+        {refTargetInactive(choice.reset_reason)}
+      </div>
+    );
+  }
+  const row = choice.reference ?? null;
+  const conversion = choice.conversion ?? null;
+  const hints = choice.hints;
+  const origin = choice.origin ?? "search";
+  const target = row === null ? null : pick(row.kp_unit_price ?? row.price, vat);
+  const source = row === null ? null : pick(row.price, vat);
+  const deviation = row === null ? null : roundDecimalPercent(row.deviation_pct, 0);
+  const where =
+    row === null
+      ? ""
+      : `${row.contract.object_title}, договор № ${row.contract.number}, ${row.contract.year} г. · «${row.title}»${
+          row.chapter_paths.length > 0 ? ` · ${pathText(row.chapter_paths[0])}` : ""
+        }`;
+  return (
+    <div
+      data-testid="reference-target"
+      className="space-y-2 rounded-lg border border-action bg-surface-sunken px-3 py-2.5 text-sm"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <b>{REF_TARGET.title}</b>
+        <Badge data-testid="reference-target-origin" variant="outline" className="h-auto py-0.5 text-warning-text">
+          {REF_TARGET.origin[origin]}
+        </Badge>
+      </div>
+      {row === null ? (
+        <p className="text-fg-secondary">{REF_TARGET.rowGone}</p>
+      ) : (
+        <>
+          <p data-testid="reference-target-where" className="line-clamp-2 text-xs text-fg-secondary" title={where}>
+            {where}
+          </p>
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <span data-testid="reference-target-price" className="font-mono text-lg font-semibold tabular-nums">
+              {target === null ? FIGURE_NONE : `${formatUnitPrice(target)} ${priceUnitLabel(line.unit)}`}
+            </span>
+            {deviation !== null && (
+              <span
+                data-testid="reference-target-deviation"
+                className={cn("font-mono text-xs tabular-nums", deviation.sign > 0 && "text-danger-text")}
+              >
+                {refDeviation(deviation.text)}
+              </span>
+            )}
+          </div>
+          {row.outlier_ratio !== null && (
+            <p
+              role="note"
+              data-testid="reference-target-outlier"
+              className="rounded-md border border-warning-border bg-warning-soft px-2 py-1 text-xs text-warning-text"
+            >
+              {analogOutlierNote(row.outlier_ratio)}
+            </p>
+          )}
+          {conversion !== null && (
+            <div data-testid="reference-target-conversion" className="space-y-0.5 text-xs text-fg-secondary">
+              <p>
+                <Badge variant="secondary" className="mr-1.5 h-auto py-0.5">
+                  {refTargetConvertedFrom(row.unit)}
+                </Badge>
+                {refTargetConversionLine(row.unit, line.unit, conversion.factor_shown, conversion.basis)}
+              </p>
+              <p className="font-mono tabular-nums">
+                {REF_TARGET.sourcePrice}: {source === null ? FIGURE_NONE : `${formatUnitPrice(source)} ${priceUnitLabel(row.unit)}`}
+                {" · "}
+                {REF_TARGET.convertedPrice}: {target === null ? FIGURE_NONE : `${formatUnitPrice(target)} ${priceUnitLabel(line.unit)}`}
+              </p>
+            </div>
+          )}
+        </>
+      )}
+      {hints?.link_now != null && (
+        <p data-testid="reference-hint-link-now" className="rounded-md bg-info-soft px-2 py-1 text-xs text-info-text">
+          {refTargetLinkNow(row?.unit ?? null, line.unit, hints.link_now.factor_shown)}
+        </p>
+      )}
+      {hints?.link_gone === true && (
+        <p data-testid="reference-hint-link-gone" className="rounded-md bg-warning-soft px-2 py-1 text-xs text-warning-text">
+          {REF_TARGET.linkGone}
+        </p>
+      )}
+      {hints?.own_analogs === true && (
+        <p data-testid="reference-hint-own-analogs" className="rounded-md bg-info-soft px-2 py-1 text-xs text-info-text">
+          {REF_TARGET.ownAnalogs}
+        </p>
+      )}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-xs text-fg-tertiary">
+          Выбрал {choice.set_by.email}, {formatDate(choice.set_at)}
+        </span>
+        {canEdit && (
+          <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={onReset}>
+            {REF_TARGET.resetToLowest}
+          </Button>
+        )}
+      </div>
     </div>
   );
 }

@@ -5,12 +5,17 @@ import type {
   OurPriceLine,
   OurPriceLineState,
   OurPriceParticipant,
+  OtherZone,
   OurPriceTotals,
+  RefRow,
   ResetReason,
   SectionZone,
+  Zone,
   TargetResetReason,
   WorkRung,
 } from "@/types/domain";
+
+import { ZONE_LABEL } from "@/pages/families/labels";
 
 import type { OfferFilter } from "./offerFilter";
 
@@ -366,7 +371,7 @@ export function lineStateLabel(line: OurPriceLine): string | null {
   if (line.state === "comparable") return line.position === null ? null : POSITION_LABEL[line.position];
   if (isWaitingAdminLine(line)) return WAITING_ADMIN_LABEL;
   if (line.state === "no_history" && line.no_history_reason !== null) {
-    if (line.no_history_reason === "no_zone_match") return noZoneMatchLabel(line.zone);
+    if (line.no_history_reason === "no_zone_match") return otherZonesLabel(line.zone, line.other_zones ?? []);
     if (line.no_history_reason === "composite") return compositeNoHistoryLabel(line.composite_parameter?.name ?? null);
     return NO_HISTORY_REASON_LABEL[line.no_history_reason];
   }
@@ -394,6 +399,7 @@ export const TARGET_MARK: Partial<Record<NonNullable<OurPriceLine["target_kind"]
   freshest: "цель: самая свежая",
   contractor: "цель: с этим подрядчиком",
   analog: "цель: аналог",
+  reference: "цель: справочная",
 };
 
 /** Строка сравнения панели работы: «7 аналогов в 4 договорах». */
@@ -468,6 +474,7 @@ export const TARGET_CARD = {
   freshest: "самая свежая",
   contractor: "с этим подрядчиком",
   pinned: "выбранный аналог",
+  reference: "справочная",
   target: "цель",
   targetAuto: "цель · авто",
   choose: "сделать целью",
@@ -481,6 +488,7 @@ export const TARGET_RESET_REASON: Record<TargetResetReason, string> = {
   analog_unavailable: "аналога больше нет на ступени",
   no_freshest: "самой свежей расценки больше нет",
   no_contractor: "среди аналогов больше нет договора с этим подрядчиком",
+  reference_unavailable: "строка договора больше не годится как справочная",
 };
 export function targetInactiveNote(reason: TargetResetReason | null): string {
   const why = reason === null ? "" : `: ${TARGET_RESET_REASON[reason]}`;
@@ -704,4 +712,225 @@ export function kpFileInProgressNote(n: number): string {
   const mod100 = n % 100;
   const noun = mod10 === 1 && mod100 !== 11 ? "строку" : mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20) ? "строки" : "строк";
   return `Каталог ещё разбирает ${formatNumber(n)} ${noun} — в файле у них не будет наших цен`;
+}
+
+/**
+ * Подпись строки без аналога в своей зоне (спека справочных аналогов §2.5): «нет аналога в зоне «Надземная» ·
+ * есть в зоне «Подземная»: 3 строки, 2 договора, «Территория»: 1 строка, 1 договор». Групп нет — прежняя подпись.
+ */
+export function otherZonesLabel(zone: Zone | null, groups: OtherZone[]): string {
+  if (groups.length === 0) return noZoneMatchLabel(zone);
+  const head = zone === null ? "нет аналога в зоне строки" : `нет аналога в зоне «${ZONE_LABEL[zone]}»`;
+  const found = groups.map((g, index) => {
+    const size = `${formatNumber(g.lines)} ${pluralForm(g.lines, "строка", "строки", "строк")}, ${formatNumber(g.contracts)} ${pluralForm(g.contracts, "договор", "договора", "договоров")}`;
+    return `${index === 0 ? "есть в зоне " : ""}«${ZONE_LABEL[g.zone]}»: ${size}`;
+  });
+  return `${head} · ${found.join(", ")}`;
+}
+
+// ---------------------------------------------------------------------------
+//  Справочные аналоги: блоки А и Г, поиск, диалог пересчёта (спека справочных аналогов §2.4-§2.13)
+// ---------------------------------------------------------------------------
+
+export const REF_ZONES_TITLE = "Справочно: та же работа в другой зоне";
+export const REF_NOTE = "Справочные строки не входят в вилку, «Самую низкую» и итоги статей. Целью становятся только по вашему выбору.";
+export const REF_FIRST = 5;
+export const REF_MAKE_TARGET = "сделать целью";
+export const REF_THIS_CONTRACTOR = "договор с этим подрядчиком";
+export const REF_LESS = "свернуть";
+export const REF_OTHER_CLASS = "другой класс";
+
+export function refMore(hidden: number): string {
+  return `ещё ${formatNumber(hidden)}`;
+}
+
+/** Метка зоны группы блока А. */
+export function refZoneBadge(zone: Zone): string {
+  return `зона: ${ZONE_LABEL[zone]}`;
+}
+
+export function refReleased(released: string[]): string {
+  return released.length === 0 ? "тот же вариант" : `отпущен: ${released.join(", ")}`;
+}
+
+/** Метка свёртки: «×9». */
+export function refFolded(count: number): string {
+  return `×${formatNumber(count)}`;
+}
+
+/** «в 3 разделах:» — различающиеся пути свёрнутых строк. */
+export function refSections(count: number): string {
+  return `в ${formatNumber(count)} ${pluralForm(count, "разделе", "разделах", "разделах")}:`;
+}
+
+export const REF_LINK_KIND_TEXT: Record<"thickness" | "width" | "density", string> = {
+  thickness: "через толщину",
+  width: "через ширину",
+  density: "через плотность",
+};
+
+/** Заголовок блока Г (спека §2.9): «Справочно: {семья} · {ед} · пересчёт …»; у постоянного — «1 {ед} = {N} {ед}». */
+export function refLinkTitle(
+  family: { title: string; unit: string | null },
+  kind: "thickness" | "width" | "density" | "constant",
+  constant: { factorShown: string; unit: string | null } | null
+): string {
+  const unit = family.unit === null ? "" : ` · ${family.unit}`;
+  let through: string;
+  if (kind === "constant") {
+    through =
+      constant === null
+        ? "постоянный"
+        : `постоянный: 1 ${family.unit ?? "ед."} = ${constant.factorShown} ${constant.unit ?? "ед."}`;
+  } else {
+    through = REF_LINK_KIND_TEXT[kind];
+  }
+  return `Справочно: ${family.title}${unit} · пересчёт ${through}`;
+}
+
+/** Пересчёт строки договора: «1 м² = 0,100 м³ — основание». */
+export function refConversionText(row: Pick<RefRow, "unit" | "conversion">, kpUnit: string | null): string | null {
+  const conversion = row.conversion;
+  if (conversion === null) return null;
+  return `1 ${row.unit ?? "ед."} = ${conversion.factor_shown} ${kpUnit ?? "ед."}`;
+}
+
+export function refDeviation(text: string): string {
+  return `КП ${text.replace("%", " %")}`;
+}
+
+export const REF_PARAM_VALUE = "параметр";
+
+export const REF_SEARCH = {
+  title: "Найти в договорах",
+  label: "Слова из наименования",
+  hint: "ищите по корням слов",
+  submit: "Найти",
+  unitsAll: "все единицы",
+  unitsKp: "как у строки КП",
+  unitsLabel: "Единицы",
+  empty: "Ничего не нашлось.",
+  invalid: "Запрос не годится: от двух знаков, не больше шести слов.",
+  failed: "Поиск не удался — повторите.",
+  zoneUnknown: "зона не определена",
+  linkConversion: "пересчёт по связи",
+  manualNeeded: "нужен пересчёт: N вводит человек",
+  loading: "Ищем…",
+} as const;
+
+export function refTruncated(limit: number): string {
+  return `показаны первые ${formatNumber(limit)}, уточните запрос`;
+}
+
+export function refSearchFound(total: number): string {
+  return `${formatNumber(total)} ${pluralForm(total, "строка", "строки", "строк")}`;
+}
+
+export const REF_DIALOG = {
+  title: "Пересчёт в единицу строки КП",
+  description: "Единицы строки договора и строки КП различны: цена пересчитывается во вторую.",
+  nameLabel: "Множитель N",
+  basisLabel: "Основание",
+  basisPlaceholder: "Откуда взят множитель",
+  linkNote: "Пересчёт по связи семей: N и основание только для просмотра.",
+  manualNote: "Связи нет — N и основание вводит человек. Без основания пересчёт не сохраняется.",
+  stale: "Пересчёт по связи изменился, пока диалог был открыт: проверьте новые N, основание и цену и нажмите ещё раз.",
+  staleRefreshing:
+    "Цена в единице строки КП обновляется. Если она не обновилась, закройте окно и выберите строку заново.",
+  cancel: "Отмена",
+  submit: "Сделать целью",
+  saving: "Сохраняем…",
+  priceInKp: "цена в единице строки КП",
+  invalidManual: "N — число больше нуля (до шести знаков после запятой), основание — не пустое.",
+} as const;
+
+/** «Запомнить для семей» в диалоге пересчёта (спека справочных аналогов §2.18). */
+export const REF_REMEMBER = {
+  label: "Запомнить для семей",
+  kind: "Вид связи",
+  paramKp: "Параметр семьи строки КП",
+  paramRow: "Параметр семьи строки договора",
+  paramsNote: "Нужен параметр хотя бы одной стороны. Предзаполнено по названию, проверьте.",
+  noFactor: "Связь заведена, но пересчёт по ней не получился.",
+  saved: "Связь сохранена. Проверьте пересчёт и нажмите «Сделать целью».",
+} as const;
+
+export const REF_OUTLIER_CONFIRM = {
+  title: "Строка помечена выбросом",
+  confirm: "Всё равно сделать целью",
+  cancel: "Отмена",
+} as const;
+
+export function refOutlierConfirmText(ratioNote: string): string {
+  return `${ratioNote}. Выбрать её целью?`;
+}
+
+// ---------------------------------------------------------------------------
+//  Карточка справочной цели (спека справочных аналогов §2.14, §2.15)
+// ---------------------------------------------------------------------------
+
+export const REF_TARGET = {
+  title: "Цель строки",
+  origin: {
+    zone: "справочная · другая зона",
+    search: "справочная · из поиска",
+    link: "справочная · по связи",
+  },
+  sourcePrice: "в договоре",
+  convertedPrice: "в единице строки КП",
+  resetToLowest: "вернуть самую низкую",
+  linkGone: "Связь удалена или не действует; цифра — по снимку.",
+  ownAnalogs: "У строки появились свои аналоги.",
+  rowGone: "Строка договора больше не доступна, цифры цели нет.",
+} as const;
+
+/** «пересчёт из м²» — единица строки договора, из которой цена пересчитана. */
+export function refTargetConvertedFrom(unit: string | null): string {
+  return `пересчёт из ${unit ?? "ед."}`;
+}
+
+/** Основание пересчёта: «1 м² = 0,1 м³ — толщина 100 мм». */
+export function refTargetConversionLine(
+  contractUnit: string | null,
+  kpUnit: string | null,
+  factorShown: string,
+  basis: string
+): string {
+  return `1 ${contractUnit ?? "ед."} = ${factorShown} ${kpUnit ?? "ед."} — ${basis}`;
+}
+
+/** Подсказка `link_now`: связь сегодня даёт другой множитель, цифра цели прежняя. */
+export function refTargetLinkNow(contractUnit: string | null, kpUnit: string | null, factorShown: string): string {
+  return `По связи сейчас 1 ${contractUnit ?? "ед."} = ${factorShown} ${kpUnit ?? "ед."}; чтобы пересчитать — выберите цель заново.`;
+}
+
+export function refTargetInactive(reason: TargetResetReason | null): string {
+  const why = reason === null ? "" : `: ${TARGET_RESET_REASON[reason]}`;
+  return `Справочная цель не действует${why}`;
+}
+
+/**
+ * Источник справочной цели в блоке «В файл подрядчику» (спека §2.15): договор, путь разделов, цитата
+ * номинала в базе НДС КП и, при пересчёте, множитель с основанием и цена в единице КП.
+ */
+export function refExportSource(row: {
+  object: string;
+  number: string;
+  year: number;
+  path: string | null;
+  quote: string | null;
+  unit: string | null;
+  vat: string;
+  conversion: { factorShown: string; basis: string; kpUnit: string | null; converted: string | null } | null;
+}): string {
+  const unit = row.unit ?? "ед.";
+  const path = row.path === null ? "" : ` (${row.path})`;
+  const quote = row.quote === null ? "" : `, ${row.quote} ₽ за ${unit} ${row.vat}`;
+  let text = `${row.object}, договор № ${row.number}, ${row.year} г.: сопоставимая работа${path}${quote}`;
+  if (row.conversion !== null) {
+    const kp = row.conversion.kpUnit ?? "ед.";
+    const converted = row.conversion.converted === null ? "" : `: ${row.conversion.converted} ₽ за ${kp} ${row.vat}`;
+    text += `; 1 ${unit} = ${row.conversion.factorShown} ${kp} (${row.conversion.basis})${converted}`;
+  }
+  return text;
 }

@@ -213,6 +213,17 @@ export const qk = {
       seriesId: number | null
     ) =>
       ["tenders", "our-price", "line", tenderId, roundId, offerId, positionItemId, level, scope, seriesId] as const,
+    /** Поиск справочных строк строки КП: под префиксом панелей, решение по строке обновляет и его. */
+    ourPriceReferenceSearch: (
+      tenderId: number,
+      roundId: number,
+      offerId: number,
+      positionItemId: number,
+      query: string,
+      units: string,
+      seriesId: number | null
+    ) =>
+      ["tenders", "our-price", "line", tenderId, roundId, offerId, positionItemId, "reference-search", query, units, seriesId] as const,
     /** Префиксы по ряду ИПЦ: все ряды (и `null`) одного этапа, разбора, панелей. */
     ourPriceRoundAllSeries: (tenderId: number, roundId: number) =>
       ["tenders", "our-price", "round", tenderId, roundId] as const,
@@ -249,6 +260,9 @@ export const qk = {
     /** Префикс схем всех семей: решение зоны меняет аналоги всюду, схема семьи показывает признак. */
     schemasAll: ["work-families", "schema"] as const,
     variants: (familyId: number) => ["work-families", "variants", familyId] as const,
+    /** Связи семьи (спека справочных аналогов §2.16) и префикс связей всех семей. */
+    links: (familyId: number) => ["work-families", "links", familyId] as const,
+    linksAll: ["work-families", "links"] as const,
   },
 
   /** Единица по введённому имени и число живых заданий предложений (смена единицы семьи). */
