@@ -794,3 +794,44 @@ kp_line_targets.kind                 -- + 'contractor' («с этим подря
 **Запись журнала.** Payload и действия по видам — спека §2.7; `payload.undo_decision` называет решение человека, которое поставила отмена (`{veto_id}`, `{not_duplicate_id}` или `{blocked}`), и ровно его снимает «вернуть автоматику». Строки `catalog_auto_actions` ссылаются на семью с `RESTRICT`: семью с записями журнала не удалить.
 
 **Миграция.** `upgrade` ничего не отказывает. `downgrade` отказывает, ничего не удалив, при восьми видах данных: части составных, составные значения, вето состава, «не дубль», пометка контекста, цель `contractor`, записи журнала, правила маршрутизации без автора; задания `auto_split` — очередь, откат их удаляет. Отклонения реализации от спеки — [§2.17 спеки](../superpowers/specs/2026-11-10-catalog-simplify-design.md).
+
+## 12. Связи семей и справочные цели
+
+Миграция `0027` ([спека справочных аналогов](../superpowers/specs/2026-11-15-reference-analogs-design.md) §2.6, §2.13, §2.17); `family_links` — в `_DOMAIN_TABLES` тестов, литералы CHECK продублированы константами в `models.py` и в миграции, паритет — `test_ref_analogs_schema.py::TestParityWithMigration`. Принадлежность параметра семье, действующая версия схемы и соответствие единиц виду — проверка сервиса (`services/family_links.py`), CHECK их не видит.
+
+```
+family_links                         -- связь пары семей с правилом пересчёта единиц
+  id PK
+  family_lo_id, family_hi_id NOT NULL → work_families ON DELETE RESTRICT
+  # CHECK ck_family_links_order: family_lo_id < family_hi_id; UNIQUE uq_family_links_pair (family_lo_id, family_hi_id)
+  unit_lo_id, unit_hi_id NOT NULL → units_of_measure ON DELETE RESTRICT   # единицы сторон на момент записи
+  # CHECK ck_family_links_units_differ: unit_lo_id <> unit_hi_id
+  kind text NOT NULL                 # CHECK ck_family_links_kind: thickness|width|density|constant
+  param_lo_id, param_hi_id NULL → family_parameters ON DELETE RESTRICT    # параметр стороны (у видов с параметром)
+  factor_from_id bigint NULL         # семья левой части равенства; БЕЗ внешнего ключа, но CHECK держит её равной lo или hi
+  factor numeric NULL, basis text NULL
+  # CHECK ck_family_links_shape: constant ⇔ factor > 0, basis не пусто, factor_from_id ∈ {lo, hi}, параметры пусты;
+  #   иначе factor, basis, factor_from_id пусты и задан хотя бы один параметр
+  created_by NOT NULL → users ON DELETE RESTRICT, created_at
+  updated_by NOT NULL → users ON DELETE RESTRICT, updated_at
+
+kp_line_targets                      -- (+7 колонок, 0027): цель-«справочная» и её снимок
+  kind                               # CHECK freshest|analog|contractor|reference
+  analog_position_item_id            # CHECK (kind IN ('analog','reference')) = (analog_position_item_id IS NOT NULL)
+  ref_origin text NULL               # откуда выбрана: zone|link|search; CHECK ck_kp_line_targets_ref_origin
+  ref_method text NULL               # link|manual; пусто без пересчёта; CHECK ck_kp_line_targets_ref_method
+  ref_factor numeric NULL, ref_basis text NULL
+  # CHECK ck_kp_line_targets_ref_conversion: либо все три (ref_method, ref_factor, ref_basis) пусты, либо заданы,
+  #   ref_factor > 0 и ref_basis не пусто
+  ref_link_id bigint NULL → family_links ON DELETE SET NULL
+  # CHECK ck_kp_line_targets_ref_link: ref_link_id задан только при ref_method = 'link'; после удаления связи — пуст
+  ref_without_analogs boolean NULL   # у строки КП в момент выбора не было своей ступени
+  # CHECK ck_kp_line_targets_ref_origin_present и ..._ref_without_analogs_present: ref_origin и ref_without_analogs
+  #   заданы ровно при kind = 'reference'
+```
+
+**Что значит снимок.** `ref_factor` и `ref_basis` — пересчёт, который человек видел при выборе цели; значение цели читается только из снимка, поэтому правка и удаление связи и новая разметка значения параметра цель не меняют. `ref_link_id` — лишь ссылка для подсказок карточки цели (`link_now`, `link_gone`). Строка договора хранится id без внешнего ключа, как у цели-аналога: она уходит с заменой сметы, тогда цель не действует (`reference_unavailable`). Схема допускает `ref_*` у не-`reference` видов цели; сервис обнуляет их при перезаписи.
+
+**Направление множителя хранится, а не выводится.** `factor_from_id` — семья левой части равенства «1 [ед. этой семьи] = `factor` [ед. другой]»; `factor` пишется ровно так, как его ввёл человек, и при упорядочивании пары не обращается. Единицы сторон запоминаются: смена единицы семьи делает связь недействующей (`units_changed`), пока правка не перезапомнит их.
+
+**Миграция.** `upgrade` ничего не отказывает. `downgrade` отказывает, ничего не удалив, если есть хоть одна связь или цель `reference` (`_downgrade_blockers`); на пустых таблицах снимает всё новое и возвращает прежние CHECK вида и аналога цели.
