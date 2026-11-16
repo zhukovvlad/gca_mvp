@@ -70,6 +70,8 @@ class RefRow:
     outlier_ratio: Decimal | None
     #: Значение параметра пересчёта строки договора, как записано.
     param_value: str | None
+    #: Семья строки договора; `None` — у строки нет семьи.
+    family_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -140,6 +142,7 @@ def zone_groups(
                 kp_unit_net=analog.net,
                 outlier_ratio=analog.outlier_ratio,
                 param_value=None,
+                family_id=kp.family_id,
             )
             for analog in ladder.analogs
         )
@@ -395,6 +398,7 @@ def link_groups(
                 kp_unit_net=kp_unit_net,
                 outlier_ratio=ratios.get(cand.line.position_item_id),
                 param_value=param_value,
+                family_id=other,
             )
             for cand, conversion, reason, kp_unit_net, param_value, _same in sorted(built, key=order)
         )

@@ -252,6 +252,7 @@ def search_reference(
             kp_unit_net=kp_unit_net,
             outlier_ratio=marks.get(line.position_item_id),
             param_value=None if text is None else text.text,
+            family_id=line.family_id,
         )
         built.append((line, ref, kind))
 

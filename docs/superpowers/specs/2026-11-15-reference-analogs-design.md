@@ -1,7 +1,7 @@
 # Справочные аналоги: другая зона, поиск по договорам, пересчёт единиц — спека (гейт 2)
 
 **Редакция 4, 16.11.2026.** По реализации: причина `pair_changed` у `PUT` связи с другой парой;
-поле `conversion_kind` у строки поиска (§2.16).
+поле `conversion_kind` у строки поиска; `family_id` у строк и строки КП (§2.16).
 
 **Редакция 3, 15.11.2026.** По ревью плана (Codex на `8386040`): пересчёт
 строки в панели и поиске у `method = link` несёт `link_id` — иначе строке
@@ -472,7 +472,9 @@ confirm_outlier: bool = false
   object_title, number, year, rate_class, contractor_id, contractor_title},
   period, chapter_paths, price, nominal, conversion {method, factor, basis,
   link_id (только у `link`)} | null, no_conversion_reason, kp_unit_price, deviation_pct, outlier_ratio,
-  with_this_contractor, param_value}`;
+  with_this_contractor, param_value, family_id}`; у строки КП (`line`) — тоже
+  `family_id` (параметры для «Запомнить для семей» фронт берёт прежним
+  `GET /semantic/families/{id}/schema`);
 - `line.choice` при `kind = reference`: `{kind, analog_id, origin, conversion,
   active, reset_reason, hints {link_now, link_gone, own_analogs}, reference
   {строка в форме rows}, set_by, set_at}` — карточке нужна строка договора и

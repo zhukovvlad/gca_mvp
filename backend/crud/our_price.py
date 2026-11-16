@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, localcontext
@@ -874,6 +874,7 @@ def _line_view(
     return {
         "position_item_id": line.position_item_id,
         "context_id": row.context_id,
+        "family_id": None if line.key is None else line.key.family_id,
         "unit_id": row.unit_id,
         "article_id": row.article_root_id,
         "category_id": row.category_id,
@@ -1048,9 +1049,9 @@ def _reference_hints(
     link_gone = False
     if snapshot.method == "link":
         state = None if snapshot.link_id is None else next((s for s in states if s.link.id == snapshot.link_id), None)
-        if snapshot.link_id is None or (state is not None and not state.active):
+        if snapshot.link_id is None or state is None or not state.active:
             link_gone = True
-        elif state is not None:
+        else:
             kp_family = None if row.line.key is None else row.line.key.family_id
             conversion, _reason, _needed = conversion_for(
                 contract_unit_id=line.unit_id,
@@ -1070,15 +1071,27 @@ def _reference_hints(
 
 
 def _reference_targets(
-    db: Session, scene: _Scene, participant: _Participant, evaluation: OfferEvaluation
+    db: Session,
+    scene: _Scene,
+    participant: _Participant,
+    evaluation: OfferEvaluation,
+    *,
+    only: Collection[int] | None = None,
+    own: tuple[int, _ReferenceBlocks] | None = None,
 ) -> _ReferenceTargets:
     """Справочные цели сметы участника: строки договоров на сцене чтения, их форма `rows` и подсказки.
-    Значения параметров связей — одним запросом и только для строк договоров этих целей (спека §2.20)."""
+    Связи и значения параметров грузятся по одному запросу на весь ответ, а не на цель (спека §2.20):
+    пометки считаются чистыми функциями. `only` — только цели этих строк КП (панель); `own` — строка КП и
+    её уже посчитанные блоки, которые второй раз не строятся."""
     decisions = scene.decisions[participant.estimate_id]
     if not decisions.references:
         return _ReferenceTargets()
     kp_rows = {r.line.position_item_id: r for r in scene.kp_lines[participant.estimate_id]}
-    analog_of = {pid: decisions.targets[pid][1] for pid in decisions.references}
+    analog_of = {
+        pid: decisions.targets[pid][1] for pid in decisions.references if only is None or pid in only
+    }
+    if not analog_of:
+        return _ReferenceTargets()
     factors = scene.plan.factor_by_estimate if scene.plan is not None else None
     lines = load_reference_lines(db, scene.contracts, set(analog_of.values()), factors=factors)
     live = {
@@ -1100,12 +1113,20 @@ def _reference_targets(
         for family in (kp_family_of(pid), lines[analog].family_id)
         if family is not None
     }
+    needs_blocks = [pid for pid in live if _blocks_open(evaluation.lines[pid]) and (own is None or pid != own[0])]
+    family_ids |= {kp_family_of(pid) for pid in needs_blocks} - {None}
     states = tuple(links_of_families(db, family_ids))
     pairs = set()
     for pid, analog in by_link.items():
         param_id = link_param_id(states, lines[analog].family_id, kp_family_of(pid))
         if param_id is not None:
             pairs.add((analog, param_id))
+    for pid in needs_blocks:
+        result = evaluation.lines[pid]
+        kp = kp_work_of(kp_rows[pid].line, result.kp_unit_net)
+        mine = [s for s in states if kp.family_id in (s.link.family_lo_id, s.link.family_hi_id)]
+        if any(s.active for s in mine):
+            pairs |= link_value_pairs(kp, scene.work_history, mine)
     values = load_link_values(db, pairs)
     details = load_analog_details(db, list(live.values()))
     steps = chapter_steps(db, {details[analog][4] for analog in live.values()} - {None})
@@ -1122,6 +1143,11 @@ def _reference_targets(
             if snapshot.method is None
             else Conversion(snapshot.method, snapshot.factor, snapshot.basis, snapshot.link_id)
         )
+        if own is not None and pid == own[0]:
+            blocks = own[1]
+        else:
+            blocks = _reference_blocks_from(scene, participant, row, result, states, values)
+        mark = reference_marks(result.ladder, blocks.zones, blocks.links).get(analog)
         param_id = link_param_id(states, line.family_id, kp_family_of(pid)) if snapshot.method == "link" else None
         text = None if param_id is None else values.get((analog, param_id))
         ref = RefRow(
@@ -1134,8 +1160,9 @@ def _reference_targets(
             conversion=conversion,
             no_conversion_reason=None,
             kp_unit_net=reference_value(line, snapshot),
-            outlier_ratio=reference_mark_of(db, scene, participant, row, result, analog),
+            outlier_ratio=mark,
             param_value=None if text is None else text.text,
+            family_id=line.family_id,
         )
         rows[pid] = reference_row_view(
             ref,
@@ -1621,20 +1648,44 @@ def _reference_blocks(
     """Блоки А и Г строки: оба — только у работы в состоянии `no_history`. Новые запросы — связи семьи
     и значения параметров связей, по одному набору на ответ (спека §2.20); сами блоки считаются на
     `WorkHistory` сцены."""
+    if not _blocks_open(result):
+        return _ReferenceBlocks()
+    kp = kp_work_of(row.line, result.kp_unit_net)
+    states = tuple(links_of_families(db, [kp.family_id]))
+    values = {}
+    if any(state.active for state in states):
+        values = load_link_values(db, link_value_pairs(kp, scene.work_history, states))
+    return _reference_blocks_from(scene, participant, row, result, states, values)
+
+
+def _blocks_open(result: LineResult) -> bool:
+    """Блоки А и Г у строки есть, только когда она `no_history`, без своей ступени, с ценой за единицу."""
     ladder = result.ladder
-    if (
+    return not (
         ladder is None
         or ladder.rung_no is not None
         or result.state is not LineState.no_history
         or result.kp_unit_net is None
-    ):
+    )
+
+
+def _reference_blocks_from(
+    scene: _Scene,
+    participant: _Participant,
+    row: KpLineRow,
+    result: LineResult,
+    all_states: Sequence[LinkState],
+    values: Mapping,
+) -> _ReferenceBlocks:
+    """Блоки А и Г без запросов: связи и значения параметров загружены вызывающим (среди `all_states` могут
+    быть связи других семей — берутся только связи семьи строки КП)."""
+    if not _blocks_open(result):
         return _ReferenceBlocks()
     kp = kp_work_of(row.line, result.kp_unit_net)
-    states = tuple(links_of_families(db, [kp.family_id]))
+    states = tuple(s for s in all_states if kp.family_id in (s.link.family_lo_id, s.link.family_hi_id))
     zones = _zone_groups_of(scene, participant, row, result)
     if not any(state.active for state in states):
         return _ReferenceBlocks(zones=zones, states=states)
-    values = load_link_values(db, link_value_pairs(kp, scene.work_history, states))
     links = link_groups(
         kp,
         row.unit_id,
@@ -1736,6 +1787,7 @@ def reference_row_view(
         "outlier_ratio": row.outlier_ratio,
         "with_this_contractor": contract.contractor_id == participant.contractor_id,
         "param_value": row.param_value,
+        "family_id": row.family_id,
     }
 
 
@@ -1833,7 +1885,14 @@ def build_line_view(
     chapter_ids = {r.chapter_item_id for r in [row, *group_rows]} | {d[4] for d in analog_details.values()}
     steps = chapter_steps(db, chapter_ids - {None})
     _, tree = category_tree(db)
-    references = _reference_targets(db, scene, participant, evaluation)
+    references = _reference_targets(
+        db,
+        scene,
+        participant,
+        evaluation,
+        only={position_item_id, *(r.line.position_item_id for r in group_rows)},
+        own=(position_item_id, reference),
+    )
     group_lines = [
         _line_with_decisions(scene, participant, r, evaluation.lines[r.line.position_item_id], steps, references)
         for r in group_rows

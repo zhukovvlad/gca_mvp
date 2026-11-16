@@ -45,6 +45,7 @@ D = Decimal
 LINE_KEYS = {
     "position_item_id",
     "context_id",
+    "family_id",
     "unit_id",
     "article_id",
     "category_id",

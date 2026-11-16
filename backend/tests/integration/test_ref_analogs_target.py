@@ -15,11 +15,11 @@ from decimal import Decimal
 import pytest
 import sqlalchemy as sa
 
-from models import CatalogContext, CatalogPosition, ContextParameterValue, KpLineTarget, UserRole
+from models import CatalogContext, CatalogPosition, ContextMember, ContextParameterValue, KpLineTarget, UserRole
 from services.family_links import LinkInput, create_link, delete_link
 from tests.integration.test_our_price_load import World
 from tests.integration.test_our_price_offer_api import _inflation_scene, _json, _line_of, _ok, _panel, _put, _url
-from tests.integration.test_our_price_round_api import Stage
+from tests.integration.test_our_price_round_api import Stage, count_statements
 from tests.integration.test_our_price_round_api import _ok as _round_ok
 from tests.integration.test_ref_analogs_panel import (
     Linked,
@@ -1171,3 +1171,159 @@ def test_ref_analogs_target_changed_unit_of_the_linked_family_keeps_the_target(a
     assert choice["active"] is True
     assert ctx.stored().ref_factor == stored_factor
     assert ctx.stored().ref_link_id == scene.link_id
+
+
+# ---------------------------------------------------------------------------
+#  Число запросов не растёт с числом справочных целей (спека §2.20)
+# ---------------------------------------------------------------------------
+
+
+def _store_link_target(db, stage, scene, item) -> None:
+    """Справочная цель по связи в обход маршрута: снимок такой же, какой записал бы `PUT`."""
+    db.add(
+        KpLineTarget(
+            position_item_id=item.id,
+            kind="reference",
+            analog_position_item_id=scene.ref_item.id,
+            set_by=stage.world.admin.id,
+            ref_origin="link",
+            ref_method="link",
+            ref_factor=D("0.1"),
+            ref_basis="толщина 100 мм",
+            ref_link_id=scene.link_id,
+            ref_without_analogs=True,
+        )
+    )
+    db.flush()
+
+
+def _linked_lines(stage, count):
+    scene, ctx = _linked(stage)
+    items = [scene.kp_item]
+    for index in range(count - 1):
+        items.append(
+            _row(
+                stage, scene.part.proposal, D("14400"), family=scene.kp_family, variant=scene.kp_variant,
+                unit="M3", title=f"Работа КП {index}",
+            )
+        )
+    for item in items:
+        _set_value(stage, item, scene.kp_schema, scene.kp_param, "50 мм")
+    stage.db.flush()
+    return scene, items
+
+
+def test_ref_analogs_target_offer_view_statements_do_not_grow_with_the_number_of_targets(
+    admin_client, stage, db_session
+) -> None:
+    scene, items = _linked_lines(stage, 5)
+    ctx = Ctx(stage, scene.rnd, scene.part, items[0], [scene.ref_item])
+    _store_link_target(db_session, stage, scene, items[0])
+    ctx.offer(admin_client)  # прогрев кэшей процесса
+    with count_statements(db_session) as one:
+        body = ctx.offer(admin_client)
+    assert sum(1 for line in body["lines"] if line["target_kind"] == "reference") == 1
+    for item in items[1:4]:
+        _store_link_target(db_session, stage, scene, item)
+    with count_statements(db_session) as four:
+        body = ctx.offer(admin_client)
+    assert sum(1 for line in body["lines"] if line["target_kind"] == "reference") == 4
+    assert all(line["choice"]["hints"] == {"link_now": None, "link_gone": False, "own_analogs": False}
+               for line in body["lines"] if line["target_kind"] == "reference")
+    assert len(one) == len(four)
+
+
+def test_ref_analogs_target_panel_statements_do_not_depend_on_targets_of_other_lines(
+    admin_client, stage, db_session
+) -> None:
+    scene, items = _linked_lines(stage, 5)
+    ctx = Ctx(stage, scene.rnd, scene.part, items[4], [scene.ref_item])
+    _store_link_target(db_session, stage, scene, items[0])
+    ctx.panel(admin_client)
+    with count_statements(db_session) as one:
+        ctx.panel(admin_client)
+    for item in items[1:4]:
+        _store_link_target(db_session, stage, scene, item)
+    with count_statements(db_session) as four:
+        panel = ctx.panel(admin_client)
+    assert panel["line"]["choice"] is None
+    assert len(one) == len(four)
+
+
+def test_ref_analogs_target_panel_of_a_target_line_does_not_grow_with_other_targets(
+    admin_client, stage, db_session
+) -> None:
+    scene, items = _linked_lines(stage, 5)
+    ctx = Ctx(stage, scene.rnd, scene.part, items[0], [scene.ref_item])
+    _store_link_target(db_session, stage, scene, items[0])
+    ctx.panel(admin_client)
+    with count_statements(db_session) as one:
+        first = ctx.panel(admin_client)
+    for item in items[1:4]:
+        _store_link_target(db_session, stage, scene, item)
+    with count_statements(db_session) as four:
+        second = ctx.panel(admin_client)
+    assert first["line"]["choice"] == second["line"]["choice"]
+    assert len(one) == len(four)
+
+
+def test_ref_analogs_target_a_link_missing_from_the_loaded_ones_is_gone(admin_client, stage, db_session) -> None:
+    """Связь снимка существует, но это связь других семей: среди загруженных её нет."""
+    scene, ctx = _linked(stage)
+    third, _, third_param, _ = _family_with_param(stage, "Семья Х", "M3", "Толщина слоя")
+    fourth, _, fourth_param, _ = _family_with_param(stage, "Семья Ю", "M2", "Толщина слоя")
+    foreign = create_link(
+        db_session,
+        body=LinkInput(
+            family_a_id=third.id, family_b_id=fourth.id, kind="thickness",
+            param_a_id=third_param.id, param_b_id=fourth_param.id,
+        ),
+        actor_id=stage.world.admin.id,
+    )
+    db_session.add(
+        KpLineTarget(
+            position_item_id=scene.kp_item.id, kind="reference", analog_position_item_id=scene.ref_item.id,
+            set_by=stage.world.admin.id, ref_origin="link", ref_method="link", ref_factor=D("0.1"),
+            ref_basis="толщина 100 мм", ref_link_id=foreign, ref_without_analogs=True,
+        )
+    )
+    db_session.flush()
+    choice = ctx.panel(admin_client)["line"]["choice"]
+    assert choice["hints"] == {"link_now": None, "link_gone": True, "own_analogs": False}
+    assert _net(choice["reference"]["kp_unit_price"]) == D("11072.4")
+
+
+# ---------------------------------------------------------------------------
+#  Семьи строк для «Запомнить для семей»
+# ---------------------------------------------------------------------------
+
+
+def test_ref_analogs_target_rows_and_the_line_carry_their_families(admin_client, stage) -> None:
+    scene, ctx = _linked(stage)
+    panel = ctx.panel(admin_client)
+    assert panel["line"]["family_id"] == scene.kp_family.id
+    assert _panel_row(panel, scene.ref_item.id)["family_id"] == scene.ref_family.id
+    found = {row["analog_id"]: row for row in ctx.search(admin_client, "Подготовка")["rows"]}
+    assert found[scene.ref_item.id]["family_id"] == scene.ref_family.id
+    seen = _link_conversion(_panel_row(panel, scene.ref_item.id))
+    _save_ctx(admin_client, ctx, _body(scene.ref_item.id, "link", seen))
+    choice = ctx.panel(admin_client)["line"]["choice"]
+    assert choice["reference"]["family_id"] == scene.ref_family.id
+    assert ctx.offer_line(admin_client)["choice"]["reference"]["family_id"] == scene.ref_family.id
+
+
+def test_ref_analogs_target_a_zone_row_carries_the_family_of_the_line_and_a_row_without_one_is_null(
+    admin_client, stage
+) -> None:
+    ctx = _zone_scene(stage)
+    panel = ctx.panel(admin_client)
+    zone_rows = [row for group in panel["reference_zones"] for row in group["rows"]]
+    assert zone_rows
+    assert {row["family_id"] for row in zone_rows} == {panel["line"]["family_id"]} != {None}
+    bare = _row(stage, stage.world.estimate(stage.world.contract(rate_class=stage.rate_class), vat_rate=D("0"))[1], D("100"), title="Подготовка без семьи")
+    stage.db.execute(sa.delete(ContextMember).where(ContextMember.position_item_id == bare.id))
+    stage.db.flush()
+    found = {row["analog_id"]: row for row in ctx.search(admin_client, "без семьи")["rows"]}
+    assert found[bare.id]["family_id"] is None
+    no_family = Ctx(stage, ctx.rnd, ctx.part, stage.kp(ctx.part, D("144"), variant=False), [])
+    assert no_family.panel(admin_client)["line"]["family_id"] is None
