@@ -71,6 +71,7 @@ import {
 } from "./labels";
 import { FetchingBar, ListSkeleton } from "./pending";
 import { RerunResetWarning, UnitCheckFailedWarning } from "./RerunResetWarning";
+import { FamilyLinksBlock } from "./FamilyLinksBlock";
 import { SchemaBlock } from "./SchemaBlock";
 import { usePersistedPageSize } from "./usePersistedPageSize";
 
@@ -647,6 +648,7 @@ function FamilyPanel({
         <p className="text-xs text-fg-tertiary">{discoveryRefusalLabel("activate_without_category")}</p>
       )}
       <SchemaBlock family={family} />
+      <FamilyLinksBlock family={family} />
     </Surface>
   );
 }

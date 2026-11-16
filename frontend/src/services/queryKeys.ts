@@ -260,6 +260,9 @@ export const qk = {
     /** Префикс схем всех семей: решение зоны меняет аналоги всюду, схема семьи показывает признак. */
     schemasAll: ["work-families", "schema"] as const,
     variants: (familyId: number) => ["work-families", "variants", familyId] as const,
+    /** Связи семьи (спека справочных аналогов §2.16) и префикс связей всех семей. */
+    links: (familyId: number) => ["work-families", "links", familyId] as const,
+    linksAll: ["work-families", "links"] as const,
   },
 
   /** Единица по введённому имени и число живых заданий предложений (смена единицы семьи). */

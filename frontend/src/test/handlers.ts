@@ -44,6 +44,8 @@ import {
 import { initialJournal } from "./journalFixtures";
 import type {
   ContractCandidate,
+  FamilyLinkBody,
+  FamilyLinkView,
   OurPriceLineState,
   ReferenceSearchResult,
   RungLevel,
@@ -489,6 +491,12 @@ interface HandlerState {
   /** Запросы `GET .../lines/:pid/reference-search` по порядку (адрес с параметрами) и ответ на них. */
   referenceSearchRequests: string[];
   referenceSearchResult: ReferenceSearchResult;
+  /** Связи семей по `id` семьи, как их отдаёт `GET /families/:id/links` (развёрнутые от неё). */
+  familyLinks: Record<number, FamilyLinkView[]>;
+  /** Записи связей по порядку: способ, `id` связи (у `POST` — `null`) и тело как пришло. */
+  familyLinkRequests: Array<{ method: "POST" | "PUT" | "DELETE"; id: number | null; body: FamilyLinkBody | null }>;
+  /** Отказ записи связи; отдаётся один раз следующей записи (`POST`/`PUT`). */
+  familyLinkRefusal: { status: number; code: string; reason?: string } | null;
   /**
    * Исход `GET /api/v1/tenders/:id/changes-export` (спека
    * 2026-09-16-tender-changes-export-design.md §2.1, §2.11, план фичи, Task
@@ -2131,6 +2139,9 @@ export const handlerState: HandlerState = {
   ourPriceRequests: [],
   referenceSearchRequests: [],
   referenceSearchResult: { rows: [], total_lines: 0, truncated: false },
+  familyLinks: {},
+  familyLinkRequests: [],
+  familyLinkRefusal: null,
   roundOverrideRequests: [],
   changesExportOutcome: "ok",
   lastChangesExportTenderId: null,
@@ -2315,6 +2326,23 @@ function initialFamilyVariants(): Record<number, FamilyVariant[]> {
       { id: 3, values: [null, null], contexts: 0, status: "archived" },
     ],
   };
+}
+
+/** Отказ записи связи (`409 link_exists`, `422 link_invalid` с `reason`), один раз. */
+function takeFamilyLinkRefusal() {
+  const refusal = handlerState.familyLinkRefusal;
+  if (refusal === null) return null;
+  handlerState.familyLinkRefusal = null;
+  return HttpResponse.json(
+    {
+      detail: {
+        code: refusal.code,
+        message: "server text must not reach the screen",
+        ...(refusal.reason === undefined ? {} : { reason: refusal.reason }),
+      },
+    },
+    { status: refusal.status }
+  );
 }
 
 /** Ответ-отказ с кодом (форма `detail.code`); отдаётся один раз — действию, которому адресован. */
@@ -2809,6 +2837,9 @@ export function resetHandlerState() {
   handlerState.ourPriceRequests = [];
   handlerState.referenceSearchRequests = [];
   handlerState.referenceSearchResult = { rows: [], total_lines: 0, truncated: false };
+  handlerState.familyLinks = {};
+  handlerState.familyLinkRequests = [];
+  handlerState.familyLinkRefusal = null;
   handlerState.roundOverrideRequests = [];
   handlerState.changesExportOutcome = "ok";
   handlerState.lastChangesExportTenderId = null;
@@ -5879,6 +5910,29 @@ export const handlers = [
     const familyId = Number(params.id);
     if (!schemaFamilyOf(familyId)) return schemaRefusalResponse("family_not_found", 404);
     return HttpResponse.json(schemaOf(familyId));
+  }),
+  // Связи семей (`routers/semantic.py`, спека справочных аналогов §2.16): список — обёрнут в `items`.
+  http.get("/api/v1/semantic/families/:id/links", ({ params }) =>
+    HttpResponse.json({ items: handlerState.familyLinks[Number(params.id)] ?? [] })
+  ),
+  http.post("/api/v1/semantic/family-links", async ({ request }) => {
+    const body = (await request.json()) as FamilyLinkBody;
+    handlerState.familyLinkRequests.push({ method: "POST", id: null, body });
+    const refusal = takeFamilyLinkRefusal();
+    if (refusal !== null) return refusal;
+    return HttpResponse.json({ id: 900 }, { status: 201 });
+  }),
+  http.put("/api/v1/semantic/family-links/:id", async ({ params, request }) => {
+    const body = (await request.json()) as FamilyLinkBody;
+    const id = Number(params.id);
+    handlerState.familyLinkRequests.push({ method: "PUT", id, body });
+    const refusal = takeFamilyLinkRefusal();
+    if (refusal !== null) return refusal;
+    return HttpResponse.json({ id });
+  }),
+  http.delete("/api/v1/semantic/family-links/:id", ({ params }) => {
+    handlerState.familyLinkRequests.push({ method: "DELETE", id: Number(params.id), body: null });
+    return new HttpResponse(null, { status: 204 });
   }),
   http.get("/api/v1/semantic/families/:id/variants", ({ params }) => {
     const familyId = Number(params.id);

@@ -61,6 +61,7 @@ import type {
   DraftMergeTarget,
   FamilyCategoryFilter,
   FamilyCategoryInput,
+  FamilyLinkBody,
   FamilySchema,
   ManualKind,
   MoveMembersInput,
@@ -2419,6 +2420,62 @@ export function useFamilyVariants(familyId: number) {
         ? SCHEMA_BUILD_POLL_MS
         : false,
     refetchIntervalInBackground: false,
+  });
+}
+
+/** Связи семьи, развёрнутые от неё (спека справочных аналогов §2.16): читают все. */
+export function useFamilyLinks(familyId: number) {
+  return useQuery({
+    queryKey: qk.workFamilies.links(familyId),
+    queryFn: () => semanticApi.familyLinks(familyId),
+  });
+}
+
+/** Отказы записи связи, которые объясняет диалог на месте: тоста у них нет. */
+const FAMILY_LINK_DIALOG_CODES: ReadonlySet<string> = new Set(["link_invalid", "link_exists"]);
+
+/** Причина отказа `422 link_invalid` (поле `reason` рядом с `code`). */
+export function linkInvalidReason(error: unknown): string | undefined {
+  return apiErrorCode(error) === "link_invalid" ? apiErrorContext<{ reason?: string }>(error)?.reason : undefined;
+}
+
+function invalidateFamilyLinks(qc: ReturnType<typeof useQueryClient>) {
+  // Связь одна на пару: перечитываются связи обеих семей.
+  return qc.invalidateQueries({ queryKey: qk.workFamilies.linksAll });
+}
+
+function onFamilyLinkError(error: unknown) {
+  if (!FAMILY_LINK_DIALOG_CODES.has(apiErrorCode(error) ?? "")) toastApiError(error);
+}
+
+export function useCreateFamilyLink() {
+  const qc = useQueryClient();
+  return useMutation<{ id: number }, AxiosError, FamilyLinkBody>({
+    mutationFn: (body) => semanticApi.createFamilyLink(body),
+    onSuccess: () => invalidateFamilyLinks(qc),
+    onError: onFamilyLinkError,
+  });
+}
+
+export function useUpdateFamilyLink() {
+  const qc = useQueryClient();
+  return useMutation<{ id: number }, AxiosError, { id: number; body: FamilyLinkBody }>({
+    mutationFn: ({ id, body }) => semanticApi.updateFamilyLink(id, body),
+    onSuccess: () => invalidateFamilyLinks(qc),
+    onError: onFamilyLinkError,
+  });
+}
+
+export function useDeleteFamilyLink() {
+  const qc = useQueryClient();
+  return useMutation<void, AxiosError, number>({
+    mutationFn: (id) => semanticApi.deleteFamilyLink(id),
+    onSuccess: () => invalidateFamilyLinks(qc),
+    onError: (error) => {
+      // Связи уже нет (удалил другой админ): список перечитывается.
+      void invalidateFamilyLinks(qc);
+      toastApiError(error);
+    },
   });
 }
 

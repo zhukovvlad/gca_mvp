@@ -488,6 +488,7 @@ export const TARGET_RESET_REASON: Record<TargetResetReason, string> = {
   analog_unavailable: "аналога больше нет на ступени",
   no_freshest: "самой свежей расценки больше нет",
   no_contractor: "среди аналогов больше нет договора с этим подрядчиком",
+  reference_unavailable: "строка договора больше не годится как справочная",
 };
 export function targetInactiveNote(reason: TargetResetReason | null): string {
   const why = reason === null ? "" : `: ${TARGET_RESET_REASON[reason]}`;
@@ -849,4 +850,74 @@ export const REF_OUTLIER_CONFIRM = {
 
 export function refOutlierConfirmText(ratioNote: string): string {
   return `${ratioNote}. Выбрать её целью?`;
+}
+
+// ---------------------------------------------------------------------------
+//  Карточка справочной цели (спека справочных аналогов §2.14, §2.15)
+// ---------------------------------------------------------------------------
+
+export const REF_TARGET = {
+  title: "Цель строки",
+  origin: {
+    zone: "справочная · другая зона",
+    search: "справочная · из поиска",
+    link: "справочная · по связи",
+  },
+  sourcePrice: "в договоре",
+  convertedPrice: "в единице строки КП",
+  resetToLowest: "вернуть самую низкую",
+  linkGone: "Связь удалена или не действует; цифра — по снимку.",
+  ownAnalogs: "У строки появились свои аналоги.",
+  rowGone: "Строка договора больше не доступна, цифры цели нет.",
+} as const;
+
+/** «пересчёт из м²» — единица строки договора, из которой цена пересчитана. */
+export function refTargetConvertedFrom(unit: string | null): string {
+  return `пересчёт из ${unit ?? "ед."}`;
+}
+
+/** Основание пересчёта: «1 м² = 0,1 м³ — толщина 100 мм». */
+export function refTargetConversionLine(
+  contractUnit: string | null,
+  kpUnit: string | null,
+  factor: Decimal,
+  basis: string
+): string {
+  return `1 ${contractUnit ?? "ед."} = ${factor.replace(".", ",")} ${kpUnit ?? "ед."} — ${basis}`;
+}
+
+/** Подсказка `link_now`: связь сегодня даёт другой множитель, цифра цели прежняя. */
+export function refTargetLinkNow(contractUnit: string | null, kpUnit: string | null, factor: Decimal): string {
+  return `По связи сейчас 1 ${contractUnit ?? "ед."} = ${factor.replace(".", ",")} ${kpUnit ?? "ед."}; чтобы пересчитать — выберите цель заново.`;
+}
+
+export function refTargetInactive(reason: TargetResetReason | null): string {
+  const why = reason === null ? "" : `: ${TARGET_RESET_REASON[reason]}`;
+  return `Справочная цель не действует${why}`;
+}
+
+/**
+ * Источник справочной цели в блоке «В файл подрядчику» (спека §2.15): договор, путь разделов, цитата
+ * номинала в базе НДС КП и, при пересчёте, множитель с основанием и цена в единице КП.
+ */
+export function refExportSource(row: {
+  object: string;
+  number: string;
+  year: number;
+  path: string | null;
+  quote: string | null;
+  unit: string | null;
+  vat: string;
+  conversion: { factor: Decimal; basis: string; kpUnit: string | null; converted: string | null } | null;
+}): string {
+  const unit = row.unit ?? "ед.";
+  const path = row.path === null ? "" : ` (${row.path})`;
+  const quote = row.quote === null ? "" : `, ${row.quote} ₽ за ${unit} ${row.vat}`;
+  let text = `${row.object}, договор № ${row.number}, ${row.year} г.: сопоставимая работа${path}${quote}`;
+  if (row.conversion !== null) {
+    const kp = row.conversion.kpUnit ?? "ед.";
+    const converted = row.conversion.converted === null ? "" : `: ${row.conversion.converted} ₽ за ${kp} ${row.vat}`;
+    text += `; 1 ${unit} = ${row.conversion.factor.replace(".", ",")} ${kp} (${row.conversion.basis})${converted}`;
+  }
+  return text;
 }

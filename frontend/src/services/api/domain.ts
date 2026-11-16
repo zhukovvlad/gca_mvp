@@ -37,6 +37,8 @@ import type {
   FamilyCategoryFilter,
   FamilyCategoryInput,
   FamilyChangeResult,
+  FamilyLinkBody,
+  FamilyLinkView,
   FamilySchema,
   FamilyVariant,
   JobsResponse,
@@ -996,6 +998,20 @@ export const semanticApi = {
     api
       .post<{ batch_id: number; status: string }>(`/v1/semantic/batches/${batchId}/discard`)
       .then((r) => r.data),
+
+  familyLinks: (familyId: number): Promise<FamilyLinkView[]> =>
+    api
+      .get<{ items: FamilyLinkView[] }>(`/v1/semantic/families/${familyId}/links`)
+      .then((r) => r.data.items),
+
+  createFamilyLink: (body: FamilyLinkBody): Promise<{ id: number }> =>
+    api.post<{ id: number }>("/v1/semantic/family-links", body).then((r) => r.data),
+
+  updateFamilyLink: (id: number, body: FamilyLinkBody): Promise<{ id: number }> =>
+    api.put<{ id: number }>(`/v1/semantic/family-links/${id}`, body).then((r) => r.data),
+
+  deleteFamilyLink: (id: number): Promise<void> =>
+    api.delete(`/v1/semantic/family-links/${id}`).then(() => undefined),
 
   getFamilySchema: (familyId: number): Promise<FamilySchema> =>
     api.get<FamilySchema>(`/v1/semantic/families/${familyId}/schema`).then((r) => r.data),

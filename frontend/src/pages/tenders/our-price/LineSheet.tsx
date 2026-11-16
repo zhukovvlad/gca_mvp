@@ -14,7 +14,7 @@ import { AnalogsTable } from "./AnalogsTable";
 import { LineWhere } from "./LineWhere";
 import { PartsReference } from "./PartsReference";
 import { ReferencePanel } from "./ReferenceBlocks";
-import { TargetCards } from "./TargetCards";
+import { ReferenceTargetCard, TargetCards } from "./TargetCards";
 import { targetAnalogId, type TargetStrategy } from "./targetSelection";
 
 import { comparedKpPrice, comparedUnit, formatMoney, formatSigned, formatUnitPrice, pick, type VatView } from "./money";
@@ -246,6 +246,16 @@ function PanelContent({
           </p>
         </Section>
       )}
+      {line.kind === "work" && line.choice?.kind === "reference" && (
+        <ReferenceTarget
+          tenderId={tenderId}
+          roundId={roundId}
+          offerId={offerId}
+          line={line}
+          vat={vat}
+          canEdit={canEdit}
+        />
+      )}
       {line.kind === "work" && line.work_rung !== null && (
         <WorkComparison
           tenderId={tenderId}
@@ -397,6 +407,34 @@ function Prices({ line, vat, vatRate }: { line: OurPriceLine; vat: VatView; vatR
         )}
       </dl>
     </Section>
+  );
+}
+
+/** Карточка справочной цели: «вернуть самую низкую» — прежнее снятие выбора (`DELETE …/target`). */
+function ReferenceTarget({
+  tenderId,
+  roundId,
+  offerId,
+  line,
+  vat,
+  canEdit,
+}: {
+  tenderId: number;
+  roundId: number;
+  offerId: number;
+  line: OurPriceLine;
+  vat: VatView;
+  canEdit: boolean;
+}) {
+  const del = useDeleteTarget(tenderId, roundId, offerId);
+  return (
+    <ReferenceTargetCard
+      line={line}
+      vat={vat}
+      canEdit={canEdit}
+      busy={del.isPending}
+      onReset={() => del.mutate({ positionItemId: line.position_item_id })}
+    />
   );
 }
 

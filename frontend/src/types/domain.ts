@@ -3526,7 +3526,18 @@ export type TargetResetReason =
   | "not_comparable"
   | "analog_unavailable"
   | "no_freshest"
-  | "no_contractor";
+  | "no_contractor"
+  | "reference_unavailable";
+
+/** Подсказки карточки справочной цели (спека справочных аналогов §2.14): на цифры не влияют. */
+export interface ReferenceHints {
+  /** Связь действует и сегодня даёт другой `N`: показываем новый множитель, цифра цели прежняя. */
+  link_now: { factor: Decimal; basis: string } | null;
+  /** Связь удалена или не действует: цифра - по снимку. */
+  link_gone: boolean;
+  /** У строки появились свои аналоги. */
+  own_analogs: boolean;
+}
 
 export interface TargetChoice {
   kind: "freshest" | "analog" | "contractor" | "reference";
@@ -3535,6 +3546,7 @@ export interface TargetChoice {
   origin?: ReferenceOrigin;
   conversion?: RefConversion;
   reference?: RefRow | null;
+  hints?: ReferenceHints;
   /** `false` - выбор сохранён, но не действует (см. `reset_reason`). */
   active: boolean;
   reset_reason: TargetResetReason | null;
@@ -3800,6 +3812,69 @@ export interface ReferenceLinkGroup {
 }
 
 export type ReferenceOrigin = "zone" | "link" | "search";
+
+// ---------------------------------------------------------------------------
+//  Связи семей (спека справочных аналогов §2.6, §2.16)
+// ---------------------------------------------------------------------------
+
+export type LinkInactiveReason = "family_inactive" | "units_changed" | "no_live_side";
+
+/** Причины отказа `422 link_invalid` (поле `reason`). */
+export type LinkInvalidReason =
+  | "same_family"
+  | "family_inactive"
+  | "units_mismatch"
+  | "param_invalid"
+  | "params_missing"
+  | "constant_invalid"
+  | "pair_changed";
+
+export interface FamilyRef {
+  id: number;
+  title: string;
+  unit: string | null;
+}
+
+export interface ParamRef {
+  id: number;
+  name: string;
+}
+
+/**
+ * Связь, развёрнутая от карточки семьи. `factor` и `factor_from_family_id` - как хранятся, форма правки
+ * берёт их, а не `shown`; `shown` - то же равенство от этой семьи, только для показа («≈» в начале - округление).
+ */
+export interface FamilyLinkView {
+  id: number;
+  other_family: FamilyRef;
+  kind: LinkKind;
+  this_param: ParamRef | null;
+  other_param: ParamRef | null;
+  factor_from_family_id: number | null;
+  factor: Decimal | null;
+  basis: string | null;
+  shown: { from_family_id: number; factor: string } | null;
+  state: "active" | "inactive";
+  inactive_reason: LinkInactiveReason | null;
+  /** Стороны, у которых параметр задан, но не жив. */
+  stale_sides: Array<"this" | "other">;
+  created_by: { id: number; email: string | null };
+  created_at: string;
+  updated_by: { id: number; email: string | null } | null;
+  updated_at: string | null;
+}
+
+/** Тело `POST /family-links` и `PUT /family-links/{id}`: `a` - эта семья, `b` - другая. */
+export interface FamilyLinkBody {
+  family_a_id: number;
+  family_b_id: number;
+  kind: LinkKind;
+  param_a_id: number | null;
+  param_b_id: number | null;
+  factor_from_family_id: number | null;
+  factor: Decimal | null;
+  basis: string | null;
+}
 
 /** Строка выдачи поиска: форма строки блока и вид пересчёта (спека §2.12). */
 export interface ReferenceSearchRow extends RefRow {

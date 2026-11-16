@@ -36,11 +36,13 @@ import type {
   KpSentFileItem,
   OurPriceAnalog,
   OtherZone,
+  FamilyLinkView,
   RefRow,
   ReferenceLinkGroup,
   ReferenceSearchResult,
   ReferenceSearchRow,
   ReferenceZoneGroup,
+  TargetChoice,
   OurPriceArticleRef,
   OurPriceCategory,
   OurPriceCell,
@@ -3657,4 +3659,63 @@ export function referenceSearchFixture(
   overrides: Partial<ReferenceSearchResult> = {}
 ): ReferenceSearchResult {
   return { rows, total_lines: rows.length, truncated: false, ...overrides };
+}
+
+/** Действующая справочная цель строки: по умолчанию из поиска, без пересчёта, подсказок нет. */
+export function referenceChoiceFixture(overrides: Partial<TargetChoice> = {}): TargetChoice {
+  return {
+    kind: "reference",
+    analog_id: 9001,
+    origin: "search",
+    conversion: null,
+    reference: refRowFixture(),
+    hints: { link_now: null, link_gone: false, own_analogs: false },
+    active: true,
+    reset_reason: null,
+    set_by: KP_FILE_AUTHOR,
+    set_at: "2026-11-15T09:30:00+00:00",
+    ...overrides,
+  };
+}
+
+/** Связь «м2 — м3 через толщину» с карточки семьи в м2 (id 71): параметр этой стороны жив. */
+export function familyLinkFixture(overrides: Partial<FamilyLinkView> = {}): FamilyLinkView {
+  return {
+    id: 41,
+    other_family: { id: 72, title: "Бетонная подготовка в кубах", unit: "м3" },
+    kind: "thickness",
+    this_param: { id: 801, name: "Толщина, мм" },
+    other_param: null,
+    factor_from_family_id: null,
+    factor: null,
+    basis: null,
+    shown: null,
+    state: "active",
+    inactive_reason: null,
+    stale_sides: [],
+    created_by: { id: 3, email: "admin@example.test" },
+    created_at: "2026-11-14T10:00:00+00:00",
+    updated_by: null,
+    updated_at: null,
+    ...overrides,
+  };
+}
+
+/**
+ * Постоянная связь: хранится «1 т = 0.6667 м3» (левая часть — семья 72, т), а с карточки семьи 71 (м3)
+ * `shown` обращён и округлён: «≈1,4999 т» — печатная форма сервера с «≈» в начале.
+ */
+export function constantLinkFixture(overrides: Partial<FamilyLinkView> = {}): FamilyLinkView {
+  return familyLinkFixture({
+    id: 42,
+    other_family: { id: 72, title: "Щебень гравийный, т", unit: "т" },
+    kind: "constant",
+    this_param: null,
+    other_param: null,
+    factor_from_family_id: 72,
+    factor: "0.6667",
+    basis: "насыпная плотность 1,5 т/м3 — по паспорту поставщика",
+    shown: { from_family_id: 71, factor: "≈1.4999" },
+    ...overrides,
+  });
 }
