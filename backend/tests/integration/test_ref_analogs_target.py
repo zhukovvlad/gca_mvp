@@ -518,6 +518,32 @@ def test_ref_analogs_target_a_stale_conversion_is_refused_before_the_outlier_che
     )
 
 
+def test_ref_analogs_target_a_needless_conversion_is_refused_before_the_outlier_check(admin_client, stage) -> None:
+    """Помеченная строка блока А в единице КП: с пересчётом — `conversion_not_needed`, а не `409`."""
+    ctx = _zone_scene(stage)
+    outlier = ctx.rows[3]
+    _refused(ctx.put(admin_client, _body(outlier.id, "zone", _manual("2"))), 422, "conversion_not_needed")
+    assert _no_row(ctx)
+
+
+def test_ref_analogs_target_a_missing_conversion_is_refused_before_the_outlier_check(admin_client, stage) -> None:
+    """Помеченная строка блока Г в другой единице: без пересчёта — `conversion_required`, а не `409`."""
+    scene, ctx = _linked_set(stage)
+    outlier = ctx.rows[3]
+    _refused(ctx.put(admin_client, _body(outlier.id, "link")), 422, "conversion_required")
+    assert _no_row(ctx)
+
+
+def test_ref_analogs_target_an_inapplicable_link_is_refused_before_the_outlier_check(admin_client, stage) -> None:
+    scene, ctx = _linked_set(stage)
+    outlier = ctx.rows[3]
+    seen = _link_conversion(_panel_row(ctx.panel(admin_client), outlier.id))
+    _refused(
+        ctx.put(admin_client, _body(outlier.id, "link", {**seen, "link_id": 987654321})), 422, "link_not_applicable"
+    )
+    assert _no_row(ctx)
+
+
 # ---------------------------------------------------------------------------
 #  Пометка выброса (К3): на строке блока, строке поиска и строке блока Г
 # ---------------------------------------------------------------------------
@@ -545,8 +571,12 @@ def test_ref_analogs_target_confirmation_of_an_unmarked_row_changes_nothing(admi
 
 
 def test_ref_analogs_target_a_marked_search_row_needs_the_confirmation(admin_client, stage) -> None:
-    """Критическое свойство К3, строка поиска: выброс собственной ступени строки КП."""
+    """Критическое свойство К3, строка поиска: выброс собственной ступени строки КП. Блоков А и Г у строки
+    нет — пометка приходит только тем путём, которым её видит поиск."""
     ctx = _own_scene(stage)
+    panel = ctx.panel(admin_client)
+    assert panel["line"]["state"] == "comparable"
+    assert (panel["reference_zones"], panel["reference_links"]) == ([], [])
     found = {row["analog_id"]: row for row in ctx.search(admin_client, "Подготовка")["rows"]}
     outlier = ctx.rows[3]
     assert found[outlier.id]["outlier_ratio"] == "10"
@@ -746,6 +776,9 @@ def test_ref_analogs_target_the_card_of_a_link_target_carries_the_converted_valu
     _save_ctx(admin_client, ctx, _body(scene.ref_item.id, "link", seen))
     panel = ctx.panel(admin_client)
     choice = panel["line"]["choice"]
+    assert set(choice) == {
+        "kind", "analog_id", "origin", "conversion", "active", "reset_reason", "hints", "reference", "set_by", "set_at",
+    }
     assert (choice["kind"], choice["analog_id"], choice["active"], choice["reset_reason"], choice["origin"]) == (
         "reference", scene.ref_item.id, True, None, "link",
     )
@@ -1014,6 +1047,7 @@ def test_ref_analogs_target_changes_no_offer_total_or_line_figure_of_a_comparabl
     `target_kind` самой строки — итоги, `to_lowest`, `to_freshest`, вилка, состояния, корзины."""
     ctx = _own_scene(stage)
     before = ctx.offer(admin_client)
+    panel_before = ctx.panel(admin_client)
     round_before = _round_ok(admin_client, stage.tender, ctx.rnd)
     _save_ctx(admin_client, ctx, _body(ctx.rows[3].id, confirm_outlier=True))
     after = ctx.offer(admin_client)
@@ -1023,6 +1057,20 @@ def test_ref_analogs_target_changes_no_offer_total_or_line_figure_of_a_comparabl
     assert _round_ok(admin_client, stage.tender, ctx.rnd) == round_before
     line = _line_of(after, ctx.item)
     assert line["to_lowest"] is not None and line["lowest"] is not None
+    # цифра цели отлична от самой низкой и самой свежей: подмешай её в сумму — равенство выше разошлось бы
+    reference = _net(line["choice"]["reference"]["kp_unit_price"])
+    assert reference == D("1000")
+    assert reference not in (_net(line["lowest"]["value"]), _net(line["freshest"]["value"]))
+    # панель: те же цифры, кроме полей цели и того, что строит файл (цель файла — отдельное правило)
+    panel_after = ctx.panel(admin_client)
+
+    def figures(panel: dict) -> dict:
+        return {
+            **{key: value for key, value in panel.items() if key not in ("line", "comment")},
+            "line": {k: v for k, v in panel["line"].items() if k not in (*_TARGET_FIELDS, "file_ours")},
+        }
+
+    assert figures(panel_after) == figures(panel_before)
 
 
 def test_ref_analogs_target_changes_nothing_in_the_panel_figures_of_a_row_without_analogs(admin_client, stage) -> None:
