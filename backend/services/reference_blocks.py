@@ -38,6 +38,7 @@ from services.reference_math import (
     link_number,
     outlier_ratios_of,
     price_in_kp_unit,
+    units_equal,
 )
 from services.zone_rules import Zone
 
@@ -246,7 +247,7 @@ def conversion_for(
     — единицы сторон связи; нет связи или единицы не те — пересчёт нужен, `N` вводит человек
     (причины нет). Связь есть, а числа нет — причина по спеке §2.8. `units` — символы единиц по
     id: по ним у видов с параметром решается, меньшая единица у строки договора или большая."""
-    if contract_unit_id is not None and contract_unit_id == kp_unit_id:
+    if units_equal(contract_unit_id, kp_unit_id):
         return None, None, False
     manual: tuple[Conversion | None, str | None, bool] = (None, None, True)
     state = _link_between(links, contract_family_id, kp_family_id)

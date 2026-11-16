@@ -314,7 +314,7 @@ describe("«сделать целью»: права и запись", () => {
     serve(() =>
       referenceLineViewFixture({
         zones: [],
-        links: [referenceLinkGroupFixture({ rows: [refLinkRowFixture({ unit: "м3", conversion: null })] })],
+        links: [referenceLinkGroupFixture({ rows: [refLinkRowFixture({ unit: "м3", needs_conversion: false, conversion: null })] })],
       })
     );
     renderSheet();

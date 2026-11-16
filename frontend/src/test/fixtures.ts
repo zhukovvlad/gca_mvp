@@ -3558,7 +3558,9 @@ export function refRowFixture(overrides: Partial<RefRow> = {}): RefRow {
     chapter_paths: [chapterPathFixture("Благоустройство", "МАФ")],
     price: pair("8372.92", "10215.96"),
     nominal: pair("8372.92", "10215.96"),
+    needs_conversion: false,
     conversion: null,
+    kp_unit_nominal: null,
     no_conversion_reason: null,
     kp_unit_price: pair("8372.92", "10215.96"),
     deviation_pct: "182.4",
@@ -3580,7 +3582,9 @@ export function refLinkRowFixture(overrides: Partial<RefRow> = {}): RefRow {
     zone: "underground",
     price: pair("1107.24", "1350.83"),
     nominal: pair("1107.24", "1350.83"),
+    needs_conversion: true,
     conversion: { method: "link", link_id: 41, factor: "0.100", factor_shown: "0,1", basis: "толщина 100 мм" },
+    kp_unit_nominal: pair("11072.40", "13508.33"),
     kp_unit_price: pair("11072.40", "13508.33"),
     deviation_pct: "113.6",
     param_value: "100",
@@ -3655,7 +3659,9 @@ export function referenceLineViewFixture(
 
 /** Строка выдачи поиска: форма строки блока плюс `conversion_kind`. */
 export function referenceSearchRowFixture(overrides: Partial<ReferenceSearchRow> = {}): ReferenceSearchRow {
-  return { ...refRowFixture(), conversion_kind: "none", ...overrides };
+  const kind = overrides.conversion_kind ?? "none";
+  // `none` ровно когда пересчёт не нужен (как на сервере)
+  return { ...refRowFixture({ needs_conversion: kind !== "none" }), conversion_kind: kind, ...overrides };
 }
 
 export function referenceSearchFixture(

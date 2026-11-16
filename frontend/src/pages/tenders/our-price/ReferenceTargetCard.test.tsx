@@ -49,6 +49,25 @@ describe("карточка справочной цели: откуда и циф
     expect(screen.queryByTestId("reference-target-conversion")).not.toBeInTheDocument();
   });
 
+  it("пометка выброса — по текущему расчёту: есть при кратности, нет при null", () => {
+    const { unmount } = render(
+      <ReferenceTargetCard
+        line={workLineFixture({
+          unit: "м3",
+          choice: referenceChoiceFixture({ reference: refRowFixture({ outlier_ratio: "3.2" }) }),
+          target_kind: "reference",
+        })}
+        vat="net"
+        canEdit
+        onReset={vi.fn()}
+      />
+    );
+    expect(screen.getByTestId("reference-target-outlier")).toHaveTextContent("3,2");
+    unmount();
+    renderCard(referenceChoiceFixture({ reference: refRowFixture({ outlier_ratio: null }) }));
+    expect(screen.queryByTestId("reference-target-outlier")).not.toBeInTheDocument();
+  });
+
   it("при пересчёте: «пересчёт из м2», основание, исходная и пересчитанная цена", () => {
     renderCard(linkChoice());
     const conversion = screen.getByTestId("reference-target-conversion");

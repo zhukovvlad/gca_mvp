@@ -26,7 +26,6 @@ import {
 import type { FamilyLinkBody, ReferenceConversionBody, ReferenceOrigin, RefRow } from "@/types/domain";
 
 import { formatUnitPrice, pick, priceUnitLabel, type VatView } from "./money";
-import { needsConversion } from "./needsConversion";
 import {
   analogOutlierNote,
   REF_DIALOG,
@@ -98,10 +97,14 @@ function DialogBody({
   mutation,
   onClose,
 }: ReferenceTargetDialogProps & { target: ReferenceTarget }) {
-  const row = freshRow(target.row.analog_id) ?? target.row;
-  const convert = needsConversion(row, kpUnit);
+  // Строка, которую вернула заведённая связь: пока перезапрос панели не принёс строку со связью, диалог берёт её.
+  const [linkRow, setLinkRow] = useState<RefRow | null>(null);
+  const fresh = freshRow(target.row.analog_id);
+  const row = fresh?.conversion?.method === "link" ? fresh : (linkRow ?? fresh ?? target.row);
+  const convert = row.needs_conversion;
   const link = row.conversion?.method === "link" ? row.conversion : null;
-  const [stale, setStale] = useState<{ factor: string; factorShown: string; basis: string } | null>(null);
+  const [stale, setStale] = useState<{ factor: string; factorShown: string; basis: string; row: RefRow } | null>(null);
+  const [linkSaved, setLinkSaved] = useState(false);
   const [factorDraft, setFactorDraft] = useState("");
   const [basisDraft, setBasisDraft] = useState("");
   const [demandedRatio, setDemandedRatio] = useState<string | null>(target.ratio ?? null);
@@ -124,7 +127,19 @@ function DialogBody({
   const rememberOn = canRemember && remember.on;
   const paramKindOn = rememberOn && !remember.isConstant;
 
-  const shown = stale ?? (link === null ? null : { factor: link.factor, factorShown: link.factor_shown, basis: link.basis });
+  // После `409` N, основание и цена должны прийти из одной свежей строки: пока строка не обновилась, показывается
+  // контекст ответа, цена скрыта, а кнопка погашена.
+  const synced =
+    stale === null ||
+    link === null ||
+    (link.factor === stale.factor && link.basis === stale.basis) ||
+    row !== stale.row;
+  const shown =
+    stale !== null && !synced
+      ? stale
+      : link === null
+        ? null
+        : { factor: link.factor, factorShown: link.factor_shown, basis: link.basis };
   const outlierRatio = row.outlier_ratio ?? demandedRatio;
   const price = pick(row.price, vat);
   const inKp = pick(row.kp_unit_price, vat);
@@ -161,7 +176,7 @@ function DialogBody({
           if (code === "conversion_stale") {
             const current = apiErrorContext<{ factor: string; factor_shown: string; basis: string }>(error);
             if (current !== undefined) {
-              setStale({ factor: current.factor, factorShown: current.factor_shown, basis: current.basis });
+              setStale({ factor: current.factor, factorShown: current.factor_shown, basis: current.basis, row });
             }
           } else if (code === "outlier_confirmation_required") {
             setDemandedRatio(apiErrorContext<{ ratio: string }>(error)?.ratio ?? "1");
@@ -206,25 +221,22 @@ function DialogBody({
       putTarget(conversionBody());
       return;
     }
-    // Связь и пересчёт по ней - от сервера: цель пишется с `link_id`, `N` и основанием перечитанной строки.
-    let fresh: RefRow | null;
+    // Связь и пересчёт по ней - от сервера. Цель здесь не пишется: человек сначала видит `N`, основание, цену
+    // в единице КП и пометку выброса, и пишет цель следующим нажатием.
+    let created: RefRow | null;
     try {
-      fresh = await createLink.mutateAsync({ body, analogId: row.analog_id });
+      created = await createLink.mutateAsync({ body, analogId: row.analog_id });
     } catch (error) {
       setLinkRefusal(linkRefusalText(apiErrorCode(error), linkInvalidReason(error)));
       return;
     }
-    if (fresh?.conversion?.method === "link") {
-      putTarget({
-        method: "link",
-        link_id: fresh.conversion.link_id,
-        expected_factor: fresh.conversion.factor,
-        expected_basis: fresh.conversion.basis,
-      });
+    remember.setOn(false);
+    if (created?.conversion?.method === "link") {
+      setLinkRow(created);
+      setLinkSaved(true);
       return;
     }
-    remember.setOn(false);
-    setLinkNote(fresh?.no_conversion_reason ?? REF_REMEMBER.noFactor);
+    setLinkNote(created?.no_conversion_reason ?? REF_REMEMBER.noFactor);
   };
 
   const staleShown = stale !== null && mutation.isError && apiErrorCode(mutation.error) === "conversion_stale";
@@ -307,11 +319,21 @@ function DialogBody({
                 )}
               </div>
             )}
-            {link !== null && inKp !== null && (
+            {linkSaved && link !== null && (
+              <p role="status" data-testid="reference-dialog-link-saved" className="text-sm text-fg-secondary">
+                {REF_REMEMBER.saved}
+              </p>
+            )}
+            {link !== null && inKp !== null && synced && (
               <p data-testid="reference-dialog-kp-price" className="font-mono tabular-nums">
                 <span className="font-sans text-fg-secondary">{REF_DIALOG.priceInKp}: </span>
                 {formatUnitPrice(inKp)} {priceUnitLabel(kpUnit)}
                 {deviation !== null && <span className="ml-2 text-danger-text">{refDeviation(deviation.text)}</span>}
+              </p>
+            )}
+            {!synced && (
+              <p role="status" data-testid="reference-dialog-stale-refreshing" className="text-sm text-fg-secondary">
+                {REF_DIALOG.staleRefreshing}
               </p>
             )}
             {staleShown && (
@@ -338,7 +360,7 @@ function DialogBody({
         <Button
           type="button"
           data-testid="reference-dialog-submit"
-          disabled={!ready || mutation.isPending || createLink.isPending}
+          disabled={!ready || !synced || mutation.isPending || createLink.isPending}
           onClick={() => void submit()}
         >
           {mutation.isPending || createLink.isPending ? REF_DIALOG.saving : outlierRatio !== null && !convert ? REF_OUTLIER_CONFIRM.confirm : REF_DIALOG.submit}

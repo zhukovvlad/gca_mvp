@@ -3789,7 +3789,11 @@ export interface RefRow {
   chapter_paths: OurPriceChapterStep[][];
   price: MoneyPair;
   nominal: MoneyPair;
+  /** Нужен ли пересчёт: единицы строки договора и строки КП не равны по id каталога (предикат сервера). */
+  needs_conversion: boolean;
   conversion: RefConversion;
+  /** Номинал в единице КП: номинал ÷ точное `N` (как в файле); `null` - пересчёта нет. */
+  kp_unit_nominal: MoneyPair | null;
   no_conversion_reason: string | null;
   kp_unit_price: MoneyPair | null;
   deviation_pct: Decimal | null;

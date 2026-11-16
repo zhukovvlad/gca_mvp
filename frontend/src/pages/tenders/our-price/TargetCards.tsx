@@ -8,6 +8,7 @@ import type { MoneyPair, OurPriceAnalog, OurPriceLine } from "@/types/domain";
 
 import { absDecimal, formatSigned, formatUnitPrice, pick, priceUnitLabel, type VatView } from "./money";
 import {
+  analogOutlierNote,
   FIGURE_KP_ABOVE,
   FIGURE_KP_BELOW,
   FIGURE_KP_EQUAL,
@@ -375,6 +376,15 @@ export function ReferenceTargetCard({ line, vat, canEdit, busy = false, onReset 
               </span>
             )}
           </div>
+          {row.outlier_ratio !== null && (
+            <p
+              role="note"
+              data-testid="reference-target-outlier"
+              className="rounded-md border border-warning-border bg-warning-soft px-2 py-1 text-xs text-warning-text"
+            >
+              {analogOutlierNote(row.outlier_ratio)}
+            </p>
+          )}
           {conversion !== null && (
             <div data-testid="reference-target-conversion" className="space-y-0.5 text-xs text-fg-secondary">
               <p>

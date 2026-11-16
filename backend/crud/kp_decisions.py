@@ -58,7 +58,7 @@ from services.our_price import (
     SavedRungs,
 )
 from services.reference_blocks import conversion_for, link_param_id, link_units
-from services.reference_math import factor_shown, parse_manual_factor
+from services.reference_math import factor_shown, parse_manual_factor, units_equal
 
 CODE_INVALID_AGREED = "invalid_agreed"
 CODE_COMMENT_TOO_LONG = "comment_too_long"
@@ -666,7 +666,7 @@ def put_reference_target(
             422, "Эта строка договора не годится как справочная цель.", code=CODE_REFERENCE_UNAVAILABLE
         )
 
-    same_unit = line.unit_id is not None and line.unit_id == row.unit_id
+    same_unit = units_equal(line.unit_id, row.unit_id)
     conversion = body.conversion
     if same_unit and conversion is not None:
         raise DomainError(422, "Единицы совпадают: пересчёт не нужен.", code=CODE_CONVERSION_NOT_NEEDED)

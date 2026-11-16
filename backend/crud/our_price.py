@@ -116,7 +116,7 @@ from services.reference_blocks import (
     reference_marks,
     zone_groups,
 )
-from services.reference_math import Conversion, factor_shown
+from services.reference_math import Conversion, factor_shown, price_in_kp_unit, units_equal
 
 #: Подпись строки «Итого на м² объекта» в форме статьи.
 TOTAL_ROW_TITLE = "Итого на м² объекта"
@@ -1204,6 +1204,7 @@ def _reference_targets(
             contract=scene.index.contract(line.contract_id),
             participant=participant,
             kp_unit_net=result.kp_unit_net,
+            kp_unit_id=row.unit_id,
             details=details,
             steps=steps,
         )
@@ -1759,6 +1760,7 @@ def _reference_rows_view(
     scene: _Scene,
     participant: _Participant,
     result: LineResult,
+    kp_unit_id: int | None,
     rows: Sequence[RefRow],
     details: _Details,
     steps: Mapping[int, tuple[ChapterStep, ...]],
@@ -1773,6 +1775,7 @@ def _reference_rows_view(
             contract=scene.index.contract(row.contract_id),
             participant=participant,
             kp_unit_net=result.kp_unit_net,
+            kp_unit_id=kp_unit_id,
             details=details,
             steps=steps,
         )
@@ -1787,11 +1790,13 @@ def reference_row_view(
     contract: HistoryContract,
     participant: _Participant,
     kp_unit_net: Decimal | None,
+    kp_unit_id: int | None,
     details: _Details,
     steps: Mapping[int, tuple[ChapterStep, ...]],
 ) -> dict:
     """Строка справочного блока или выдачи поиска (спека справочных аналогов §2.16): `ids` — свёрнутые
-    строки, `kp_unit_net` — нетто цены строки КП за единицу для отклонения."""
+    строки, `kp_unit_net` — нетто цены строки КП за единицу для отклонения, `kp_unit_id` — единица
+    строки КП: по ней решается `needs_conversion` тем же предикатом, что у сервера."""
     rate = participant.base
     title, unit, _titles, _category, _chapter = details[row.position_item_id]
     paths: list[list[dict]] = []
@@ -1824,7 +1829,13 @@ def reference_row_view(
         "chapter_paths": paths,
         "price": money_pair(row.net, rate, unit=True),
         "nominal": money_pair(row.nominal, rate, unit=True),
+        "needs_conversion": not units_equal(row.unit_id, kp_unit_id),
         "conversion": _conversion_view(row),
+        "kp_unit_nominal": (
+            None
+            if row.conversion is None
+            else money_pair(price_in_kp_unit(row.nominal, row.conversion.factor), rate, unit=True)
+        ),
         "no_conversion_reason": row.no_conversion_reason,
         "kp_unit_price": money_pair(row.kp_unit_net, rate, unit=True),
         "deviation_pct": deviation,
@@ -1839,6 +1850,7 @@ def _reference_zones_view(
     scene: _Scene,
     participant: _Participant,
     result: LineResult,
+    kp_unit_id: int | None,
     reference: _ReferenceBlocks,
     details: _Details,
     steps: Mapping[int, tuple[ChapterStep, ...]],
@@ -1849,7 +1861,7 @@ def _reference_zones_view(
             "rung_no": group.rung_no,
             "released": list(group.released),
             "other_class": group.other_class,
-            "rows": _reference_rows_view(scene, participant, result, group.rows, details, steps),
+            "rows": _reference_rows_view(scene, participant, result, kp_unit_id, group.rows, details, steps),
         }
         for group in reference.zones
     ]
@@ -1859,6 +1871,7 @@ def _reference_links_view(
     scene: _Scene,
     participant: _Participant,
     result: LineResult,
+    kp_unit_id: int | None,
     reference: _ReferenceBlocks,
     details: _Details,
     steps: Mapping[int, tuple[ChapterStep, ...]],
@@ -1875,7 +1888,7 @@ def _reference_links_view(
                 "family": {"id": group.family_id, "title": side.title, "unit": side.unit},
                 "kind": group.kind,
                 "other_class": group.other_class,
-                "rows": _reference_rows_view(scene, participant, result, group.rows, details, steps),
+                "rows": _reference_rows_view(scene, participant, result, kp_unit_id, group.rows, details, steps),
             }
         )
     return view
@@ -1964,8 +1977,8 @@ def build_line_view(
 
     vat_dropped = _vat_dropped_view(scene, row, result)
     analogs = _analogs_view(scene, participant, result, analog_details, tree, steps)
-    reference_zones = _reference_zones_view(scene, participant, result, reference, analog_details, steps)
-    reference_links = _reference_links_view(scene, participant, result, reference, analog_details, steps)
+    reference_zones = _reference_zones_view(scene, participant, result, row.unit_id, reference, analog_details, steps)
+    reference_links = _reference_links_view(scene, participant, result, row.unit_id, reference, analog_details, steps)
 
     template = _template_text(scene, participant, row, result, unit_texts[position_item_id], references)
     own_comment = scene.decisions[participant.estimate_id].comments.get(position_item_id)

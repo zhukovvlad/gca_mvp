@@ -28,7 +28,6 @@ import {
 } from "./ourPriceCopy";
 import { ReferenceRows } from "./ReferenceRows";
 import { ReferenceSearch } from "./ReferenceSearch";
-import { needsConversion } from "./needsConversion";
 import { ReferenceTargetDialog, type ReferenceTarget } from "./ReferenceTargetDialog";
 
 export interface ReferencePanelProps {
@@ -59,7 +58,7 @@ export function ReferencePanel({ tenderId, roundId, offerId, seriesId, data, vat
   const kpUnit = line.unit;
   const choose = (row: RefRow, origin: ReferenceOrigin) => {
     // Диалог нужен, когда единицы различны (пересчёт) или строка помечена выбросом (подтверждение).
-    if (needsConversion(row, kpUnit) || row.outlier_ratio !== null) {
+    if (row.needs_conversion || row.outlier_ratio !== null) {
       setTarget({ row, origin });
       return;
     }

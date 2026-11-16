@@ -43,7 +43,7 @@ from services.reference_blocks import (
     reference_marks,
     zone_groups,
 )
-from services.reference_math import price_in_kp_unit
+from services.reference_math import price_in_kp_unit, units_equal
 
 #: Предел выдачи — строк после свёртки (спека §2.12).
 SEARCH_LIMIT = 50
@@ -258,7 +258,7 @@ def search_reference(
 
     def order(item: tuple[ReferenceLine, RefRow, str]) -> tuple:
         line, _ref, _kind = item
-        same_unit = line.unit_id is not None and line.unit_id == row.unit_id
+        same_unit = units_equal(line.unit_id, row.unit_id)
         same_zone = line.zone is not None and line.zone == row.line.zone
         return (
             not same_unit,
@@ -285,6 +285,7 @@ def search_reference(
             contract=contract_of[ref.contract_id],
             participant=participant,
             kp_unit_net=kp_net,
+            kp_unit_id=row.unit_id,
             details=details,
             steps=steps,
         )

@@ -277,3 +277,11 @@ def test_ref_analogs_fold_keeps_first_occurrence_order() -> None:
     rows = [(_key(contract=2), 5), (_key(contract=1), 1), (_key(contract=2), 3)]
     got = _fold(rows)
     assert [(r[1], ids) for r, ids in got] == [(3, (3, 5)), (1, (1,))]
+
+
+@pytest.mark.parametrize(
+    ("contract_unit_id", "kp_unit_id", "expected"),
+    [(1, 1, True), (1, 2, False), (None, 1, False), (1, None, False), (None, None, False)],
+)
+def test_units_equal_needs_both_ids_and_equality(contract_unit_id, kp_unit_id, expected) -> None:
+    assert rm.units_equal(contract_unit_id, kp_unit_id) is expected

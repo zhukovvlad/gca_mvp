@@ -45,6 +45,7 @@ function plainRow(overrides: Partial<RefRow> = {}): RefRow {
     ids: [9301],
     unit: "м2",
     family_id: ROW_FAMILY,
+    needs_conversion: true,
     conversion: null,
     no_conversion_reason: REASON,
     kp_unit_price: null,
@@ -191,7 +192,7 @@ describe("«Запомнить для семей»: когда флажок ви
   });
 
   it("выброс при равных единицах — диалог только подтверждает, флажка нет", async () => {
-    const { dialog } = await openDialog({ row: plainRow({ unit: "м3", outlier_ratio: "3.2" }) });
+    const { dialog } = await openDialog({ row: plainRow({ unit: "м3", needs_conversion: false, outlier_ratio: "3.2" }) });
     expect(checkbox(dialog)).toBeNull();
   });
 });
@@ -227,18 +228,30 @@ describe("«Запомнить для семей»: вид с параметро
     expect(screen.queryByRole("option", { name: "Толщина диапазон" })).not.toBeInTheDocument();
   });
 
-  it("после связи панель перечитывается, цель пишется с link_id, N и основанием СЕРВЕРА", async () => {
-    const { dialog, lineFetches } = await openDialog({ after: linkedRow() });
+  it("после связи цель НЕ пишется: диалог показывает N, основание и цену от сервера, цель — следующим нажатием", async () => {
+    const { dialog, lineFetches } = await openDialog({
+      after: linkedRow({ kp_unit_price: { net: "7000.00", shown: null }, deviation_pct: "10", outlier_ratio: "2.5" }),
+    });
     await remember(dialog);
     await userEvent.click(within(dialog).getByTestId("reference-dialog-submit"));
-    await waitFor(() => expect(targets()).toHaveLength(1));
+    await waitFor(() => expect(links()).toHaveLength(1));
+    expect(await within(dialog).findByTestId("reference-dialog-link-saved")).toBeInTheDocument();
     expect(lineFetches.afterPost).toBeGreaterThanOrEqual(1);
+    expect(within(dialog).getByTestId("reference-dialog-factor")).toHaveTextContent("0,125");
+    expect(within(dialog).getByTestId("reference-dialog-basis")).toHaveTextContent("толщина 125 мм");
+    expect(within(dialog).getByTestId("reference-dialog-kp-price")).toHaveTextContent("7 000");
+    expect(within(dialog).getByTestId("reference-dialog-outlier")).toBeInTheDocument();
+    expect(checkbox(dialog)).toBeNull();
+    expect(targets()).toHaveLength(0);
+    expect(screen.getByTestId("reference-dialog")).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByTestId("reference-dialog-submit"));
+    await waitFor(() => expect(targets()).toHaveLength(1));
     expect(targets()[0].body).toEqual({
       kind: "reference",
       analog_id: 9301,
       origin: "zone",
       conversion: { method: "link", link_id: 900, expected_factor: "0.125", expected_basis: "толщина 125 мм" },
-      confirm_outlier: false,
+      confirm_outlier: true,
     });
     await waitFor(() => expect(screen.queryByTestId("reference-dialog")).not.toBeInTheDocument());
   });

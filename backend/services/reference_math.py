@@ -123,6 +123,12 @@ def constant_factor(factor: Decimal, *, from_is_contract_family: bool) -> Decima
         return Decimal(1) / factor
 
 
+def units_equal(contract_unit_id: int | None, kp_unit_id: int | None) -> bool:
+    """Единицы строки договора и строки КП равны: обе заданы и совпали по id каталога (спека §2.13).
+    Пересчёт нужен всегда, когда это ложно, в том числе когда одна из единиц пуста."""
+    return contract_unit_id is not None and contract_unit_id == kp_unit_id
+
+
 def price_in_kp_unit(price: Decimal, factor: Decimal) -> Decimal:
     """Цена в единице строки КП — цена ÷ `N`, по точному `N`."""
     with localcontext(_CONTEXT):

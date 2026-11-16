@@ -334,6 +334,32 @@ def test_ref_analogs_search_row_carries_the_conversion_the_target_will_accept(me
     assert (gap["conversion_kind"], gap["conversion"]) == ("manual_needed", None)
     assert gap["no_conversion_reason"] == "у строки нет значения «Толщина слоя»"
     assert gap["kp_unit_price"] is None
+    # `needs_conversion` — тот же предикат по id единиц, что у сервера; `none` ровно когда он ложен
+    assert {row["analog_id"]: row["needs_conversion"] for row in body["rows"]} == {
+        scene.ref_item.id: True,
+        same_unit.id: False,
+        manual.id: True,
+        no_value.id: True,
+    }
+    assert all((row["conversion_kind"] == "none") == (not row["needs_conversion"]) for row in body["rows"])
+
+
+def test_ref_analogs_search_a_kp_row_without_a_catalog_unit_needs_a_conversion_for_every_row(
+    member_client, stage, db_session
+) -> None:
+    """Единица строки КП не задана: у строки договора с тем же символом единицы пересчёт всё равно нужен."""
+    scene = Linked(stage)
+    _, same_symbol = _contract_row(
+        stage, D("500"), family=scene.kp_family, variant=scene.kp_variant, unit="M3", title="Подготовка своя"
+    )
+    db_session.execute(
+        sa.update(CatalogPosition).where(CatalogPosition.id == scene.kp_item.catalog_position_id).values(unit_id=None)
+    )
+    db_session.flush()
+    body = _search(member_client, stage, scene.rnd, scene.part, scene.kp_item, "Подготовка")
+    row = next(r for r in body["rows"] if r["analog_id"] == same_symbol.id)
+    assert row["unit"] == "м³"
+    assert (row["needs_conversion"], row["conversion_kind"]) == (True, "manual_needed")
 
 
 # ---------------------------------------------------------------------------

@@ -344,6 +344,25 @@ def test_ref_analogs_target_a_kp_row_without_a_unit_needs_a_conversion(admin_cli
     _refused(ctx.put(admin_client, _body(ctx.rows[0].id, "zone")), 422, "conversion_required")
 
 
+def test_ref_analogs_target_needs_conversion_follows_the_server_predicate_on_unit_ids(
+    admin_client, stage, db_session
+) -> None:
+    """Панель и карточка цели несут `needs_conversion` по id единиц: строка КП без единицы каталога — `true`,
+    сколько бы ни совпадали подписи; равные id — `false`."""
+    ctx = _zone_scene(stage)
+    (zone,) = ctx.panel(admin_client)["reference_zones"]
+    assert all(row["needs_conversion"] is False for row in zone["rows"])
+    db_session.execute(
+        sa.update(CatalogPosition).where(CatalogPosition.id == ctx.item.catalog_position_id).values(unit_id=None)
+    )
+    db_session.flush()
+    (zone,) = ctx.panel(admin_client)["reference_zones"]
+    assert all(row["needs_conversion"] is True for row in zone["rows"])
+    _save_ctx(admin_client, ctx, _body(ctx.rows[0].id, "zone", _manual("1")))
+    reference = ctx.panel(admin_client)["line"]["choice"]["reference"]
+    assert reference["needs_conversion"] is True
+
+
 def test_ref_analogs_target_a_link_that_stopped_acting_is_not_applicable(admin_client, stage, db_session) -> None:
     scene, ctx = _linked(stage)
     body = _body(scene.ref_item.id, "link", _link_conversion(_panel_row(ctx.panel(admin_client), scene.ref_item.id)))
@@ -1029,6 +1048,34 @@ def test_ref_analogs_target_the_value_takes_the_read_inflation_series(admin_clie
     without = ctx.panel(admin_client)["line"]["choice"]["reference"]
     assert _net(without["kp_unit_price"]) == D("100")
     assert ctx.stored().ref_factor is None
+
+
+def test_ref_analogs_target_nominal_in_the_kp_unit_is_nominal_over_the_exact_factor(
+    admin_client, stage, db_session
+) -> None:
+    """Номинал в единице КП — номинал ÷ точное `N`, как в файле; цена в единице КП идёт от нетто (после инфляции)."""
+    rnd, part, item, series_id = _inflation_scene(stage, db_session, "ok")
+    ctx = Ctx(stage, rnd, part, item, [])
+    (analog,) = ctx.panel(admin_client, inflation_series_id=series_id)["analogs"]
+    db_session.execute(
+        sa.update(CatalogPosition).where(CatalogPosition.id == item.catalog_position_id).values(unit_id=None)
+    )
+    db_session.flush()
+    response = ctx.put(
+        admin_client, _body(analog["analog_id"], conversion=_manual("0.1")), inflation_series_id=series_id
+    )
+    assert response.status_code == 204, response.text
+    reference = ctx.panel(admin_client, inflation_series_id=series_id)["line"]["choice"]["reference"]
+    assert _net(reference["nominal"]) == D("100")
+    assert _net(reference["kp_unit_nominal"]) == D("100") / D("0.1")
+    assert abs(_net(reference["kp_unit_price"]) - _net(reference["price"]) / D("0.1")) < D("1e-20")
+    assert _net(reference["kp_unit_price"]) != _net(reference["kp_unit_nominal"])
+
+
+def test_ref_analogs_target_nominal_in_the_kp_unit_is_empty_without_a_conversion(admin_client, stage) -> None:
+    ctx = _zone_scene(stage)
+    (zone,) = ctx.panel(admin_client)["reference_zones"]
+    assert all(row["kp_unit_nominal"] is None for row in zone["rows"])
 
 
 # ---------------------------------------------------------------------------

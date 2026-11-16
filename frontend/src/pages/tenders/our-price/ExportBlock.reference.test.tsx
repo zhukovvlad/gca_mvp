@@ -65,6 +65,23 @@ describe("блок «В файл подрядчику»: справочная ц
     );
   });
 
+  it("цена в единице КП в источнике — номинал ÷ N, а не цена после инфляции", () => {
+    // номинал 1 107,24 за м2, N = 0,1: 11 072,40 за м3; «цена в единице КП» панели (12 000) идёт после инфляции
+    renderBlock(
+      referenceChoiceFixture({
+        origin: "link",
+        reference: refLinkRowFixture({
+          kp_unit_nominal: { net: "11072.40", shown: "13508.33" },
+          kp_unit_price: { net: "12000.00", shown: "14640.00" },
+        }),
+        conversion: { method: "link", link_id: 41, factor: "0.100", factor_shown: "0,1", basis: "толщина 100 мм" },
+      })
+    );
+    const source = screen.getByTestId("export-reference-source");
+    expect(source).toHaveTextContent("11 072,40 ₽ за м3 без НДС");
+    expect(source).not.toHaveTextContent("12 000");
+  });
+
   it("цитата идёт в базе НДС КП", () => {
     renderBlock(referenceChoiceFixture(), { vatView: "shown" });
     expect(screen.getByTestId("export-reference-source")).toHaveTextContent("10 215,96 ₽ за м3 с НДС 22 %");

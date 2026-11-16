@@ -173,7 +173,8 @@ export function ExportBlock({
   const reference = line.choice !== null && line.choice.active && line.choice.kind === "reference" ? line.choice : null;
   const refRow = reference?.reference ?? null;
   const quoted = refRow === null ? null : pick(refRow.nominal, basis);
-  const convertedPrice = refRow === null ? null : pick(refRow.kp_unit_price, basis);
+  // Как в файле (`price_in_kp_unit(номинал, N)`): номинал ÷ точное N, а не цена после инфляции.
+  const convertedPrice = refRow === null ? null : pick(refRow.kp_unit_nominal, basis);
   const vatLabel = shownRate !== null ? vatShownLabel(shownRate) : VAT_NET_LABEL;
   const referenceSource =
     line.agreed !== null || reference === null || refRow === null

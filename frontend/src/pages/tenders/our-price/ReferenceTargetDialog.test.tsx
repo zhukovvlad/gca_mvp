@@ -10,6 +10,7 @@ import {
   OUR_PRICE_ROUND_ID,
   OUR_PRICE_TENDER_ID,
   refLinkRowFixture,
+  refRowFixture,
   referenceLineViewFixture,
   referenceLinkGroupFixture,
 } from "@/test/fixtures";
@@ -19,7 +20,6 @@ import type { OurPriceLineView, RefRow } from "@/types/domain";
 
 import { LineSheet, type LineSheetProps } from "./LineSheet";
 import { SAVING_LABEL } from "./ourPriceCopy";
-import { needsConversion } from "./needsConversion";
 
 const LINE_PATH = "/api/v1/tenders/:id/rounds/:roundId/our-price/offers/:offerId/lines/:positionItemId";
 const ADMIN = { id: 1, email: "admin@example.test", role: "admin" } as const;
@@ -51,22 +51,6 @@ async function openDialog(row: RefRow = refLinkRowFixture()) {
   await userEvent.click(within(rowEl).getByRole("button", { name: /сделать целью/ }));
   return screen.findByTestId("reference-dialog");
 }
-
-describe("needsConversion", () => {
-  it("равные единицы — пересчёт не нужен", () => {
-    expect(needsConversion({ unit: "м3" }, "м3")).toBe(false);
-  });
-
-  it("различные единицы — нужен", () => {
-    expect(needsConversion({ unit: "м2" }, "м3")).toBe(true);
-  });
-
-  it("пустая единица строки договора или строки КП — нужен: равенства нет", () => {
-    expect(needsConversion({ unit: null }, "м3")).toBe(true);
-    expect(needsConversion({ unit: "м3" }, null)).toBe(true);
-    expect(needsConversion({ unit: null }, null)).toBe(true);
-  });
-});
 
 describe("диалог пересчёта: по связи", () => {
   it("показывает N и основание только для просмотра, полей ввода нет", async () => {
@@ -126,13 +110,29 @@ describe("диалог пересчёта: по связи", () => {
     await waitFor(() => expect(screen.queryByTestId("recalc-overlay")).not.toBeInTheDocument());
   });
 
-  it("409 conversion_stale: подменяет N и основание пришедшими, ждёт нового нажатия, второй PUT — с новыми", async () => {
-    const dialog = await openDialog();
+  /** Панель, у которой после `409` меняется пересчёт (N 0,125, цена 8 857,92); `getGate` задерживает или ломает этот перезапрос. */
+  async function openStale(getGate?: { hold?: Promise<void>; fail?: boolean }) {
+    let stale = false;
     const bodies: Array<{ conversion: { expected_factor: string; expected_basis: string } }> = [];
+    const newRow = refLinkRowFixture({
+      conversion: { method: "link", link_id: 41, factor: "0.125", factor_shown: "0,125", basis: "толщина 125 мм" },
+      kp_unit_price: { net: "8857.92", shown: null },
+    });
     server.use(
+      http.get(LINE_PATH, async () => {
+        if (stale && getGate?.hold) await getGate.hold;
+        if (stale && getGate?.fail) return new HttpResponse(null, { status: 500 });
+        return HttpResponse.json(
+          referenceLineViewFixture({
+            zones: [],
+            links: [referenceLinkGroupFixture({ rows: [stale ? newRow : refLinkRowFixture()] })],
+          })
+        );
+      }),
       http.put(`${LINE_PATH}/target`, async ({ request }) => {
         bodies.push((await request.json()) as (typeof bodies)[number]);
         if (bodies.length === 1) {
+          stale = true;
           return HttpResponse.json(
             {
               detail: {
@@ -149,12 +149,23 @@ describe("диалог пересчёта: по связи", () => {
         return new HttpResponse(null, { status: 204 });
       })
     );
+    renderWithProviders(<LineSheet {...baseProps} />, { initialUser: ADMIN });
+    await userEvent.click(
+      within(await screen.findByTestId("ref-row-link-41-9101")).getByRole("button", { name: /сделать целью/ })
+    );
+    const dialog = await screen.findByTestId("reference-dialog");
     await userEvent.click(within(dialog).getByTestId("reference-dialog-submit"));
     await waitFor(() => expect(within(dialog).getByTestId("reference-dialog-stale")).toBeInTheDocument());
+    return { dialog, bodies };
+  }
+
+  it("409 conversion_stale: N и основание — пришедшие, цена обновляется, второй PUT — с новыми", async () => {
+    const { dialog, bodies } = await openStale();
     expect(within(dialog).getByTestId("reference-dialog-factor")).toHaveTextContent("0,125");
     expect(within(dialog).getByTestId("reference-dialog-basis")).toHaveTextContent("толщина 125 мм");
     expect(bodies).toHaveLength(1);
-    expect(screen.getByTestId("reference-dialog")).toBeInTheDocument();
+    await waitFor(() => expect(within(dialog).getByTestId("reference-dialog-submit")).toBeEnabled());
+    expect(within(dialog).getByTestId("reference-dialog-kp-price")).toHaveTextContent("8 857,92 ₽/м3");
     await userEvent.click(within(dialog).getByTestId("reference-dialog-submit"));
     await waitFor(() => expect(bodies).toHaveLength(2));
     expect(bodies[0].conversion).toMatchObject({ expected_factor: "0.100", expected_basis: "толщина 100 мм" });
@@ -162,43 +173,35 @@ describe("диалог пересчёта: по связи", () => {
     await waitFor(() => expect(screen.queryByTestId("reference-dialog")).not.toBeInTheDocument());
   });
 
-  it("после conversion_stale цена в единице КП — из перезапрошенной панели", async () => {
-    let stale = false;
-    serve(() =>
-      referenceLineViewFixture({
-        zones: [],
-        links: [
-          referenceLinkGroupFixture({
-            rows: [
-              refLinkRowFixture(
-                stale
-                  ? {
-                      conversion: { method: "link", link_id: 41, factor: "0.125", factor_shown: "0,125", basis: "толщина 125 мм" },
-                      kp_unit_price: { net: "8857.92", shown: null },
-                    }
-                  : {}
-              ),
-            ],
-          }),
-        ],
-      })
-    );
-    server.use(
-      http.put(`${LINE_PATH}/target`, () => {
-        stale = true;
-        return HttpResponse.json(
-          { detail: { code: "conversion_stale", message: "Изменилось.", factor: "0.125", factor_shown: "0,125", basis: "толщина 125 мм" } },
-          { status: 409 }
-        );
-      })
-    );
-    renderWithProviders(<LineSheet {...baseProps} />, { initialUser: ADMIN });
-    await userEvent.click(within(await screen.findByTestId("ref-row-link-41-9101")).getByRole("button", { name: /сделать целью/ }));
-    const dialog = await screen.findByTestId("reference-dialog");
+  it("после 409, пока панель перечитывается: цены и отклонения нет, кнопка погашена; после ответа — новая цена и второй PUT с новым N", async () => {
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { dialog, bodies } = await openStale({ hold });
+    const submit = within(dialog).getByTestId("reference-dialog-submit");
+    expect(submit).toBeDisabled();
+    expect(within(dialog).getByTestId("reference-dialog-factor")).toHaveTextContent("0,125");
+    expect(within(dialog).getByTestId("reference-dialog-stale-refreshing")).toBeInTheDocument();
+    expect(within(dialog).queryByTestId("reference-dialog-kp-price")).not.toBeInTheDocument();
+    expect(dialog).not.toHaveTextContent("11 072,40");
+    await userEvent.click(submit);
+    expect(bodies).toHaveLength(1);
+    release();
+    await waitFor(() => expect(within(dialog).getByTestId("reference-dialog-kp-price")).toHaveTextContent("8 857,92"));
+    expect(within(dialog).queryByTestId("reference-dialog-stale-refreshing")).not.toBeInTheDocument();
+    expect(within(dialog).getByTestId("reference-dialog-submit")).toBeEnabled();
     await userEvent.click(within(dialog).getByTestId("reference-dialog-submit"));
-    await waitFor(() =>
-      expect(within(dialog).getByTestId("reference-dialog-kp-price")).toHaveTextContent("8 857,92 ₽/м3")
-    );
+    await waitFor(() => expect(bodies).toHaveLength(2));
+    expect(bodies[1].conversion).toMatchObject({ expected_factor: "0.125", expected_basis: "толщина 125 мм" });
+  });
+
+  it("после 409 перезапрос панели упал: кнопка остаётся погашенной, старой цены нет", async () => {
+    const { dialog, bodies } = await openStale({ fail: true });
+    await waitFor(() => expect(within(dialog).getByTestId("reference-dialog-stale-refreshing")).toBeInTheDocument());
+    expect(within(dialog).getByTestId("reference-dialog-submit")).toBeDisabled();
+    expect(within(dialog).queryByTestId("reference-dialog-kp-price")).not.toBeInTheDocument();
+    expect(bodies).toHaveLength(1);
   });
 });
 
@@ -244,6 +247,38 @@ describe("диалог пересчёта: ручной ввод", () => {
       conversion: { method: "manual", factor: "0.667", basis: "насыпная плотность" },
       confirm_outlier: false,
     });
+  });
+
+  it("подписи единиц равны, а needs_conversion = true (у единицы нет id каталога): открывается ручной диалог, PUT — manual", async () => {
+    // Решает флаг сервера, а не сравнение подписей: единицы «м3» и «м3» с разными или пустыми id пересчёта требуют.
+    const dialog = await openDialog(
+      refRowFixture({ analog_id: 9102, ids: [9102], unit: "м3", needs_conversion: true, conversion: null, kp_unit_price: null })
+    );
+    expect(within(dialog).getByTestId("reference-dialog-manual")).toBeInTheDocument();
+    await userEvent.type(within(dialog).getByRole("textbox", { name: "Множитель N" }), "2");
+    await userEvent.type(within(dialog).getByLabelText("Основание"), "по справке");
+    await userEvent.click(within(dialog).getByTestId("reference-dialog-submit"));
+    await waitFor(() => expect(targets()).toHaveLength(1));
+    expect(targets()[0].body).toMatchObject({ analog_id: 9102, conversion: { method: "manual", factor: "2", basis: "по справке" } });
+  });
+
+  it("подписи единиц различны, а needs_conversion = false: цель пишется сразу, conversion = null, диалога нет", async () => {
+    serve(() =>
+      referenceLineViewFixture({
+        zones: [],
+        links: [
+          referenceLinkGroupFixture({
+            rows: [refLinkRowFixture({ analog_id: 9103, ids: [9103], needs_conversion: false, conversion: null, kp_unit_price: null })],
+          }),
+        ],
+      })
+    );
+    renderWithProviders(<LineSheet {...baseProps} />, { initialUser: ADMIN });
+    const rowEl = await screen.findByTestId("ref-row-link-41-9103");
+    await userEvent.click(within(rowEl).getByRole("button", { name: /сделать целью/ }));
+    await waitFor(() => expect(targets()).toHaveLength(1));
+    expect(targets()[0].body).toMatchObject({ analog_id: 9103, conversion: null });
+    expect(screen.queryByTestId("reference-dialog")).not.toBeInTheDocument();
   });
 
   it("422 manual_conversion_invalid: текст сервера в диалоге, диалог остаётся открытым", async () => {
