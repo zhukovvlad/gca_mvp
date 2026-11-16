@@ -18,7 +18,7 @@ from collections.abc import Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal, localcontext
 from enum import Enum
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from money.inflation import YearMonth, adjust_amount
 from money.price import is_price, is_weight
@@ -48,7 +48,11 @@ from services.price_basis import (
 from services.price_basis import (
     outside as _outside,
 )
+from services.reference_math import price_in_kp_unit
 from services.zone_rules import Zone
+
+if TYPE_CHECKING:  # crud.reference_lines читает модели и импортирует этот модуль цепочкой загрузчиков
+    from crud.reference_lines import ReferenceLine
 
 Level = Literal["v", "p", "f"]
 Scope = Literal["cls", "all"]
@@ -216,12 +220,39 @@ class ManualRung:
     reset_reason: ResetReason | None
 
 
-TargetKind = Literal["freshest", "analog", "contractor"]
+TargetKind = Literal["freshest", "analog", "contractor", "reference"]
 TargetResetReason = Literal[
-    "kind_changed", "not_comparable", "analog_unavailable", "no_freshest", "no_contractor"
+    "kind_changed",
+    "not_comparable",
+    "analog_unavailable",
+    "no_freshest",
+    "no_contractor",
+    "reference_unavailable",
 ]
 #: Сохранённый выбор цели: вид и аналог (`position_item_id` строки договора; у «самой свежей» — `None`).
+#: Справочная цель идёт здесь же как `("reference", analog_id)`, её снимок — в `ReferenceSnapshot`.
 SavedTarget = tuple[TargetKind, int | None]
+
+
+@dataclass(frozen=True)
+class ReferenceSnapshot:
+    """Снимок справочной цели, записанный при выборе (спека справочных аналогов §2.13): откуда выбрана,
+    пересчёт единиц и была ли у строки КП своя ступень. Пересчёт читается только отсюда."""
+
+    origin: Literal["zone", "link", "search"]
+    method: Literal["link", "manual"] | None
+    factor: Decimal | None
+    basis: str | None
+    link_id: int | None
+    without_analogs: bool
+
+
+def reference_value(line: ReferenceLine, snapshot: ReferenceSnapshot) -> Decimal:
+    """Значение справочной цели: цена строки договора (с рядом чтения), делённая на `N` из снимка;
+    без пересчёта — делённая на 1 (спека §2.14)."""
+    if snapshot.factor is None:
+        return line.net
+    return price_in_kp_unit(line.net, snapshot.factor)
 
 
 @dataclass(frozen=True)
@@ -235,12 +266,14 @@ class TargetChoice:
 
 
 def resolve_target(
-    saved: SavedTarget | None, result: LineResult, *, is_system: bool
+    saved: SavedTarget | None, result: LineResult, *, is_system: bool, reference_available: bool = False
 ) -> TargetChoice | None:
     """Статус выбора по сохранённой записи `(вид, аналог)` и расчёту строки.
 
     Условия идут по таблице §2.14, первое невыполненное даёт причину. Запись остаётся и при сбросе:
-    расчёт идёт на самой низкой.
+    расчёт идёт на самой низкой. Справочная цель состояния строки не проверяет (спека справочных
+    аналогов §2.14): её сбрасывает только система и строка договора, переставшая быть справочной
+    (`reference_available` — строка есть среди справочных строк сцены чтения).
     """
     if saved is None:
         return None
@@ -248,6 +281,9 @@ def resolve_target(
     reason: TargetResetReason | None = None
     if is_system:
         reason = "kind_changed"
+    elif kind == "reference":
+        if not reference_available:
+            reason = "reference_unavailable"
     elif result.state is not LineState.comparable:
         reason = "not_comparable"
     elif kind == "analog" and (result.ladder is None or analog_id not in result.ladder.remainder_ids):
@@ -260,11 +296,12 @@ def resolve_target(
 
 
 def target_analog(result: LineResult, choice: TargetChoice | None) -> Analog | None:
-    """Аналог цели сравнимой работы: действующий выбор, иначе самая низкая; `None` — цели нет."""
+    """Аналог цели сравнимой работы: действующий выбор, иначе самая низкая; `None` — цели нет. Справочная
+    цель аналогом лестницы не бывает: для неё здесь самая низкая."""
     ladder = result.ladder
     if ladder is None or result.state is not LineState.comparable:
         return None
-    if choice is not None and choice.active:
+    if choice is not None and choice.active and choice.kind != "reference":
         if choice.kind == "analog":
             analog_id = choice.analog_id
         elif choice.kind == "contractor":

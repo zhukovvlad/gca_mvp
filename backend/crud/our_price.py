@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, localcontext
 
@@ -45,7 +45,7 @@ from crud.our_price_load import (
     load_kp_lines,
     load_work_history,
 )
-from crud.reference_lines import load_link_values
+from crud.reference_lines import ReferenceLine, load_link_values, load_reference_lines
 from crud.stage_summary import pct_str
 from models import (
     Contractor,
@@ -77,6 +77,7 @@ from services.our_price import (
     OfferEvaluation,
     OfferTotals,
     RateRange,
+    ReferenceSnapshot,
     Rung,
     RungChoice,
     SavedTarget,
@@ -85,6 +86,7 @@ from services.our_price import (
     kp_work_of,
     lines_totals,
     offer_totals,
+    reference_value,
     resolve_target,
 )
 from services.our_price_money import (
@@ -104,13 +106,17 @@ from services.reference_blocks import (
     LinkGroup,
     RefRow,
     ZoneGroup,
+    conversion_for,
     fold_group_rows,
     link_groups,
+    link_param_id,
     link_units,
     link_value_pairs,
     other_zones,
+    reference_marks,
     zone_groups,
 )
+from services.reference_math import Conversion
 
 #: Подпись строки «Итого на м² объекта» в форме статьи.
 TOTAL_ROW_TITLE = "Итого на м² объекта"
@@ -1005,12 +1011,172 @@ def _file_ours(
     return money_pair(target_net(inputs), participant.base, unit=True)
 
 
+@dataclass(frozen=True)
+class _ReferenceTargets:
+    """Справочные цели сметы участника, собранные для чтения (спека справочных аналогов §2.14, §2.16).
+
+    `lines` — строки договоров целей, которые справочные на сцене чтения (по ним цель действует); `rows` и
+    `hints` — по строке КП: строка договора в форме `rows` и подсказки карточки цели. Пусто, когда у сметы
+    справочных целей нет, — и тогда ни одного запроса сверх разбора.
+    """
+
+    lines: Mapping[int, ReferenceLine] = field(default_factory=dict)
+    rows: Mapping[int, dict] = field(default_factory=dict)
+    hints: Mapping[int, dict] = field(default_factory=dict)
+
+
+def reference_mark_of(
+    db: Session, scene: _Scene, participant: _Participant, row: KpLineRow, result: LineResult, analog_id: int
+) -> Decimal | None:
+    """Пометка выброса пары «строка КП — строка договора» по текущему расчёту (спека §2.10): отношение
+    к медиане набора, если строка выброс; иначе `None`. Наборы те же, что у панели и поиска."""
+    blocks = _reference_blocks(db, scene, participant, row, result)
+    return reference_marks(result.ladder, blocks.zones, blocks.links).get(analog_id)
+
+
+def _reference_hints(
+    snapshot: ReferenceSnapshot,
+    row: KpLineRow,
+    result: LineResult,
+    line: ReferenceLine,
+    states: Sequence[LinkState],
+    values: Mapping,
+) -> dict:
+    """Подсказки карточки цели (спека §2.14); на цифры не влияют. `link_now` — связь действует и сегодня
+    даёт другое `N′`; `link_gone` — связь удалена или не действует."""
+    link_now = None
+    link_gone = False
+    if snapshot.method == "link":
+        state = None if snapshot.link_id is None else next((s for s in states if s.link.id == snapshot.link_id), None)
+        if snapshot.link_id is None or (state is not None and not state.active):
+            link_gone = True
+        elif state is not None:
+            kp_family = None if row.line.key is None else row.line.key.family_id
+            conversion, _reason, _needed = conversion_for(
+                contract_unit_id=line.unit_id,
+                kp_unit_id=row.unit_id,
+                contract_family_id=line.family_id,
+                kp_family_id=kp_family,
+                links=states,
+                units=link_units(states),
+                values=values,
+                position_item_id=line.position_item_id,
+            )
+            if conversion is not None and conversion.link_id == snapshot.link_id and conversion.factor != snapshot.factor:
+                link_now = {"factor": format(conversion.factor, "f"), "basis": conversion.basis}
+    ladder = result.ladder
+    own_analogs = snapshot.without_analogs and ladder is not None and ladder.rung_no is not None
+    return {"link_now": link_now, "link_gone": link_gone, "own_analogs": own_analogs}
+
+
+def _reference_targets(
+    db: Session, scene: _Scene, participant: _Participant, evaluation: OfferEvaluation
+) -> _ReferenceTargets:
+    """Справочные цели сметы участника: строки договоров на сцене чтения, их форма `rows` и подсказки.
+    Значения параметров связей — одним запросом и только для строк договоров этих целей (спека §2.20)."""
+    decisions = scene.decisions[participant.estimate_id]
+    if not decisions.references:
+        return _ReferenceTargets()
+    kp_rows = {r.line.position_item_id: r for r in scene.kp_lines[participant.estimate_id]}
+    analog_of = {pid: decisions.targets[pid][1] for pid in decisions.references}
+    factors = scene.plan.factor_by_estimate if scene.plan is not None else None
+    lines = load_reference_lines(db, scene.contracts, set(analog_of.values()), factors=factors)
+    live = {
+        pid: analog
+        for pid, analog in analog_of.items()
+        if analog in lines and pid in kp_rows and not kp_rows[pid].line.is_system
+    }
+    if not live:
+        return _ReferenceTargets(lines=lines)
+
+    def kp_family_of(pid: int) -> int | None:
+        key = kp_rows[pid].line.key
+        return None if key is None else key.family_id
+
+    by_link = {pid: analog for pid, analog in live.items() if decisions.references[pid].method == "link"}
+    family_ids = {
+        family
+        for pid, analog in by_link.items()
+        for family in (kp_family_of(pid), lines[analog].family_id)
+        if family is not None
+    }
+    states = tuple(links_of_families(db, family_ids))
+    pairs = set()
+    for pid, analog in by_link.items():
+        param_id = link_param_id(states, lines[analog].family_id, kp_family_of(pid))
+        if param_id is not None:
+            pairs.add((analog, param_id))
+    values = load_link_values(db, pairs)
+    details = load_analog_details(db, list(live.values()))
+    steps = chapter_steps(db, {details[analog][4] for analog in live.values()} - {None})
+
+    rows: dict[int, dict] = {}
+    hints: dict[int, dict] = {}
+    for pid, analog in live.items():
+        snapshot = decisions.references[pid]
+        line = lines[analog]
+        row = kp_rows[pid]
+        result = evaluation.lines[pid]
+        conversion = (
+            None
+            if snapshot.method is None
+            else Conversion(snapshot.method, snapshot.factor, snapshot.basis, snapshot.link_id)
+        )
+        param_id = link_param_id(states, line.family_id, kp_family_of(pid)) if snapshot.method == "link" else None
+        text = None if param_id is None else values.get((analog, param_id))
+        ref = RefRow(
+            position_item_id=analog,
+            contract_id=line.contract_id,
+            zone=line.zone,
+            unit_id=line.unit_id,
+            nominal=line.nominal,
+            net=line.net,
+            conversion=conversion,
+            no_conversion_reason=None,
+            kp_unit_net=reference_value(line, snapshot),
+            outlier_ratio=reference_mark_of(db, scene, participant, row, result, analog),
+            param_value=None if text is None else text.text,
+        )
+        rows[pid] = reference_row_view(
+            ref,
+            [analog],
+            contract=scene.index.contract(line.contract_id),
+            participant=participant,
+            kp_unit_net=result.kp_unit_net,
+            details=details,
+            steps=steps,
+        )
+        hints[pid] = _reference_hints(snapshot, row, result, line, states, values)
+    return _ReferenceTargets(lines=lines, rows=rows, hints=hints)
+
+
+_NO_HINTS = {"link_now": None, "link_gone": False, "own_analogs": False}
+
+
+def _snapshot_conversion_view(snapshot: ReferenceSnapshot) -> dict | None:
+    """Пересчёт справочной цели из снимка в форме `conversion` строки (спека §2.16)."""
+    if snapshot.method is None:
+        return None
+    assert snapshot.factor is not None
+    view = {"method": snapshot.method, "factor": format(snapshot.factor, "f"), "basis": snapshot.basis}
+    if snapshot.method == "link":
+        view["link_id"] = snapshot.link_id
+    return view
+
+
 def _decision_fields(
-    scene: _Scene, participant: _Participant, row: KpLineRow, result: LineResult, template: str | None
+    scene: _Scene,
+    participant: _Participant,
+    row: KpLineRow,
+    result: LineResult,
+    template: str | None,
+    references: _ReferenceTargets | None = None,
 ) -> dict:
     """Поля решений строки: `agreed`, `comment_kind`, `manual_rung`, `target_kind`, `choice`
-    (спека 4б §2.11, спека лестницы аналогов §2.14, §2.17). Текст комментария сюда не входит — его
-    отдаёт только панель."""
+    (спека 4б §2.11, спека лестницы аналогов §2.14, §2.17; справочная цель — спека справочных аналогов
+    §2.14–§2.16). Текст комментария сюда не входит — его отдаёт только панель. `references` — справочные
+    цели сметы; без них справочная цель считается недоступной."""
+    references = references if references is not None else _ReferenceTargets()
     decisions = scene.decisions[participant.estimate_id]
     pid = row.line.position_item_id
 
@@ -1039,7 +1205,13 @@ def _decision_fields(
             "set_by": _author(user_id, email),
             "set_at": iso(at),
         }
-    choice = resolve_target(_saved_target(decisions, pid), result, is_system=row.line.is_system)
+    saved = _saved_target(decisions, pid)
+    choice = resolve_target(
+        saved,
+        result,
+        is_system=row.line.is_system,
+        reference_available=saved is not None and saved[1] in references.lines,
+    )
     choice_view = None
     if choice is not None:
         _, _, at, user_id, email = decisions.targets[pid]
@@ -1051,8 +1223,18 @@ def _decision_fields(
             "set_by": _author(user_id, email),
             "set_at": iso(at),
         }
+        if choice.kind == "reference":
+            snapshot = decisions.references[pid]
+            choice_view.update(
+                origin=snapshot.origin,
+                conversion=_snapshot_conversion_view(snapshot),
+                hints=references.hints.get(pid, _NO_HINTS),
+                reference=references.rows.get(pid),
+            )
     if agreed is not None:
         target_kind = "agreed"
+    elif choice is not None and choice.active and choice.kind == "reference":
+        target_kind = "reference"
     elif result.state is not LineState.comparable:
         target_kind = None
     else:
@@ -1072,13 +1254,14 @@ def _line_with_decisions(
     row: KpLineRow,
     result: LineResult,
     steps: Mapping[int, tuple[ChapterStep, ...]],
+    references: _ReferenceTargets | None = None,
 ) -> dict:
     # Строке разбора нужен только вид комментария, а не его текст, поэтому
     # единицу КП не читаем: вид от неё не зависит.
     template = _template_text(scene, participant, row, result, "")
     return {
         **_line_view(row, result, participant.base, scene.index, scene.families, steps),
-        **_decision_fields(scene, participant, row, result, template),
+        **_decision_fields(scene, participant, row, result, template, references),
         **_other_zones_field(other_zones(_zone_groups_of(scene, participant, row, result))),
     }
 
@@ -1101,6 +1284,7 @@ def build_offer_view(
     rate = participant.base
     rows = scene.kp_lines[participant.estimate_id]
     view, kp_value = _participant_view(scene, participant, evaluation)
+    references = _reference_targets(db, scene, participant, evaluation)
     steps = chapter_steps(db, {row.chapter_item_id for row in rows if row.chapter_item_id is not None})
     _, tree = category_tree(db)
     extra = load_additional_works(db, [participant.estimate_id])[participant.estimate_id]
@@ -1132,7 +1316,9 @@ def build_offer_view(
         "categories": _categories_view(tree, rows, extra),
         "node_totals": _node_totals_view(tree, rows, evaluation, steps, rate, extra),
         "lines": [
-            _line_with_decisions(scene, participant, row, evaluation.lines[row.line.position_item_id], steps)
+            _line_with_decisions(
+                scene, participant, row, evaluation.lines[row.line.position_item_id], steps, references
+            )
             for row in rows
         ],
     }
@@ -1236,6 +1422,28 @@ def _other_zones_field(found: list[dict]) -> dict:
     return {"other_zones": found} if found else {}
 
 
+def line_with_scene(
+    db: Session,
+    tender_id: int,
+    round_id: int,
+    offer_id: int,
+    position_item_id: int,
+    *,
+    inflation_series_id: int | None,
+) -> tuple[_Scene, _Participant, KpLineRow, LineResult]:
+    """Сцена участника, строка КП и её расчёт на автоматических ступенях: то, из чего проверяется
+    решение по строке (спека справочных аналогов §2.13).
+
+    Raises:
+        DomainError 404: тендера, этапа, оффера или строки этого КП нет, у оффера нет сметы.
+    """
+    scene, participant, evaluation = _offer_context(
+        db, tender_id, round_id, offer_id, inflation_series_id=inflation_series_id, require_line=position_item_id
+    )
+    (row,) = (r for r in scene.kp_lines[participant.estimate_id] if r.line.position_item_id == position_item_id)
+    return scene, participant, row, evaluation.lines[position_item_id]
+
+
 def line_for_rung_check(
     db: Session,
     tender_id: int,
@@ -1252,11 +1460,10 @@ def line_for_rung_check(
     Raises:
         DomainError 404: тендера, этапа, оффера или строки этого КП нет, у оффера нет сметы.
     """
-    scene, participant, evaluation = _offer_context(
-        db, tender_id, round_id, offer_id, inflation_series_id=inflation_series_id, require_line=position_item_id
+    _, participant, row, result = line_with_scene(
+        db, tender_id, round_id, offer_id, position_item_id, inflation_series_id=inflation_series_id
     )
-    (row,) = (r for r in scene.kp_lines[participant.estimate_id] if r.line.position_item_id == position_item_id)
-    return participant.estimate_id, row, evaluation.lines[position_item_id]
+    return participant.estimate_id, row, result
 
 
 def _vat_dropped_view(scene: _Scene, row: KpLineRow, result: LineResult) -> list[dict]:
@@ -1626,8 +1833,9 @@ def build_line_view(
     chapter_ids = {r.chapter_item_id for r in [row, *group_rows]} | {d[4] for d in analog_details.values()}
     steps = chapter_steps(db, chapter_ids - {None})
     _, tree = category_tree(db)
+    references = _reference_targets(db, scene, participant, evaluation)
     group_lines = [
-        _line_with_decisions(scene, participant, r, evaluation.lines[r.line.position_item_id], steps)
+        _line_with_decisions(scene, participant, r, evaluation.lines[r.line.position_item_id], steps, references)
         for r in group_rows
     ]
 
@@ -1660,7 +1868,7 @@ def build_line_view(
     own_comment = scene.decisions[participant.estimate_id].comments.get(position_item_id)
     line = {
         **_line_view(row, result, rate, scene.index, scene.families, steps),
-        **_decision_fields(scene, participant, row, result, template),
+        **_decision_fields(scene, participant, row, result, template, references),
         "file_ours": _file_ours(scene, participant, row, result, unit_texts[position_item_id]),
         "article": _article_ref(tree, row.category_id),
         **_other_zones_field(other_zones(reference.zones)),
