@@ -285,6 +285,53 @@ _WEIGHT = sa.func.coalesce(PositionItem.suggested_quantity, PositionItem.quantit
 _UNKNOWN_LABEL = "не уточнено"
 _LABEL_SEPARATOR = " · "
 
+#: Откуда значение параметра в строке: шесть источников записи контекста как есть и три
+#: производных — записи нет (`missing`), вариант на прежней схеме (`old_schema`), запись
+#: разошлась с вариантом при той же версии схемы (`stale`).
+ParamSource = Literal["name", "path", "manual", "path_conflict", "none", "off_list", "missing", "old_schema", "stale"]
+
+
+@dataclass(frozen=True)
+class LineParam:
+    """Параметр варианта строки КП с названием, значением и происхождением значения
+    (спека параметров варианта §2.2)."""
+
+    parameter_id: int
+    name: str
+    role: Literal["main", "secondary"]
+    #: Главный — текст значения варианта; второстепенный — текст записи.
+    value: str | None
+    #: Текст «не из списка» записи; `None` у остальных источников.
+    off_list: str | None
+    #: Составное значение главного параметра варианта на действующей схеме.
+    composite: bool
+    source: ParamSource
+    #: Значение ждёт перезапроса (`refresh_requested_at` записи).
+    refreshing: bool
+    #: Что говорит запись каталога, когда она разошлась с вариантом (`stale`); иначе `None`.
+    catalog_value: str | None
+
+
+@dataclass(frozen=True)
+class VariantMain:
+    """Активный главный параметр схемы варианта и значение варианта по нему."""
+
+    parameter_id: int
+    name: str
+    value_id: int | None
+    text: str | None
+
+
+@dataclass(frozen=True)
+class _ContextValue:
+    """Запись значения контекста по параметру: что в ней лежит и ждёт ли перезапроса."""
+
+    value_id: int | None
+    text: str | None
+    off_list: str | None
+    source: str
+    refreshing: bool
+
 
 @dataclass(frozen=True)
 class KpLineRow:
@@ -313,6 +360,9 @@ class KpLineRow:
     category_id: int | None = None
     #: Раздел сметы, в котором лежит строка; `None` — строка вне разделов.
     chapter_item_id: int | None = None
+    #: Параметры варианта строки с названиями: главные схемы варианта, затем второстепенные
+    #: действующей схемы (спека параметров варианта §2.2); `()` у строки без варианта.
+    params: tuple[LineParam, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -337,6 +387,8 @@ class _VariantInfo:
     main_values: Mapping[int, int | None] = field(default_factory=dict)
     #: parameter_id -> форма значения: id составного значения либо `"simple"`; ключи те же, что у `main_values`.
     forms: Mapping[int, Form] = field(default_factory=dict)
+    #: Активные главные параметры собственной схемы варианта по `ordinal`, и на прежней схеме тоже.
+    mains: tuple[VariantMain, ...] = ()
 
 
 def _variant_infos(db: Session, variant_ids: Sequence[int]) -> dict[int, _VariantInfo]:
@@ -374,8 +426,9 @@ def _variant_infos(db: Session, variant_ids: Sequence[int]) -> dict[int, _Varian
     ).all()
     schema_ids = sorted({head.schema_id for head in heads})
     mains: dict[int, list[int]] = defaultdict(list)
-    for schema_id, parameter_id in db.execute(
-        sa.select(FamilyParameter.schema_id, FamilyParameter.id)
+    names: dict[int, str] = {}
+    for schema_id, parameter_id, parameter_name in db.execute(
+        sa.select(FamilyParameter.schema_id, FamilyParameter.id, FamilyParameter.name)
         .where(
             FamilyParameter.schema_id.in_(schema_ids),
             FamilyParameter.role == ParameterRole.main.value,
@@ -384,6 +437,7 @@ def _variant_infos(db: Session, variant_ids: Sequence[int]) -> dict[int, _Varian
         .order_by(FamilyParameter.schema_id, FamilyParameter.ordinal)
     ).all():
         mains[schema_id].append(parameter_id)
+        names[parameter_id] = parameter_name
     values: dict[int, dict[int, tuple[int | None, str | None]]] = defaultdict(dict)
     for variant_id, parameter_id, value_id, text in db.execute(
         sa.select(
@@ -425,6 +479,15 @@ def _variant_infos(db: Session, variant_ids: Sequence[int]) -> dict[int, _Varian
                 parameter_id: value_id if value_id in composite_of else "simple"
                 for parameter_id, value_id in main_values.items()
             },
+            mains=tuple(
+                VariantMain(
+                    parameter_id=parameter_id,
+                    name=names[parameter_id],
+                    value_id=own.get(parameter_id, (None, None))[0],
+                    text=own.get(parameter_id, (None, None))[1],
+                )
+                for parameter_id in parameters
+            ),
         )
     return infos
 
@@ -814,7 +877,8 @@ def load_kp_lines(
 
     Строки отдаются все, без предикатов цены и веса: пригодность решает ядро.
     Число запросов не зависит от числа строк: строки, сигнал каталога, три
-    запроса вариантов, второстепенные параметры, конфликтные главные параметры и дерево статей. Строка без
+    запроса вариантов, второстепенные параметры, записи значений контекстов и второстепенные параметры
+    действующих схем (параметры строки), конфликтные главные параметры и дерево статей. Строка без
     членства или без варианта — `key = None`, `variant_label = None`; название
     семьи берётся у любого контекста, у которого она есть.
     """
@@ -863,6 +927,9 @@ def load_kp_lines(
     signals = catalog_signal(db, estimate_ids, only_position_item_id=only_position_item_id)
     infos = _variant_infos(db, [row[11] for row in rows if row[11] is not None])
     secondary = _secondary_values(db, [row[10] for row in rows if row[10] is not None])
+    variant_context_ids = [row[10] for row in rows if row[10] is not None and row[11] is not None]
+    context_values = _context_values(db, variant_context_ids)
+    current_secondaries = _current_secondaries(db, sorted({info.family_id for info in infos.values()}))
     conflicts = _conflicted_parameters(db, [row[10] for row in rows if row[10] is not None])
     root_of, _ = category_roots(db)
     chains = _chain_states(db, [row[15] for row in rows if row[15] is not None])
@@ -943,6 +1010,15 @@ def load_kp_lines(
                 secondary=secondary.get(context_id, ()) if context_id is not None else (),
                 category_id=category_id,
                 chapter_item_id=chapter_item_id,
+                params=(
+                    _line_params(
+                        info,
+                        context_values.get(context_id, {}) if context_id is not None else {},
+                        current_secondaries.get(info.family_id, ()),
+                    )
+                    if info is not None
+                    else ()
+                ),
             )
         )
     return result
@@ -974,6 +1050,130 @@ def _secondary_values(db: Session, context_ids: Sequence[int]) -> dict[int, tupl
         text = value or (f"не из списка: «{off_list}»" if off_list else _UNKNOWN_LABEL)
         grouped[context_id].append((name, text))
     return {context_id: tuple(pairs) for context_id, pairs in grouped.items()}
+
+
+def catalog_text(value: str | None, source: str, off_list: str | None) -> str:
+    """Подпись значения записи каталога по таблице показа (спека параметров варианта §2.2):
+    расхождение разделов и текст не из списка проверяются раньше значения."""
+    if source == ValueSource.path_conflict.value:
+        return "расходится по разделам"
+    if source == ValueSource.off_list.value:
+        return f"не из списка: «{off_list}»"
+    return value or _UNKNOWN_LABEL
+
+
+def _context_values(db: Session, context_ids: Sequence[int]) -> dict[int, dict[int, _ContextValue]]:
+    """Все записи значений (главных и второстепенных) заданных контекстов одним запросом:
+    `context_id -> parameter_id -> запись`."""
+    ids = sorted(set(context_ids))
+    if not ids:
+        return {}
+    grouped: dict[int, dict[int, _ContextValue]] = defaultdict(dict)
+    for context_id, parameter_id, value_id, text, off_list, source, refresh_requested_at in db.execute(
+        sa.select(
+            ContextParameterValue.context_id,
+            ContextParameterValue.parameter_id,
+            ContextParameterValue.value_id,
+            FamilyParameterValue.value,
+            ContextParameterValue.off_list_text,
+            ContextParameterValue.source,
+            ContextParameterValue.refresh_requested_at,
+        )
+        .select_from(ContextParameterValue)
+        .outerjoin(FamilyParameterValue, FamilyParameterValue.id == ContextParameterValue.value_id)
+        .where(ContextParameterValue.context_id.in_(ids))
+    ).all():
+        grouped[context_id][parameter_id] = _ContextValue(
+            value_id=value_id,
+            text=text,
+            off_list=off_list,
+            source=source,
+            refreshing=refresh_requested_at is not None,
+        )
+    return dict(grouped)
+
+
+def _current_secondaries(db: Session, family_ids: Sequence[int]) -> dict[int, tuple[tuple[int, str], ...]]:
+    """Активные второстепенные параметры действующей (`frozen`) схемы каждой семьи по
+    `ordinal` одним запросом: `family_id -> ((parameter_id, name), …)`."""
+    ids = sorted(set(family_ids))
+    if not ids:
+        return {}
+    grouped: dict[int, list[tuple[int, str]]] = defaultdict(list)
+    for family_id, parameter_id, name in db.execute(
+        sa.select(FamilyParameterSchema.family_id, FamilyParameter.id, FamilyParameter.name)
+        .select_from(FamilyParameter)
+        .join(FamilyParameterSchema, FamilyParameterSchema.id == FamilyParameter.schema_id)
+        .where(
+            FamilyParameterSchema.family_id.in_(ids),
+            FamilyParameterSchema.status == SchemaStatus.frozen.value,
+            FamilyParameter.role == ParameterRole.secondary.value,
+            FamilyParameter.archived_at.is_(None),
+        )
+        .order_by(FamilyParameterSchema.family_id, FamilyParameter.ordinal)
+    ).all():
+        grouped[family_id].append((parameter_id, name))
+    return {family_id: tuple(pairs) for family_id, pairs in grouped.items()}
+
+
+def _line_params(
+    info: _VariantInfo, values: Mapping[int, _ContextValue], secondaries: Sequence[tuple[int, str]]
+) -> tuple[LineParam, ...]:
+    """Параметры строки с вариантом: главные схемы варианта, затем второстепенные
+    действующей схемы (спека параметров варианта §2.2).
+
+    Вариант на прежней схеме: все главные `old_schema`, записи не смотрятся. Иначе главный без
+    записи — `missing`; запись с другим `value_id`, чем у варианта, — `stale` (значение остаётся
+    вариантным, запись показывается в `catalog_value`); иначе источник записи как есть.
+    `NULL` против `NULL` расхождением не считается.
+    """
+    on_current = info.schema_id == info.current_schema_id
+    result: list[LineParam] = []
+    for main in info.mains:
+        record = values.get(main.parameter_id) if on_current else None
+        composite = on_current and info.forms.get(main.parameter_id, "simple") != "simple"
+        if not on_current:
+            source: ParamSource = "old_schema"
+        elif record is None:
+            source = "missing"
+        elif record.value_id != main.value_id:
+            source = "stale"
+        else:
+            source = record.source  # type: ignore[assignment]
+        steady = on_current and record is not None and source != "stale"
+        result.append(
+            LineParam(
+                parameter_id=main.parameter_id,
+                name=main.name,
+                role="main",
+                value=main.text,
+                off_list=record.off_list if steady and record is not None else None,
+                composite=composite,
+                source=source,
+                refreshing=record.refreshing if record is not None else False,
+                catalog_value=(
+                    catalog_text(record.text, record.source, record.off_list)
+                    if source == "stale" and record is not None
+                    else None
+                ),
+            )
+        )
+    for parameter_id, name in secondaries:
+        record = values.get(parameter_id)
+        result.append(
+            LineParam(
+                parameter_id=parameter_id,
+                name=name,
+                role="secondary",
+                value=record.text if record is not None else None,
+                off_list=record.off_list if record is not None else None,
+                composite=False,
+                source=record.source if record is not None else "missing",  # type: ignore[arg-type]
+                refreshing=record.refreshing if record is not None else False,
+                catalog_value=None,
+            )
+        )
+    return tuple(result)
 
 
 def kp_vat_bases(db: Session, estimate_ids: Sequence[int]) -> dict[int, Decimal | None]:
