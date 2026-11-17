@@ -218,6 +218,81 @@ def _values_key(
     )
 
 
+MatchRule = Literal["required", "ignored", "same_set"]
+ParamsBasis = Literal["rung", "catalog"]
+
+
+@dataclass(frozen=True)
+class ParamsRule:
+    """Как учитывается параметр варианта строки при подборе аналогов (спека параметров варианта §2.3)."""
+
+    #: `rung` — правило описывает фактический подбор; `catalog` — что сделала бы лестница по настройке
+    #: каталога; `None` — система без ступени или строка без варианта.
+    basis: ParamsBasis | None
+    #: parameter_id главного -> правило; пусто при `basis = None`.
+    main: Mapping[int, MatchRule]
+    #: Правило второстепенных: `ignored` при `basis ≠ None`, иначе `None`.
+    secondary: MatchRule | None
+
+
+def _rung_two_rules(
+    main_ids: Sequence[int],
+    forms: Mapping[int, Form],
+    conflicted: frozenset[int],
+    info: FamilyLadderInfo | None,
+) -> dict[int, MatchRule]:
+    """Правила ступеней 2 и 4: неотпускаемый — значением, отпускаемый — формой (составная или нет).
+
+    Без отпускаемых все главные — `required`: это и есть «ступени 2/4 недоступны» таблицы §2.3."""
+    releasable = set(_releasable_ids(info))
+    rules: dict[int, MatchRule] = {}
+    for parameter_id in main_ids:
+        if parameter_id not in releasable:
+            rules[parameter_id] = "required"
+        elif _form(forms, conflicted, parameter_id) == "simple":
+            rules[parameter_id] = "ignored"
+        else:
+            rules[parameter_id] = "same_set"
+    return rules
+
+
+def params_rule(
+    *,
+    main_ids: Sequence[int],
+    has_variant: bool,
+    is_system: bool,
+    schema_id: int | None,
+    forms: Mapping[int, Form],
+    conflicted: frozenset[int],
+    info: FamilyLadderInfo | None,
+    work_rung: RungNo | None,
+    system_level: Literal["v", "p", "f"] | None,
+) -> ParamsRule:
+    """Правило «при подборе» для главных параметров варианта строки (спека параметров варианта §2.3).
+
+    `main_ids` — главные параметры схемы варианта по `ordinal`; `info` — семья на действующей схеме.
+    """
+    if not has_variant:
+        return ParamsRule(basis=None, main={}, secondary=None)
+    if is_system:
+        if system_level is None:
+            return ParamsRule(basis=None, main={}, secondary=None)
+        if system_level == "v":
+            system_rules: dict[int, MatchRule] = {p: "required" for p in main_ids}
+        elif system_level == "f":
+            system_rules = {p: "ignored" for p in main_ids}
+        else:
+            system_rules = {p: ("required" if i == 0 else "ignored") for i, p in enumerate(main_ids)}
+        return ParamsRule(basis="rung", main=system_rules, secondary="ignored")
+    if work_rung in (1, 3):
+        return ParamsRule(basis="rung", main={p: "required" for p in main_ids}, secondary="ignored")
+    if work_rung in (2, 4):
+        return ParamsRule(basis="rung", main=_rung_two_rules(main_ids, forms, conflicted, info), secondary="ignored")
+    if info is not None and schema_id == info.schema_id:
+        return ParamsRule(basis="catalog", main=_rung_two_rules(main_ids, forms, conflicted, info), secondary="ignored")
+    return ParamsRule(basis="catalog", main={p: "required" for p in main_ids}, secondary="ignored")
+
+
 _ValuesKey = tuple[int | str | None, ...]
 _Unknown = tuple[WorkHistoryLine, HistoryContract]
 
