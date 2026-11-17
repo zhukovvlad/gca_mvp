@@ -4,7 +4,9 @@
 **Дизайн:** `docs/superpowers/design/2026-11-17-variant-params.md` (редакция 2), макет — `.../2026-11-17-variant-params/mockup.html`
 **Стоит на:** лестница аналогов, упрощение каталога, справочные аналоги — все в `main`
 **Ветка:** `feat/variant-params`, черновой PR #89
-**Статус:** редакция 1, 17.11.2026, ждёт гейта 3.
+**Статус:** редакция 2, 18.11.2026, ждёт гейта 3. Ред. 2 — по ревью Codex
+ред. 1 (`1e48a7b`): старое поле `secondary` удаляется одним шагом в Task 6,
+после последнего потребителя, а не в Tasks 2 и 4 (решение 9).
 
 > Исполнителю: задачи идут по порядку; каждая — цикл TDD
 > (`superpowers:test-driven-development`: тесты первыми, красный прогон
@@ -109,18 +111,20 @@ backend/
                                     WorkHistory.lines_of (Task 3)
   crud/our_price_load.py            правка: LineParam, ParamSource, _VariantInfo.mains, _context_values,
                                     _current_secondaries, _line_params, catalog_text, load_value_texts;
-                                    KpLineRow.secondary → params; _secondary_values удаляется (Task 2, 3)
-  crud/our_price.py                 правка: _line_view — params, params_basis, без secondary (Task 3);
+                                    KpLineRow.params (Task 2, 3); KpLineRow.secondary и
+                                    _secondary_values удаляются (Task 6)
+  crud/our_price.py                 правка: _line_view — params, params_basis (Task 3), без secondary (Task 6);
                                     build_line_view — analog_columns, released_values (Task 3)
   tests/unit/test_variant_params_rule.py              создаётся (Task 1)
   tests/integration/test_variant_params_load.py       создаётся (Task 2)
   tests/integration/test_variant_params_api.py        создаётся (Task 3)
-  tests/integration/test_our_price_load.py, test_our_price_offer_api.py   правка ожиданий secondary (Task 2, 3)
+  tests/integration/test_our_price_offer_api.py       правка LINE_KEYS: +params, +params_basis (Task 3), −secondary (Task 6)
+  tests/integration/test_our_price_load.py            правка ожиданий secondary (Task 6)
 frontend/src/
-  types/domain.ts, test/fixtures.ts                   правка (Task 4)
+  types/domain.ts, test/fixtures.ts                   правка: новые поля (Task 4), −secondary (Task 6)
   pages/tenders/our-price/
     paramsCopy.ts, paramsCopy.test.ts                 создаются (Task 4)
-    ourPriceCopy.ts, ourPriceCopy.test.ts             правка: workRungLabel, −refReleased, −SHEET_FIELD.secondary (Task 4)
+    ourPriceCopy.ts, ourPriceCopy.test.ts             правка: workRungLabel, −refReleased (Task 4), −SHEET_FIELD.secondary (Task 6)
     LineParamsCell.tsx, LineParamsCell.test.tsx       создаются (Task 5)
     OfferLinesTable.tsx, OfferLinesTable.test.tsx     правка (Task 5)
     WorkParamsSection.tsx, WorkParamsSection.test.tsx создаются (Task 6)
@@ -162,6 +166,14 @@ docs/devlog/2026-11-17-variant-params.md              создаётся (Task 7
 8. **`variantCaption`** остаётся (подзаголовок панели переходит на
    `line.family`, таблица — на семью отдельной строкой); если после Task 6 у
    неё не останется вызовов — удаляется вместе с тестами в той же задаче.
+9. **Старое поле `secondary` живёт до последнего потребителя** (по ревью
+   Codex плана ред. 1). Tasks 2–5 только добавляют новое: `KpLineRow.secondary`,
+   `_secondary_values`, `secondary` в ответе API, `OurPriceLine.secondary`,
+   `SHEET_FIELD.secondary` и `secondary` в фикстурах остаются прежними, поэтому
+   стенд и соседние наборы зелёные на каждой границе задачи. Удаление — одним
+   шагом в Task 6, после перевода последнего читателя (`LineSheet`), на бэкенде
+   и фронте сразу; там же проверка `grep` = 0. Финальный контракт спеки (без
+   `secondary`) не меняется.
 
 ## Задачи
 
@@ -233,8 +245,8 @@ def params_rule(
 
 **Files**
 - Edit: `backend/crud/our_price_load.py`
-- Edit (ожидания `secondary` → `params`): `backend/tests/integration/test_our_price_load.py` (строки с `row.secondary`, тест числа запросов `test_load_kp_lines_runs_the_same_statements_for_2_and_20_lines`)
 - Test: `backend/tests/integration/test_variant_params_load.py`
+- Не трогать: `KpLineRow.secondary`, `_secondary_values`, `backend/tests/integration/test_our_price_load.py` — старое поле живёт до Task 6 (решение плана 9).
 
 **Interfaces**
 - Потребляет: `ContextParameterValue` (`source`, `off_list_text`, `refresh_requested_at`, `value_id`), `FamilyParameter`, `FamilyParameterSchema`, `SchemaStatus`, `_variant_infos`, `_UNKNOWN_LABEL`, `count_statements` (существуют).
@@ -264,7 +276,7 @@ class VariantMain:
     text: str | None
 
 # _VariantInfo: + mains: tuple[VariantMain, ...]  — активные главные схемы варианта по ordinal
-# KpLineRow: secondary удаляется; + params: tuple[LineParam, ...] = ()
+# KpLineRow: + params: tuple[LineParam, ...] = (); secondary остаётся как есть до Task 6
 
 @dataclass(frozen=True)
 class _ContextValue:
@@ -308,22 +320,24 @@ def _line_params(info: _VariantInfo, values: Mapping[int, _ContextValue],
   (`none` / `off_list` с текстом), у главного и второстепенного (К2);
 - число запросов `load_kp_lines` одно на 2 и 20 строк, у строк есть и главные,
   и второстепенные (К5). Замер исполнителя, не тест: на фикстуре этого теста
-  до правки и после — ровно плюс один запрос, число — в отчёт задачи.
+  до правки и после — ровно плюс два запроса (`_secondary_values` ещё жив,
+  уходит в Task 6), число — в отчёт задачи;
+- `row.secondary` не изменился: прежние ожидания `test_our_price_load.py`
+  зелёные без правок.
 
 **Имена**
 - Заводятся: `ParamSource`, `LineParam`, `VariantMain`, `_VariantInfo.mains`, `KpLineRow.params`, `_ContextValue`, `_context_values`, `_current_secondaries`, `catalog_text`, `_line_params`.
-- Удаляются: `KpLineRow.secondary`, `_secondary_values`.
-- Существуют, проверено `grep`-ом: `load_kp_lines`, `_variant_infos`, `_UNKNOWN_LABEL`, `ContextParameterValue`, `count_statements`.
+- Существуют, проверено `grep`-ом: `load_kp_lines`, `_variant_infos`, `_UNKNOWN_LABEL`, `ContextParameterValue`, `count_statements`, `KpLineRow.secondary`, `_secondary_values`.
 
 **Проверка**
 - `just test-int-local-k variant_params` — ДО 0, ПОСЛЕ ≥ 14.
-- `just test-int-local-k our_price_load` — зелёный; ожидания `secondary` переписаны на `params`, остальные не тронуты.
+- `just test-int-local-k our_price_load` — зелёный без правок ожиданий.
 
 ### Task 3: ответы разбора и панели — **ревью**
 
 **Files**
 - Edit: `backend/crud/our_price.py`, `backend/crud/our_price_load.py` (`load_value_texts`), `backend/services/analog_ladder.py` (`WorkHistory.lines_of`)
-- Edit (ожидания): `backend/tests/integration/test_our_price_offer_api.py` (`LINE_KEYS`: −`secondary`, +`params`, +`params_basis`; строки 452, 578)
+- Edit (ожидания): `backend/tests/integration/test_our_price_offer_api.py` (`LINE_KEYS`: +`params`, +`params_basis`; `secondary` остаётся до Task 6)
 - Test: `backend/tests/integration/test_variant_params_api.py`
 
 **Interfaces**
@@ -340,12 +354,12 @@ def _released_view(db: Session, scene: _Scene, row: KpLineRow, result: LineResul
 ```
 
 Ответ строки (`_line_view`): + `params_basis`, + `params` (поля §2.4, без
-`parameter_id`), − `secondary`. Ответ панели: + `analog_columns`; каждый
-элемент `analogs` + `released_values`.
+`parameter_id`); `secondary` пока отдаётся прежним (решение плана 9). Ответ
+панели: + `analog_columns`; каждый элемент `analogs` + `released_values`.
 
 **Утверждения**
 - разбор оффера и панель отдают у каждой строки `params_basis` и `params` по
-  форме §2.4, `secondary` нет; `params` строки разбора и `line` панели равны;
+  форме §2.4; `params` строки разбора и `line` панели равны;
 - `params_basis`: работа со ступенью и система со ступенью → `rung`; работа с
   вариантом без ступени → `catalog` (К4); система без ступени и строка без
   варианта → `null`, у всех параметров `match = null`;
@@ -390,7 +404,7 @@ export type ParamsBasis = "rung" | "catalog";
 export interface LineParam { name: string; role: "main" | "secondary"; value: string | null;
   off_list: string | null; composite: boolean; source: ParamSource; refreshing: boolean;
   catalog_value: string | null; match: ParamMatch | null; }
-// OurPriceLine: + params_basis: ParamsBasis | null; + params: LineParam[]; − secondary
+// OurPriceLine: + params_basis: ParamsBasis | null; + params: LineParam[]; secondary остаётся до Task 6
 // OurPriceAnalog: + released_values: Array<{ value: string | null; conflict: boolean; differs: boolean }>
 // OurPriceLineView: + analog_columns: Array<{ name: string }>
 
@@ -429,16 +443,17 @@ export const PARAMS_COPY: { more: (n: number) => string; collapse: string; secon
 - `workRungLabel`: 1/3 — «тот же вариант»; 2/4 — «без учёта: марка W,
   толщина»; «· другой класс» как сейчас; тесты `ourPriceCopy.test.ts` на
   «без Марка W» переписаны;
-- `refReleased` и `SHEET_FIELD.secondary` удалены, `grep` по `frontend/src`
-  — 0;
+- `refReleased` удалён (вызовов нет — проверено `grep`-ом), `grep` по
+  `frontend/src` — 0; `SHEET_FIELD.secondary` и `OurPriceLine.secondary`
+  остаются до Task 6 (решение плана 9);
 - фикстуры: `ourPriceLineFixture` несёт `params_basis` и `params` (три
-  параметра, без `secondary`), `ourPriceAnalogFixture` — `released_values:
-  []`, `ourPriceLineViewFixture` — `analog_columns: []`; `tsc` зелёный по
-  всему фронту.
+  параметра) рядом с прежним `secondary`, `ourPriceAnalogFixture` —
+  `released_values: []`, `ourPriceLineViewFixture` — `analog_columns: []`;
+  `tsc` зелёный по всему фронту — потребители `secondary` не тронуты.
 
 **Имена**
 - Заводятся: всё в блоке «Производит».
-- Удаляются: `refReleased`, `SHEET_FIELD.secondary`, `OurPriceLine.secondary`.
+- Удаляются: `refReleased`.
 - Существуют, проверено `grep`-ом: `workRungLabel`, `workRungCaption`, `variantCaption`, `SHEET_FIELD`, фикстуры выше.
 
 **Проверка**
@@ -475,8 +490,9 @@ export function LineParamsCell(props: { family: string | null; params: LineParam
 - приписки «— не учитывается при подборе» / «— при подборе нужен такой же
   набор» только при `params_basis = rung` (К4: строка `catalog` с `ignored`
   приписки не несёт); «(из разделов)» у `path`;
-- значка ⓘ со второстепенными нет; прежние тесты ⓘ в
-  `OfferLinesTable.test.tsx` переписаны на параметры.
+- значка ⓘ со второстепенными нет: `OfferLinesTable.tsx` больше не читает
+  `line.secondary`; прежние тесты ⓘ и overrides `secondary` в
+  `OfferLinesTable.test.tsx` переписаны на `params`.
 
 **Имена**
 - Заводятся: `LineParamsCell`.
@@ -487,11 +503,12 @@ export function LineParamsCell(props: { family: string | null; params: LineParam
 - `just test-frontend-file src/pages/tenders/our-price/OfferLinesTable.test.tsx` — зелёный; `tsc`, `eslint` — без ошибок.
 - Снимок стенда: оффер 76, строки «Плиты пандусов…» и «Корпус 1,2,3,4,5,7,9…» рядом с макетом; наезда колонок нет (замер ширин в браузере).
 
-### Task 6: панель строки
+### Task 6: панель строки и удаление `secondary`
 
 **Files**
 - Create: `frontend/src/pages/tenders/our-price/WorkParamsSection.tsx`, `WorkParamsSection.test.tsx`
 - Edit: `frontend/src/pages/tenders/our-price/LineSheet.tsx`, `LineSheet.work.test.tsx`, `AnalogsTable.tsx`, `AnalogsTable.test.tsx`
+- Edit (удаление `secondary`, решение плана 9): `frontend/src/types/domain.ts`, `frontend/src/test/fixtures.ts`, `frontend/src/pages/tenders/our-price/ourPriceCopy.ts` (`SHEET_FIELD.secondary`); `backend/crud/our_price.py` (`_line_view`), `backend/crud/our_price_load.py` (`KpLineRow.secondary`, `_secondary_values`); ожидания `backend/tests/integration/test_our_price_load.py` (строки с `row.secondary`) и `test_our_price_offer_api.py` (`LINE_KEYS` −`secondary`, строки 452, 578)
 
 **Interfaces**
 - Потребляет: `paramText`, `paramWarn`, `paramSourceText`, `matchText`, `releasedValueText`, `PARAMS_COPY` (Task 4); `OurPriceLineView.analog_columns`, `OurPriceAnalog.released_values` (Task 4).
@@ -519,15 +536,23 @@ export function WorkParamsSection(props: { params: LineParam[]; basis: ParamsBas
   `releasedValueText`, подсветка у `differs`; при пустом `analog_columns`
   колонок нет;
 - бейдж ступени и справочные блоки — «без учёта: …» (общая
-  `workRungLabel`).
+  `workRungLabel`);
+- удаление `secondary` одним шагом после перевода `LineSheet`: ответы разбора
+  и панели без поля `secondary`; `grep` по `\.secondary\b`, `SHEET_FIELD.secondary`,
+  `_secondary_values` в `backend/crud` и `frontend/src/pages/tenders` — 0;
+  ожидания `row.secondary` в `test_our_price_load.py` переписаны на `params`;
+- число запросов `load_kp_lines`: замер исполнителя на фикстуре теста 2/20
+  строк — минус один к Task 2, итог к `4df65cc` — ровно плюс один (§2.10).
 
 **Имена**
 - Заводятся: `WorkParamsSection`, проп `AnalogsTable.columns`.
+- Удаляются: `SHEET_FIELD.secondary`, `OurPriceLine.secondary`, `KpLineRow.secondary`, `_secondary_values`, поле `secondary` ответа API.
 - Существуют, проверено `grep`-ом: `LineSheet`, `AnalogsTable`, `ReferenceBlocks`, `SHEET_SECTION`, `workRungLabel`.
 
 **Проверка**
 - `just test-frontend-file src/pages/tenders/our-price/WorkParamsSection.test.tsx` — ДО нет файла, ПОСЛЕ ≥ 9.
-- `LineSheet.work.test.tsx`, `AnalogsTable.test.tsx` — зелёные; `tsc`, `eslint` — без ошибок.
+- `LineSheet.work.test.tsx`, `AnalogsTable.test.tsx`, `OfferLinesTable.test.tsx` — зелёные; `tsc`, `eslint` — без ошибок.
+- Один раз в конце: `just test-int-local-k "our_price or variant_params"` — зелёный; правки ожиданий — только названные в Files.
 - Снимок стенда: панель «Плиты пандусов…» (ступень 2, три аналога с W8, W12, W12 — колонка марки, подсветка) и «Корпус…» (сборная, `catalog`) рядом с макетом.
 
 ### Task 7: справочник, стенд, замеры, devlog
