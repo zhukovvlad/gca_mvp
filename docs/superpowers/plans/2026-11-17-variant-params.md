@@ -4,9 +4,11 @@
 **Дизайн:** `docs/superpowers/design/2026-11-17-variant-params.md` (редакция 2), макет — `.../2026-11-17-variant-params/mockup.html`
 **Стоит на:** лестница аналогов, упрощение каталога, справочные аналоги — все в `main`
 **Ветка:** `feat/variant-params`, черновой PR #89
-**Статус:** редакция 2, 18.11.2026, ждёт гейта 3. Ред. 2 — по ревью Codex
+**Статус:** редакция 3, 18.11.2026, ждёт гейта 3. Ред. 2 — по ревью Codex
 ред. 1 (`1e48a7b`): старое поле `secondary` удаляется одним шагом в Task 6,
-после последнего потребителя, а не в Tasks 2 и 4 (решение 9).
+после последнего потребителя, а не в Tasks 2 и 4 (решение 9). Ред. 3 — по
+ревью ред. 2 (`adfe9a2`): Task 3 расширяет строгие наборы ключей панели
+(`PANEL_KEYS`) и аналога на новые поля.
 
 > Исполнителю: задачи идут по порядку; каждая — цикл TDD
 > (`superpowers:test-driven-development`: тесты первыми, красный прогон
@@ -337,7 +339,7 @@ def _line_params(info: _VariantInfo, values: Mapping[int, _ContextValue],
 
 **Files**
 - Edit: `backend/crud/our_price.py`, `backend/crud/our_price_load.py` (`load_value_texts`), `backend/services/analog_ladder.py` (`WorkHistory.lines_of`)
-- Edit (ожидания): `backend/tests/integration/test_our_price_offer_api.py` (`LINE_KEYS`: +`params`, +`params_basis`; `secondary` остаётся до Task 6)
+- Edit (ожидания): `backend/tests/integration/test_our_price_offer_api.py` — три строгих набора ключей и больше ничего: `LINE_KEYS` +`params`, +`params_basis` (`secondary` остаётся до Task 6); `PANEL_KEYS` +`analog_columns`; набор ключей аналога в `TestLinePanelAuto.test_analogs_of_the_work_carry_the_analog_card` +`released_values`. `test_kp_file_scene.py` импортирует `LINE_KEYS` и `PANEL_KEYS` отсюда — правок не требует. Других строгих наборов ключей разбора и панели в `backend/tests` нет (проверено `grep`-ом по `set(...) ==`).
 - Test: `backend/tests/integration/test_variant_params_api.py`
 
 **Interfaces**
@@ -360,6 +362,9 @@ def _released_view(db: Session, scene: _Scene, row: KpLineRow, result: LineResul
 **Утверждения**
 - разбор оффера и панель отдают у каждой строки `params_basis` и `params` по
   форме §2.4; `params` строки разбора и `line` панели равны;
+- `analog_columns` есть в каждом ответе панели, `released_values` — у каждого
+  аналога, в том числе на ступени 1 (там `[]`); строгие наборы ключей
+  расширены ровно на эти поля, проверки цен и прочего поведения не тронуты;
 - `params_basis`: работа со ступенью и система со ступенью → `rung`; работа с
   вариантом без ступени → `catalog` (К4); система без ступени и строка без
   варианта → `null`, у всех параметров `match = null`;
