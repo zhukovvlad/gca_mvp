@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Параметры варианта</title>
+<style>
+  :root {
+    --bg: #0e1013; --surface: #181b20; --sunken: #121418; --border: #2a2e36; --fg: #e8e8e8;
+    --fg2: #9aa0a8; --muted: #6b717a; --warn: #f0a35e; --info: #7fb4ff; --ok: #6fcf97; --danger: #e5736b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-variant-numeric: tabular-nums; }
+  .wrap { max-width: 1480px; margin: 0 auto; padding: 16px; }
+  .note { border: 1px dashed var(--muted); border-radius: 10px; padding: 10px 14px; color: var(--fg2); font-size: 13px; margin-bottom: 18px; }
+  .note b { color: var(--fg); }
+  h2 { font-size: 16px; margin: 26px 0 4px; }
+  h3 { font-size: 13px; margin: 18px 0 6px; color: var(--fg2); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  .sub { color: var(--fg2); font-size: 12px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 4px 14px 10px; }
+  .badge { display: inline-block; font-size: 11px; border-radius: 6px; padding: 1px 7px; margin-left: 8px; vertical-align: middle; border: 1px solid var(--border); color: var(--fg2); }
+  .badge.rec { border-color: var(--ok); color: var(--ok); }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; font-weight: 500; font-size: 12px; color: var(--fg2); padding: 8px; border-bottom: 1px solid var(--border); }
+  td { padding: 10px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  td.num, th.num { text-align: right; white-space: nowrap; }
+  .title { color: var(--fg); }
+  .cap { display: block; font-size: 11.5px; line-height: 1.45; color: var(--fg2); margin-top: 2px; }
+  .pn { color: var(--muted); }
+  .pv { color: var(--fg2); }
+  .unk { color: var(--warn); }
+  .rel { color: var(--info); }
+  .src { color: var(--muted); font-style: italic; }
+  .sep { color: var(--muted); }
+  .rung { display: block; font-size: 11.5px; color: var(--fg2); }
+  .state { display: inline-block; border: 1px solid var(--border); border-radius: 8px; padding: 2px 8px; font-size: 12px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+  .panel h4 { margin: 0 0 2px; font-size: 15px; }
+  .ptab td, .ptab th { padding: 7px 8px; }
+  .ptab td:first-child { color: var(--fg2); }
+  .yes { color: var(--ok); } .no { color: var(--muted); }
+  .diff { color: var(--warn); font-weight: 600; }
+  .lowest { font-size: 11px; color: var(--ok); margin-left: 6px; }
+  .why { margin-top: 10px; padding: 8px 12px; border-left: 3px solid var(--info); background: var(--sunken); border-radius: 0 8px 8px 0; font-size: 13px; color: var(--fg2); }
+  .why b { color: var(--fg); }
+  .pl { margin-top: 4px; font-size: 12px; line-height: 1.5; }
+  .pl .pp { padding-left: 10px; border-left: 2px solid var(--border); }
+  .pl .more { display: none; }
+  .pl.open .more { display: block; }
+  .tog { margin: 3px 0 0 10px; background: none; border: 0; padding: 0; color: var(--info); font: inherit; font-size: 12px; cursor: pointer; }
+  .tog:hover { text-decoration: underline; }
+  .tag2 { font-size: 10.5px; color: var(--muted); border: 1px solid var(--border); border-radius: 5px; padding: 0 5px; margin-left: 4px; }
+  @media (max-width: 1100px) { .grid2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="note">
+    <b>Макет гейта 1, А11 «Параметры варианта с названиями».</b> Оффер 76, строки настоящие, цены без НДС. Названия и
+    значения — из схемы самого варианта; «откуда» — из записи значения у строки каталога (наименование, разделы сметы,
+    вручную). Какой именно раздел дал значение, не хранится — путь строки показывает соседний блок панели «Где строка».
+  </div>
+
+  <h2>1. Строка в таблице «Против нашей цены»</h2>
+  <div class="sub">Строки: обычная с отпущенной маркой, сборная из сегодняшнего случая, фасад с «не уточнено»; в предложении добавлена мембрана — у её семьи четыре главных параметра.</div>
+
+  <h3>Сейчас</h3>
+  <div class="card"><table>
+    <thead><tr><th>Работа</th><th>Ед.</th><th class="num">Объём</th><th class="num">КП, ₽/ед.</th><th class="num">Наша вилка</th></tr></thead>
+    <tbody>
+      <tr><td><span class="title">Плиты пандусов В30 W6 F150 арматурой класса А500С, А240</span>
+        <span class="cap">Устройство жб конструкций · B30 · W6 · рампы ⓘ</span></td>
+        <td>м³</td><td class="num mono">171,85</td><td class="num mono">57 245,66</td>
+        <td class="num mono">42 708,58 – 61 176,06<span class="rung">без Марка по водонепроницаемости · 3 аналога</span></td></tr>
+      <tr><td><span class="title">Корпус 1,2,3,4,5,7,9 В40 W6 F150 арматурой класса А500С, А240</span>
+        <span class="cap">Устройство жб конструкций · B40 · W6 · трансферные конструкции + балки + капители ⓘ</span></td>
+        <td>м³</td><td class="num mono">876,86</td><td class="num mono">60 055,67</td><td class="num">—</td></tr>
+      <tr><td><span class="title">Прозрачное заполнение фасадных конструкций – стеклопакет СПД 10.10.4ТП-18Ar-8З-18Ar-8.8.4ТП (ГОСТ 24866 –2014)</span>
+        <span class="cap">Устройство светопрозрачного фасада (витражное остекление) · двухкамерный стеклопакет · не уточнено · не уточнено</span></td>
+        <td>м²</td><td class="num mono">13 014,92</td><td class="num mono">39 550,61</td><td class="num">—</td></tr>
+    </tbody></table></div>
+
+  <h3>Предлагаю — параметры столбиком, первые три сразу <span class="badge rec">вариант 1</span></h3>
+  <div class="sub" style="margin-bottom:6px">Каждый параметр — своей строкой «название: значение». Порядок — как в схеме: сначала главные, потом второстепенные. Больше трёх — остальные под «подробнее», строка таблицы раздвигается вниз; «свернуть» возвращает три. Нажимайте.</div>
+  <div class="card"><table>
+    <thead><tr><th>Работа</th><th>Ед.</th><th class="num">Объём</th><th class="num">КП, ₽/ед.</th><th class="num">Наша вилка</th></tr></thead>
+    <tbody>
+      <tr><td><span class="title">Плиты пандусов В30 W6 F150 арматурой класса А500С, А240</span>
+        <span class="cap">Устройство жб конструкций</span>
+        <div class="pl">
+          <div class="pp"><span class="pn">Класс бетона по прочности:</span> <span class="pv">B30</span></div>
+          <div class="pp"><span class="pn">Марка по водонепроницаемости:</span> <span class="pv">W6</span> <span class="rel">— не учитывается при подборе</span></div>
+          <div class="pp"><span class="pn">Тип конструкции:</span> <span class="pv">рампы</span></div>
+          <div class="pp more"><span class="pn">Коэффициент армирования, кг/м³:</span> <span class="unk">не уточнено</span> <span class="tag2">второстепенный</span></div>
+          <button class="tog" type="button"></button>
+        </div></td>
+        <td>м³</td><td class="num mono">171,85</td><td class="num mono">57 245,66</td>
+        <td class="num mono">42 708,58 – 61 176,06<span class="rung">без учёта марки по водонепроницаемости · 3 аналога</span></td></tr>
+      <tr><td><span class="title">Корпус 1,2,3,4,5,7,9 В40 W6 F150 арматурой класса А500С, А240</span>
+        <span class="cap">Устройство жб конструкций</span>
+        <div class="pl">
+          <div class="pp"><span class="pn">Класс бетона по прочности:</span> <span class="pv">B40</span></div>
+          <div class="pp"><span class="pn">Марка по водонепроницаемости:</span> <span class="pv">W6</span></div>
+          <div class="pp"><span class="pn">Тип конструкции:</span> <span class="pv">трансферные конструкции + балки + капители</span> <span class="src">(из разделов сметы)</span></div>
+          <div class="pp more"><span class="pn">Коэффициент армирования, кг/м³:</span> <span class="unk">не уточнено</span> <span class="tag2">второстепенный</span></div>
+          <button class="tog" type="button"></button>
+        </div></td>
+        <td>м³</td><td class="num mono">876,86</td><td class="num mono">60 055,67</td><td class="num">—</td></tr>
+      <tr><td><span class="title">Прозрачное заполнение фасадных конструкций – стеклопакет СПД 10.10.4ТП-18Ar-8З-18Ar-8.8.4ТП (ГОСТ 24866 –2014)</span>
+        <span class="cap">Устройство светопрозрачного фасада (витражное остекление)</span>
+        <div class="pl">
+          <div class="pp"><span class="pn">Тип остекления/заполнения:</span> <span class="pv">двухкамерный стеклопакет</span></div>
+          <div class="pp"><span class="pn">Система остекления:</span> <span class="unk">не уточнено</span></div>
+          <div class="pp"><span class="pn">Огнестойкость:</span> <span class="unk">не уточнено</span></div>
+        </div></td>
+        <td>м²</td><td class="num mono">13 014,92</td><td class="num mono">39 550,61</td><td class="num">—</td></tr>
+      <tr><td><span class="title">Мембрана LOGICBASE V-SL, толщиной 2 мм</span>
+        <span class="cap">Укладка гидроизоляции</span>
+        <div class="pl open">
+          <div class="pp"><span class="pn">Толщина, мм:</span> <span class="pv">2–3</span></div>
+          <div class="pp"><span class="pn">Тип гидроизоляции:</span> <span class="unk">не уточнено</span></div>
+          <div class="pp"><span class="pn">Количество слоёв:</span> <span class="unk">не уточнено</span></div>
+          <div class="pp more"><span class="pn">Тип материала:</span> <span class="pv">ПВХ мембрана Logicbase V-SL</span></div>
+          <button class="tog" type="button"></button>
+        </div></td>
+        <td>м²</td><td class="num mono">19 732,85</td><td class="num mono">1 483,76</td><td class="num">—<span class="rung">аналоги только в другой зоне</span></td></tr>
+    </tbody></table></div>
+  <div class="sub" style="margin-top:6px">Последняя строка показана раскрытой: у семьи «Укладка гидроизоляции» четыре главных параметра, четвёртый — под «подробнее».</div>
+
+  <h2>2. Панель строки</h2>
+  <div class="sub">Блок «Работа» вместо одной подписи: каждый параметр строкой, откуда взят и учитывается ли он при подборе аналогов. В аналогах — значение параметра, который при подборе не учитывался.</div>
+
+  <div class="grid2" style="margin-top:10px">
+    <div class="panel">
+      <h4>Плиты пандусов В30 W6 F150 арматурой класса А500С, А240</h4>
+      <div class="sub">м³ · 171,85 · КП 57 245,66 ₽/м³ · подземная часть · без учёта марки по водонепроницаемости · 3 аналога</div>
+
+      <h3>Работа</h3>
+      <table class="ptab">
+        <thead><tr><th>Параметр</th><th>В строке КП</th><th>Откуда</th><th>При подборе</th></tr></thead>
+        <tbody>
+          <tr><td>Семья</td><td colspan="3">Устройство жб конструкций</td></tr>
+          <tr><td>Класс бетона по прочности</td><td>B30</td><td class="sub">из наименования</td><td class="yes">должен совпасть</td></tr>
+          <tr><td>Марка по водонепроницаемости</td><td>W6</td><td class="sub">из наименования</td><td class="rel">не учитывается</td></tr>
+          <tr><td>Тип конструкции</td><td>рампы</td><td class="sub">из наименования</td><td class="yes">должен совпасть</td></tr>
+          <tr><td>Коэффициент армирования, кг/м³ <span class="sub">второстепенный</span></td><td class="unk">не уточнено</td><td class="sub">—</td><td class="no">не учитывается</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Аналоги</h3>
+      <table class="ptab">
+        <thead><tr><th>Объект · договор</th><th>Наименование в договоре</th><th>Марка по водонепр.</th><th class="num">₽/м³</th></tr></thead>
+        <tbody>
+          <tr><td>VEER 1 оч UB2 · UB2-CIW · 2024-11</td><td>Плита рампы B30 W8 F150</td><td class="diff">W8</td><td class="num mono">61 176,06</td></tr>
+          <tr><td>Тушино 1 оч. Cityzen · ТУШ-1-СМР · 2024-08</td><td>Плиты пандусов Бетон В30 F150 W12</td><td class="diff">W12</td><td class="num mono">42 708,58<span class="lowest">самая низкая</span></td></tr>
+          <tr><td>Тушино 1 оч. Cityzen · ТУШ-1-СМР · 2024-08</td><td>Плиты пандусов Бетон В30 F150 W12</td><td class="diff">W12</td><td class="num mono">42 708,58</td></tr>
+        </tbody>
+      </table>
+      <div class="why">В КП <b>W6</b>, у всех аналогов марка выше (<b>W8</b>, <b>W12</b>). То есть аналоги — бетон дороже по спецификации, и всё равно КП выше самой низкой цены на 34 %. Сейчас это видно только по наименованию договора.</div>
+    </div>
+
+    <div class="panel">
+      <h4>Корпус 1,2,3,4,5,7,9 В40 W6 F150 арматурой класса А500С, А240</h4>
+      <div class="sub">м³ · 876,86 · КП 60 055,67 ₽/м³ · подземная часть · нет аналога</div>
+
+      <h3>Работа</h3>
+      <table class="ptab">
+        <thead><tr><th>Параметр</th><th>В строке КП</th><th>Откуда</th><th></th></tr></thead>
+        <tbody>
+          <tr><td>Семья</td><td colspan="3">Устройство жб конструкций</td></tr>
+          <tr><td>Класс бетона по прочности</td><td>B40</td><td class="sub">из наименования</td><td></td></tr>
+          <tr><td>Марка по водонепроницаемости</td><td>W6</td><td class="sub">из наименования</td><td></td></tr>
+          <tr><td>Тип конструкции</td><td>трансферные конструкции + балки + капители <span class="sub">(сборное, «вместе»)</span></td><td class="src">из разделов сметы</td><td><span class="state">нет такого набора в договорах</span></td></tr>
+          <tr><td>Коэффициент армирования, кг/м³ <span class="sub">второстепенный</span></td><td class="unk">не уточнено</td><td class="sub">—</td><td></td></tr>
+        </tbody>
+      </table>
+      <div class="why">С этой таблицей разбор 17.11 был бы одним взглядом: тип конструкции не в наименовании, а взят из разделов сметы, и именно он делает строку сборной. Сам раздел («Балки, капители, трансферные конструкции, лестницы») — в блоке «Где строка».</div>
+
+      <h3 style="margin-top:22px">Фасад: та же таблица</h3>
+      <table class="ptab">
+        <thead><tr><th>Параметр</th><th>В строке КП</th><th>Откуда</th></tr></thead>
+        <tbody>
+          <tr><td>Тип остекления/заполнения</td><td>двухкамерный стеклопакет</td><td class="sub">из наименования</td></tr>
+          <tr><td>Система остекления</td><td class="unk">не уточнено</td><td class="sub">нет ни в наименовании, ни в разделах</td></tr>
+          <tr><td>Огнестойкость</td><td class="unk">не уточнено</td><td class="sub">нет ни в наименовании, ни в разделах</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+<script>
+document.querySelectorAll(".pl").forEach((pl) => {
+  const btn = pl.querySelector(".tog");
+  if (!btn) return;
+  const n = pl.querySelectorAll(".more").length;
+  const paint = () => { btn.textContent = pl.classList.contains("open") ? "свернуть" : `подробнее · ещё ${n}`; };
+  btn.onclick = () => { pl.classList.toggle("open"); paint(); };
+  paint();
+});
+</script>
+</body>
+</html>
