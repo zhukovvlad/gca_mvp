@@ -1,8 +1,8 @@
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { handlerState, ladderQueues } from "@/test/handlers";
+import { chainRow, handlerState, LADDER_PAGE_SIZE, ladderQueues } from "@/test/handlers";
 import { renderWithProviders } from "@/test/utils";
 
 import { parseEntry } from "./entryParams";
@@ -61,14 +61,50 @@ describe("SuggestionsTab: очереди лестницы аналогов", () 
     expect(screen.queryByLabelText("Единица")).not.toBeInTheDocument();
   });
 
-  it("вход по ссылке с ?chain=: сразу очередь «Зоны», строка цепочки подсвечена", async () => {
+  it("вход по ссылке с ?chain=: сразу очередь «Зоны», над ней карточка этой цепочки, очередь — «Спорные»", async () => {
     renderWithProviders(<SuggestionsTab chainId={2} />);
 
+    const card = await screen.findByTestId("zone-entry-card");
     await screen.findAllByTestId("zone-row");
     expect(screen.getByRole("tab", { name: /^Зоны/ })).toHaveAttribute("aria-selected", "true");
-    const highlighted = screen.getAllByTestId("zone-row").filter((r) => r.dataset.highlighted === "true");
-    expect(highlighted).toHaveLength(1);
-    expect(highlighted[0]).toHaveTextContent("Временные сети");
+    expect(card).toHaveTextContent("Временные сети");
+    expect(ladderQueues.chainRequests[0]).toContain("filter=disputed");
+    // Порядок макета: сначала что такое зона, потом карточка с просьбой её выбрать, потом фильтр.
+    const explain = screen.getByTestId("zones-explain");
+    const filter = screen.getByLabelText("Показать");
+    expect(explain.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(card.compareDocumentPosition(filter) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    for (const row of screen.getAllByTestId("zone-row")) expect(row).not.toHaveAttribute("data-highlighted");
+    expect(screen.queryByTestId("zone-not-found")).not.toBeInTheDocument();
+  });
+
+  // Стенд 18.11.2026: цепочка 27989 стояла на 69-й странице очереди, и ссылка её не показывала.
+  it("цепочка дальше первой страницы и «Спорных», и «Всех»: карточка показывает её разделы, модель и четыре зоны", async () => {
+    ladderQueues.chains = [
+      ...Array.from({ length: LADDER_PAGE_SIZE + 1 }, (_, i) => chainRow(i + 1)),
+      chainRow(900, { titles: ["Устройство кровли", "Тип КС1 - КС8"], proposed_zone: "underground", proposed_confidence: "0.85" }),
+    ];
+    renderWithProviders(<SuggestionsTab chainId={900} />);
+
+    const card = await screen.findByTestId("zone-entry-card");
+    await screen.findAllByTestId("zone-row");
+    expect(card).toHaveTextContent("Устройство кровли / Тип КС1 - КС8");
+    expect(card).toHaveTextContent("Модель: подземная · уверенность 0,85");
+    for (const name of ["Подземная", "Надземная", "Территория", "Весь объект"]) {
+      expect(within(card).getByRole("button", { name })).toBeInTheDocument();
+    }
+    // Её нет в очереди (первая страница — 1…50): карточка не зависит от очереди.
+    expect(screen.getAllByTestId("zone-row")).toHaveLength(LADDER_PAGE_SIZE);
+    expect(within(screen.getByTestId("zones-queue")).queryByText(/Устройство кровли/)).not.toBeInTheDocument();
+  });
+
+  it("без chain карточки нет", async () => {
+    renderWithProviders(<SuggestionsTab />);
+    await screen.findAllByTestId("suggestion-group");
+    await userEvent.setup().click(screen.getByRole("tab", { name: /^Зоны/ }));
+
+    await screen.findAllByTestId("zone-row");
+    expect(screen.queryByTestId("zone-entry-card")).not.toBeInTheDocument();
   });
 });
 

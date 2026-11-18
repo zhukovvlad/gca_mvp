@@ -3508,6 +3508,12 @@ const ladderHandlers = [
       acceptable_total: ladderQueues.chains.filter(isAcceptableChain).length,
     });
   }),
+  http.get("/api/v1/semantic/section-chains/:id", ({ params }) => {
+    const chain = ladderQueues.chains.find((c) => c.id === Number(params.id));
+    if (!chain)
+      return HttpResponse.json({ detail: { code: "not_found", message: "нет цепочки" } }, { status: 404 });
+    return HttpResponse.json(chain);
+  }),
   http.post("/api/v1/semantic/section-chains/accept-all", () => {
     ladderQueues.acceptAllCalls.zones += 1;
     const targets = ladderQueues.chains.filter(isAcceptableChain);

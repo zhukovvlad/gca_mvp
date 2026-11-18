@@ -3349,6 +3349,15 @@ export function useSectionChains(params: SectionChainsParams, { poll = true }: {
   });
 }
 
+/** Одна цепочка разделов для карточки входа по ссылке; 404 не повторяется. Поллинга нет: решение сбрасывает ключ. */
+export function useSectionChain(chainId: number) {
+  return useQuery({
+    queryKey: qk.semanticQueue.zoneChain(chainId),
+    queryFn: () => semanticApi.getSectionChain(chainId),
+    retry: (failures, error) => apiErrorStatus(error) !== 404 && failures < 1,
+  });
+}
+
 /** Очередь «Можно отпустить»: плоский список страницы, по семьям его раскладывает экран. */
 export function useReleasableProposals(page: number, { poll = true }: { poll?: boolean } = {}) {
   return useQuery({
@@ -3387,10 +3396,17 @@ function invalidateAfterLadderDecision(
   return ownRefetch;
 }
 
+/**
+ * Общий ключ решений по зонам: карточка входа и очередь «Зоны» считают «занято» по нему
+ * (`useIsMutating`), чтобы цепочка, видимая в обеих, не получила два решения подряд.
+ */
+export const zoneDecisionMutationKey = ["zone-decision"] as const;
+
 /** Решение человека по зоне цепочки разделов (`PUT /section-chains/{id}/zone`, 204). */
 export function useDecideChainZone() {
   const qc = useQueryClient();
   return useMutation({
+    mutationKey: zoneDecisionMutationKey,
     mutationFn: ({ chainId, zone }: { chainId: number; zone: SectionZone }) =>
       semanticApi.decideChainZone(chainId, zone),
     onSuccess: () => invalidateAfterLadderDecision(qc, "zones"),
@@ -3402,6 +3418,7 @@ export function useDecideChainZone() {
 export function useAcceptAllZones() {
   const qc = useQueryClient();
   return useMutation({
+    mutationKey: zoneDecisionMutationKey,
     mutationFn: () => semanticApi.acceptAllChainZones(),
     onSuccess: (result) => {
       toast.success(

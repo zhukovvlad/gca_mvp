@@ -31,6 +31,7 @@ import { FetchingBar, ListSkeleton } from "./pending";
 import { PreviewDialog } from "./PreviewDialog";
 import { SuggestionGroups } from "./SuggestionGroups";
 import { SuggestionsHeader } from "./SuggestionsHeader";
+import { ZoneEntryCard } from "./ZoneEntryCard";
 import { ZonesQueue } from "./ZonesQueue";
 import { usePersistedPageSize } from "./usePersistedPageSize";
 
@@ -65,7 +66,7 @@ interface SuggestionsTabProps {
   onOpenFamily?: (familyId: number) => void;
   /** Вход по ссылке с подписи «ждёт решения администратора»: единица и предложение контекста. */
   target?: SuggestionTarget | null;
-  /** Вход по ссылке `?chain=`: очередь «Зоны» с подсвеченной цепочкой разделов. */
+  /** Вход по ссылке `?chain=`: очередь «Зоны» с карточкой этой цепочки разделов над ней. */
   chainId?: number | null;
 }
 
@@ -387,7 +388,9 @@ export function SuggestionsTab({ onOpenFamily, target = null, chainId = null }: 
         />
       )}
 
-      {queue === "zones" && <ZonesQueue highlightChainId={chainId} />}
+      {queue === "zones" && (
+        <ZonesQueue>{chainId !== null && <ZoneEntryCard chainId={chainId} />}</ZonesQueue>
+      )}
       {queue === "releasable" && <ReleasableQueue />}
 
       {queue === "err" && (errorsQ.isPending || holdQ.isPending) && (

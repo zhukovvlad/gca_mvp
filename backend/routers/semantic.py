@@ -1394,6 +1394,20 @@ def list_section_chains_route(
     return crud_section_chains.list_chains(db, filter=filter_, q=q, page=page)
 
 
+@router.get("/section-chains/{chain_id}")
+def get_section_chain_route(
+    chain_id: int,
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Одна цепочка в форме элемента списка (карточка входа по ссылке «ждёт решения»).
+    Только чтение: коммита и отката нет."""
+    try:
+        return crud_section_chains.get_chain(db, chain_id)
+    except DomainError as exc:
+        raise_domain_error(exc)
+
+
 @router.post("/section-chains/accept-all")
 def accept_all_section_chains_route(
     admin: User = Depends(require_admin),

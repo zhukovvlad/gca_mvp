@@ -10,6 +10,7 @@ import { server } from "@/test/server";
 import { chainRow, ladderQueues } from "@/test/handlers";
 import { renderWithProviders } from "@/test/utils";
 
+import { ZONES_EXPLAIN } from "./labels";
 import { ZonesQueue } from "./ZonesQueue";
 
 /**
@@ -178,19 +179,14 @@ describe("ZonesQueue", () => {
     expect(ladderQueues.chainRequests.at(-1)).toContain("page=2");
   });
 
-  it("подсветка по ?chain=: строка выбранной цепочки помечена", async () => {
-    renderWithProviders(<ZonesQueue highlightChainId={2} />);
+  it("строка-пояснение зоны видна всегда, а подсветки строки и плашки «нет на странице» нет", async () => {
+    renderWithProviders(<ZonesQueue />);
     await screen.findAllByTestId("zone-row");
 
-    expect(rowOf(/Временные сети/)).toHaveAttribute("data-highlighted", "true");
-    expect(rowOf(/Корпус 2/)).not.toHaveAttribute("data-highlighted");
-  });
-
-  it("цепочки из ссылки нет на странице: заметка вместо подсветки", async () => {
-    renderWithProviders(<ZonesQueue highlightChainId={999} />);
-    await screen.findAllByTestId("zone-row");
-
-    expect(screen.getByTestId("zone-not-found")).toBeInTheDocument();
+    expect(screen.getByTestId("zones-explain")).toHaveTextContent(ZONES_EXPLAIN);
+    expect(ZONES_EXPLAIN).toMatch(/^Зона — часть объекта/);
+    expect(screen.queryByTestId("zone-not-found")).not.toBeInTheDocument();
+    for (const row of screen.getAllByTestId("zone-row")) expect(row).not.toHaveAttribute("data-highlighted");
   });
 
   it("решение зоны → перезапрос разбора: открытый экран «Против нашей цены» запрашивает данные заново", async () => {

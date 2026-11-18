@@ -423,28 +423,8 @@ def _filter_condition(flt: str):
     raise ValueError(f"неизвестный фильтр очереди зон: {flt!r}")
 
 
-def list_chains(
-    db: Session, *, filter: ChainFilter, q: str | None, page: int
-) -> dict:  # noqa: A002 — имя параметра задано интерфейсом
-    """Страница очереди «Зоны»: `{items, total}`. Поиск `q` — по ключу цепочки (запрос
-    нормализуется как ключ, совпадение по подстроке буквально, без шаблонов `LIKE`)."""
-    conditions = [_filter_condition(filter)]
-    if q is not None and normalize_title(q):
-        conditions.append(sa.func.strpos(SectionChain.chain_key, normalize_title(q)) > 0)
-    stmt = sa.select(SectionChain).where(*conditions)
-    total = db.execute(
-        sa.select(sa.func.count()).select_from(stmt.order_by(None).subquery())
-    ).scalar_one()
-    page = max(1, page)
-    chains = db.execute(
-        stmt.order_by(SectionChain.id).offset((page - 1) * PAGE_SIZE).limit(PAGE_SIZE)
-    ).scalars().all()
-    acceptable_total = db.execute(
-        sa.select(sa.func.count()).select_from(SectionChain).where(*_ACCEPTABLE)
-    ).scalar_one()
-    if not chains:
-        return {"items": [], "total": total, "acceptable_total": acceptable_total}
-
+def _chain_items(db: Session, chains: Sequence[SectionChain]) -> list[dict]:
+    """Элементы очереди «Зоны» для цепочек: одна форма на список и на одну цепочку."""
     ids = [chain.id for chain in chains]
     job_status: dict[int, str] = {}
     for chain_id, status in db.execute(
@@ -473,30 +453,63 @@ def list_chains(
         ).all()
     }
     samples = load_zone_material(db, ids, limit=SAMPLE_TITLES)
+    return [
+        {
+            "id": chain.id,
+            "titles": list(chain.titles),
+            "zone": chain.zone,
+            "zone_source": chain.zone_source,
+            "proposed_zone": chain.proposed_zone,
+            "proposed_confidence": (
+                str(chain.proposed_confidence)
+                if chain.proposed_confidence is not None else None
+            ),
+            "proposed_reason": chain.proposed_reason,
+            "job_status": job_status.get(chain.id),
+            "rows_kp": rows_of.get(chain.id, (0, 0))[0],
+            "rows_contracts": rows_of.get(chain.id, (0, 0))[1],
+            "sample_titles": [title for title, _unit in samples[chain.id].rows],
+        }
+        for chain in chains
+    ]
+
+
+def list_chains(
+    db: Session, *, filter: ChainFilter, q: str | None, page: int
+) -> dict:  # noqa: A002 — имя параметра задано интерфейсом
+    """Страница очереди «Зоны»: `{items, total}`. Поиск `q` — по ключу цепочки (запрос
+    нормализуется как ключ, совпадение по подстроке буквально, без шаблонов `LIKE`)."""
+    conditions = [_filter_condition(filter)]
+    if q is not None and normalize_title(q):
+        conditions.append(sa.func.strpos(SectionChain.chain_key, normalize_title(q)) > 0)
+    stmt = sa.select(SectionChain).where(*conditions)
+    total = db.execute(
+        sa.select(sa.func.count()).select_from(stmt.order_by(None).subquery())
+    ).scalar_one()
+    page = max(1, page)
+    chains = db.execute(
+        stmt.order_by(SectionChain.id).offset((page - 1) * PAGE_SIZE).limit(PAGE_SIZE)
+    ).scalars().all()
+    acceptable_total = db.execute(
+        sa.select(sa.func.count()).select_from(SectionChain).where(*_ACCEPTABLE)
+    ).scalar_one()
+    if not chains:
+        return {"items": [], "total": total, "acceptable_total": acceptable_total}
+
     return {
-        "items": [
-            {
-                "id": chain.id,
-                "titles": list(chain.titles),
-                "zone": chain.zone,
-                "zone_source": chain.zone_source,
-                "proposed_zone": chain.proposed_zone,
-                "proposed_confidence": (
-                    str(chain.proposed_confidence)
-                    if chain.proposed_confidence is not None else None
-                ),
-                "proposed_reason": chain.proposed_reason,
-                "job_status": job_status.get(chain.id),
-                "rows_kp": rows_of.get(chain.id, (0, 0))[0],
-                "rows_contracts": rows_of.get(chain.id, (0, 0))[1],
-                "sample_titles": [title for title, _unit in samples[chain.id].rows],
-            }
-            for chain in chains
-        ],
+        "items": _chain_items(db, chains),
         "total": total,
         # Сколько спорных цепочек «Принять все предложения модели» примет (без «не знаю»).
         "acceptable_total": acceptable_total,
     }
+
+
+def get_chain(db: Session, chain_id: int) -> dict:
+    """Одна цепочка в той же форме, что элемент `list_chains`; нет такой — 404."""
+    chain = db.get(SectionChain, chain_id)
+    if chain is None:
+        raise DomainError(404, f"Цепочка разделов {chain_id} не найдена.")
+    return _chain_items(db, [chain])[0]
 
 
 def decide_zone(db: Session, chain_id: int, zone: str, *, actor_id: int) -> None:
