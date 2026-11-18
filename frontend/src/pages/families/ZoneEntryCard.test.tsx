@@ -164,6 +164,41 @@ describe("ZoneEntryCard", () => {
       await expectBothShow(card, "Территория");
       expect(ladderQueues.zoneDecisions).toHaveLength(1);
     });
+
+    // Ревью Codex к 011825a: PUT уже ответил, а перечитывание карточки ещё идёт — блокировка
+    // держится до его конца, иначе между ответом и перечитыванием можно нажать по старым данным.
+    it("PUT ответил, перечитывание карточки задержано: обе области заблокированы до его конца; плашка карточки — по центру", async () => {
+      let release!: () => void;
+      const hold = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let cardReads = 0;
+      server.use(
+        http.get("/api/v1/semantic/section-chains/:id", async ({ params }) => {
+          cardReads += 1;
+          if (ladderQueues.zoneDecisions.length > 0) await hold;
+          const chain = ladderQueues.chains.find((c) => c.id === Number(params.id));
+          return chain ? HttpResponse.json(chain) : new HttpResponse(null, { status: 404 });
+        })
+      );
+      const { user, card } = await renderBoth();
+      const readsBefore = cardReads;
+
+      await user.click(within(card).getByRole("button", { name: "Надземная" }));
+
+      await waitFor(() => expect(cardReads).toBeGreaterThan(readsBefore), LATER);
+      await waitFor(() => expect(ladderQueues.zoneDecisions).toEqual([{ chainId: 4, zone: "aboveground" }]), LATER);
+      expectBothBlocked(card);
+      const [cardOverlay, queueOverlay] = screen.getAllByTestId("recalc-overlay");
+      expect(card).toContainElement(cardOverlay);
+      expect(cardOverlay).toHaveAttribute("data-placement", "center");
+      expect(queueOverlay).toHaveAttribute("data-placement", "top");
+      await user.click(within(queueRowOf(/Фундаменты/)).getByRole("button", { name: "Территория" }));
+      expect(ladderQueues.zoneDecisions).toHaveLength(1);
+
+      release();
+      await expectBothShow(card, "Надземная");
+    });
   });
 
   it("404 от маршрута: вместо карточки плашка «не найдена», очередь ниже отрисована", async () => {

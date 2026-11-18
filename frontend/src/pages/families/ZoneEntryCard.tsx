@@ -66,8 +66,9 @@ export function ZoneEntryCard({ chainId }: { chainId: number }) {
         )}
       </div>
       <p className="text-[13px] text-fg-secondary">{ZONE_ENTRY_ASK}</p>
-      <RecalcOverlay active={busy} label={SAVING_LABEL}>
-        <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-4">
+      <RecalcOverlay active={busy} label={SAVING_LABEL} placement="center">
+        {/* Не ниже плашки «Сохраняем…» (~44 px): у короткой цепочки она не выходит за блок. */}
+        <div className="grid min-h-14 grid-cols-[minmax(0,1fr)_auto] items-start gap-4">
           <div className="grid min-w-0 gap-1">
             <div className="font-medium text-fg">{chain.titles.join(" / ")}</div>
             <div className="text-xs text-fg-tertiary">
