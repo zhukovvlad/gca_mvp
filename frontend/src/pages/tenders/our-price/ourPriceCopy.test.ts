@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { ourPriceLineFixture } from "@/test/fixtures";
 
-import { formatRatio, linesCount, offerSubtitle, progressCaption, roundSubtitle, variantCaption, priceBasisLabel,VAT_NET_LABEL, VAT_UNKNOWN_LABEL, inflationCaptionOf, KP_NOT_ADJUSTED_NOTE, groupLinesCaption, ratioNote, unitWarnContracts, unitWarnKp, isWaitingAdminLine, LINE_STATE_LABEL, lineStateLabel, periodRu, targetInactiveNote, WAITING_ADMIN_LABEL, workRungCaption, workRungLabel, analogsMore, COMPOSITE_NO_TARGET, EXPORT_SOURCE, TARGET_CARD, TARGET_MARK, targetSameContract, otherZonesLabel, refLinkTitle, refSections, refTruncated } from "./ourPriceCopy";
+import { formatRatio, linesCount, offerSubtitle, progressCaption, roundSubtitle, priceBasisLabel,VAT_NET_LABEL, VAT_UNKNOWN_LABEL, inflationCaptionOf, KP_NOT_ADJUSTED_NOTE, groupLinesCaption, ratioNote, unitWarnContracts, unitWarnKp, isWaitingAdminLine, LINE_STATE_LABEL, lineStateLabel, periodRu, targetInactiveNote, WAITING_ADMIN_LABEL, workRungCaption, workRungLabel, analogsMore, COMPOSITE_NO_TARGET, EXPORT_SOURCE, TARGET_CARD, TARGET_MARK, targetSameContract, otherZonesLabel, refLinkTitle, refSections, refTruncated } from "./ourPriceCopy";
 
 describe("groupLinesCaption", () => {
   it.each([
@@ -55,17 +55,6 @@ describe("formatRatio", () => {
     expect(formatRatio("99.96")).toBe("×100");
     expect(formatRatio("100.4")).toBe("×100");
     expect(formatRatio("0.01")).toBe("в 100 раз меньше");
-  });
-});
-
-describe("variantCaption", () => {
-  it("подпись варианта уже начинается с семьи — семья не повторяется", () => {
-    expect(variantCaption({ family: "Семья А", variant_label: "Семья А · 50 мм" })).toBe("Семья А · 50 мм");
-  });
-
-  it("семья без варианта — только семья; без семьи — ничего", () => {
-    expect(variantCaption({ family: "Семья А", variant_label: null })).toBe("Семья А");
-    expect(variantCaption({ family: null, variant_label: null })).toBeNull();
   });
 });
 
@@ -141,9 +130,10 @@ describe("priceBasisLabel", () => {
 describe("лестница аналогов: подписи", () => {
   it("подпись ступени работы: 1-2 по классу объекта, 3-4 с «другой класс»; 2 и 4 называют отпущенные параметры", () => {
     expect(workRungLabel({ no: 1, released: [], other_class: false })).toBe("тот же вариант");
-    expect(workRungLabel({ no: 2, released: ["Марка W", "Толщина"], other_class: false })).toBe("без Марка W, Толщина");
+    expect(workRungLabel({ no: 2, released: ["Марка W", "Толщина"], other_class: false })).toBe("без учёта: марка W, толщина");
+    expect(workRungLabel({ no: 2, released: ["МАФ"], other_class: false })).toBe("без учёта: МАФ");
     expect(workRungLabel({ no: 3, released: [], other_class: true })).toBe("тот же вариант · другой класс");
-    expect(workRungLabel({ no: 4, released: ["Марка W"], other_class: true })).toBe("без Марка W · другой класс");
+    expect(workRungLabel({ no: 4, released: ["Марка W"], other_class: true })).toBe("без учёта: марка W · другой класс");
   });
 
   it("«N аналогов»: склонение 1, 2-4, 5, 11, 21", () => {

@@ -16,6 +16,7 @@ import { PartsReference } from "./PartsReference";
 import { ReferencePanel } from "./ReferenceBlocks";
 import { ReferenceTargetCard, TargetCards } from "./TargetCards";
 import { targetAnalogId, type TargetStrategy } from "./targetSelection";
+import { WorkParamsSection } from "./WorkParamsSection";
 
 import { comparedKpPrice, comparedUnit, formatMoney, formatSigned, formatUnitPrice, pick, type VatView } from "./money";
 import {
@@ -53,7 +54,6 @@ import {
   ZONE_CAPTION,
   unitWarnContracts,
   unitWarnKp,
-  variantCaption,
   VAT_DROPPED_NOTE,
 } from "./ourPriceCopy";
 import { ExportBlock } from "./ExportBlock";
@@ -186,7 +186,7 @@ function LineSheetBody({
 }
 
 function subtitle(line: OurPriceLine): string {
-  return variantCaption(line) ?? SHEET_DESCRIPTION;
+  return line.family ?? SHEET_DESCRIPTION;
 }
 
 interface PanelContentProps {
@@ -236,6 +236,7 @@ function PanelContent({
         </Section>
       )}
       <Prices line={line} vat={vat} vatRate={vatRate} />
+      <WorkParamsSection params={line.params} basis={line.params_basis} kind={line.kind} />
       {line.kind === "work" && line.no_history_reason === "composite" && (
         <Section title={SHEET_SECTION.comparison} testId="sheet-comparison">
           <p
@@ -399,12 +400,6 @@ function Prices({ line, vat, vatRate }: { line: OurPriceLine; vat: VatView; vatR
             </dd>
           </>
         )}
-        {line.secondary.length > 0 && (
-          <>
-            <dt className="text-fg-secondary">{SHEET_FIELD.secondary}</dt>
-            <dd>{line.secondary.map((s) => `${s.name}: ${s.value}`).join("; ")}</dd>
-          </>
-        )}
       </dl>
     </Section>
   );
@@ -499,6 +494,7 @@ function WorkComparison({ tenderId, roundId, offerId, seriesId, line, data, vat,
         pinnedAnalogId={pinnedAnalogId}
         contractorAnalogId={line.contractor?.analog_id ?? null}
         busy={put.isPending || del.isPending}
+        columns={data.analog_columns}
         onChoose={(analogId) => put.mutate({ positionItemId: line.position_item_id, kind: "analog", analogId })}
       />
     </Section>

@@ -3583,6 +3583,39 @@ export interface OurPriceAnalog {
   article: OurPriceArticleRef | null;
   /** Путь по смете договора от её корня; может быть пустым. */
   chapter_path: OurPriceChapterStep[];
+  /** Значения отпущенных параметров в порядке `analog_columns` панели (спека параметров варианта §2.5). */
+  released_values: Array<{ value: string | null; conflict: boolean; differs: boolean }>;
+}
+
+/** Откуда значение параметра строки (спека параметров варианта §2.2). */
+export type ParamSource =
+  | "name"
+  | "path"
+  | "manual"
+  | "path_conflict"
+  | "none"
+  | "off_list"
+  | "missing"
+  | "old_schema"
+  | "stale";
+
+/** Как параметр учитывается при подборе аналогов (спека параметров варианта §2.3). */
+export type ParamMatch = "required" | "ignored" | "same_set";
+
+/** Основание правил подбора: фактическая ступень или настройка каталога. */
+export type ParamsBasis = "rung" | "catalog";
+
+/** Параметр строки с названием, значением и источником (спека параметров варианта §2.4). */
+export interface LineParam {
+  name: string;
+  role: "main" | "secondary";
+  value: string | null;
+  off_list: string | null;
+  composite: boolean;
+  source: ParamSource;
+  refreshing: boolean;
+  catalog_value: string | null;
+  match: ParamMatch | null;
 }
 
 /** Статья со своей цепочкой от корня классификатора; `chain` кончается самой статьёй. */
@@ -3675,7 +3708,8 @@ export interface OurPriceLine {
   /** Семья строки КП: сторона `a` связи при «Запомнить для семей» (спека справочных аналогов §2.16). */
   family_id: number | null;
   variant_label: string | null;
-  secondary: Array<{ name: string; value: string }>;
+  params_basis: ParamsBasis | null;
+  params: LineParam[];
   state: OurPriceLineState;
   waiting_admin: boolean;
   /** Очередь «Предложения» с открытым предложением, из-за которого строка ждёт; иначе `null`. */
@@ -4001,6 +4035,8 @@ export interface OurPriceLineView {
   contracts: OurPriceRungContract[];
   /** Справка работы в порядке §2.11; у системы пусто. */
   analogs: OurPriceAnalog[];
+  /** Колонки отпущенных параметров таблицы аналогов; пусто вне ступеней 2 и 4. */
+  analog_columns: Array<{ name: string }>;
   /** Справка «по частям» сборной строки; пусто у остальных. На цель и итоги не влияет. */
   parts_reference: OurPricePartsGroup[];
   /** Блок А: та же работа в другой зоне; пусто, когда блока нет (спека справочных аналогов §2.4). */

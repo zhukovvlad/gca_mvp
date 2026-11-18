@@ -56,7 +56,8 @@ LINE_KEYS = {
     "section_ref",
     "family",
     "variant_label",
-    "secondary",
+    "params_basis",
+    "params",
     "state",
     "waiting_admin",
     "suggestion_queue",
@@ -94,7 +95,7 @@ LINE_KEYS = {
 }
 PANEL_KEYS = {
     "line", "group_lines", "contracts", "analogs", "reference_zones", "reference_links", "parts_reference",
-    "vat_dropped", "comment",
+    "vat_dropped", "comment", "analog_columns",
 }
 TOLERANCE = D("1e-20")
 
@@ -449,7 +450,6 @@ class TestLineForm:
         assert line["section_ref"] == (item.item_number_in_proposal or item.position_key_in_proposal)
         assert line["family"] == "Семья Т"
         assert line["variant_label"] == "Семья Т · 50 мм"
-        assert line["secondary"] == []
         assert line["state"] == "comparable"
         assert line["waiting_admin"] is False
         assert line["kind"] == "work"
@@ -555,7 +555,7 @@ class TestLineForm:
         assert (line["rung"], line["rungs"]) == (None, [])
         assert line["analogs_count"] == 2
 
-    def test_secondary_parameters_are_named_pairs(self, member_client, stage, world, db_session):
+    def test_secondary_parameters_are_named_in_params(self, member_client, stage, world, db_session):
         from models import ContextParameterValue
 
         color = world.param(stage.schema, 3, "Цвет", role="secondary")
@@ -575,7 +575,8 @@ class TestLineForm:
 
         line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
 
-        assert line["secondary"] == [{"name": "Цвет", "value": "серый"}]
+        secondary = [(p["name"], p["value"]) for p in line["params"] if p["role"] == "secondary"]
+        assert secondary == [("Цвет", "серый")]
 
     def test_signed_difference_when_the_kp_is_under_our_rate(self, member_client, stage, factories):
         """Аналог 200, КП 150, объём 1: разница к самой низкой `-50`, в «выше самых низких»
@@ -1215,6 +1216,7 @@ class TestLinePanelAuto:
             "with_this_contractor",
             "place_match",
             "selectable",
+            "released_values",
         }
         assert first["contract_id"] == low.id
         assert first["object_title"] == low.object.title

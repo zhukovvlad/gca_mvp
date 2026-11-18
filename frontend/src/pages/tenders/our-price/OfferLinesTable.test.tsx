@@ -2,7 +2,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 
-import { agreedFixture, ourPriceLineFixture, workLineFixture } from "@/test/fixtures";
+import { agreedFixture, ourPriceLineFixture, ourPriceParamFixture, workLineFixture } from "@/test/fixtures";
 import type { MoneyPair, OurPriceLine } from "@/types/domain";
 
 import { OfferLinesTable } from "./OfferLinesTable";
@@ -217,47 +217,66 @@ describe("колонки строки", () => {
     expect(screen.getByTestId("to-ours-1")).not.toHaveTextContent(WAITING_ADMIN_LABEL);
   });
 
-  it("работа и вариант — одной строкой, второстепенные параметры — в подсказке", () => {
+  it("ячейка «Работа»: наименование, семья отдельной строкой, под ней параметры столбиком", () => {
     renderTable([
       line(1, {
         title: "Устройство стяжки",
         family: "Стяжка",
-        variant_label: "Стяжка · 50 мм",
-        secondary: [
-          { name: "Цвет", value: "серый" },
-          { name: "Армирование", value: "сетка" },
+        params: [
+          ourPriceParamFixture({ name: "Толщина", value: "50 мм" }),
+          ourPriceParamFixture({ name: "Армирование", value: "сетка" }),
         ],
       }),
     ]);
     const work = screen.getByTestId("work-1");
     expect(work).toHaveTextContent("Устройство стяжки");
-    expect(work).toHaveTextContent("Стяжка · 50 мм");
-    // Подпись варианта уже начинается с семьи: семья во второй раз не печатается.
-    expect(work).not.toHaveTextContent("Стяжка · Стяжка");
-    expect(screen.getByTestId("secondary-1")).toHaveAttribute("title", "Цвет: серый; Армирование: сетка");
+    expect(within(work).getByTestId("params-family")).toHaveTextContent(/^Стяжка$/);
+    const rows = within(work).getAllByTestId("params-row");
+    expect(rows[0]).toHaveTextContent("Толщина: 50 мм");
+    expect(rows[1]).toHaveTextContent("Армирование: сетка");
+    expect(screen.queryByTestId("secondary-1")).not.toBeInTheDocument();
   });
 
-  it("без второстепенных параметров значка подсказки нет; без семьи вариантной строки нет", () => {
-    renderTable([line(1, { secondary: [], family: null, variant_label: null })]);
-    expect(screen.queryByTestId("secondary-1")).not.toBeInTheDocument();
+  it("без семьи и без параметров в ячейке только наименование", () => {
+    renderTable([line(1, { family: null, params: [], variant_label: null })]);
+    expect(screen.queryByTestId("params-family")).not.toBeInTheDocument();
+    expect(screen.queryAllByTestId("params-row")).toHaveLength(0);
     expect(screen.getByTestId("work-1")).not.toHaveTextContent("·");
   });
 
-  it("вариант есть, второстепенных параметров нет — значка подсказки нет", () => {
-    renderTable([line(1, { family: "Стяжка", variant_label: "Стяжка · 50 мм", secondary: [] })]);
-    expect(screen.getByTestId("work-1")).toHaveTextContent("Стяжка · 50 мм");
-    expect(screen.queryByTestId("secondary-1")).not.toBeInTheDocument();
+  it("«подробнее» не открывает панель строки, щелчок по параметру — открывает", () => {
+    const onOpenLine = vi.fn();
+    const four = [1, 2, 3, 4].map((i) => ourPriceParamFixture({ name: `П${i}`, value: `з${i}` }));
+    renderTable([line(1, { params: four })], { onOpenLine });
+    fireEvent.click(screen.getByRole("button", { name: "подробнее · ещё 1" }));
+    expect(onOpenLine).not.toHaveBeenCalled();
+    expect(within(screen.getByTestId("work-1")).getAllByTestId("params-row")).toHaveLength(4);
+    fireEvent.click(screen.getByRole("button", { name: "свернуть" }));
+    expect(onOpenLine).not.toHaveBeenCalled();
+    fireEvent.click(screen.getAllByTestId("params-row")[0]);
+    expect(onOpenLine).toHaveBeenCalledWith(1);
   });
 
-  it("значение варианта без семьи печатается без ведущего разделителя", () => {
-    renderTable([line(1, { family: null, variant_label: "50 мм" })]);
-    expect(screen.getByTestId("work-1")).toHaveTextContent("50 мм");
-    expect(screen.getByTestId("work-1")).not.toHaveTextContent("·");
+  it("раскрытие одной строки не раскрывает соседнюю", () => {
+    const four = [1, 2, 3, 4].map((i) => ourPriceParamFixture({ name: `П${i}`, value: `з${i}` }));
+    renderTable([line(1, { params: four }), line(2, { params: four })]);
+    fireEvent.click(within(screen.getByTestId("work-1")).getByRole("button", { name: /подробнее/ }));
+    expect(within(screen.getByTestId("work-1")).getAllByTestId("params-row")).toHaveLength(4);
+    expect(within(screen.getByTestId("work-2")).getAllByTestId("params-row")).toHaveLength(3);
   });
 
-  it("второстепенные параметры без варианта строки не печатаются: подсказка живёт при варианте", () => {
-    renderTable([line(1, { family: null, variant_label: null, secondary: [{ name: "Цвет", value: "серый" }] })]);
-    expect(screen.queryByTestId("secondary-1")).not.toBeInTheDocument();
+  it("раскрытие остаётся у своей строки после смены сортировки", () => {
+    const four = [1, 2, 3, 4].map((i) => ourPriceParamFixture({ name: `П${i}`, value: `з${i}` }));
+    renderTable([
+      line(1, { ...toOurs(1, "-50.00"), params: four }),
+      line(2, { ...toOurs(2, "200.00"), params: four }),
+    ]);
+    expect(order()).toEqual([2, 1]);
+    fireEvent.click(within(screen.getByTestId("work-1")).getByRole("button", { name: /подробнее/ }));
+    fireEvent.click(screen.getByRole("button", { name: /К самой низкой/ }));
+    expect(order()).toEqual([1, 2]);
+    expect(within(screen.getByTestId("work-1")).getAllByTestId("params-row")).toHaveLength(4);
+    expect(within(screen.getByTestId("work-2")).getAllByTestId("params-row")).toHaveLength(3);
   });
 
   it("нет объёма и нет цены КП — прочерки", () => {
@@ -635,8 +654,8 @@ describe("лестница аналогов: колонки и подписи с
       workRow(3, { work_rung: { no: 2, released: ["Толщина"], other_class: false }, analogs_count: 2 }),
     ]);
     expect(screen.getByTestId("rung-1")).toHaveTextContent("тот же вариант · 7 аналогов");
-    expect(screen.getByTestId("rung-2")).toHaveTextContent("без Марка W · другой класс · 1 аналог");
-    expect(screen.getByTestId("rung-3")).toHaveTextContent("без Толщина · 2 аналога");
+    expect(screen.getByTestId("rung-2")).toHaveTextContent("без учёта: марка W · другой класс · 1 аналог");
+    expect(screen.getByTestId("rung-3")).toHaveTextContent("без учёта: толщина · 2 аналога");
   });
 
   it("метка цели: у «самой свежей» и «аналога» есть, у «самой низкой» и «договорились» нет", () => {

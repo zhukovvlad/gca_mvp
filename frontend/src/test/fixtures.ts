@@ -49,6 +49,7 @@ import type {
   OurPriceChapterStep,
   OurPriceFork,
   OurPriceInflation,
+  LineParam,
   OurPriceLine,
   OurPriceLineState,
   OurPriceLineView,
@@ -2907,6 +2908,22 @@ export function nodeTotalsFixture(
   return { lines, no_price: noPrice, kp_total: kpTotal };
 }
 
+/** Параметр строки: по умолчанию главный, из наименования, «должен совпасть». */
+export function ourPriceParamFixture(overrides: Partial<LineParam> = {}): LineParam {
+  return {
+    name: "Параметр 1",
+    role: "main",
+    value: "значение 1",
+    off_list: null,
+    composite: false,
+    source: "name",
+    refreshing: false,
+    catalog_value: null,
+    match: "required",
+    ...overrides,
+  };
+}
+
 /** Строка разбора: по умолчанию сопоставимая работа на автоматической ступени. */
 export function ourPriceLineFixture(overrides: Partial<OurPriceLine> = {}): OurPriceLine {
   return {
@@ -2923,7 +2940,13 @@ export function ourPriceLineFixture(overrides: Partial<OurPriceLine> = {}): OurP
     family: "Семья 1",
     family_id: null,
     variant_label: "Семья 1 · Вариант 1",
-    secondary: [{ name: "Цвет", value: "серый" }],
+    // Ступень семьи `v` (ниже): правила подбора описывают фактический подбор, главные - `required`.
+    params_basis: "rung",
+    params: [
+      ourPriceParamFixture({ name: "Тип конструкции", value: "стены" }),
+      ourPriceParamFixture({ name: "Марка по водонепроницаемости", value: "W6" }),
+      ourPriceParamFixture({ name: "Цвет", role: "secondary", value: "серый", match: "ignored" }),
+    ],
     state: "comparable",
     waiting_admin: false,
     suggestion_queue: null,
@@ -3207,6 +3230,7 @@ export function ourPriceLineViewFixture(
       },
     ],
     analogs: [],
+    analog_columns: [],
     parts_reference: [],
     reference_zones: [],
     reference_links: [],
@@ -3263,6 +3287,7 @@ export function ourPriceAnalogFixture(overrides: Partial<OurPriceAnalog> = {}): 
     selectable: true,
     article: articleRefFixture(),
     chapter_path: chapterPathFixture("Корпус 1", "Надземная часть"),
+    released_values: [],
     ...overrides,
   };
 }

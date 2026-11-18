@@ -29,6 +29,7 @@ function renderTable(props: Partial<AnalogsTableProps> = {}) {
       contractorAnalogId={props.contractorAnalogId ?? null}
       busy={props.busy ?? false}
       onChoose={props.onChoose ?? (() => undefined)}
+      columns={props.columns ?? []}
     />
   );
 }
@@ -187,5 +188,55 @@ describe("справка аналогов", () => {
     renderTable({ analogs: [] });
     expect(screen.getByTestId("analogs-empty")).toBeInTheDocument();
     expect(screen.queryByTestId("analogs-table")).not.toBeInTheDocument();
+  });
+});
+
+describe("колонки отпущенных параметров", () => {
+  const columns = [{ name: "Марка W" }, { name: "Толщина" }];
+  const released = (value: string | null, differs = false, conflict = false) => ({ value, conflict, differs });
+
+  it("колонка на каждый элемент columns: имя и значение у каждого аналога, в порядке columns", () => {
+    renderTable({
+      columns,
+      analogs: [
+        ourPriceAnalogFixture({ analog_id: 1, released_values: [released("W8", true), released("200", false)] }),
+        ourPriceAnalogFixture({ analog_id: 2, released_values: [released("W12", true), released("250", true)] }),
+      ],
+    });
+    const first = screen.getByTestId("analog-released-1");
+    expect(within(first).getAllByTestId("analog-released-name").map((n) => n.textContent)).toEqual(["Марка W", "Толщина"]);
+    expect(within(first).getAllByTestId("analog-released-value").map((n) => n.textContent)).toEqual(["W8", "200"]);
+    const second = screen.getByTestId("analog-released-2");
+    expect(within(second).getAllByTestId("analog-released-value").map((n) => n.textContent)).toEqual(["W12", "250"]);
+  });
+
+  it("значение без текста — «не уточнено», конфликт — «расходится по разделам»", () => {
+    renderTable({
+      columns,
+      analogs: [ourPriceAnalogFixture({ analog_id: 1, released_values: [released(null), released(null, true, true)] })],
+    });
+    const values = within(screen.getByTestId("analog-released-1")).getAllByTestId("analog-released-value");
+    expect(values[0]).toHaveTextContent("не уточнено");
+    expect(values[1]).toHaveTextContent("расходится по разделам");
+  });
+
+  it("подсветка — только у значения с differs", () => {
+    renderTable({
+      columns,
+      analogs: [ourPriceAnalogFixture({ analog_id: 1, released_values: [released("W8", true), released("200", false)] })],
+    });
+    const [differs, same] = within(screen.getByTestId("analog-released-1")).getAllByTestId("analog-released-value");
+    expect(differs).toHaveAttribute("data-differs", "true");
+    expect(differs.className).toContain("text-warning-text");
+    expect(same).not.toHaveAttribute("data-differs");
+    expect(same.className).not.toContain("text-warning-text");
+  });
+
+  it("columns пуст — колонок нет, даже если у аналога есть значения", () => {
+    renderTable({
+      columns: [],
+      analogs: [ourPriceAnalogFixture({ analog_id: 1, released_values: [released("W8", true)] })],
+    });
+    expect(screen.queryByTestId("analog-released-1")).not.toBeInTheDocument();
   });
 });

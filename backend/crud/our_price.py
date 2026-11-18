@@ -43,6 +43,7 @@ from crud.our_price_load import (
     load_composites,
     load_history,
     load_kp_lines,
+    load_value_texts,
     load_work_history,
 )
 from crud.reference_lines import ReferenceLine, load_link_values, load_reference_lines
@@ -60,7 +61,14 @@ from models import (
 )
 from money.inflation import YearMonth, adjust_amount
 from money.price import is_price
-from services.analog_ladder import FamilyLadderInfo, Figure, WorkHistory, parts_reference
+from services.analog_ladder import (
+    FamilyLadderInfo,
+    Figure,
+    WorkHistory,
+    _releasable_ids,
+    params_rule,
+    parts_reference,
+)
 from services.context_routing import ChapterStep, chapter_steps
 from services.excel import iso_date_to_ru
 from services.family_links import LinkState, links_of_families
@@ -843,6 +851,42 @@ def _article_ref(tree: Mapping[int, CategoryMeta], category_id: int | None) -> d
     }
 
 
+def _params_view(
+    row: KpLineRow, result: LineResult, families: Mapping[int, FamilyLadderInfo]
+) -> tuple[str | None, list[dict]]:
+    """Параметры строки с правилом «при подборе» (спека параметров варианта §2.3, §2.4): основание
+    правила и параметры в порядке `row.params`. Без основания (нет варианта, система без ступени)
+    у всех параметров `match` — `None`."""
+    line = row.line
+    ladder = result.ladder
+    rule = params_rule(
+        main_ids=[p.parameter_id for p in row.params if p.role == "main"],
+        has_variant=line.key is not None,
+        is_system=line.is_system,
+        schema_id=line.schema_id,
+        forms=line.forms,
+        conflicted=line.conflicted,
+        info=None if line.key is None else families.get(line.key.family_id),
+        work_rung=None if ladder is None else ladder.rung_no,
+        system_level=None if result.rung is None else result.rung.level,
+    )
+    params = [
+        {
+            "name": p.name,
+            "role": p.role,
+            "value": p.value,
+            "off_list": p.off_list,
+            "composite": p.composite,
+            "source": p.source,
+            "refreshing": p.refreshing,
+            "catalog_value": p.catalog_value,
+            "match": rule.main.get(p.parameter_id) if p.role == "main" else rule.secondary,
+        }
+        for p in row.params
+    ]
+    return rule.basis, params
+
+
 def _line_view(
     row: KpLineRow,
     result: LineResult,
@@ -871,6 +915,7 @@ def _line_view(
         else None
     )
     waiting_admin = _waiting_admin(line, result)
+    params_basis, params = _params_view(row, result, families)
     return {
         "position_item_id": line.position_item_id,
         "context_id": row.context_id,
@@ -885,7 +930,8 @@ def _line_view(
         "section_ref": row.section_ref,
         "family": row.family_title,
         "variant_label": row.variant_label,
-        "secondary": [{"name": name, "value": value} for name, value in row.secondary],
+        "params_basis": params_basis,
+        "params": params,
         "state": result.state.value,
         "waiting_admin": waiting_admin,
         "suggestion_queue": row.suggestion_queue if _is_waiting_admin(line) else None,
@@ -1571,11 +1617,55 @@ def _analog_ids(result: LineResult) -> list[int]:
     return [analog.position_item_id for analog in ladder.analogs]
 
 
+def _released_view(
+    db: Session, scene: _Scene, row: KpLineRow, result: LineResult
+) -> tuple[list[dict], dict[int, list[dict]]]:
+    """Колонки отпущенных параметров и значения аналогов по ним (спека параметров варианта §2.5): только
+    при ступени работы 2 или 4. Значения берутся из строк истории сцены; тексты — одним запросом на ответ.
+    Без колонок: `([], {})`."""
+    ladder = result.ladder
+    key = row.line.key
+    if ladder is None or ladder.rung_no not in (2, 4) or key is None:
+        return [], {}
+    info = scene.families.get(key.family_id)
+    released = _releasable_ids(info)
+    if info is None or not released:
+        return [], {}
+    history = {line.position_item_id: line for line in scene.work_history.lines_of(key.family_id)}
+    kp_values, kp_conflicted = row.line.main_values, row.line.conflicted
+    texts = load_value_texts(
+        db,
+        {
+            value_id
+            for analog in ladder.analogs
+            for parameter_id in released
+            if (value_id := history[analog.position_item_id].main_values.get(parameter_id)) is not None
+        },
+    )
+    values: dict[int, list[dict]] = {}
+    for analog in ladder.analogs:
+        line = history[analog.position_item_id]
+        cells = []
+        for parameter_id in released:
+            value_id = line.main_values.get(parameter_id)
+            conflict = parameter_id in line.conflicted
+            cells.append(
+                {
+                    "value": None if value_id is None else texts[value_id],
+                    "conflict": conflict,
+                    "differs": conflict or parameter_id in kp_conflicted or value_id != kp_values.get(parameter_id),
+                }
+            )
+        values[analog.position_item_id] = cells
+    return [{"name": info.names[parameter_id]} for parameter_id in released], values
+
+
 def _analogs_view(
     scene: _Scene,
     participant: _Participant,
     result: LineResult,
     details: Mapping[int, tuple[str, str | None, list[str], int | None, int | None]],
+    released_values: Mapping[int, list[dict]],
     tree: Mapping[int, CategoryMeta],
     steps: Mapping[int, tuple[ChapterStep, ...]],
 ) -> list[dict]:
@@ -1616,6 +1706,7 @@ def _analogs_view(
                 "with_this_contractor": contract.contractor_id == participant.contractor_id,
                 "place_match": analog.place_match,
                 "selectable": analog.outlier_ratio is None,
+                "released_values": released_values.get(analog.position_item_id, []),
             }
         )
     return view
@@ -1976,7 +2067,8 @@ def build_line_view(
         )
 
     vat_dropped = _vat_dropped_view(scene, row, result)
-    analogs = _analogs_view(scene, participant, result, analog_details, tree, steps)
+    analog_columns, released_values = _released_view(db, scene, row, result)
+    analogs = _analogs_view(scene, participant, result, analog_details, released_values, tree, steps)
     reference_zones = _reference_zones_view(scene, participant, result, row.unit_id, reference, analog_details, steps)
     reference_links = _reference_links_view(scene, participant, result, row.unit_id, reference, analog_details, steps)
 
@@ -1994,6 +2086,7 @@ def build_line_view(
         "group_lines": group_lines,
         "contracts": contracts,
         "analogs": analogs,
+        "analog_columns": analog_columns,
         "reference_zones": reference_zones,
         "reference_links": reference_links,
         "parts_reference": _parts_reference_view(db, scene, participant, row, result),

@@ -27,12 +27,11 @@ import {
   RUNG_LEVEL_LABEL,
   RUNG_MANUAL_INACTIVE_TAG,
   RUNG_MANUAL_TAG,
-  SECONDARY_MARK,
   TARGET_MARK,
   TREE_RESTORE_LABEL,
-  variantCaption,
   workRungCaption,
 } from "./ourPriceCopy";
+import { LineParamsCell } from "./LineParamsCell";
 import { LineStateText } from "./LineStateText";
 import { SortHead } from "./SortHead";
 import { ariaSort, compareNullable, nextSort, type SortDir, type SortState } from "./sorting";
@@ -165,7 +164,6 @@ export function OfferLinesTable({ lines, layout, vat, rateClass, canResolve = fa
         header: LINE_COLUMN.work,
         cell: ({ row }) => {
           const line = row.original;
-          const variant = variantCaption(line) ?? "";
           return (
             <div data-testid={`work-${line.position_item_id}`}>
               <button type="button" className="line-clamp-3 text-left text-fg" title={line.title}>
@@ -179,20 +177,7 @@ export function OfferLinesTable({ lines, layout, vat, rateClass, canResolve = fa
                   {paths.get(line.position_item_id)}
                 </span>
               )}
-              {variant !== "" && (
-                <span className="block text-[0.6875rem] leading-snug text-fg-secondary">
-                  {variant}
-                  {line.secondary.length > 0 && (
-                    <span
-                      data-testid={`secondary-${line.position_item_id}`}
-                      className="ml-1 text-fg-muted"
-                      title={line.secondary.map((s) => `${s.name}: ${s.value}`).join("; ")}
-                    >
-                      {SECONDARY_MARK}
-                    </span>
-                  )}
-                </span>
-              )}
+              <LineParamsCell family={line.family} params={line.params} basis={line.params_basis} />
             </div>
           );
         },
@@ -329,7 +314,14 @@ export function OfferLinesTable({ lines, layout, vat, rateClass, canResolve = fa
     ];
   }, [vat, rateClass, canResolve, paths]);
 
-  const table = useTable({ features, columns, data: sorted });
+  // Ключ строки — позиция, а не место в сортировке: иначе локальное состояние
+  // ячейки (раскрытие параметров) переезжает к соседней строке при пересортировке.
+  const table = useTable({
+    features,
+    columns,
+    data: sorted,
+    getRowId: (line) => String(line.position_item_id),
+  });
 
   // Дерево: строки внутри уровня — в порядке общей сортировки; порядок самих уровней задаёт раскладка.
   const rows = table.getRowModel().rows;

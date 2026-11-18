@@ -18,6 +18,7 @@ import type {
 import { ZONE_LABEL } from "@/pages/families/labels";
 
 import type { OfferFilter } from "./offerFilter";
+import { lowerFirst } from "./paramsCopy";
 
 /**
  * Тексты экранов «Против нашей цены» (спека 4а §2.9, §2.11, §2.13). Компоненты
@@ -235,11 +236,6 @@ export function offerSubtitle(stageNo: number, parts: SubtitleParts): string {
   return subtitleOf(parts.heldOn !== null ? `${stage}, ${dateRu(parts.heldOn)}` : stage, parts);
 }
 
-/** Подпись варианта строки: подпись уже начинается с семьи, поэтому семья отдельно не печатается. */
-export function variantCaption(line: { family: string | null; variant_label: string | null }): string | null {
-  return line.variant_label ?? line.family;
-}
-
 export const OFFER_SWITCHER_LABEL = "Участник:";
 
 export function offerCrumbStage(stageNo: number): string {
@@ -325,7 +321,6 @@ export function rowsLabel(count: number): string {
 export const noPriceCountLabel = (count: number): string => `${count} без цены`;
 export const nodeKpLabel = (amount: string): string => `КП ${amount}`;
 export const ALL_CLASSES_LABEL = "все кл.";
-export const SECONDARY_MARK = "ⓘ";
 export const SUB_KOPECK_LABEL = "< 0,01";
 
 export const POSITION_LABEL = {
@@ -382,9 +377,13 @@ function analogsCount(n: number): string {
   return `${formatNumber(n)} ${pluralForm(n, "аналог", "аналога", "аналогов")}`;
 }
 
-/** Подпись ступени работы (спека лестницы аналогов §2.8): «тот же вариант», «без …», «… · другой класс». */
+/**
+ * Подпись ступени работы (спека лестницы аналогов §2.8, спека параметров варианта §2.6):
+ * «тот же вариант», «без учёта: …», «… · другой класс».
+ */
 export function workRungLabel(rung: WorkRung): string {
-  const base = rung.no === 1 || rung.no === 3 ? "тот же вариант" : `без ${rung.released.join(", ")}`;
+  const base =
+    rung.no === 1 || rung.no === 3 ? "тот же вариант" : `без учёта: ${rung.released.map(lowerFirst).join(", ")}`;
   return rung.other_class ? `${base} · другой класс` : base;
 }
 
@@ -434,7 +433,6 @@ export const SHEET_FIELD = {
   quantity: "Объём",
   toOurs: "К самой низкой",
   ours: "Самая низкая (справкой)",
-  secondary: "Второстепенные",
 } as const;
 
 /** Карточки цифр работы (спека лестницы аналогов §2.20): подписи и подсказки. */
@@ -747,10 +745,6 @@ export function refMore(hidden: number): string {
 /** Метка зоны группы блока А. */
 export function refZoneBadge(zone: Zone): string {
   return `зона: ${ZONE_LABEL[zone]}`;
-}
-
-export function refReleased(released: string[]): string {
-  return released.length === 0 ? "тот же вариант" : `отпущен: ${released.join(", ")}`;
 }
 
 /** Метка свёртки: «×9». */

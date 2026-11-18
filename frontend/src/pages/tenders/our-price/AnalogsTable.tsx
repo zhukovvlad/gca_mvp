@@ -20,6 +20,7 @@ import {
   analogsMore,
   periodRu,
 } from "./ourPriceCopy";
+import { releasedValueText } from "./paramsCopy";
 import { TargetMark, type TargetMarkKind } from "./TargetCards";
 
 export interface AnalogsTableProps {
@@ -36,6 +37,8 @@ export interface AnalogsTableProps {
   /** Цель сохраняется: кнопки выбора погашены. */
   busy: boolean;
   onChoose: (analogId: number) => void;
+  /** Отпускаемые параметры ступени 2/4 (`analog_columns`): у каждого аналога - значение по порядку; пусто - колонок нет. */
+  columns: Array<{ name: string }>;
 }
 
 const DASH = "—";
@@ -88,6 +91,7 @@ export function AnalogsTable({
   contractorAnalogId,
   busy,
   onChoose,
+  columns,
 }: AnalogsTableProps) {
   const [open, setOpen] = useState(false);
   if (analogs.length === 0) {
@@ -173,6 +177,28 @@ export function AnalogsTable({
               >
                 {a.title}
               </p>
+              {columns.length > 0 && (
+                <dl data-testid={`analog-released-${a.analog_id}`} className="flex flex-wrap gap-x-4 gap-y-0.5 text-xs">
+                  {columns.map((column, i) => {
+                    const released = a.released_values[i];
+                    if (released === undefined) return null;
+                    return (
+                      <div key={column.name} className="flex gap-1">
+                        <dt data-testid="analog-released-name" className="text-fg-secondary">
+                          {column.name}
+                        </dt>
+                        <dd
+                          data-testid="analog-released-value"
+                          data-differs={released.differs ? "true" : undefined}
+                          className={cn(released.differs && "rounded-sm bg-warning-soft px-1 text-warning-text")}
+                        >
+                          {releasedValueText(released)}
+                        </dd>
+                      </div>
+                    );
+                  })}
+                </dl>
+              )}
               <LineWhere article={a.article} chapterPath={a.chapter_path} scope="contract" />
               {canChoose && a.selectable && a.analog_id !== pinnedAnalogId && (
                 <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => onChoose(a.analog_id)}>
