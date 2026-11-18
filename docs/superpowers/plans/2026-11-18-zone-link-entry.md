@@ -47,6 +47,13 @@
    `highlightChainId` удаляется вместе с подсветкой и `zone-not-found`.
 5. Поллинга у запроса карточки нет: решение в ней сбрасывает ключ, а ответ
    модели по одной цепочке за время просмотра не ждём.
+6. Общая блокировка (спека §2 п. 2): `useDecideChainZone` и
+   `useAcceptAllZones` получают общий `zoneDecisionMutationKey`; карточка и
+   `ZonesQueue` считают «занято» как `useIsMutating({ mutationKey:
+   zoneDecisionMutationKey }) > 0` вместо локальных `isPending`. Мутация
+   остаётся в работе до конца перечитывания: `onSuccess` уже возвращает
+   промис перечитывания префикса «Зоны», под которым лежит и ключ карточки.
+   Образец — `kpDecisionMutationKey` на экране КП.
 
 ## Задачи
 
@@ -78,6 +85,7 @@ getSectionChain: (chainId: number) => Promise<SectionChainRow>
 qk.semanticQueue.zoneChain: (chainId: number) => readonly ["semantic-queue", "zones", "chain", number]
 // services/queries.ts
 export function useSectionChain(chainId: number): UseQueryResult<SectionChainRow>
+export const zoneDecisionMutationKey: readonly ["zone-decision"]
 // pages/families/ZonesQueue.tsx
 export function modelLine(chain: SectionChainRow): string
 export function ZoneToggle(props: { chain: SectionChainRow; busy: boolean;
@@ -115,6 +123,12 @@ export const ZONE_ENTRY_NOT_FOUND: string
 - нажатие зоны в карточке шлёт ровно одно решение `{chainId, zone}`; после
   перечитывания кнопка зоны нажата, вместо строки модели —
   «зона поставлена: человек»;
+- карточка и очередь вместе, цепочка видна в обеих, `PUT …/zone` задержан:
+  решение из карточки блокирует кнопки зон и «Принять все» в очереди, а
+  решение из строки очереди — кнопки карточки; попытка нажать во второй
+  области не шлёт второго решения (в моке ровно одно); после ответа и
+  перечитывания обе области показывают одну и ту же нажатую зону и
+  разблокированы. Без общего ключа (локальный `isPending`) тест красный;
 - `404` от маршрута — `ZONE_ENTRY_NOT_FOUND` вместо карточки, очередь ниже
   отрисована; ошибка 500 — не текст «не найдена»;
 - «← вернуться к КП» есть, когда до страницы была навигация, и нет при
@@ -133,13 +147,14 @@ export const ZONE_ENTRY_NOT_FOUND: string
 **Имена**
 - Заводятся этой задачей: `_chain_items`, `get_chain`, `get_section_chain_route`,
   `getSectionChain`, `qk.semanticQueue.zoneChain`, `useSectionChain`,
-  `ZoneToggle`, `ZoneEntryCard`, `ZONES_EXPLAIN`, `ZONE_ENTRY_TITLE`,
+  `ZoneToggle`, `ZoneEntryCard`, `zoneDecisionMutationKey`, `ZONES_EXPLAIN`, `ZONE_ENTRY_TITLE`,
   `ZONE_ENTRY_ASK`, `ZONE_ENTRY_BACK`, `ZONE_ENTRY_NOT_FOUND`; `modelLine`
   существует, задача его экспортирует.
 - Существуют, проверено `grep`-ом: `list_chains`, `SAMPLE_TITLES`,
   `load_zone_material`, `raise_domain_error`, `require_admin`,
   `LADDER_ROUTE_TEMPLATES`, `SectionChainRow`, `qk.semanticQueue.zonesAll`,
-  `useDecideChainZone`, `invalidateAfterLadderDecision`, `apiErrorStatus`,
+  `useDecideChainZone`, `useAcceptAllZones`, `invalidateAfterLadderDecision`,
+  `kpDecisionMutationKey`, `RecalcOverlay`, `SAVING_LABEL`, `apiErrorStatus`,
   `ladderQueues`, `LADDER_PAGE_SIZE`, `ZONE_LABEL`, `ZONE_SOURCE_LABEL`,
   `SECTION_ZONES`, `parseEntry`.
 
