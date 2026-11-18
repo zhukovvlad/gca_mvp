@@ -640,13 +640,27 @@ def _conflicted_parameters(db: Session, context_ids: Sequence[int]) -> dict[int,
     if not ids:
         return {}
     grouped: dict[int, dict[int, set[int]]] = defaultdict(lambda: defaultdict(set))
-    for context_id, schema_id, parameter_id in db.execute(
-        sa.select(ContextParameterValue.context_id, FamilyParameter.schema_id, FamilyParameter.id)
-        .select_from(ContextParameterValue)
-        .join(FamilyParameter, FamilyParameter.id == ContextParameterValue.parameter_id)
+    # CTE с MATERIALIZED: сначала отбор значений контекстов по входу и источнику, потом
+    # соединение с параметрами. Без префикса планировщик может встроить CTE и вернуться к
+    # вложенному циклу с полным чтением context_parameter_values на каждую строку
+    # family_parameters (оценка фильтра роли и архива там занижена до одной строки).
+    conflicts = (
+        sa.select(
+            ContextParameterValue.context_id.label("context_id"),
+            ContextParameterValue.parameter_id.label("parameter_id"),
+        )
         .where(
             ContextParameterValue.context_id.in_(ids),
             ContextParameterValue.source == ValueSource.path_conflict.value,
+        )
+        .cte("conflicted_values")
+        .prefix_with("MATERIALIZED")
+    )
+    for context_id, schema_id, parameter_id in db.execute(
+        sa.select(conflicts.c.context_id, FamilyParameter.schema_id, FamilyParameter.id)
+        .select_from(conflicts)
+        .join(FamilyParameter, FamilyParameter.id == conflicts.c.parameter_id)
+        .where(
             FamilyParameter.role == ParameterRole.main.value,
             FamilyParameter.archived_at.is_(None),
         )
