@@ -13,6 +13,7 @@ import sqlalchemy as sa
 
 from crud.our_price_load import _conflicted_parameters
 from models import ContextParameterValue
+from services.context_routing import ChapterStep, chapter_steps
 from tests.integration.test_our_price_load import World
 
 pytestmark = pytest.mark.integration
@@ -177,3 +178,81 @@ class TestConflictedParameters:
             _conflicted_parameters(world.db, [0])
 
         assert len(statements) == 1
+
+
+def _chapters_proposal(factories):
+    estimate = factories.EstimateFactory.create()
+    lot = factories.LotFactory.create(estimate=estimate)
+    return factories.ProposalFactory.create(lot=lot)
+
+
+def _chapter_row(factories, proposal, title, number, *, parent=None):
+    kwargs = dict(
+        proposal=proposal,
+        is_chapter=True,
+        job_title_in_proposal=title,
+        item_number_in_proposal=number,
+        chapter_number_in_proposal="1",
+    )
+    if parent is not None:
+        kwargs["chapter_item_id"] = parent.id
+    return factories.PositionItemFactory.create(**kwargs)
+
+
+def _step(chapter):
+    return ChapterStep(chapter.id, chapter.job_title_in_proposal, chapter.item_number_in_proposal)
+
+
+class TestChapterSteps:
+    def test_three_level_chain_and_two_branches_under_common_root(self, db_session, factories):
+        proposal = _chapters_proposal(factories)
+        root = _chapter_row(factories, proposal, "Раздел А", "1")
+        middle = _chapter_row(factories, proposal, "Раздел Б", "1.1", parent=root)
+        leaf = _chapter_row(factories, proposal, "Раздел В", "1.1.1", parent=middle)
+        other_branch = _chapter_row(factories, proposal, "Раздел Г", "1.2", parent=root)
+
+        result = chapter_steps(db_session, [leaf.id, other_branch.id])
+
+        assert result == {
+            leaf.id: (_step(root), _step(middle), _step(leaf)),
+            other_branch.id: (_step(root), _step(other_branch)),
+        }
+        assert result[leaf.id][0] == ChapterStep(root.id, "Раздел А", "1")
+        assert result[leaf.id][-1] == ChapterStep(leaf.id, "Раздел В", "1.1.1")
+
+    def test_empty_number_gives_none_and_step_is_kept(self, db_session, factories):
+        proposal = _chapters_proposal(factories)
+        root = _chapter_row(factories, proposal, "Раздел А", None)
+        child = _chapter_row(factories, proposal, "Раздел Б", "1.1", parent=root)
+
+        result = chapter_steps(db_session, [child.id])
+
+        assert result == {child.id: (ChapterStep(root.id, "Раздел А", None), ChapterStep(child.id, "Раздел Б", "1.1"))}
+        assert result[child.id][0].number is None
+
+    def test_chapter_without_parent_gives_one_step(self, db_session, factories):
+        proposal = _chapters_proposal(factories)
+        root = _chapter_row(factories, proposal, "Раздел А", "1")
+
+        assert chapter_steps(db_session, [root.id]) == {root.id: (ChapterStep(root.id, "Раздел А", "1"),)}
+
+    def test_key_absent_from_position_items_is_absent_from_result(self, db_session, factories):
+        proposal = _chapters_proposal(factories)
+        root = _chapter_row(factories, proposal, "Раздел А", "1")
+        child = _chapter_row(factories, proposal, "Раздел Б", "1.1", parent=root)
+        missing = 987_654_321
+
+        result = chapter_steps(db_session, [child.id, missing])
+
+        assert result == {child.id: (_step(root), _step(child))}
+        assert missing not in result
+
+    def test_duplicates_in_the_input_give_the_same_result(self, db_session, factories):
+        proposal = _chapters_proposal(factories)
+        root = _chapter_row(factories, proposal, "Раздел А", "1")
+        child = _chapter_row(factories, proposal, "Раздел Б", "1.1", parent=root)
+        other = _chapter_row(factories, proposal, "Раздел В", "1.2", parent=root)
+
+        expected = {child.id: (_step(root), _step(child)), other.id: (_step(root), _step(other))}
+        assert chapter_steps(db_session, [child.id, other.id]) == expected
+        assert chapter_steps(db_session, [child.id, other.id, child.id, other.id, child.id]) == expected
