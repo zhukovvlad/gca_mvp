@@ -300,6 +300,11 @@ def _chapter_chain_rows(db: Session, chapter_item_ids: Collection[int]):
     if not ids:
         return []
 
+    # Шаг рекурсии берёт следующий раздел по первичному ключу — LATERAL-подзапросом с
+    # барьером `OFFSET 0`. Без барьера планировщик разворачивает LATERAL обратно в обычное
+    # соединение, оценивает рабочую таблицу рекурсии в разы выше стартового набора и на
+    # каждом уровне строит хэш по всей `position_items` вместо поисков по ключу (на стенде
+    # ~2 с против 0,1 с, devlog 2026-11-18-our-price-slow-queries). Не убирать как лишний.
     rows = db.execute(
         sa.text(
             """
@@ -324,7 +329,12 @@ def _chapter_chain_rows(db: Session, chapter_item_ids: Collection[int]):
                     p.item_number_in_proposal,
                     chain.depth + 1
                 FROM chain
-                JOIN position_items p ON p.id = chain.next_id
+                CROSS JOIN LATERAL (
+                    SELECT q.id, q.chapter_item_id, q.job_title_in_proposal, q.item_number_in_proposal
+                    FROM position_items q
+                    WHERE q.id = chain.next_id
+                    OFFSET 0
+                ) p
                 WHERE chain.next_id IS NOT NULL
             )
             CYCLE current_id SET is_cycle USING visited_path

@@ -1,0 +1,29 @@
+Sort  (cost=217974.39..218234.11 rows=103887 width=171) (actual time=1709.593..1710.186 rows=9419 loops=1)
+  Sort Key: chain.start_id, chain.depth
+  Sort Method: quicksort  Memory: 1497kB
+  Buffers: shared hit=48030 read=9402, temp read=11125 written=13327
+  CTE chain
+    ->  Recursive Union  (cost=5536.72..198360.94 rows=103887 width=176) (actual time=3.772..1692.217 rows=9419 loops=1)
+          Buffers: shared hit=48030 read=9402, temp read=11125 written=13327
+          ->  Bitmap Heap Scan on position_items pi  (cost=5536.72..10305.47 rows=2047 width=176) (actual time=3.770..7.823 rows=2047 loops=1)
+                Recheck Cond: (id = ANY ('{...2047 ids}'::bigint[]))
+                Heap Blocks: exact=1209
+                Buffers: shared hit=7350
+                ->  Bitmap Index Scan on position_items_pkey  (cost=0.00..5531.09 rows=2047 width=0) (actual time=3.600..3.601 rows=2047 loops=1)
+                      Index Cond: (id = ANY ('{...2047 ids}'::bigint[]))
+                      Buffers: shared hit=6141
+          ->  Hash Join  (cost=14860.31..18701.66 rows=10184 width=176) (actual time=218.405..279.039 rows=1229 loops=6)
+                Hash Cond: (chain_1.next_id = p.id)
+                Buffers: shared hit=40680 read=9402, temp read=11125 written=13327
+                ->  WorkTable Scan on chain chain_1  (cost=0.00..409.40 rows=10184 width=52) (actual time=0.021..0.513 rows=1229 loops=6)
+                      Filter: ((next_id IS NOT NULL) AND (NOT is_cycle))
+                      Rows Removed by Filter: 341
+                ->  Hash  (cost=9896.47..9896.47 rows=154947 width=131) (actual time=215.887..215.887 rows=158470 loops=6)
+                      Buckets: 65536  Batches: 4  Memory Usage: 6842kB
+                      Buffers: shared hit=40680 read=9402, temp written=13194
+                      ->  Seq Scan on position_items p  (cost=0.00..9896.47 rows=154947 width=131) (actual time=0.058..97.537 rows=158470 loops=6)
+                            Buffers: shared hit=40680 read=9402
+  ->  CTE Scan on chain  (cost=0.00..2077.74 rows=103887 width=171) (actual time=3.776..1702.870 rows=9419 loops=1)
+        Buffers: shared hit=48030 read=9402, temp read=11125 written=13327
+Planning Time: 1.377 ms
+Execution Time: 1713.804 ms

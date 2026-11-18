@@ -1,0 +1,26 @@
+Sort  (cost=897127.38..897387.10 rows=103887 width=171) (actual time=61.567..62.126 rows=9419 loops=1)
+  Sort Key: chain.start_id, chain.depth
+  Sort Method: quicksort  Memory: 1497kB
+  Buffers: shared hit=36838
+  CTE chain
+    ->  Recursive Union  (cost=5536.72..877513.94 rows=103887 width=176) (actual time=4.183..46.785 rows=9419 loops=1)
+          Buffers: shared hit=36838
+          ->  Bitmap Heap Scan on position_items pi  (cost=5536.72..10305.47 rows=2047 width=176) (actual time=4.181..7.032 rows=2047 loops=1)
+                Recheck Cond: (id = ANY ('{...2047 ids}'::bigint[]))
+                Heap Blocks: exact=1209
+                Buffers: shared hit=7350
+                ->  Bitmap Index Scan on position_items_pkey  (cost=0.00..5531.09 rows=2047 width=0) (actual time=3.992..3.992 rows=2047 loops=1)
+                      Index Cond: (id = ANY ('{...2047 ids}'::bigint[]))
+                      Buffers: shared hit=6141
+          ->  Nested Loop  (cost=0.42..86616.96 rows=10184 width=176) (actual time=0.020..6.016 rows=1229 loops=6)
+                Buffers: shared hit=29488
+                ->  WorkTable Scan on chain chain_1  (cost=0.00..409.40 rows=10184 width=52) (actual time=0.010..0.483 rows=1229 loops=6)
+                      Filter: ((next_id IS NOT NULL) AND (NOT is_cycle))
+                      Rows Removed by Filter: 341
+                ->  Index Scan using position_items_pkey on position_items q  (cost=0.42..8.44 rows=1 width=131) (actual time=0.003..0.003 rows=1 loops=7372)
+                      Index Cond: (id = chain_1.next_id)
+                      Buffers: shared hit=29488
+  ->  CTE Scan on chain  (cost=0.00..2077.74 rows=103887 width=171) (actual time=4.189..56.225 rows=9419 loops=1)
+        Buffers: shared hit=36838
+Planning Time: 1.393 ms
+Execution Time: 64.350 ms

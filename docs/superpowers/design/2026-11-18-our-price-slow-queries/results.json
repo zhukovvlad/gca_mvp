@@ -1,0 +1,255 @@
+{
+ "tender": 7,
+ "round": 23,
+ "offer": 76,
+ "series": 1,
+ "line": 223458,
+ "rounds": 3,
+ "same_response": {
+  "offer": true,
+  "line": true,
+  "file": true
+ },
+ "calls": {
+  "file/after": {
+   "median": {
+    "total": 3.285,
+    "sql_t": 1.319,
+    "sql_n": 54,
+    "chain_t": 0.086,
+    "chain_n": 1,
+    "conflict_t": 0.035,
+    "conflict_n": 2
+   },
+   "runs": [
+    {
+     "total": 3.383,
+     "sql_t": 1.394,
+     "sql_n": 54,
+     "chain_t": 0.089,
+     "chain_n": 1,
+     "conflict_t": 0.025,
+     "conflict_n": 2
+    },
+    {
+     "total": 3.149,
+     "sql_t": 1.251,
+     "sql_n": 54,
+     "chain_t": 0.082,
+     "chain_n": 1,
+     "conflict_t": 0.035,
+     "conflict_n": 2
+    },
+    {
+     "total": 3.285,
+     "sql_t": 1.319,
+     "sql_n": 54,
+     "chain_t": 0.086,
+     "chain_n": 1,
+     "conflict_t": 0.038,
+     "conflict_n": 2
+    }
+   ]
+  },
+  "file/before": {
+   "median": {
+    "total": 9.288,
+    "sql_t": 7.033,
+    "sql_n": 54,
+    "chain_t": 2.147,
+    "chain_n": 1,
+    "conflict_t": 3.597,
+    "conflict_n": 2
+   },
+   "runs": [
+    {
+     "total": 9.288,
+     "sql_t": 7.177,
+     "sql_n": 54,
+     "chain_t": 2.465,
+     "chain_n": 1,
+     "conflict_t": 3.597,
+     "conflict_n": 2
+    },
+    {
+     "total": 9.88,
+     "sql_t": 7.033,
+     "sql_n": 54,
+     "chain_t": 1.864,
+     "chain_n": 1,
+     "conflict_t": 4.031,
+     "conflict_n": 2
+    },
+    {
+     "total": 8.818,
+     "sql_t": 6.331,
+     "sql_n": 54,
+     "chain_t": 2.147,
+     "chain_n": 1,
+     "conflict_t": 3.244,
+     "conflict_n": 2
+    }
+   ]
+  },
+  "line/after": {
+   "median": {
+    "total": 3.362,
+    "sql_t": 1.331,
+    "sql_n": 55,
+    "chain_t": 0.112,
+    "chain_n": 2,
+    "conflict_t": 0.037,
+    "conflict_n": 2
+   },
+   "runs": [
+    {
+     "total": 3.94,
+     "sql_t": 1.762,
+     "sql_n": 55,
+     "chain_t": 0.105,
+     "chain_n": 2,
+     "conflict_t": 0.043,
+     "conflict_n": 2
+    },
+    {
+     "total": 3.034,
+     "sql_t": 1.259,
+     "sql_n": 55,
+     "chain_t": 0.115,
+     "chain_n": 2,
+     "conflict_t": 0.035,
+     "conflict_n": 2
+    },
+    {
+     "total": 3.362,
+     "sql_t": 1.331,
+     "sql_n": 55,
+     "chain_t": 0.112,
+     "chain_n": 2,
+     "conflict_t": 0.037,
+     "conflict_n": 2
+    }
+   ]
+  },
+  "line/before": {
+   "median": {
+    "total": 8.629,
+    "sql_t": 6.613,
+    "sql_n": 55,
+    "chain_t": 2.071,
+    "chain_n": 2,
+    "conflict_t": 3.503,
+    "conflict_n": 2
+   },
+   "runs": [
+    {
+     "total": 8.629,
+     "sql_t": 6.613,
+     "sql_n": 55,
+     "chain_t": 2.071,
+     "chain_n": 2,
+     "conflict_t": 3.503,
+     "conflict_n": 2
+    },
+    {
+     "total": 9.409,
+     "sql_t": 7.109,
+     "sql_n": 55,
+     "chain_t": 2.125,
+     "chain_n": 2,
+     "conflict_t": 3.858,
+     "conflict_n": 2
+    },
+    {
+     "total": 8.361,
+     "sql_t": 6.197,
+     "sql_n": 55,
+     "chain_t": 1.892,
+     "chain_n": 2,
+     "conflict_t": 3.399,
+     "conflict_n": 2
+    }
+   ]
+  },
+  "offer/after": {
+   "median": {
+    "total": 4.121,
+    "sql_t": 1.614,
+    "sql_n": 54,
+    "chain_t": 0.168,
+    "chain_n": 2,
+    "conflict_t": 0.042,
+    "conflict_n": 2
+   },
+   "runs": [
+    {
+     "total": 4.079,
+     "sql_t": 1.102,
+     "sql_n": 54,
+     "chain_t": 0.142,
+     "chain_n": 2,
+     "conflict_t": 0.033,
+     "conflict_n": 2
+    },
+    {
+     "total": 5.24,
+     "sql_t": 1.983,
+     "sql_n": 54,
+     "chain_t": 0.168,
+     "chain_n": 2,
+     "conflict_t": 0.084,
+     "conflict_n": 2
+    },
+    {
+     "total": 4.121,
+     "sql_t": 1.614,
+     "sql_n": 54,
+     "chain_t": 0.179,
+     "chain_n": 2,
+     "conflict_t": 0.042,
+     "conflict_n": 2
+    }
+   ]
+  },
+  "offer/before": {
+   "median": {
+    "total": 11.992,
+    "sql_t": 9.236,
+    "sql_n": 54,
+    "chain_t": 4.599,
+    "chain_n": 2,
+    "conflict_t": 3.785,
+    "conflict_n": 2
+   },
+   "runs": [
+    {
+     "total": 11.587,
+     "sql_t": 9.236,
+     "sql_n": 54,
+     "chain_t": 4.599,
+     "chain_n": 2,
+     "conflict_t": 3.785,
+     "conflict_n": 2
+    },
+    {
+     "total": 11.992,
+     "sql_t": 8.549,
+     "sql_n": 54,
+     "chain_t": 4.195,
+     "chain_n": 2,
+     "conflict_t": 3.351,
+     "conflict_n": 2
+    },
+    {
+     "total": 12.777,
+     "sql_t": 9.683,
+     "sql_n": 54,
+     "chain_t": 4.748,
+     "chain_n": 2,
+     "conflict_t": 3.982,
+     "conflict_n": 2
+    }
+   ]
+  }
+ }
+}

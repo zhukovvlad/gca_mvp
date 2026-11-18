@@ -1,0 +1,16 @@
+Nested Loop  (cost=3.48..551.58 rows=1 width=24) (actual time=927.871..2457.094 rows=4 loops=1)
+  Join Filter: (context_parameter_values.parameter_id = family_parameters.id)
+  Rows Removed by Join Filter: 2216
+  Buffers: shared hit=132665
+  ->  Seq Scan on family_parameters  (cost=0.00..27.26 rows=1 width=16) (actual time=0.020..1.672 rows=555 loops=1)
+        Filter: ((archived_at IS NULL) AND (role = 'main'::text))
+        Rows Removed by Filter: 3
+        Buffers: shared hit=20
+  ->  Seq Scan on context_parameter_values  (cost=3.48..524.26 rows=4 width=16) (actual time=3.867..4.407 rows=4 loops=555)
+        Filter: ((source = 'path_conflict'::text) AND (context_id = ANY ('{...1391 ids}'::bigint[])))
+        Rows Removed by Filter: 16195
+        Buffers: shared hit=132645
+Planning:
+  Buffers: shared hit=6
+Planning Time: 4.773 ms
+Execution Time: 2457.130 ms
