@@ -1,41 +1,57 @@
-"""Замер «до / после» двух медленных запросов экранов 4а/4б — артефакт дизайна
-`docs/superpowers/design/2026-11-18-our-price-slow-queries.md`.
+"""Замер «старый запрос / прототип / приложение» двух медленных запросов экранов 4а/4б —
+артефакт дизайна `docs/superpowers/design/2026-11-18-our-price-slow-queries.md`.
 
-Только чтение: каждый вызов в своей транзакции с откатом, записи нет. «После» —
-прототипы двух запросов, подставленные на время замера вместо функций модулей;
-код приложения не меняется.
+Только чтение: каждый вызов в своей транзакции с откатом, записи нет. Варианты:
+
+    old        дословные копии тел двух функций из `main` (SQLAlchemy Core и текст SQL
+               как были), подставленные на время замера вместо функций модулей;
+    prototype  прототипы CHAIN_AFTER / CONFLICT_AFTER, тоже подставленные;
+    app        функции приложения без подмен (то, что в рабочем дереве).
 
 Запуск из backend/ (база — DATABASE_URL из backend/.env):
 
     uv run python ../docs/superpowers/design/2026-11-18-our-price-slow-queries/measure.py \
-        --rounds 3 --out <файл.json> --plans <каталог>
+        --variants old,app --rounds 3 --out <файл.json> --plans <каталог>
+
+`--variants` — список через запятую из old, prototype, app (по умолчанию old,app).
 
 Печать — только ASCII. Каждый вызов (разбор с ИПЦ, панель строки, файл подрядчику)
-измеряется по кругам попеременно «до» и «после», чтобы нагрузка машины делилась
-поровну. В каждом замере: общее время, время и число всех SQL, время и число двух
-запросов отдельно (по тексту запроса).
+измеряется по кругам всеми выбранными вариантами попеременно, чтобы нагрузка машины
+делилась поровну. В каждом замере: общее время, время и число всех SQL, время и число двух
+запросов отдельно (по тексту запроса). Ответы сверяются между всеми выбранными вариантами
+(`same_response`); тексты SQL обоих запросов каждого варианта пишутся в результат
+(`sql_text`), а `sql_text_equal` говорит, совпали ли они у всех вариантов после схлопывания
+пробельных символов. Планы EXPLAIN — в каталог `--plans`, файл `<запрос>-<вариант>.txt`.
+
+Проверка самого скрипта: запустить скрипт ветки на коде `main` (копия `git archive main`) с
+`--variants old,app --rounds 1` — ответы и тексты SQL `old` и `app` должны совпасть.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import statistics
 import sys
 import time
 from collections import defaultdict
+from collections.abc import Collection, Sequence
 from pathlib import Path
 
 sys.path.insert(0, ".")
 
 import sqlalchemy as sa  # noqa: E402
 from sqlalchemy import event  # noqa: E402
+from sqlalchemy.orm import Session  # noqa: E402
 
 from crud import kp_sent_files, our_price, our_price_load  # noqa: E402
 from database import SessionLocal, engine  # noqa: E402
+from models import ContextParameterValue, FamilyParameter, ParameterRole, ValueSource  # noqa: E402
 from services import context_routing  # noqa: E402
 from services.context_routing import RoutingError  # noqa: E402
 
 TENDER, ROUND, OFFER, SERIES = 7, 23, 76, 1
+ALL_VARIANTS = ("old", "prototype", "app")
 
 CHAIN_AFTER = """
 WITH RECURSIVE chain(start_id, current_id, next_id, title, number, depth) AS (
@@ -70,11 +86,91 @@ FROM cpv JOIN family_parameters fp ON fp.id = cpv.parameter_id
 WHERE fp.role = 'main' AND fp.archived_at IS NULL
 """
 
+# Функции приложения, снятые при импорте: вариант `app` возвращает именно их.
 ORIGINAL = {
     "chain": context_routing._chapter_chain_rows,
     "conflict": our_price_load._conflicted_parameters,
 }
 
+
+# --- вариант `old`: дословные тела функций из `main`, меняются только имена ---------------
+
+def chain_old(db: Session, chapter_item_ids: Collection[int]):
+    """Строки рекурсивного запроса пути разделов, по возрастанию `depth` внутри каждого
+    `start_id`; найденный цикл — `RoutingError`. Общий запрос `chapter_paths` и `chapter_steps`."""
+    ids = list(dict.fromkeys(chapter_item_ids))
+    if not ids:
+        return []
+
+    rows = db.execute(
+        sa.text(
+            """
+            WITH RECURSIVE chain(start_id, current_id, next_id, title, number, depth) AS (
+                SELECT
+                    pi.id,
+                    pi.id,
+                    pi.chapter_item_id,
+                    pi.job_title_in_proposal,
+                    pi.item_number_in_proposal,
+                    0
+                FROM position_items pi
+                WHERE pi.id = ANY(:ids)
+
+                UNION ALL
+
+                SELECT
+                    chain.start_id,
+                    p.id,
+                    p.chapter_item_id,
+                    p.job_title_in_proposal,
+                    p.item_number_in_proposal,
+                    chain.depth + 1
+                FROM chain
+                JOIN position_items p ON p.id = chain.next_id
+                WHERE chain.next_id IS NOT NULL
+            )
+            CYCLE current_id SET is_cycle USING visited_path
+            SELECT start_id, current_id, depth, title, number, is_cycle
+            FROM chain
+            ORDER BY start_id, depth
+            """
+        ).bindparams(sa.bindparam("ids", value=ids, type_=sa.ARRAY(sa.BigInteger)))
+    ).all()
+    for row in rows:
+        if row.is_cycle:
+            raise RoutingError(
+                f"раздел {row.start_id}: цикл в chapter_item_id — раздел "
+                f"{row.current_id} уже встречался в цепочке"
+            )
+    return rows
+
+
+def conflict_old(db: Session, context_ids: Sequence[int]) -> dict[int, dict[int, frozenset[int]]]:
+    """Главные параметры контекстов со значением `path_conflict`: context_id -> schema_id ->
+    parameter_id. Один запрос на любое число контекстов; конфликт — не значение (спека §2.8)."""
+    ids = sorted(set(context_ids))
+    if not ids:
+        return {}
+    grouped: dict[int, dict[int, set[int]]] = defaultdict(lambda: defaultdict(set))
+    for context_id, schema_id, parameter_id in db.execute(
+        sa.select(ContextParameterValue.context_id, FamilyParameter.schema_id, FamilyParameter.id)
+        .select_from(ContextParameterValue)
+        .join(FamilyParameter, FamilyParameter.id == ContextParameterValue.parameter_id)
+        .where(
+            ContextParameterValue.context_id.in_(ids),
+            ContextParameterValue.source == ValueSource.path_conflict.value,
+            FamilyParameter.role == ParameterRole.main.value,
+            FamilyParameter.archived_at.is_(None),
+        )
+    ).all():
+        grouped[context_id][schema_id].add(parameter_id)
+    return {
+        context_id: {schema_id: frozenset(parameters) for schema_id, parameters in by_schema.items()}
+        for context_id, by_schema in grouped.items()
+    }
+
+
+# --- вариант `prototype` -------------------------------------------------------------------
 
 def chain_after(db, chapter_item_ids):
     ids = list(dict.fromkeys(chapter_item_ids))
@@ -101,13 +197,16 @@ def conflict_after(db, context_ids):
     return {c: {s: frozenset(p) for s, p in by.items()} for c, by in grouped.items()}
 
 
+FUNCTIONS = {
+    "old": {"chain": chain_old, "conflict": conflict_old},
+    "prototype": {"chain": chain_after, "conflict": conflict_after},
+    "app": ORIGINAL,
+}
+
+
 def use(variant: str) -> None:
-    if variant == "before":
-        context_routing._chapter_chain_rows = ORIGINAL["chain"]
-        our_price_load._conflicted_parameters = ORIGINAL["conflict"]
-    else:
-        context_routing._chapter_chain_rows = chain_after
-        our_price_load._conflicted_parameters = conflict_after
+    context_routing._chapter_chain_rows = FUNCTIONS[variant]["chain"]
+    our_price_load._conflicted_parameters = FUNCTIONS[variant]["conflict"]
 
 
 def kind_of(statement: str) -> str | None:
@@ -119,8 +218,13 @@ def kind_of(statement: str) -> str | None:
     return None
 
 
-acc: dict = {"variant": "before", "sql_t": 0.0, "sql_n": 0, "chain_t": 0.0, "chain_n": 0,
-              "conflict_t": 0.0, "conflict_n": 0}
+def collapse(text: str | None) -> str | None:
+    """Текст SQL без различий в пробельных символах."""
+    return None if text is None else " ".join(text.split())
+
+
+acc: dict = {"variant": "app", "sql_t": 0.0, "sql_n": 0, "chain_t": 0.0, "chain_n": 0,
+              "conflict_t": 0.0, "conflict_n": 0, "texts": {}}
 
 
 @event.listens_for(engine, "before_cursor_execute")
@@ -137,17 +241,19 @@ def _after(conn, cursor, statement, params, context, executemany):
     if kind is not None:
         acc[kind + "_t"] += took
         acc[kind + "_n"] += 1
+        acc["texts"].setdefault(kind, statement)
         acc.setdefault("captured", {}).setdefault((acc["variant"], kind), (statement, params))
 
 
 def measure(variant: str, fn) -> dict:
     use(variant)
-    acc.update(variant=variant, sql_t=0.0, sql_n=0, chain_t=0.0, chain_n=0, conflict_t=0.0, conflict_n=0)
+    acc.update(variant=variant, sql_t=0.0, sql_n=0, chain_t=0.0, chain_n=0, conflict_t=0.0, conflict_n=0,
+               texts={})
     started = time.perf_counter()
     result = fn()
     total = time.perf_counter() - started
     return {"total": total, **{k: acc[k] for k in ("sql_t", "sql_n", "chain_t", "chain_n", "conflict_t", "conflict_n")},
-            "_result": result}
+            "_result": result, "_texts": dict(acc["texts"])}
 
 
 def comparable(result):
@@ -166,18 +272,26 @@ def explain(db, plans_dir: Path) -> None:
             text = "\n".join(line for (line,) in cur.fetchall())
         conn.rollback()
         # Списки идентификаторов в плане заменяются их числом — они длинные и ничего не говорят.
-        import re
-
         text = re.sub(r"'\{[0-9,]+\}'", lambda m: f"'{{...{m.group(0).count(',') + 1} ids}}'", text)
         (plans_dir / f"{kind}-{variant}.txt").write_text(text + "\n", encoding="utf-8")
 
 
+def parse_variants(raw: str) -> list[str]:
+    variants = [v.strip() for v in raw.split(",") if v.strip()]
+    unknown = [v for v in variants if v not in ALL_VARIANTS]
+    if unknown or not variants or len(set(variants)) != len(variants):
+        raise SystemExit(f"--variants: list of distinct names from {', '.join(ALL_VARIANTS)}; got {raw!r}")
+    return variants
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--variants", default="old,app")
     parser.add_argument("--rounds", type=int, default=3)
     parser.add_argument("--out", required=True)
     parser.add_argument("--plans", required=True)
     args = parser.parse_args()
+    variants = parse_variants(args.variants)
 
     db = SessionLocal()
     try:
@@ -194,34 +308,46 @@ def main() -> None:
         }
         runs: dict = defaultdict(list)
         same: dict = {}
+        sql_equal: dict = {name: {"chain": True, "conflict": True} for name in calls}
+        sql_text: dict = {}
         for _ in range(args.rounds):
             for name, fn in calls.items():
                 results = {}
-                for variant in ("before", "after"):
+                texts = {}
+                for variant in variants:
                     db.execute(sa.text("SET TRANSACTION READ ONLY"))
                     row = measure(variant, fn)
                     db.rollback()
                     results[variant] = comparable(row.pop("_result"))
+                    texts[variant] = row.pop("_texts")
                     runs[(name, variant)].append(row)
-                same[name] = same.get(name, True) and results["before"] == results["after"]
-        use("before")
+                    sql_text.setdefault(
+                        f"{name}/{variant}", {kind: texts[variant].get(kind) for kind in ("chain", "conflict")})
+                same[name] = same.get(name, True) and len(set(results.values())) == 1
+                for kind in ("chain", "conflict"):
+                    collapsed = {collapse(texts[v].get(kind)) for v in variants}
+                    sql_equal[name][kind] = sql_equal[name][kind] and len(collapsed) == 1 and None not in collapsed
+        use("app")
         explain(db, Path(args.plans))
     finally:
-        use("before")
+        use("app")
         db.rollback()
         db.close()
 
     summary = {"tender": TENDER, "round": ROUND, "offer": OFFER, "series": SERIES, "line": line,
-               "rounds": args.rounds, "same_response": same, "calls": {}}
+               "rounds": args.rounds, "variants": variants, "same_response": same,
+               "sql_text_equal": sql_equal, "sql_text": sql_text, "calls": {}}
     for (name, variant), rows in sorted(runs.items()):
         med = {k: round(statistics.median(r[k] for r in rows), 3) for k in rows[0]}
-        summary["calls"][f"{name}/{variant}"] = {"median": med, "runs": [{k: round(v, 3) for k, v in r.items()} for r in rows]}
+        summary["calls"][f"{name}/{variant}"] = {
+            "median": med, "runs": [{k: round(v, 3) for k, v in r.items()} for r in rows]}
     Path(args.out).write_text(json.dumps(summary, ensure_ascii=True, indent=1), encoding="utf-8")
     for key, value in summary["calls"].items():
         m = value["median"]
-        print(f"{key:14} total {m['total']:6.2f}  sql {m['sql_t']:6.2f} ({m['sql_n']:.0f})  "
+        print(f"{key:18} total {m['total']:6.2f}  sql {m['sql_t']:6.2f} ({m['sql_n']:.0f})  "
               f"chain {m['chain_t']:5.2f} ({m['chain_n']:.0f})  conflict {m['conflict_t']:5.2f} ({m['conflict_n']:.0f})")
     print("same_response", same)
+    print("sql_text_equal", sql_equal)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,17 @@
+Nested Loop  (cost=524.26..551.66 rows=1 width=24) (actual time=2.664..3.088 rows=4 loops=1)
+  Join Filter: (family_parameters.id = conflicted_values.parameter_id)
+  Rows Removed by Join Filter: 2216
+  Buffers: shared hit=259
+  CTE conflicted_values
+    ->  Seq Scan on context_parameter_values  (cost=3.48..524.26 rows=4 width=16) (actual time=2.039..2.410 rows=4 loops=1)
+          Filter: ((source = 'path_conflict'::text) AND (context_id = ANY ('{...1391 ids}'::bigint[])))
+          Rows Removed by Filter: 16195
+          Buffers: shared hit=239
+  ->  Seq Scan on family_parameters  (cost=0.00..27.26 rows=1 width=16) (actual time=0.023..0.198 rows=555 loops=1)
+        Filter: ((archived_at IS NULL) AND (role = 'main'::text))
+        Rows Removed by Filter: 3
+        Buffers: shared hit=20
+  ->  CTE Scan on conflicted_values  (cost=0.00..0.08 rows=4 width=16) (actual time=0.004..0.005 rows=4 loops=555)
+        Buffers: shared hit=239
+Planning Time: 3.986 ms
+Execution Time: 3.121 ms
