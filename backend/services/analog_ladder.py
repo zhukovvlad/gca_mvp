@@ -347,6 +347,10 @@ class WorkHistory:
             self._lines_by_family.setdefault(line.family_id, []).append(line)
         self._pools: dict[int, _FamilyPool] = {}
 
+    def lines_of(self, family_id: int) -> Sequence[WorkHistoryLine]:
+        """Строки истории семьи, как загружены; без запросов."""
+        return self._lines_by_family.get(family_id, ())
+
     def pool(self, family_id: int) -> _FamilyPool:
         found = self._pools.get(family_id)
         if found is None:

@@ -57,6 +57,8 @@ LINE_KEYS = {
     "family",
     "variant_label",
     "secondary",
+    "params_basis",
+    "params",
     "state",
     "waiting_admin",
     "suggestion_queue",
@@ -94,7 +96,7 @@ LINE_KEYS = {
 }
 PANEL_KEYS = {
     "line", "group_lines", "contracts", "analogs", "reference_zones", "reference_links", "parts_reference",
-    "vat_dropped", "comment",
+    "vat_dropped", "comment", "analog_columns",
 }
 TOLERANCE = D("1e-20")
 
@@ -1215,6 +1217,7 @@ class TestLinePanelAuto:
             "with_this_contractor",
             "place_match",
             "selectable",
+            "released_values",
         }
         assert first["contract_id"] == low.id
         assert first["object_title"] == low.object.title

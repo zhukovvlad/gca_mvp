@@ -779,6 +779,20 @@ def load_composites(db: Session, line: KpLine) -> dict[int, CompositeValue]:
     }
 
 
+def load_value_texts(db: Session, value_ids: Collection[int]) -> dict[int, str]:
+    """Тексты значений параметров одним запросом; составное значение — его собственный текст.
+    Пустое множество — без запроса."""
+    if not value_ids:
+        return {}
+    return dict(
+        db.execute(
+            sa.select(FamilyParameterValue.id, FamilyParameterValue.value).where(
+                FamilyParameterValue.id.in_(set(value_ids))
+            )
+        ).all()
+    )
+
+
 def load_analog_details(
     db: Session, position_item_ids: Sequence[int]
 ) -> dict[int, tuple[str, str | None, list[str], int | None, int | None]]:
