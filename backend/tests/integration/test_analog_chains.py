@@ -25,6 +25,7 @@ from crud.section_chains import (
     assign_section_chains,
     backfill_chains,
     decide_zone,
+    get_chain,
     list_chains,
 )
 from models import (
@@ -754,6 +755,78 @@ class TestListChains:
         (item,) = list_chains(db_session, filter="all", q=None, page=1)["items"]
 
         assert item["sample_titles"] == ["Частая", "Средняя", "Редкая"]
+
+
+# ---------------------------------------------------------------------------
+#  get_chain и маршрут одной цепочки
+# ---------------------------------------------------------------------------
+
+CHAIN_URL = "/api/v1/semantic/section-chains/{}"
+
+
+class TestGetChain:
+    def _rich_chain(self, db, factories) -> SectionChain:
+        """Цепочка со спорным предложением, заданием, строками КП и договоров."""
+        titles = ["Раздел без шаблонов", "Подраздел"]
+        _scene(factories, titles, "Р1", "Р2", kp=True)
+        _scene(factories, titles, "Р3")
+        backfill_chains(db, enqueue=True, reapply_rule=False)
+        (chain,) = db.execute(sa.select(SectionChain)).scalars().all()
+        chain.proposed_zone = "underground"
+        chain.proposed_confidence = Decimal("0.85")
+        chain.proposed_reason = "Причина"
+        db.flush()
+        return chain
+
+    def test_equals_the_list_item_in_all_fields(self, db_session, factories):
+        chain = self._rich_chain(db_session, factories)
+        _chain(db_session, "соседняя")
+
+        one = get_chain(db_session, chain.id)
+
+        (listed,) = (
+            item for item in list_chains(db_session, filter="all", q=None, page=1)["items"]
+            if item["id"] == chain.id
+        )
+        assert one == listed
+        assert (one["rows_kp"], one["rows_contracts"]) == (2, 1)
+        assert one["proposed_confidence"] == "0.85"
+        assert one["job_status"] is not None and one["sample_titles"]
+
+    def test_unknown_chain_is_404(self, db_session):
+        with pytest.raises(DomainError) as caught:
+            get_chain(db_session, 987654321)
+
+        assert caught.value.status_code == 404
+
+    def test_route_admin_gets_the_list_item_shape(self, admin_client, db_session, factories):
+        chain = self._rich_chain(db_session, factories)
+        db_session.commit()
+
+        response = admin_client.get(CHAIN_URL.format(chain.id))
+
+        assert response.status_code == 200
+        (listed,) = (
+            item for item in admin_client.get(
+                "/api/v1/semantic/section-chains", params={"filter": "all"}
+            ).json()["items"] if item["id"] == chain.id
+        )
+        assert response.json() == listed
+
+    def test_route_unknown_chain_is_404(self, admin_client):
+        assert admin_client.get(CHAIN_URL.format(987654321)).status_code == 404
+
+    def test_route_member_is_refused(self, member_client, db_session, factories):
+        chain = self._rich_chain(db_session, factories)
+        db_session.commit()
+
+        assert member_client.get(CHAIN_URL.format(chain.id)).status_code == 403
+
+    def test_route_anonymous_is_refused(self, anon_client, db_session, factories):
+        chain = self._rich_chain(db_session, factories)
+        db_session.commit()
+
+        assert anon_client.get(CHAIN_URL.format(chain.id)).status_code in (401, 403)
 
 
 # ---------------------------------------------------------------------------

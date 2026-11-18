@@ -19,7 +19,7 @@ function suggestionTargetOf(entry: Entry | null): SuggestionTarget | null {
     : null;
 }
 
-/** Цепочка разделов из ссылки `?chain=`: подсвечивается в очереди «Зоны». */
+/** Цепочка разделов из ссылки `?chain=`: карточка над очередью «Зоны». */
 function chainTargetOf(entry: Entry | null): number | null {
   return entry?.tab === "suggestions" && entry.queue === "zones" ? entry.chainId : null;
 }

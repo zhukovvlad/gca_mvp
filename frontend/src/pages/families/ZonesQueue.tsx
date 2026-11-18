@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useIsMutating } from "@tanstack/react-query";
+import { useState } from "react";
 
 import { Pager } from "@/components/domain/Pager";
 import { EmptyState } from "@/components/ui-domain/EmptyState";
@@ -12,13 +13,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { formatConfidence } from "@/lib/format";
 import { RecalcOverlay } from "@/pages/tenders/our-price/RecalcOverlay";
 import { SAVING_LABEL } from "@/pages/tenders/our-price/ourPriceCopy";
 import {
   useAcceptAllZones,
   useDecideChainZone,
   useSectionChains,
+  zoneDecisionMutationKey,
 } from "@/services/queries";
 import type {
   SectionChainFilter,
@@ -32,6 +33,8 @@ import {
   ZONE_FILTER_LABEL,
   ZONE_LABEL,
   ZONE_SOURCE_LABEL,
+  ZONES_EXPLAIN,
+  modelLine,
 } from "./labels";
 import { FetchingBar, ListSkeleton } from "./pending";
 
@@ -46,47 +49,66 @@ const FILTERS: SectionChainFilter[] = [
   "all",
 ];
 const GRID = "grid grid-cols-[minmax(0,1fr)_auto] items-start gap-4 px-4 py-3";
-const LIVE_JOB = new Set(["pending", "running"]);
 
 /**
- * Что модель ответила по цепочке: зона с уверенностью и причиной, «не знаю» (`unknown` — ответ
- * есть, цепочка спорная) либо ответа нет (задание ждёт или не удалось).
+ * Четыре кнопки зон цепочки: общие для строки очереди и карточки входа по ссылке, чтобы они не
+ * разошлись. Нажатие на стоящую зону от правила или модели закрепляет её решением человека.
  */
-function modelLine(chain: SectionChainRow): string {
-  const reason = chain.proposed_reason ? ` — «${chain.proposed_reason}»` : "";
-  if (chain.proposed_zone === null) {
-    if (chain.job_status !== null && LIVE_JOB.has(chain.job_status))
-      return "Модель: ждёт ответа";
-    return "Модель: ответа нет";
-  }
-  const confidence = ` · уверенность ${formatConfidence(chain.proposed_confidence)}`;
-  if (chain.proposed_zone === "unknown") return `Модель: не знаю${confidence}${reason}`;
-  return `Модель: ${ZONE_LABEL[chain.proposed_zone].toLowerCase()}${confidence}${reason}`;
-}
-
-function ZoneRow({
+export function ZoneToggle({
   chain,
-  highlighted,
   busy,
   onDecide,
 }: {
   chain: SectionChainRow;
-  highlighted: boolean;
   busy: boolean;
   onDecide: (zone: SectionZone) => void;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (highlighted) ref.current?.scrollIntoView?.({ block: "center" });
-  }, [highlighted]);
+  return (
+    <ToggleGroup
+      variant="outline"
+      size="sm"
+      spacing={0}
+      aria-label="Зона цепочки"
+      disabled={busy}
+      value={chain.zone === null ? [] : [chain.zone]}
+      onValueChange={(value) => {
+        const next = value[0];
+        if (next !== undefined) {
+          onDecide(next as SectionZone);
+          return;
+        }
+        // Нажали уже стоящую зону: переключатель её отжимает (пустой выбор). Зону от правила
+        // или модели это закрепляет решением человека; решение человека не трогается.
+        if (chain.zone !== null && chain.zone_source !== "human") onDecide(chain.zone);
+      }}
+    >
+      {SECTION_ZONES.map((zone) => (
+        <ToggleGroupItem
+          key={zone}
+          value={zone}
+          // Нажатая зона заметна, как основная кнопка: штатный `bg-muted` в тёмной теме не виден.
+          className="aria-pressed:bg-primary aria-pressed:text-primary-foreground"
+        >
+          {ZONE_LABEL[zone]}
+        </ToggleGroupItem>
+      ))}
+    </ToggleGroup>
+  );
+}
+
+function ZoneRow({
+  chain,
+  busy,
+  onDecide,
+}: {
+  chain: SectionChainRow;
+  busy: boolean;
+  onDecide: (zone: SectionZone) => void;
+}) {
   return (
     <div
-      ref={ref}
       data-testid="zone-row"
-      data-highlighted={highlighted ? "true" : undefined}
-      className={`${GRID} border-b border-border-subtle last:border-b-0 ${
-        highlighted ? "bg-accent-soft ring-2 ring-inset ring-accent-border" : ""
-      }`}
+      className={`${GRID} border-b border-border-subtle last:border-b-0`}
     >
       <div className="grid min-w-0 gap-1">
         <div className="font-medium text-fg">{chain.titles.join(" / ")}</div>
@@ -100,59 +122,27 @@ function ZoneRow({
           <div className="text-xs text-fg-tertiary">{`зона поставлена: ${ZONE_SOURCE_LABEL[chain.zone_source]}`}</div>
         )}
       </div>
-      <ToggleGroup
-        variant="outline"
-        size="sm"
-        spacing={0}
-        aria-label="Зона цепочки"
-        disabled={busy}
-        value={chain.zone === null ? [] : [chain.zone]}
-        onValueChange={(value) => {
-          const next = value[0];
-          if (next !== undefined) {
-            onDecide(next as SectionZone);
-            return;
-          }
-          // Нажали уже стоящую зону: переключатель её отжимает (пустой выбор). Зону от правила
-          // или модели это закрепляет решением человека; решение человека не трогается.
-          if (chain.zone !== null && chain.zone_source !== "human") onDecide(chain.zone);
-        }}
-      >
-        {SECTION_ZONES.map((zone) => (
-          <ToggleGroupItem
-            key={zone}
-            value={zone}
-            // Нажатая зона заметна, как основная кнопка: штатный `bg-muted` в тёмной теме не виден.
-            className="aria-pressed:bg-primary aria-pressed:text-primary-foreground"
-          >
-            {ZONE_LABEL[zone]}
-          </ToggleGroupItem>
-        ))}
-      </ToggleGroup>
+      <ZoneToggle chain={chain} busy={busy} onDecide={onDecide} />
     </div>
   );
 }
 
-interface ZonesQueueProps {
-  /** Цепочка, к которой привела ссылка (`?chain=`): строка подсвечивается. */
-  highlightChainId?: number | null;
-}
-
 /**
  * Очередь «Зоны» (спека лестницы аналогов §2.17, §2.20): цепочки разделов, фильтр (по умолчанию
- * спорные), поиск по ключу цепочки и страницы сервера. Решение ставится на цепочку и действует на
- * все сметы, где она встречается; зону от правила или модели можно поправить, открыв их фильтром.
+ * спорные, и при входе по ссылке тоже), поиск по ключу цепочки и страницы сервера. Решение
+ * ставится на цепочку и действует на все сметы, где она встречается; зону от правила или модели
+ * можно поправить, открыв их фильтром.
  */
-export function ZonesQueue({ highlightChainId = null }: ZonesQueueProps) {
-  const [filter, setFilter] = useState<SectionChainFilter>(
-    highlightChainId === null ? "disputed" : "all",
-  );
+export function ZonesQueue() {
+  const [filter, setFilter] = useState<SectionChainFilter>("disputed");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const query = useSectionChains({ filter, q: search, page });
   const decide = useDecideChainZone();
   const acceptAll = useAcceptAllZones();
-  const busy = decide.isPending || acceptAll.isPending;
+  // Одно сохранение на карточку входа и очередь: занято, пока идёт любое решение по зонам и
+  // перечитывание (мутация держится до его конца), в обеих областях сразу.
+  const busy = useIsMutating({ mutationKey: zoneDecisionMutationKey }) > 0;
 
   const items = query.data?.items ?? [];
   const total = query.data?.total ?? 0;
@@ -162,14 +152,11 @@ export function ZonesQueue({ highlightChainId = null }: ZonesQueueProps) {
   if (query.data && !query.isPlaceholderData && page > lastValidPage)
     setPage(lastValidPage);
 
-  const highlightMissing =
-    highlightChainId !== null &&
-    query.data !== undefined &&
-    !query.isPlaceholderData &&
-    !items.some((c) => c.id === highlightChainId);
-
   return (
     <div className="grid gap-3">
+      <p data-testid="zones-explain" className="text-sm text-fg-secondary">
+        {ZONES_EXPLAIN}
+      </p>
       <div className="flex flex-wrap items-center gap-x-3.5 gap-y-2 text-sm text-fg-secondary">
         <div className="flex items-center gap-2">
           <Label htmlFor="zones-filter" className="text-sm font-normal">
@@ -233,16 +220,6 @@ export function ZonesQueue({ highlightChainId = null }: ZonesQueueProps) {
         />
       )}
 
-      {highlightMissing && (
-        <div
-          data-testid="zone-not-found"
-          className="rounded-lg border border-warning-border bg-warning-soft px-3 py-2 text-sm text-warning-text"
-        >
-          Цепочки разделов нет на этой странице очереди. Уточните фильтр или
-          поиск.
-        </div>
-      )}
-
       {query.data && items.length === 0 && (
         <EmptyState
           title="Цепочек нет"
@@ -260,7 +237,6 @@ export function ZonesQueue({ highlightChainId = null }: ZonesQueueProps) {
               <ZoneRow
                 key={chain.id}
                 chain={chain}
-                highlighted={chain.id === highlightChainId}
                 busy={busy}
                 onDecide={(zone) => decide.mutate({ chainId: chain.id, zone })}
               />

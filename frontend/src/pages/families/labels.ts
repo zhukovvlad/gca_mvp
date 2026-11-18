@@ -1,5 +1,7 @@
+import { formatConfidence } from "@/lib/format";
 import type {
   SectionChainFilter,
+  SectionChainRow,
   SectionZone,
   BatchSource,
   BuildWait,
@@ -722,6 +724,36 @@ export const ZONE_SOURCE_LABEL: Record<"rule" | "model" | "human", string> = {
   model: "модель",
   human: "человек",
 };
+
+const LIVE_JOB = new Set(["pending", "running"]);
+
+/**
+ * Что модель ответила по цепочке: зона с уверенностью и причиной, «не знаю» (`unknown` — ответ
+ * есть, цепочка спорная) либо ответа нет (задание ждёт или не удалось).
+ */
+export function modelLine(chain: SectionChainRow): string {
+  const reason = chain.proposed_reason ? ` — «${chain.proposed_reason}»` : "";
+  if (chain.proposed_zone === null) {
+    if (chain.job_status !== null && LIVE_JOB.has(chain.job_status))
+      return "Модель: ждёт ответа";
+    return "Модель: ответа нет";
+  }
+  const confidence = ` · уверенность ${formatConfidence(chain.proposed_confidence)}`;
+  if (chain.proposed_zone === "unknown") return `Модель: не знаю${confidence}${reason}`;
+  return `Модель: ${ZONE_LABEL[chain.proposed_zone].toLowerCase()}${confidence}${reason}`;
+}
+
+/** Строка-пояснение над фильтром очереди «Зоны» (дизайн входа по ссылке §3). */
+export const ZONES_EXPLAIN =
+  "Зона — часть объекта, к которой относится раздел сметы. Аналоги строке КП ищутся только в договорах той же зоны, поэтому без зоны строка не сравнивается. Зона ставится на цепочку разделов один раз и действует на все сметы.";
+
+/** Карточка входа по ссылке «ждёт решения» (дизайн входа по ссылке §3). */
+export const ZONE_ENTRY_TITLE = "Строки КП ждут зону этой цепочки разделов";
+export const ZONE_ENTRY_ASK =
+  "Выберите зону. Решение действует на все сметы с этой цепочкой, цены строк КП пересчитаются.";
+export const ZONE_ENTRY_BACK = "← вернуться к КП";
+export const ZONE_ENTRY_NOT_FOUND =
+  "Цепочка разделов не найдена: возможно, сметы перезагружены. Вернитесь к КП и откройте ссылку заново.";
 
 /** Признак «можно отпустить» главного параметра: размечен / не размечен. */
 export function releasableLabel(value: boolean | null): string {

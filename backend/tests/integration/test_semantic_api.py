@@ -476,6 +476,7 @@ assert len(DISCOVERY_ROUTE_TEMPLATES) == 11
 LADDER_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
     {
         ("GET", f"{BASE}/section-chains"),
+        ("GET", f"{BASE}/section-chains/{{chain_id}}"),
         ("PUT", f"{BASE}/section-chains/{{chain_id}}/zone"),
         ("GET", f"{BASE}/releasable-proposals"),
         ("POST", f"{BASE}/releasable-proposals/accept-all"),
@@ -483,7 +484,7 @@ LADDER_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
         ("PUT", f"{BASE}/families/{{family_id}}/parameters/{{parameter_id}}/releasable"),
     }
 )
-assert len(LADDER_ROUTE_TEMPLATES) == 6
+assert len(LADDER_ROUTE_TEMPLATES) == 7
 
 #: Маршруты «Журнала ИИ» (спека упрощения каталога §2.7): список, запись, отмена, «поправить»
 #: и «вернуть автоматику» — ШАБЛОНАМИ пути, независимо от `app.routes`.

@@ -57,6 +57,7 @@ import type {
   AcceptAllReleasableResult,
   AcceptAllZonesResult,
   SectionChainList,
+  SectionChainRow,
   SectionChainsParams,
   SectionZone,
   ReaskPreview,
@@ -812,6 +813,9 @@ export const semanticApi = {
         params: { filter: params.filter, q: params.q.trim() === "" ? undefined : params.q.trim(), page: params.page },
       })
       .then((r) => r.data),
+
+  getSectionChain: (chainId: number): Promise<SectionChainRow> =>
+    api.get<SectionChainRow>(`/v1/semantic/section-chains/${chainId}`).then((r) => r.data),
 
   decideChainZone: (chainId: number, zone: SectionZone): Promise<void> =>
     api.put(`/v1/semantic/section-chains/${chainId}/zone`, { zone }).then(() => undefined),

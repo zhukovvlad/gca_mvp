@@ -319,6 +319,8 @@ export const qk = {
     /** Очередь «Зоны» (лестница аналогов §2.17): префикс и ключ с фильтром, поиском и страницей. */
     zonesAll: ["semantic-queue", "zones"] as const,
     zones: (params: SectionChainsParams) => ["semantic-queue", "zones", params] as const,
+    /** Одна цепочка (карточка входа по ссылке): под префиксом «Зоны», решение перечитывает её тем же сбросом. */
+    zoneChain: (chainId: number) => ["semantic-queue", "zones", "chain", chainId] as const,
     /** Очередь «Можно отпустить»: префикс и ключ страницы. */
     releasableAll: ["semantic-queue", "releasable"] as const,
     releasable: (page: number) => ["semantic-queue", "releasable", page] as const,
