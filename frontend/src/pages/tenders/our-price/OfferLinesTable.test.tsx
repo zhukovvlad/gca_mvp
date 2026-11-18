@@ -265,6 +265,20 @@ describe("колонки строки", () => {
     expect(within(screen.getByTestId("work-2")).getAllByTestId("params-row")).toHaveLength(3);
   });
 
+  it("раскрытие остаётся у своей строки после смены сортировки", () => {
+    const four = [1, 2, 3, 4].map((i) => ourPriceParamFixture({ name: `П${i}`, value: `з${i}` }));
+    renderTable([
+      line(1, { ...toOurs(1, "-50.00"), params: four }),
+      line(2, { ...toOurs(2, "200.00"), params: four }),
+    ]);
+    expect(order()).toEqual([2, 1]);
+    fireEvent.click(within(screen.getByTestId("work-1")).getByRole("button", { name: /подробнее/ }));
+    fireEvent.click(screen.getByRole("button", { name: /К самой низкой/ }));
+    expect(order()).toEqual([1, 2]);
+    expect(within(screen.getByTestId("work-1")).getAllByTestId("params-row")).toHaveLength(4);
+    expect(within(screen.getByTestId("work-2")).getAllByTestId("params-row")).toHaveLength(3);
+  });
+
   it("нет объёма и нет цены КП — прочерки", () => {
     renderTable([line(1, { quantity: null, kp: { unit_price: null, total: null } })]);
     expect(screen.getByTestId("qty-1")).toHaveTextContent("—");

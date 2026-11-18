@@ -314,7 +314,14 @@ export function OfferLinesTable({ lines, layout, vat, rateClass, canResolve = fa
     ];
   }, [vat, rateClass, canResolve, paths]);
 
-  const table = useTable({ features, columns, data: sorted });
+  // Ключ строки — позиция, а не место в сортировке: иначе локальное состояние
+  // ячейки (раскрытие параметров) переезжает к соседней строке при пересортировке.
+  const table = useTable({
+    features,
+    columns,
+    data: sorted,
+    getRowId: (line) => String(line.position_item_id),
+  });
 
   // Дерево: строки внутри уровня — в порядке общей сортировки; порядок самих уровней задаёт раскладка.
   const rows = table.getRowModel().rows;
