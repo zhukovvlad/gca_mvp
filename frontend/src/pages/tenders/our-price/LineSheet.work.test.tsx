@@ -85,7 +85,7 @@ describe("панель строки-работы: сравнение", () => {
       workLineViewFixture({ line: { work_rung: { no: 4, released: ["Марка W", "Толщина"], other_class: true } } })
     );
     renderSheet();
-    expect(await screen.findByTestId("sheet-comparison")).toHaveTextContent("без Марка W, Толщина · другой класс");
+    expect(await screen.findByTestId("sheet-comparison")).toHaveTextContent("без учёта: марка W, толщина · другой класс");
   });
 
   it("две карточки: цена, объект и договор, дата цены, разница КП к ней со знаком", async () => {

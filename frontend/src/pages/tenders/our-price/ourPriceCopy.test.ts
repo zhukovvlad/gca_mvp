@@ -141,9 +141,10 @@ describe("priceBasisLabel", () => {
 describe("лестница аналогов: подписи", () => {
   it("подпись ступени работы: 1-2 по классу объекта, 3-4 с «другой класс»; 2 и 4 называют отпущенные параметры", () => {
     expect(workRungLabel({ no: 1, released: [], other_class: false })).toBe("тот же вариант");
-    expect(workRungLabel({ no: 2, released: ["Марка W", "Толщина"], other_class: false })).toBe("без Марка W, Толщина");
+    expect(workRungLabel({ no: 2, released: ["Марка W", "Толщина"], other_class: false })).toBe("без учёта: марка W, толщина");
+    expect(workRungLabel({ no: 2, released: ["МАФ"], other_class: false })).toBe("без учёта: МАФ");
     expect(workRungLabel({ no: 3, released: [], other_class: true })).toBe("тот же вариант · другой класс");
-    expect(workRungLabel({ no: 4, released: ["Марка W"], other_class: true })).toBe("без Марка W · другой класс");
+    expect(workRungLabel({ no: 4, released: ["Марка W"], other_class: true })).toBe("без учёта: марка W · другой класс");
   });
 
   it("«N аналогов»: склонение 1, 2-4, 5, 11, 21", () => {

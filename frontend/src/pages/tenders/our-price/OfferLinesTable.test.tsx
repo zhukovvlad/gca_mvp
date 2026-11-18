@@ -635,8 +635,8 @@ describe("лестница аналогов: колонки и подписи с
       workRow(3, { work_rung: { no: 2, released: ["Толщина"], other_class: false }, analogs_count: 2 }),
     ]);
     expect(screen.getByTestId("rung-1")).toHaveTextContent("тот же вариант · 7 аналогов");
-    expect(screen.getByTestId("rung-2")).toHaveTextContent("без Марка W · другой класс · 1 аналог");
-    expect(screen.getByTestId("rung-3")).toHaveTextContent("без Толщина · 2 аналога");
+    expect(screen.getByTestId("rung-2")).toHaveTextContent("без учёта: марка W · другой класс · 1 аналог");
+    expect(screen.getByTestId("rung-3")).toHaveTextContent("без учёта: толщина · 2 аналога");
   });
 
   it("метка цели: у «самой свежей» и «аналога» есть, у «самой низкой» и «договорились» нет", () => {
