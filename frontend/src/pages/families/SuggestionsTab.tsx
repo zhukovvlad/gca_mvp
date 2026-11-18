@@ -388,8 +388,9 @@ export function SuggestionsTab({ onOpenFamily, target = null, chainId = null }: 
         />
       )}
 
-      {queue === "zones" && chainId !== null && <ZoneEntryCard chainId={chainId} />}
-      {queue === "zones" && <ZonesQueue />}
+      {queue === "zones" && (
+        <ZonesQueue>{chainId !== null && <ZoneEntryCard chainId={chainId} />}</ZonesQueue>
+      )}
       {queue === "releasable" && <ReleasableQueue />}
 
       {queue === "err" && (errorsQ.isPending || holdQ.isPending) && (

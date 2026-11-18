@@ -1,5 +1,5 @@
 import { useIsMutating } from "@tanstack/react-query";
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 
 import { Pager } from "@/components/domain/Pager";
 import { EmptyState } from "@/components/ui-domain/EmptyState";
@@ -132,8 +132,11 @@ function ZoneRow({
  * спорные, и при входе по ссылке тоже), поиск по ключу цепочки и страницы сервера. Решение
  * ставится на цепочку и действует на все сметы, где она встречается; зону от правила или модели
  * можно поправить, открыв их фильтром.
+ *
+ * `children` — карточка входа по ссылке: встаёт сразу после строки-пояснения, до фильтра (макет
+ * дизайна входа по ссылке): сначала что такое зона, потом просьба её выбрать.
  */
-export function ZonesQueue() {
+export function ZonesQueue({ children }: { children?: ReactNode } = {}) {
   const [filter, setFilter] = useState<SectionChainFilter>("disputed");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
@@ -157,6 +160,7 @@ export function ZonesQueue() {
       <p data-testid="zones-explain" className="text-sm text-fg-secondary">
         {ZONES_EXPLAIN}
       </p>
+      {children}
       <div className="flex flex-wrap items-center gap-x-3.5 gap-y-2 text-sm text-fg-secondary">
         <div className="flex items-center gap-2">
           <Label htmlFor="zones-filter" className="text-sm font-normal">

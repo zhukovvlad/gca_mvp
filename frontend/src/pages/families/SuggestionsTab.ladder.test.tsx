@@ -69,7 +69,11 @@ describe("SuggestionsTab: очереди лестницы аналогов", () 
     expect(screen.getByRole("tab", { name: /^Зоны/ })).toHaveAttribute("aria-selected", "true");
     expect(card).toHaveTextContent("Временные сети");
     expect(ladderQueues.chainRequests[0]).toContain("filter=disputed");
-    expect(screen.getByTestId("zones-explain")).toBeInTheDocument();
+    // Порядок макета: сначала что такое зона, потом карточка с просьбой её выбрать, потом фильтр.
+    const explain = screen.getByTestId("zones-explain");
+    const filter = screen.getByLabelText("Показать");
+    expect(explain.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(card.compareDocumentPosition(filter) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     for (const row of screen.getAllByTestId("zone-row")) expect(row).not.toHaveAttribute("data-highlighted");
     expect(screen.queryByTestId("zone-not-found")).not.toBeInTheDocument();
   });
