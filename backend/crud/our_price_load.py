@@ -355,7 +355,6 @@ class KpLineRow:
     article_root_id: int | None
     family_title: str | None
     variant_label: str | None
-    secondary: tuple[tuple[str, str], ...]
     #: Статья раздела строки (`chapter.work_category_id`); `None` — «Нераспределённое».
     category_id: int | None = None
     #: Раздел сметы, в котором лежит строка; `None` — строка вне разделов.
@@ -891,8 +890,8 @@ def load_kp_lines(
 
     Строки отдаются все, без предикатов цены и веса: пригодность решает ядро.
     Число запросов не зависит от числа строк: строки, сигнал каталога, три
-    запроса вариантов, второстепенные параметры, записи значений контекстов и второстепенные параметры
-    действующих схем (параметры строки), конфликтные главные параметры и дерево статей. Строка без
+    запроса вариантов, записи значений контекстов и второстепенные параметры действующих схем
+    (параметры строки), конфликтные главные параметры и дерево статей. Строка без
     членства или без варианта — `key = None`, `variant_label = None`; название
     семьи берётся у любого контекста, у которого она есть.
     """
@@ -940,7 +939,6 @@ def load_kp_lines(
     ).all()
     signals = catalog_signal(db, estimate_ids, only_position_item_id=only_position_item_id)
     infos = _variant_infos(db, [row[11] for row in rows if row[11] is not None])
-    secondary = _secondary_values(db, [row[10] for row in rows if row[10] is not None])
     variant_context_ids = [row[10] for row in rows if row[10] is not None and row[11] is not None]
     context_values = _context_values(db, variant_context_ids)
     current_secondaries = _current_secondaries(db, sorted({info.family_id for info in infos.values()}))
@@ -1021,7 +1019,6 @@ def load_kp_lines(
                 article_root_id=root_of.get(category_id) if category_id is not None else None,
                 family_title=family_title,
                 variant_label=info.label if info is not None else None,
-                secondary=secondary.get(context_id, ()) if context_id is not None else (),
                 category_id=category_id,
                 chapter_item_id=chapter_item_id,
                 params=(
@@ -1036,34 +1033,6 @@ def load_kp_lines(
             )
         )
     return result
-
-
-def _secondary_values(db: Session, context_ids: Sequence[int]) -> dict[int, tuple[tuple[str, str], ...]]:
-    """Пары «параметр, значение» второстепенных активных параметров контекстов
-    по номеру параметра; пустое значение читается «не уточнено», текст не из
-    списка — «не из списка: «текст»», как его показывает каталог семей."""
-    rows = db.execute(
-        sa.select(
-            ContextParameterValue.context_id,
-            FamilyParameter.name,
-            FamilyParameterValue.value,
-            ContextParameterValue.off_list_text,
-        )
-        .select_from(ContextParameterValue)
-        .join(FamilyParameter, FamilyParameter.id == ContextParameterValue.parameter_id)
-        .outerjoin(FamilyParameterValue, FamilyParameterValue.id == ContextParameterValue.value_id)
-        .where(
-            ContextParameterValue.context_id.in_(sorted(set(context_ids))),
-            FamilyParameter.role == ParameterRole.secondary.value,
-            FamilyParameter.archived_at.is_(None),
-        )
-        .order_by(ContextParameterValue.context_id, FamilyParameter.ordinal)
-    ).all()
-    grouped: dict[int, list[tuple[str, str]]] = defaultdict(list)
-    for context_id, name, value, off_list in rows:
-        text = value or (f"не из списка: «{off_list}»" if off_list else _UNKNOWN_LABEL)
-        grouped[context_id].append((name, text))
-    return {context_id: tuple(pairs) for context_id, pairs in grouped.items()}
 
 
 def catalog_text(value: str | None, source: str, off_list: str | None) -> str:

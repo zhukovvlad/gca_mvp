@@ -2940,7 +2940,6 @@ export function ourPriceLineFixture(overrides: Partial<OurPriceLine> = {}): OurP
     family: "Семья 1",
     family_id: null,
     variant_label: "Семья 1 · Вариант 1",
-    secondary: [{ name: "Цвет", value: "серый" }],
     // Ступень семьи `v` (ниже): правила подбора описывают фактический подбор, главные - `required`.
     params_basis: "rung",
     params: [

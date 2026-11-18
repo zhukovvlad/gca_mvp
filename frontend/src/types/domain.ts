@@ -3708,7 +3708,6 @@ export interface OurPriceLine {
   /** Семья строки КП: сторона `a` связи при «Запомнить для семей» (спека справочных аналогов §2.16). */
   family_id: number | null;
   variant_label: string | null;
-  secondary: Array<{ name: string; value: string }>;
   params_basis: ParamsBasis | null;
   params: LineParam[];
   state: OurPriceLineState;

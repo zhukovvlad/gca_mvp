@@ -143,13 +143,13 @@ describe("цены панели", () => {
     expect(screen.getByTestId("sheet-ours")).toHaveTextContent("1 000,00");
     expect(screen.getByTestId("sheet-ours")).not.toHaveTextContent("1 220,00");
     expect(screen.getByTestId("sheet-ours")).not.toHaveTextContent(ALL_CLASSES_LABEL);
-    expect(prices).toHaveTextContent("Цвет: серый");
-    // Заголовок панели — строка ответа, подзаголовок — её семья и вариант.
+    // Второстепенные параметры живут в разделе «Работа», а не в «Ценах».
+    expect(prices).not.toHaveTextContent("Цвет");
+    // Заголовок панели — строка ответа, подзаголовок — её семья без значений параметров.
     const sheet = screen.getByTestId("line-sheet");
     expect(within(sheet).getByRole("heading", { name: "Работа 1" })).toBeInTheDocument();
-    expect(sheet).toHaveTextContent("Семья 1 · Вариант 1");
-    // Подпись варианта уже начинается с семьи: во второй раз она не печатается.
-    expect(sheet).not.toHaveTextContent("Семья 1 · Семья 1");
+    expect(sheet).toHaveTextContent("Семья 1");
+    expect(sheet).not.toHaveTextContent("Семья 1 · Вариант 1");
   });
 
   it("цена КП и наша расценка подписаны рублями за единицу измерения строки", async () => {

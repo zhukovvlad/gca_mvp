@@ -1056,7 +1056,7 @@ class TestKpSemantics:
         assert row.line.key is None
         assert row.variant_label is None
         assert row.family_title is None
-        assert row.secondary == ()
+        assert row.params == ()
         assert row.line.is_system is False
         assert (row.line.in_progress, row.line.waiting_admin) == (False, False)
 
@@ -1188,13 +1188,15 @@ class TestKpSemantics:
 
         (row,) = _kp(db_session, estimate)
 
-        assert row.secondary == (("Марка", "М300"), ("Цвет", "серый"))
+        secondary = [(p.name, p.value) for p in row.params if p.role == "secondary"]
+        assert secondary == [("Марка", "М300"), ("Цвет", "серый")]
 
     def test_secondary_value_not_specified_and_off_list_text(self, world, db_session):
         estimate, proposal, family, schema, first, second = _kp_scene(world)
         unspecified = world.param(schema, 3, "Марка", role="secondary")
         off_list = world.param(schema, 4, "Цвет", role="secondary")
-        item = world.line(proposal, family=family)
+        variant = world.variant(family, schema, {1: world.value(first, "50 мм"), 2: world.value(second, "бетон")})
+        item = world.line(proposal, family=family, variant=variant)
         db_session.add_all(
             [
                 ContextParameterValue(
@@ -1218,7 +1220,8 @@ class TestKpSemantics:
 
         (row,) = _kp(db_session, estimate)
 
-        assert row.secondary == (("Марка", "не уточнено"), ("Цвет", "не из списка: «зелёный»"))
+        secondary = [(p.name, p.value, p.off_list, p.source) for p in row.params if p.role == "secondary"]
+        assert secondary == [("Марка", None, None, "none"), ("Цвет", None, "зелёный", "off_list")]
 
 
 class TestKpArticleRoot:
@@ -1562,7 +1565,7 @@ class TestStatementCountDoesNotGrowWithRows:
             rows_many = load_kp_lines(db_session, [estimate.id])[estimate.id]
 
         assert (len(rows_few), len(rows_many)) == (2, 20)
-        assert all(r.secondary for r in rows_many)
+        assert all(any(p.role == "secondary" for p in r.params) for r in rows_many)
         assert few[0] > 0
         assert many[0] == few[0]
 

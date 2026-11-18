@@ -236,11 +236,6 @@ export function offerSubtitle(stageNo: number, parts: SubtitleParts): string {
   return subtitleOf(parts.heldOn !== null ? `${stage}, ${dateRu(parts.heldOn)}` : stage, parts);
 }
 
-/** Подпись варианта строки: подпись уже начинается с семьи, поэтому семья отдельно не печатается. */
-export function variantCaption(line: { family: string | null; variant_label: string | null }): string | null {
-  return line.variant_label ?? line.family;
-}
-
 export const OFFER_SWITCHER_LABEL = "Участник:";
 
 export function offerCrumbStage(stageNo: number): string {
@@ -326,7 +321,6 @@ export function rowsLabel(count: number): string {
 export const noPriceCountLabel = (count: number): string => `${count} без цены`;
 export const nodeKpLabel = (amount: string): string => `КП ${amount}`;
 export const ALL_CLASSES_LABEL = "все кл.";
-export const SECONDARY_MARK = "ⓘ";
 export const SUB_KOPECK_LABEL = "< 0,01";
 
 export const POSITION_LABEL = {
@@ -439,7 +433,6 @@ export const SHEET_FIELD = {
   quantity: "Объём",
   toOurs: "К самой низкой",
   ours: "Самая низкая (справкой)",
-  secondary: "Второстепенные",
 } as const;
 
 /** Карточки цифр работы (спека лестницы аналогов §2.20): подписи и подсказки. */

@@ -930,7 +930,6 @@ def _line_view(
         "section_ref": row.section_ref,
         "family": row.family_title,
         "variant_label": row.variant_label,
-        "secondary": [{"name": name, "value": value} for name, value in row.secondary],
         "params_basis": params_basis,
         "params": params,
         "state": result.state.value,
@@ -1654,9 +1653,7 @@ def _released_view(
                 {
                     "value": None if value_id is None else texts[value_id],
                     "conflict": conflict,
-                    "differs": conflict
-                    or parameter_id in kp_conflicted
-                    or value_id != kp_values.get(parameter_id),
+                    "differs": conflict or parameter_id in kp_conflicted or value_id != kp_values.get(parameter_id),
                 }
             )
         values[analog.position_item_id] = cells

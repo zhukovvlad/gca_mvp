@@ -17,6 +17,8 @@ import {
   OUR_PRICE_TENDER_ID,
   ourPriceAnalogFixture,
   ourPriceLineFixture,
+  ourPriceLineViewFixture,
+  ourPriceParamFixture,
   workLineViewFixture,
 } from "@/test/fixtures";
 import { server } from "@/test/server";
@@ -25,6 +27,7 @@ import { ANALOG_UNAVAILABLE_TOAST } from "@/services/queries";
 import type { MoneyPair, OurPriceLine, OurPriceLineView, TargetChoice } from "@/types/domain";
 
 import { LineSheet, type LineSheetProps } from "./LineSheet";
+import { PARAMS_COPY } from "./paramsCopy";
 import { REF_SEARCH, SAVING_LABEL, SHEET_SECTION, UNIT_WARN_ALL_OUTLIERS, zoneQueueHref } from "./ourPriceCopy";
 
 const LINE_PATH = "/api/v1/tenders/:id/rounds/:roundId/our-price/offers/:offerId/lines/:positionItemId";
@@ -264,13 +267,14 @@ describe("панель работы: ширина и порядок секций
       .getAllByRole("heading", { level: 4 })
       .map((h) => h.textContent);
 
-  it("работа: где строка, цены, сравнение, аналоги, поиск по договорам, в файл подрядчику", async () => {
+  it("работа: где строка, цены, работа, сравнение, аналоги, поиск по договорам, в файл подрядчику", async () => {
     serve(() => workLineViewFixture());
     renderSheet();
     await screen.findByTestId("sheet-comparison");
     expect(titles()).toEqual([
       SHEET_SECTION.where,
       SHEET_SECTION.prices,
+      PARAMS_COPY.sectionTitle,
       SHEET_SECTION.comparison,
       SHEET_SECTION.analogs,
       REF_SEARCH.title,
@@ -278,13 +282,14 @@ describe("панель работы: ширина и порядок секций
     ]);
   });
 
-  it("сборная строка: где строка, цены, сравнение, по частям, поиск по договорам, в файл подрядчику", async () => {
+  it("сборная строка: где строка, цены, работа, сравнение, по частям, поиск по договорам, в файл подрядчику", async () => {
     serve(() => compositeLineViewFixture());
     renderSheet();
     await screen.findByTestId("composite-no-target");
     expect(titles()).toEqual([
       SHEET_SECTION.where,
       SHEET_SECTION.prices,
+      PARAMS_COPY.sectionTitle,
       SHEET_SECTION.comparison,
       SHEET_SECTION.parts,
       REF_SEARCH.title,
@@ -673,5 +678,86 @@ describe("деньги панели работы — строками, без а
     renderSheet();
     const low = await screen.findByTestId("figure-lowest");
     expect(low).toHaveTextContent("1 234,57");
+  });
+});
+
+describe("панель строки: параметры варианта", () => {
+  const withParams = (line: Partial<OurPriceLine>): OurPriceLineView => {
+    const base = ourPriceLineViewFixture();
+    return { ...base, line: { ...base.line, ...line } };
+  };
+
+  it("подзаголовок — семья, без склейки со значениями и подписью варианта", async () => {
+    serve(() => withParams({ family: "Семья Т", variant_label: "Семья Т · вариант 1" }));
+    renderSheet();
+    await screen.findByTestId("sheet-prices");
+    expect(screen.getByText("Семья Т")).toBeInTheDocument();
+    expect(screen.queryByText(/вариант 1/)).not.toBeInTheDocument();
+  });
+
+  it("без семьи — прежняя подпись панели", async () => {
+    serve(() => withParams({ family: null, variant_label: null, params: [] }));
+    renderSheet();
+    await screen.findByTestId("sheet-prices");
+    expect(screen.getByText("Сравнение строки КП с нашими договорами")).toBeInTheDocument();
+  });
+
+  it("в «Ценах» нет строки «Второстепенные»", async () => {
+    serve(() => withParams({ params: [ourPriceParamFixture({ name: "Цвет", role: "secondary", value: "серый" })] }));
+    renderSheet();
+    expect(await screen.findByTestId("sheet-prices")).not.toHaveTextContent("Второстепенные");
+  });
+
+  it("раздел «Работа» стоит сразу после «Цен», работа и система показывают его при непустом params", async () => {
+    serve(() => withParams({ params: [ourPriceParamFixture({ name: "Параметр Т", value: "значение Т" })] }));
+    renderSheet();
+    const prices = await screen.findByTestId("sheet-prices");
+    const work = screen.getByTestId("sheet-work-params");
+    expect(prices.nextElementSibling).toBe(work);
+    expect(work).toHaveTextContent("Параметр Т");
+    expect(work).toHaveTextContent("значение Т");
+  });
+
+  it("params пуст — раздела «Работа» нет", async () => {
+    serve(() => withParams({ params: [] }));
+    renderSheet();
+    await screen.findByTestId("sheet-prices");
+    expect(screen.queryByTestId("sheet-work-params")).not.toBeInTheDocument();
+  });
+
+  it("основание catalog доходит до заголовка колонки «При подборе»", async () => {
+    serve(() => withParams({ params_basis: "catalog", params: [ourPriceParamFixture({ match: "ignored" })] }));
+    renderSheet();
+    const work = await screen.findByTestId("sheet-work-params");
+    expect(work).toHaveTextContent("(аналогов нет — настройка каталога)");
+    expect(work).toHaveTextContent("можно не учитывать");
+  });
+
+  it("колонки аналогов: имя из analog_columns, значение и подсветка у аналога", async () => {
+    serve(() => {
+      const view = workLineViewFixture({
+        line: { work_rung: { no: 2, released: ["Марка W"], other_class: false } },
+        analogs: [
+          ourPriceAnalogFixture({
+            analog_id: 8001,
+            released_values: [{ value: "W8", conflict: false, differs: true }],
+          }),
+        ],
+      });
+      return { ...view, analog_columns: [{ name: "Марка W" }] };
+    });
+    renderSheet();
+    const card = await screen.findByTestId("analog-released-8001");
+    expect(card).toHaveTextContent("Марка W");
+    const value = within(card).getByTestId("analog-released-value");
+    expect(value).toHaveTextContent("W8");
+    expect(value).toHaveAttribute("data-differs", "true");
+  });
+
+  it("analog_columns пуст — у аналогов колонок нет", async () => {
+    serve(() => workLineViewFixture());
+    renderSheet();
+    await screen.findByTestId("analog-8001");
+    expect(screen.queryByTestId("analog-released-8001")).not.toBeInTheDocument();
   });
 });
