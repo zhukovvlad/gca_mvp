@@ -25,10 +25,10 @@ export function WorkParamsSection({ params, basis, kind }: WorkParamsSectionProp
       <Table className="text-sm">
         <TableHeader>
           <TableRow>
-            <TableHead>{PARAMS_COPY.columns.param}</TableHead>
-            <TableHead>{PARAMS_COPY.columns.value}</TableHead>
-            <TableHead>{PARAMS_COPY.columns.source}</TableHead>
-            <TableHead>
+            <TableHead className="whitespace-normal">{PARAMS_COPY.columns.param}</TableHead>
+            <TableHead className="whitespace-normal">{PARAMS_COPY.columns.value}</TableHead>
+            <TableHead className="whitespace-normal">{PARAMS_COPY.columns.source}</TableHead>
+            <TableHead className="whitespace-normal">
               <MatchHeader kind={kind} basis={basis} />
             </TableHead>
           </TableRow>
@@ -44,7 +44,7 @@ export function WorkParamsSection({ params, basis, kind }: WorkParamsSectionProp
               </TableCell>
               <TableCell
                 data-testid="work-param-value"
-                className={cn("whitespace-normal align-top", paramWarn(param) && "text-warning-text")}
+                className={cn("whitespace-normal align-top", paramWarn(param) && "text-warning")}
               >
                 {paramText(param)}
               </TableCell>
@@ -74,7 +74,7 @@ function MatchHeader({ kind, basis }: { kind: "work" | "system"; basis: ParamsBa
       ) : (
         label
       )}
-      {basis === "catalog" && <span className="ml-1 font-normal text-fg-secondary">{PARAMS_COPY.catalogHint}</span>}
+      {basis === "catalog" && <span className="block text-xs font-normal text-fg-secondary">{PARAMS_COPY.catalogHint}</span>}
     </>
   );
 }

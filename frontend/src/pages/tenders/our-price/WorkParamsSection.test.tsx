@@ -90,8 +90,8 @@ describe("WorkParamsSection: состав раздела", () => {
       ourPriceParamFixture({ name: "П2", value: null, source: "none", match: null }),
     ]);
     const [ok, warn] = screen.getAllByTestId("work-param-value");
-    expect(ok.className).not.toContain("text-warning-text");
-    expect(warn.className).toContain("text-warning-text");
+    expect(ok.classList.contains("text-warning")).toBe(false);
+    expect(warn.classList.contains("text-warning")).toBe(true);
   });
 });
 
@@ -108,6 +108,15 @@ describe("WorkParamsSection: основание подбора", () => {
       "(аналогов нет — настройка каталога)"
     );
     expect(within(rows()[0]).getAllByRole("cell")[3]).toHaveTextContent(/^можно не учитывать$/);
+  });
+
+  it("catalog: заголовок «При подборе» переносится, подсказка — отдельным блоком под ним", () => {
+    renderSection([ourPriceParamFixture({ match: "ignored" })], { basis: "catalog" });
+    const head = screen.getByRole("columnheader", { name: /При подборе/ });
+    expect(head.classList.contains("whitespace-normal")).toBe(true);
+    const hint = screen.getByText("(аналогов нет — настройка каталога)");
+    expect(hint).not.toBe(head);
+    expect(hint.classList.contains("block")).toBe(true);
   });
 
   it("basis = null (система без ступени): правил нет, «—», пояснения каталога нет", () => {

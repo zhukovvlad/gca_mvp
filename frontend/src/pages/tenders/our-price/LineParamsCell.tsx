@@ -39,7 +39,7 @@ export function LineParamsCell({ family, params, basis }: LineParamsCellProps) {
         return (
           <div key={param.name} data-testid="params-row">
             <span>{param.name}:</span>{" "}
-            <span data-testid="params-value" className={cn("text-fg", paramWarn(param) && "text-warning-text")}>
+            <span data-testid="params-value" className={cn("text-fg", paramWarn(param) && "text-warning")}>
               {paramText(param)}
             </span>
             {note !== null && <span className="text-fg-muted"> {note}</span>}

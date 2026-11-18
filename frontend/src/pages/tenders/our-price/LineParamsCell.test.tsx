@@ -110,7 +110,7 @@ describe("LineParamsCell: значения, цвет, приписки", () => {
     renderCell([ourPriceParamFixture({ name: "Марка", value: null, refreshing: true })]);
     const value = screen.getByTestId("params-value");
     expect(value).toHaveTextContent("не уточнено — уточняется");
-    expect(value.className).toContain("text-warning-text");
+    expect(value.classList.contains("text-warning")).toBe(true);
   });
 
   it("refreshing вне списка — «не из списка: «…» — уточняется»", () => {
@@ -126,9 +126,9 @@ describe("LineParamsCell: значения, цвет, приписки", () => {
       ourPriceParamFixture({ name: "Б", value: null }),
     ]);
     const [ok, unknown] = screen.getAllByTestId("params-value");
-    expect(ok.className).not.toContain("text-warning-text");
+    expect(ok.classList.contains("text-warning")).toBe(false);
     expect(unknown).toHaveTextContent("не уточнено");
-    expect(unknown.className).toContain("text-warning-text");
+    expect(unknown.classList.contains("text-warning")).toBe(true);
   });
 
   it("основание rung: у главного «не учитывается» и «такой же набор» — приписки; у required — нет", () => {
