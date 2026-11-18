@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Вход в очередь «Зоны»</title>
+<style>
+  :root {
+    --bg: #0e1013; --surface: #181b20; --sunken: #121418; --border: #2a2e36; --fg: #e8e8e8;
+    --fg2: #9aa0a8; --muted: #6b717a; --warn: #f0a35e; --info: #7fb4ff; --ok: #6fcf97;
+    --accent-soft: #16233a; --accent-border: #3a5a8c; --primary: #e8e8e8; --primary-fg: #121418;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 16px; }
+  .note { border: 1px dashed var(--muted); border-radius: 10px; padding: 10px 14px; color: var(--fg2); font-size: 13px; margin-bottom: 18px; }
+  .note b { color: var(--fg); }
+  h2 { font-size: 16px; margin: 30px 0 10px; }
+  .screen { border: 1px solid var(--border); border-radius: 14px; padding: 16px; background: var(--bg); }
+  .tabs { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); overflow: hidden; font-size: 13px; }
+  .tabs span { padding: 6px 12px; color: var(--fg2); border-right: 1px solid var(--border); }
+  .tabs span:last-child { border-right: 0; }
+  .tabs span.on { background: var(--sunken); color: var(--fg); }
+  .tabs i { font-style: normal; opacity: .6; margin-left: 4px; }
+  .explain { margin: 12px 0 0; font-size: 13px; color: var(--fg2); max-width: 860px; }
+  .entry { margin-top: 14px; border: 1px solid var(--accent-border); background: var(--accent-soft); border-radius: 12px; padding: 14px 16px; display: grid; gap: 8px; }
+  .entry .head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+  .entry h3 { margin: 0; font-size: 15px; }
+  .back { color: var(--info); font-size: 13px; text-decoration: underline; text-underline-offset: 2px; white-space: nowrap; }
+  .ask { font-size: 13px; color: var(--fg2); }
+  .row { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 16px; align-items: start; }
+  .titles { font-weight: 500; }
+  .meta { font-size: 12px; color: var(--muted); }
+  .model { font-size: 13px; color: var(--fg2); }
+  .done { font-size: 12px; color: var(--ok); }
+  .toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; font-size: 13px; }
+  .toggle span { padding: 5px 10px; border-right: 1px solid var(--border); color: var(--fg); background: var(--surface); }
+  .toggle span:last-child { border-right: 0; }
+  .toggle span.on { background: var(--primary); color: var(--primary-fg); }
+  .filters { display: flex; gap: 14px; align-items: center; margin-top: 18px; font-size: 13px; color: var(--fg2); flex-wrap: wrap; }
+  .select, .search { border: 1px solid var(--border); border-radius: 8px; padding: 5px 10px; background: var(--surface); color: var(--fg); }
+  .search { width: 240px; color: var(--muted); }
+  .accept { margin-top: 10px; display: inline-block; border: 1px solid var(--border); border-radius: 8px; padding: 5px 10px; font-size: 13px; }
+  .queue { margin-top: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+  .queue .row { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  .queue .row:last-child { border-bottom: 0; }
+  .warn { margin-top: 14px; border: 1px solid #6b4a23; background: #2a1f12; color: var(--warn); border-radius: 10px; padding: 8px 12px; font-size: 13px; }
+  .gone { opacity: .45; }
+  @media (max-width: 760px) { .row { grid-template-columns: 1fr; } .entry .head { flex-direction: column; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="note">
+  <b>Макет к дизайну 2026-11-18-zone-link-entry.</b> Данные — со стенда: КП 76, строка «Цементно-песчаная
+  стяжка М100…», цепочка 27989. Три состояния: вход по ссылке, после нажатия зоны, номер цепочки устарел.
+  Вёрстка — ориентир, цвета берутся из темы приложения.
+</div>
+
+<h2>1. Вход по ссылке «ждёт решения администратора»</h2>
+<div class="screen">
+  <div class="tabs">
+    <span>Семья из списка<i>…</i></span><span>Смена семьи<i>…</i></span><span>Новая<i>…</i></span>
+    <span class="on">Зоны<i>707</i></span><span>Можно отпустить<i>…</i></span><span>Ошибки<i>…</i></span>
+  </div>
+
+  <p class="explain">Зона — часть объекта, к которой относится раздел сметы. Аналоги строке КП ищутся только
+    в договорах той же зоны, поэтому без зоны строка не сравнивается. Зона ставится на цепочку разделов
+    один раз и действует на все сметы.</p>
+
+  <div class="entry">
+    <div class="head">
+      <h3>Строки КП ждут зону этой цепочки разделов</h3>
+      <a class="back" href="#">← вернуться к КП</a>
+    </div>
+    <div class="ask">Выберите зону. Решение действует на все сметы с этой цепочкой, цены строк КП пересчитаются.</div>
+    <div class="row">
+      <div>
+        <div class="titles">Устройство кровли / 1 Этап ЖК / Устройство кровли над подземной автостоянкой / Тип КС1 - КС8</div>
+        <div class="meta">КП: 9 строк · договоры: 0 · например: «Щебень гранитный фракции 20-40…», «Дренажный слой с геотекстилем…», «Гидроизоляционная мембрана ЭКП 4,5 мм в 1 слой»</div>
+        <div class="model">Модель: подземная · уверенность 0,85 — «Кровля над подземной автостоянкой — это эксплуатируемое покрытие над подземным паркингом, относится к подземной части объекта.»</div>
+      </div>
+      <div class="toggle"><span>Подземная</span><span>Надземная</span><span>Территория</span><span>Весь объект</span></div>
+    </div>
+  </div>
+
+  <div class="filters">
+    <span>Показать <span class="select">Спорные ▾</span></span>
+    <span class="search">поиск по разделам…</span>
+    <span class="meta">707 цепочек</span>
+  </div>
+  <span class="accept">Принять все предложения модели (707)</span>
+  <div class="queue">
+    <div class="row"><div><div class="titles">Земляные работы / Котлован / Разработка грунта</div>
+      <div class="meta">КП: 14 строк · договоры: 31</div><div class="model">Модель: подземная · уверенность 0,90</div></div>
+      <div class="toggle"><span>Подземная</span><span>Надземная</span><span>Территория</span><span>Весь объект</span></div></div>
+    <div class="row"><div><div class="titles">Благоустройство / Озеленение</div>
+      <div class="meta">КП: 6 строк · договоры: 12</div><div class="model">Модель: территория · уверенность 0,88</div></div>
+      <div class="toggle"><span>Подземная</span><span>Надземная</span><span>Территория</span><span>Весь объект</span></div></div>
+    <div class="row"><div class="meta">… ещё 48 цепочек на странице, листалка внизу</div></div>
+  </div>
+  <p class="meta gone">Нет больше: фильтра «Все» при входе по ссылке, подсветки строки в списке, жёлтой плашки
+    «Цепочки разделов нет на этой странице очереди».</p>
+</div>
+
+<h2>2. После нажатия «Подземная»</h2>
+<div class="screen">
+  <p class="explain" style="margin-top:0">(вкладки и пояснение — как выше)</p>
+  <div class="entry">
+    <div class="head">
+      <h3>Строки КП ждут зону этой цепочки разделов</h3>
+      <a class="back" href="#">← вернуться к КП</a>
+    </div>
+    <div class="ask">Выберите зону. Решение действует на все сметы с этой цепочкой, цены строк КП пересчитаются.</div>
+    <div class="row">
+      <div>
+        <div class="titles">Устройство кровли / 1 Этап ЖК / Устройство кровли над подземной автостоянкой / Тип КС1 - КС8</div>
+        <div class="meta">КП: 9 строк · договоры: 0 · например: «Щебень гранитный фракции 20-40…», …</div>
+        <div class="done">зона поставлена: человек</div>
+      </div>
+      <div class="toggle"><span class="on">Подземная</span><span>Надземная</span><span>Территория</span><span>Весь объект</span></div>
+    </div>
+  </div>
+  <p class="meta">Решение человека снимает предложение модели (так уже работает в очереди). В списке у решённой
+    цепочки пишется «Модель: ответа нет»; в карточке эту строку после решения не показываю — она только сбивает.
+    Счётчик «Зоны» во вкладке уменьшается на 1.</p>
+</div>
+
+<h2>3. Номер цепочки устарел</h2>
+<div class="screen">
+  <p class="explain" style="margin-top:0">(вкладки и пояснение — как выше)</p>
+  <div class="warn">Цепочка разделов не найдена: возможно, сметы перезагружены. Вернитесь к КП и откройте ссылку заново.</div>
+  <p class="meta">Ниже — обычная очередь «Спорные».</p>
+</div>
+
+</div>
+</body>
+</html>
