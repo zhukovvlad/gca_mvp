@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Зона в панели строки</title>
+<style>
+  :root {
+    --bg: #f3f1ec; --surface: #ffffff; --sunken: #f6f5f1; --border: #e3e0d8; --fg: #1d1f22;
+    --fg2: #6b6f76; --muted: #9a9ea5; --warn: #b45309; --warn-soft: #fdf3e3; --warn-border: #f0d7ad;
+    --accent: #2f6b4f; --accent-soft: #eaf3ee; --accent-border: #b9d6c6; --info: #2563eb;
+    --primary: #23302a; --primary-fg: #ffffff; --chip: #efede7; --overlay: rgba(20,22,25,.45);
+  }
+  :root[data-theme="dark"] {
+    --bg: #0e1013; --surface: #181b20; --sunken: #121418; --border: #2a2e36; --fg: #e8e8e8;
+    --fg2: #9aa0a8; --muted: #6b717a; --warn: #f0a35e; --warn-soft: #2a1f12; --warn-border: #6b4a23;
+    --accent: #7fc8a0; --accent-soft: #17251e; --accent-border: #2f5a43; --info: #7fb4ff;
+    --primary: #e8e8e8; --primary-fg: #121418; --chip: #23272e; --overlay: rgba(0,0,0,.6);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .wrap { max-width: 1500px; margin: 0 auto; padding: 16px; }
+  .note { border: 1px dashed var(--muted); border-radius: 10px; padding: 10px 14px; color: var(--fg2); font-size: 13px; margin-bottom: 14px; max-width: 980px; }
+  .note b { color: var(--fg); }
+  .bar { display: flex; gap: 10px; align-items: center; margin-bottom: 18px; flex-wrap: wrap; }
+  .bar button { font: inherit; font-size: 13px; padding: 5px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); color: var(--fg); cursor: pointer; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(560px, 1fr)); gap: 22px; align-items: start; }
+  .state h2 { font-size: 14px; margin: 0 0 8px; }
+  .state .sub { font-size: 12px; color: var(--fg2); margin: -4px 0 8px; }
+  .sheet { position: relative; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px 18px; overflow: hidden; }
+  .sheet .t { font-family: Georgia, "Times New Roman", serif; font-size: 16px; }
+  .sheet .fam { color: var(--fg2); font-size: 13px; margin-top: 2px; }
+  .sec { margin-top: 18px; }
+  .sec > h4 { margin: 0 0 8px; font-size: 12px; letter-spacing: .05em; text-transform: uppercase; color: var(--fg); }
+  .lbl { font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--fg2); margin: 8px 0 3px; }
+  .crumbs { font-size: 13px; }
+  .crumbs .art { display: inline-block; background: var(--accent-soft); border-radius: 4px; padding: 0 5px; }
+  .tree { font-size: 13px; color: var(--fg); }
+  .tree div { padding-left: calc(var(--d) * 14px); }
+  .tree .n { color: var(--fg2); font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+  .zone { margin-top: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--sunken); padding: 10px 12px; display: grid; gap: 6px; position: relative; }
+  .zone.undecided { border-color: var(--warn-border); background: var(--warn-soft); }
+  .zhead { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .zname { font-weight: 600; font-size: 14px; }
+  .zname.warn { color: var(--warn); }
+  .src { font-size: 12px; color: var(--fg2); background: var(--chip); border-radius: 6px; padding: 1px 7px; white-space: nowrap; }
+  .info { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; margin: 0 2px 0 4px; border-radius: 50%; border: 1px solid var(--fg2); color: var(--fg2); font-size: 10px; font-weight: 600; cursor: help; vertical-align: 1px; outline: none; }
+  .info:focus-visible { box-shadow: 0 0 0 2px var(--info); }
+  .tip { display: none; position: absolute; left: -10px; top: calc(100% + 8px); width: 320px; z-index: 5; background: var(--primary); color: var(--primary-fg); font-size: 12px; font-weight: 400; line-height: 1.45; border-radius: 8px; padding: 8px 10px; box-shadow: 0 6px 18px rgba(0,0,0,.25); text-align: left; }
+  .info:hover .tip, .info:focus .tip, .info.open .tip { display: block; }
+  .scope { font-size: 12.5px; color: var(--fg); }
+  .model { font-size: 12.5px; color: var(--fg2); }
+  .model b { color: var(--fg); font-weight: 500; }
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 2px; }
+  .toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; font-size: 12.5px; background: var(--surface); }
+  .toggle span { padding: 4px 9px; border-right: 1px solid var(--border); cursor: pointer; }
+  .toggle span:last-child { border-right: 0; }
+  .toggle span.on { background: var(--primary); color: var(--primary-fg); }
+  .link { font-size: 12.5px; color: var(--info); text-decoration: underline; text-underline-offset: 2px; }
+  .ro { font-size: 12px; color: var(--muted); }
+  .cmp { font-size: 13px; color: var(--fg2); }
+  .badge { display: inline-block; font-size: 12px; background: var(--chip); color: var(--fg); border-radius: 6px; padding: 2px 8px; margin-right: 6px; }
+  .tiles { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-top: 8px; }
+  .tile { border: 1px solid var(--border); border-top: 3px solid var(--accent); border-radius: 10px; padding: 8px 10px; font-size: 12px; color: var(--fg2); }
+  .tile b { display: block; font-size: 17px; color: var(--fg); font-family: ui-monospace, Consolas, monospace; margin-top: 3px; }
+  .nocmp { font-size: 13px; color: var(--warn); }
+  .ellipsis { color: var(--muted); font-size: 12px; margin-top: 10px; }
+  .dim { position: absolute; inset: 0; background: var(--overlay); display: flex; align-items: center; justify-content: center; padding: 18px; }
+  .dialog { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; max-width: 440px; box-shadow: 0 10px 30px rgba(0,0,0,.25); }
+  .dialog h5 { margin: 0 0 8px; font-size: 15px; }
+  .dialog p { margin: 0 0 8px; font-size: 13px; color: var(--fg2); }
+  .dialog p b { color: var(--fg); font-weight: 600; }
+  .dialog .acts { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+  .btn { font-size: 13px; border-radius: 8px; padding: 6px 12px; border: 1px solid var(--border); background: var(--surface); color: var(--fg); }
+  .btn.p { background: var(--primary); color: var(--primary-fg); border-color: var(--primary); }
+  .saving { position: absolute; inset: 0; border-radius: 10px; background: rgba(120,124,130,.28); display: flex; align-items: center; justify-content: center; }
+  .saving span { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; font-size: 13px; box-shadow: 0 3px 10px rgba(0,0,0,.12); }
+  .legend { font-size: 12.5px; color: var(--fg2); max-width: 980px; margin-top: 22px; }
+  .legend li { margin: 3px 0; }
+  @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } .tiles { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="note">
+  <b>Макет к дизайну 2026-11-19-zone-in-line-panel.</b> Панель строки КП 76 «Дренажный слой с геотекстилем…»,
+  цепочка разделов 27989. Блок «Зона места» — в разделе «Где строка», сразу под цепочкой разделов, которой
+  зона и принадлежит. Остальная панель (цены, работа, сравнение) — как сегодня, здесь сокращена.
+  Цифры счётчиков и ответ модели — со стенда; дата решения и номера пунктов сметы условные.
+</div>
+<div class="bar">
+  <button onclick="document.documentElement.dataset.theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'">Светлая / тёмная тема</button>
+</div>
+
+<div class="grid">
+
+<!-- 1 -->
+<div class="state">
+  <h2>1. Администратор, зона стоит (поставил человек)</h2>
+  <div class="sheet">
+    <div class="t">Дренажный слой с геотекстилем (1160 кн/м2), толщиной 10 мм</div>
+    <div class="fam">Устройство дренажной профилированной мембраны</div>
+    <div class="sec"><h4>Где строка</h4>
+      <div class="lbl">Статья классификатора</div>
+      <div class="crumbs">7 Кровля › <span class="art">7.1 Устройство кровли подземной части/стилобата</span></div>
+      <div class="lbl">В смете КП</div>
+      <div class="tree">
+        <div style="--d:0"><span class="n">п. 412</span> — 1 Этап ЖК</div>
+        <div style="--d:1"><span class="n">п. 413</span> — Устройство кровли над подземной автостоянкой</div>
+        <div style="--d:2"><span class="n">п. 414</span> — Тип КС1 - КС8</div>
+      </div>
+      <div class="zone">
+        <div class="zhead"><span><span class="lbl" style="display:inline;margin:0">Зона места</span><span class="info" tabindex="0" aria-label="Что такое зона">?<span class="tip" role="tooltip">Зона — часть объекта, где выполняется работа: подземная, надземная, территория или весь объект. Её определяют разделы сметы выше, а не название работы: один и тот же дренаж бывает и над паркингом, и на кровле корпуса. Аналоги строке подбираются только из договоров с той же зоной.</span></span><span class="lbl" style="display:inline;margin:0"> · </span><span class="zname">Подземная часть</span></span>
+          <span class="src">поставил человек · 19.11.2026</span></div>
+        <div class="scope">Решение — на весь раздел: <b>КП — 56 строк, договоры — 0</b>, во всех сметах, где он встречается.</div>
+        <div class="model">Модель предлагала: <b>подземная · 0,85</b> — «Кровля над подземной автостоянкой — это эксплуатируемое покрытие над подземным паркингом…»</div>
+        <div class="row">
+          <div class="toggle"><span class="on">Подземная</span><span>Надземная</span><span>Территория</span><span>Весь объект</span></div>
+          <a class="link" href="#">открыть в очереди «Зоны» →</a>
+        </div>
+      </div>
+    </div>
+    <div class="sec"><h4>Сравнение</h4>
+      <div class="cmp"><span class="badge">тот же вариант</span>2 аналога в 2 договорах · подземная часть</div>
+      <div class="tiles"><div class="tile">самая низкая<b>495,55</b></div><div class="tile">самая свежая<b>1 178,06</b></div><div class="tile">с этим подрядчиком<b>—</b></div></div>
+    </div>
+    <div class="ellipsis">… цены, работа, аналоги, файл подрядчику — без изменений</div>
+  </div>
+</div>
+
+<!-- 2 -->
+<div class="state">
+  <h2>2. Администратор, зона не определена</h2>
+  <div class="sub">Сегодня здесь подпись «ждёт решения администратора» и переход в очередь. Теперь решается на месте.</div>
+  <div class="sheet">
+    <div class="t">Дренажный слой с геотекстилем (1160 кн/м2), толщиной 10 мм</div>
+    <div class="fam">Устройство дренажной профилированной мембраны</div>
+    <div class="sec"><h4>Где строка</h4>
+      <div class="lbl">В смете КП</div>
+      <div class="tree">
+        <div style="--d:0"><span class="n">п. 412</span> — 1 Этап ЖК</div>
+        <div style="--d:1"><span class="n">п. 413</span> — Устройство кровли над подземной автостоянкой</div>
+        <div style="--d:2"><span class="n">п. 414</span> — Тип КС1 - КС8</div>
+      </div>
+      <div class="zone undecided">
+        <div class="zhead"><span><span class="lbl" style="display:inline;margin:0">Зона места</span><span class="info" tabindex="0" aria-label="Что такое зона">?<span class="tip" role="tooltip">Зона — часть объекта, где выполняется работа: подземная, надземная, территория или весь объект. Её определяют разделы сметы выше, а не название работы: один и тот же дренаж бывает и над паркингом, и на кровле корпуса. Аналоги строке подбираются только из договоров с той же зоной.</span></span><span class="lbl" style="display:inline;margin:0"> · </span><span class="zname warn">не определена</span></span>
+          <span class="src">ждёт решения администратора</span></div>
+        <div class="scope">Решение — на весь раздел: <b>КП — 56 строк, договоры — 0</b>, во всех сметах, где он встречается.</div>
+        <div class="model">Модель предлагает: <b>подземная · 0,85</b> — «Кровля над подземной автостоянкой — это эксплуатируемое покрытие…» (ниже порога 0,95, поэтому решает человек)</div>
+        <div class="row">
+          <div class="toggle"><span>Подземная</span><span>Надземная</span><span>Территория</span><span>Весь объект</span></div>
+          <a class="link" href="#">открыть в очереди «Зоны» →</a>
+        </div>
+      </div>
+    </div>
+    <div class="sec"><h4>Сравнение</h4>
+      <div class="nocmp">Не с чем сравнить: зона раздела не определена — выберите её выше.</div>
+    </div>
+  </div>
+</div>
+
+<!-- 3 -->
+<div class="state">
+  <h2>3. Обычный пользователь (member)</h2>
+  <div class="sub">Тот же блок, только чтение: без кнопок и без перехода в очередь (она только у администратора).</div>
+  <div class="sheet">
+    <div class="t">Дренажный слой с геотекстилем (1160 кн/м2), толщиной 10 мм</div>
+    <div class="fam">Устройство дренажной профилированной мембраны</div>
+    <div class="sec"><h4>Где строка</h4>
+      <div class="lbl">В смете КП</div>
+      <div class="tree">
+        <div style="--d:0"><span class="n">п. 412</span> — 1 Этап ЖК</div>
+        <div style="--d:1"><span class="n">п. 413</span> — Устройство кровли над подземной автостоянкой</div>
+        <div style="--d:2"><span class="n">п. 414</span> — Тип КС1 - КС8</div>
+      </div>
+      <div class="zone">
+        <div class="zhead"><span><span class="lbl" style="display:inline;margin:0">Зона места</span><span class="info" tabindex="0" aria-label="Что такое зона">?<span class="tip" role="tooltip">Зона — часть объекта, где выполняется работа: подземная, надземная, территория или весь объект. Её определяют разделы сметы выше, а не название работы: один и тот же дренаж бывает и над паркингом, и на кровле корпуса. Аналоги строке подбираются только из договоров с той же зоной.</span></span><span class="lbl" style="display:inline;margin:0"> · </span><span class="zname">Подземная часть</span></span>
+          <span class="src">поставил человек · 19.11.2026</span></div>
+        <div class="scope">Решение — на весь раздел: <b>КП — 56 строк, договоры — 0</b>, во всех сметах, где он встречается.</div>
+        <div class="model">Модель предлагала: <b>подземная · 0,85</b> — «Кровля над подземной автостоянкой…»</div>
+        <div class="ro">Зону раздела меняет администратор.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 4 -->
+<div class="state">
+  <h2>4. Смена уже стоящей зоны — подтверждение</h2>
+  <div class="sub">Администратор нажал «Весь объект» при стоящей «Подземная». Первая установка (состояние 2) — без окна.</div>
+  <div class="sheet" style="min-height: 430px">
+    <div class="t">Дренажный слой с геотекстилем (1160 кн/м2), толщиной 10 мм</div>
+    <div class="fam">Устройство дренажной профилированной мембраны</div>
+    <div class="sec"><h4>Где строка</h4>
+      <div class="zone">
+        <div class="zhead"><span><span class="lbl" style="display:inline;margin:0">Зона места</span><span class="info" tabindex="0" aria-label="Что такое зона">?<span class="tip" role="tooltip">Зона — часть объекта, где выполняется работа: подземная, надземная, территория или весь объект. Её определяют разделы сметы выше, а не название работы: один и тот же дренаж бывает и над паркингом, и на кровле корпуса. Аналоги строке подбираются только из договоров с той же зоной.</span></span><span class="lbl" style="display:inline;margin:0"> · </span><span class="zname">Подземная часть</span></span><span class="src">поставил человек · 19.11.2026</span></div>
+        <div class="row"><div class="toggle"><span class="on">Подземная</span><span>Надземная</span><span>Территория</span><span>Весь объект</span></div></div>
+      </div>
+    </div>
+    <div class="dim">
+      <div class="dialog">
+        <h5>Сменить зону раздела?</h5>
+        <p>«Устройство кровли / 1 Этап ЖК / Устройство кровли над подземной автостоянкой / Тип КС1 - КС8»:
+          <b>Подземная часть → Весь объект</b>.</p>
+        <p>Изменится подбор аналогов у <b>56 строк КП и 0 строк договоров</b> во всех сметах с этим разделом.
+          Строки зоны «Весь объект» сравниваются только с такими же. Вернуть можно здесь же.</p>
+        <div class="acts"><span class="btn">Отмена</span><span class="btn p">Сменить зону</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 5 -->
+<div class="state">
+  <h2>5. Сохранение</h2>
+  <div class="sub">Пока идёт решение и перечитывание — блок под серым слоем, кнопки и очередь «Зоны» заблокированы (общая блокировка, как вчера).</div>
+  <div class="sheet">
+    <div class="sec" style="margin-top:0"><h4>Где строка</h4>
+      <div class="zone">
+        <div class="zhead"><span><span class="lbl" style="display:inline;margin:0">Зона места</span><span class="info" tabindex="0" aria-label="Что такое зона">?<span class="tip" role="tooltip">Зона — часть объекта, где выполняется работа: подземная, надземная, территория или весь объект. Её определяют разделы сметы выше, а не название работы: один и тот же дренаж бывает и над паркингом, и на кровле корпуса. Аналоги строке подбираются только из договоров с той же зоной.</span></span><span class="lbl" style="display:inline;margin:0"> · </span><span class="zname">Весь объект</span></span><span class="src">поставил человек · 19.11.2026</span></div>
+        <div class="scope">Решение — на весь раздел: <b>КП — 56 строк, договоры — 0</b>.</div>
+        <div class="row"><div class="toggle"><span>Подземная</span><span>Надземная</span><span>Территория</span><span class="on">Весь объект</span></div></div>
+        <div class="saving"><span>⟳ Сохраняем…</span></div>
+      </div>
+    </div>
+    <div class="sec"><h4>Сравнение</h4><div class="cmp">— пересчитывается после сохранения —</div></div>
+  </div>
+</div>
+
+</div>
+
+<ul class="legend">
+  <li><b>Источник зоны</b> — одной подписью: «по правилу» (слова в разделах), «поставила модель · 0,97», «поставил человек · дата». Имени человека нет — панель видит и обычный пользователь.</li>
+  <li><b>«Модель предлагала»</b> берётся из журнала вызовов модели, поэтому видна и у решённых раньше цепочек. Нет ответа модели (зона по правилу) — строки нет.</li>
+  <li><b>Что такое зона</b> — во всплывающей подсказке у «?» (наведение или фокус с клавиатуры; штатный Tooltip shadcn), а не строкой в блоке: нужна один раз, а место занимала бы всегда. Без зоны «Сравнение» и так говорит, что сравнивать не с чем.</li>
+  <li><b>Системы</b> (₽/м² по площади) — блока нет: зона у них не участвует.</li>
+  <li>Подпись зоны в «Сравнении» («… · подземная часть») остаётся как сегодня.</li>
+</ul>
+
+</div>
+</body>
+</html>
