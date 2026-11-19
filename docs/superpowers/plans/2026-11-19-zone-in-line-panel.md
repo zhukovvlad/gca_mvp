@@ -5,6 +5,8 @@
 **Спека:** [`docs/superpowers/specs/2026-11-19-zone-in-line-panel-design.md`](../specs/2026-11-19-zone-in-line-panel-design.md)
 **Дизайн и макет:** [`docs/superpowers/design/2026-11-19-zone-in-line-panel.md`](../design/2026-11-19-zone-in-line-panel.md)
 **Ветка:** `feat/zone-in-line-panel`, черновой PR #92
+**Редакция 2** — по ревью Codex к `1f17e5d`: ожидание свежей панели после
+решения (решение плана 5, шаги 5, 7), состояния `stopped` и `paused` (шаг 1).
 
 **Goal:** в панели строки КП видно зону цепочки разделов, её источник, охват и
 ответ модели; администратор меняет зону на месте.
@@ -26,14 +28,19 @@
 - Фронт — только компоненты shadcn/ui, уже стоящие в проекте.
 - Режим проверок — по риску (решение пользователя 28.10.2026): деньги, НДС,
   атомарность не затронуты. Критические свойства — правило окна
-  подтверждения (спека §2 п. 3) и порядок `model_state` (спека §1); их снятия
-  защиты делает оркестратор лично. Отдельного ревью задачи нет; итоговое
+  подтверждения (спека §2 п. 3), блокировка до свежей панели (спека §2 п. 4)
+  и порядок `model_state` (спека §1); их снятия защиты делает оркестратор
+  лично. Отдельного ревью задачи нет; итоговое
   ревью — Codex.
 
 ## Review Focus
 
-1. Цепочка со спорным предложением и одновременно живым заданием —
-   `running`, а не `proposed` (порядок спеки §1): тест в задаче.
+1. Решение из панели: `PUT` и перечитывание очереди закончились, ответ
+   панели ещё идёт — кнопки заняты, новый выбор не уходит; после ответа
+   видна новая зона, и смена её требует окна: тест в задаче.
+1а. Цепочка со спорным предложением и одновременно живым заданием —
+   `running`, а не `proposed`; остановка захвата — `stopped`, пауза по
+   времени — `paused` (порядок спеки §1): тесты в задаче.
 2. Решённая цепочка, у которой последняя `ok`-попытка не разбирается —
    `model_answer = null`, панель отвечает 200: тест в задаче.
 3. Первая установка зоны при `rows_contracts > 0` — окно; при `0` — сразу:
@@ -70,13 +77,19 @@
    вместо всей строки — переиспользуется блоком без подделки строки очереди.
 4. Окно — `AlertDialog`; решение уходит только по «Сменить зону». Правило
    окна — чистая экспортируемая функция, тестируется отдельно и через экран.
+5. Ожидание свежей панели: `invalidateAfterLadderDecision` получает третье
+   значение `waitFor = "zones-and-our-price"` — ждёт `zonesAll` и
+   `qk.tenders.ourPriceAll` (последний — не в фоновом `rest`, чтобы не
+   перечитывать дважды); `useDecideChainZone(options?: { awaitOurPrice?:
+   boolean })` передаёт его при `awaitOurPrice: true`. Панель вызывает с
+   `true`; очередь, карточка и «Принять все» — как сегодня.
 
 ## Задачи
 
 ### Task 1: поле `zone_chain` и блок «Зона места»
 
 **Interfaces**
-- Потребляет (существуют): `_chain_items`, `parse_zone_answer`,
+- Потребляет (существуют): `_chain_items`, `invalidateAfterLadderDecision`, `parse_zone_answer`,
   `AnswerSchemaError`, `SemanticJob`, `SemanticJobKind.section_zone`,
   `SemanticJobAttempt`, `SemanticAttemptOutcome.ok`, `_claim_paused`,
   `iso`, `settings.SEMANTIC_ZONE_AUTO_ACCEPT_THRESHOLD`, `build_line_view`,
@@ -94,7 +107,7 @@ def zone_chain_info(db: Session, chain_id: int, *, settings: Settings = default_
 
 ```ts
 // types/domain.ts
-export type ZoneModelState = "running" | "paused" | "unknown" | "proposed" | "failed" | "none";
+export type ZoneModelState = "stopped" | "paused" | "running" | "unknown" | "proposed" | "failed" | "none";
 export interface ZoneChainInfo {
   id: number; titles: string[]; zone: SectionZone | null;
   zone_source: "rule" | "model" | "human" | null; decided_at: string | null;
@@ -103,6 +116,8 @@ export interface ZoneChainInfo {
   threshold: string;
 }
 // OurPriceLineView: zone_chain: ZoneChainInfo | null
+// services/queries.ts
+export function useDecideChainZone(options?: { awaitOurPrice?: boolean }): UseMutationResult<void, unknown, { chainId: number; zone: SectionZone }>
 // pages/tenders/our-price/LineZoneBlock.tsx
 export function zoneNeedsConfirm(chain: ZoneChainInfo, zone: SectionZone): boolean
 export function zoneModelText(chain: ZoneChainInfo): string | null
@@ -114,8 +129,10 @@ export function LineZoneBlock(props: { chain: ZoneChainInfo | null; canEdit: boo
 
 `test_analog_chains.py`, класс `TestZoneChainInfo`:
 - по одной фикстуре на каждое значение `model_state` спеки §1; цепочка со
-  спорным предложением и заданием `pending` → `running`, то же при
-  `claim_paused` → `paused`; `proposed_zone="unknown"` с уверенностью `0.97`
+  спорным предложением и заданием `pending` → `running`; то же при
+  `claim_paused` → `stopped`; при `budget_paused_until` через час → `paused`,
+  при прошедшем `budget_paused_until` → `running`; при одновременных
+  остановке и паузе → `stopped`; `proposed_zone="unknown"` с уверенностью `0.97`
   → `unknown`, `model_answer.confidence == "0.97"`;
 - цепочка с зоной `human`: `model_state is None`, `decided_at` равен
   `iso(decided_at)`, `model_answer` — из последней `ok`-попытки (у задания
@@ -160,7 +177,14 @@ export function LineZoneBlock(props: { chain: ZoneChainInfo | null; canEdit: boo
 - `chain=null`: одна строка спеки §3 п. 7, нет кнопок, ссылки, «?»;
 - «?» — фокус клавиатурой открывает подсказку с текстом дизайна §2;
 - общая блокировка: при задержанном `PUT` из блока кнопки заблокированы и
-  виден «Сохраняем…».
+  виден «Сохраняем…»;
+- свежая панель: `PUT` отвечает сразу, `GET` панели после решения задержан —
+  кнопки заблокированы и «Сохраняем…» виден, пока `GET` не ответил; клик по
+  другой зоне в это время `PUT` не шлёт; после ответа (`zone="underground"`,
+  `zone_source="human"`) нажата «Подземная», а клик «Весь объект» открывает
+  окно. С `waitFor="zones"` (как сегодня) тест красный;
+- тексты `stopped` и `paused` различны; у `paused` рядом с «не определена» —
+  «модель определяет», у `stopped` — «ждёт решения администратора».
 
 `LineSheet.test.tsx`:
 - работа без статьи и пути, с `zone_chain` — секция «Где строка» есть,
@@ -178,7 +202,8 @@ export function LineZoneBlock(props: { chain: ZoneChainInfo | null; canEdit: boo
 
 - [ ] **Step 7: фронт.** Типы, копия, `LineZoneBlock` по спеке §2–3 и макету,
   `ZoneToggle` с узким пропом, вставка в `LineSheet`, `zone_chain: null` в
-  моках по умолчанию.
+  моках по умолчанию; `waitFor="zones-and-our-price"` и опция
+  `awaitOurPrice` (решение плана 5).
 
 - [ ] **Step 8:** та же команда — зелёная; `npx tsc -b`, `npx eslint .` —
   чисто.
@@ -191,7 +216,8 @@ export function LineZoneBlock(props: { chain: ZoneChainInfo | null; canEdit: boo
 - Снятия защиты в копии вне живого дерева: (а) убрать условие
   `rows_contracts > 0` из `zoneNeedsConfirm` — тест первой установки со
   строками договоров краснеет; (б) поставить `proposed` выше `running` —
-  серверный тест порядка краснеет.
+  серверный тест порядка краснеет; (в) панель вызывает `useDecideChainZone()`
+  без `awaitOurPrice` — тест свежей панели краснеет.
 - Стенд: панель «Дренажный слой с геотекстилем…» (КП 76, цепочка 27989) у
   `admin` — снимки в светлой и тёмной теме, сверка с макетом; окно открыть и
   закрыть «Отменой». Зону на стенде не менять — решение за пользователем.
