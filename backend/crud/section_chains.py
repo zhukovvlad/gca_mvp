@@ -30,7 +30,8 @@ from sqlalchemy.orm import Session
 
 from config import Settings
 from config import settings as default_settings
-from crud.common import DomainError
+from crud.common import DomainError, iso
+from crud.our_price_load import _claim_paused
 from models import (
     ZONES,
     Estimate,
@@ -38,14 +39,20 @@ from models import (
     PositionItem,
     Proposal,
     SectionChain,
+    SemanticAttemptOutcome,
     SemanticJob,
+    SemanticJobAttempt,
     SemanticJobKind,
+    SemanticJobStatus,
+    SemanticWorkerState,
 )
 from services.context_routing import chapter_paths
+from services.semantic_answer import AnswerSchemaError
 from services.semantic_cost import known_prefix_tokens, reserve_for_known_prefix, tariffs_from
 from services.zone_request import (
     insert_zone_jobs,
     load_zone_material,
+    parse_zone_answer,
     render_zone_batch,
 )
 from services.zone_rules import chain_key, normalize_title, rule_zone
@@ -423,6 +430,27 @@ def _filter_condition(flt: str):
     raise ValueError(f"неизвестный фильтр очереди зон: {flt!r}")
 
 
+def _rows_of(db: Session, chain_ids: Sequence[int]) -> dict[int, tuple[int, int]]:
+    """Строки цепочек во всех сметах: `id` цепочки -> (строк КП, строк договоров).
+    Цепочки без строк в словаре нет. Один запрос на очередь «Зоны» и на панель строки."""
+    return {
+        row.chain_id: (row.kp, row.contracts)
+        for row in db.execute(
+            sa.select(
+                PositionItem.section_chain_id.label("chain_id"),
+                sa.func.count().filter(Estimate.offer_id.is_not(None)).label("kp"),
+                sa.func.count().filter(Estimate.contract_id.is_not(None)).label("contracts"),
+            )
+            .select_from(PositionItem)
+            .join(Proposal, Proposal.id == PositionItem.proposal_id)
+            .join(Lot, Lot.id == Proposal.lot_id)
+            .join(Estimate, Estimate.id == Lot.estimate_id)
+            .where(PositionItem.section_chain_id.in_(chain_ids))
+            .group_by(PositionItem.section_chain_id)
+        ).all()
+    }
+
+
 def _chain_items(db: Session, chains: Sequence[SectionChain]) -> list[dict]:
     """Элементы очереди «Зоны» для цепочек: одна форма на список и на одну цепочку."""
     ids = [chain.id for chain in chains]
@@ -436,22 +464,7 @@ def _chain_items(db: Session, chains: Sequence[SectionChain]) -> list[dict]:
         .order_by(SemanticJob.section_chain_id, SemanticJob.id)
     ).all():
         job_status[chain_id] = status  # последнее задание цепочки — с наибольшим id
-    rows_of = {
-        row.chain_id: (row.kp, row.contracts)
-        for row in db.execute(
-            sa.select(
-                PositionItem.section_chain_id.label("chain_id"),
-                sa.func.count().filter(Estimate.offer_id.is_not(None)).label("kp"),
-                sa.func.count().filter(Estimate.contract_id.is_not(None)).label("contracts"),
-            )
-            .select_from(PositionItem)
-            .join(Proposal, Proposal.id == PositionItem.proposal_id)
-            .join(Lot, Lot.id == Proposal.lot_id)
-            .join(Estimate, Estimate.id == Lot.estimate_id)
-            .where(PositionItem.section_chain_id.in_(ids))
-            .group_by(PositionItem.section_chain_id)
-        ).all()
-    }
+    rows_of = _rows_of(db, ids)
     samples = load_zone_material(db, ids, limit=SAMPLE_TITLES)
     return [
         {
@@ -472,6 +485,100 @@ def _chain_items(db: Session, chains: Sequence[SectionChain]) -> list[dict]:
         }
         for chain in chains
     ]
+
+
+_LIVE_JOB_STATUSES = (SemanticJobStatus.pending.value, SemanticJobStatus.running.value)
+_STUCK_JOB_STATUSES = (SemanticJobStatus.error.value, SemanticJobStatus.privacy_hold.value)
+
+
+def _zone_model_state(db: Session, chain: SectionChain) -> str:
+    """Состояние модели у цепочки без зоны: первое подходящее сверху (спека зоны в панели
+    строки §1). Порядок повторяет правило строки: живое задание без остановки — «разбирает»;
+    спорная, застрявшая или живая при остановке — «ждёт решения»."""
+    statuses = set(
+        db.execute(
+            sa.select(SemanticJob.status).where(
+                SemanticJob.kind == SemanticJobKind.section_zone.value,
+                SemanticJob.section_chain_id == chain.id,
+                SemanticJob.status.in_([*_LIVE_JOB_STATUSES, *_STUCK_JOB_STATUSES]),
+            )
+        ).scalars()
+    )
+    if statuses.intersection(_LIVE_JOB_STATUSES):
+        if _claim_paused(db):
+            return "stopped"
+        paused_until = db.execute(
+            sa.select(SemanticWorkerState.budget_paused_until)
+        ).scalar_one_or_none()
+        if paused_until is not None and paused_until > dt.datetime.now(dt.UTC):
+            return "paused"
+        return "running"
+    if chain.proposed_zone == "unknown":
+        return "unknown"
+    if chain.proposed_zone is not None:
+        return "proposed"
+    if statuses.intersection(_STUCK_JOB_STATUSES):
+        return "failed"
+    return "none"
+
+
+def _logged_zone_answer(db: Session, chain_id: int) -> dict | None:
+    """Ответ модели из журнала вызовов: разбор `raw_response` последней по `id` попытки
+    `ok` среди всех заданий `section_zone` цепочки. Попытки нет или ответ не по схеме —
+    `None`, без ошибки: предыдущую попытку взамен не берём."""
+    raw = db.execute(
+        sa.select(SemanticJobAttempt.raw_response)
+        .join(SemanticJob, SemanticJob.id == SemanticJobAttempt.job_id)
+        .where(
+            SemanticJob.kind == SemanticJobKind.section_zone.value,
+            SemanticJob.section_chain_id == chain_id,
+            SemanticJobAttempt.outcome == SemanticAttemptOutcome.ok.value,
+        )
+        .order_by(SemanticJobAttempt.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if raw is None:
+        return None
+    try:
+        answer = parse_zone_answer(raw)
+    except AnswerSchemaError:
+        return None
+    return {"zone": answer.zone, "confidence": str(answer.confidence), "reason": answer.reason}
+
+
+def zone_chain_info(db: Session, chain_id: int, *, settings: Settings = default_settings) -> dict:
+    """Блок «Зона места» панели строки КП (спека зоны в панели строки §1): цепочка, зона и её
+    источник, охват, состояние модели и её ответ. Только читает. Нет такой цепочки — 404."""
+    chain = db.get(SectionChain, chain_id)
+    if chain is None:
+        raise DomainError(404, f"Цепочка разделов {chain_id} не найдена.")
+    kp, contracts = _rows_of(db, [chain.id]).get(chain.id, (0, 0))
+    if chain.zone is None:
+        model_state: str | None = _zone_model_state(db, chain)
+        model_answer = (
+            {
+                "zone": chain.proposed_zone,
+                "confidence": str(chain.proposed_confidence),
+                "reason": chain.proposed_reason,
+            }
+            if chain.proposed_zone is not None and chain.proposed_confidence is not None
+            else None
+        )
+    else:
+        model_state = None
+        model_answer = _logged_zone_answer(db, chain.id)
+    return {
+        "id": chain.id,
+        "titles": list(chain.titles),
+        "zone": chain.zone,
+        "zone_source": chain.zone_source,
+        "decided_at": iso(chain.decided_at) if chain.zone_source == "human" else None,
+        "rows_kp": kp,
+        "rows_contracts": contracts,
+        "model_state": model_state,
+        "model_answer": model_answer,
+        "threshold": str(settings.SEMANTIC_ZONE_AUTO_ACCEPT_THRESHOLD),
+    }
 
 
 def list_chains(

@@ -500,8 +500,80 @@ export function COMPOSITE_NO_TARGET(parameterName: string | null): string {
 }
 
 /** «Где строка»: подписи блоков (спека упрощения каталога §2.11). */
-export const WHERE_ARTICLE = "статья";
+export const WHERE_ARTICLE = "статья классификатора";
 export const WHERE_PATH = { kp: "в смете КП", contract: "в смете договора" } as const;
+
+/** Блок «Зона места» панели строки (спека зоны в панели строки §3): тексты. */
+export const ZONE_BLOCK_TITLE = "Зона места";
+export const ZONE_HINT_LABEL = "Что такое зона";
+export const ZONE_HINT =
+  "Зона — часть объекта, где выполняется работа: подземная, надземная, территория или весь объект. Её определяют разделы сметы, а не название работы: один и тот же дренаж бывает и над паркингом, и на кровле корпуса. Аналоги строке подбираются только из договоров с той же зоной.";
+export const ZONE_UNDEFINED = "не определена";
+export const ZONE_UNDEFINED_TITLE = "Не определена";
+export const ZONE_QUEUE_LINK = "открыть в очереди «Зоны» →";
+export const ZONE_READONLY = "Зону раздела меняет администратор.";
+export const ZONE_NO_CHAIN =
+  "Зона места · не определена — строка стоит вне разделов сметы, зону назначить некуда";
+export const ZONE_SOURCE_RULE = "по правилу";
+export const ZONE_SOURCE_RUNNING = "модель определяет";
+
+/** Название зоны с заглавной буквы: блок и окно («Подземная часть»). */
+export function zoneTitle(zone: SectionZone): string {
+  const caption = ZONE_CAPTION[zone];
+  return `${caption.charAt(0).toUpperCase()}${caption.slice(1)}`;
+}
+
+export function zoneSourceModel(confidence: string | null): string {
+  return confidence === null ? "поставила модель" : `поставила модель · ${confidence}`;
+}
+
+export function zoneSourceHuman(date: string): string {
+  return `поставил человек · ${date}`;
+}
+
+/** Охват решения: две разные вещи (спека зоны в панели строки §3 п. 4). */
+export function zoneScopeRows(kp: number, contracts: number): string {
+  return `Зона назначается строкам раздела во всех сметах: КП — ${kp}, договоры — ${contracts}.`;
+}
+
+export function zoneScopeContracts(contracts: number): string {
+  return `Строки договоров этого раздела (${contracts}) служат аналогами для строк других КП той же зоны: решение меняет и их сравнение.`;
+}
+
+/** Модель у цепочки без зоны: подпись на каждое состояние (спека §3 п. 5). */
+export const ZONE_MODEL_STATE_TEXT = {
+  running: "Модель определяет зону.",
+  paused: "Модель ждёт сброса лимита провайдера; можно не ждать и выбрать зону.",
+  stopped: "Разбор моделью остановлен до решения администратора; зону выбирает администратор.",
+  failed: "Модель не ответила; решает администратор.",
+  none: "Ответа модели нет; решает администратор.",
+} as const;
+
+export function zoneModelProposed(zone: SectionZone, confidence: string, reason: string, threshold: string): string {
+  return `Модель предлагает: ${ZONE_CAPTION[zone]} · ${confidence} — «${reason}»; ниже порога ${threshold}, решает администратор.`;
+}
+
+export function zoneModelUnknown(reason: string): string {
+  return `Модель не смогла определить зону — «${reason}»; решает администратор.`;
+}
+
+/** Модель у цепочки с зоной: что она предлагала (спека §3 п. 6). */
+export function zoneModelWas(zone: SectionZone | "unknown", confidence: string, reason: string): string {
+  return `Модель предлагала: ${zone === "unknown" ? "не знаю" : ZONE_CAPTION[zone]} · ${confidence} — «${reason}»`;
+}
+
+/** «Сравнение» у строки в состоянии «зона не определена» (спека §3 п. 3). */
+export const NO_ZONE_COMPARE = "Не с чем сравнить: зона раздела не определена";
+export const NO_ZONE_COMPARE_ADMIN_TAIL = " — выберите её выше";
+export const NO_ZONE_COMPARE_NO_CHAIN = "Не с чем сравнить: строка вне разделов сметы";
+
+/** Окно подтверждения смены зоны (спека §3 п. 8). */
+export const ZONE_DIALOG_TITLE = "Сменить зону раздела?";
+export const ZONE_DIALOG_CANCEL = "Отмена";
+export const ZONE_DIALOG_CONFIRM = "Сменить зону";
+export function zoneDialogChange(titles: string[], from: string, to: string): string {
+  return `«${titles.join(" / ")}»: ${from} → ${to}.`;
+}
 
 /** Справка «по частям» сборной строки. */
 export const PARTS_NOTE = "Целью части не становятся: кнопки «сделать целью» здесь нет.";

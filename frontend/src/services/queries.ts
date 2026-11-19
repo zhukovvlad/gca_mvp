@@ -3376,24 +3376,29 @@ export function useReleasableProposals(page: number, { poll = true }: { poll?: b
  */
 function invalidateAfterLadderDecision(
   qc: ReturnType<typeof useQueryClient>,
-  waitFor?: "zones" | "releasable",
+  waitFor?: "zones" | "releasable" | "zones-and-our-price",
 ) {
-  const own = waitFor === "zones" ? qk.semanticQueue.zonesAll : qk.semanticQueue.releasableAll;
-  const other = waitFor === "zones" ? qk.semanticQueue.releasableAll : qk.semanticQueue.zonesAll;
+  const zones = waitFor === "zones" || waitFor === "zones-and-our-price";
+  const own = zones ? qk.semanticQueue.zonesAll : qk.semanticQueue.releasableAll;
+  const other = zones ? qk.semanticQueue.releasableAll : qk.semanticQueue.zonesAll;
+  // Решение из панели строки ждёт и экраны «Против нашей цены»: иначе кнопки зон ожили бы на
+  // старой зоне панели, и второй выбор ушёл бы без обязательного окна подтверждения.
+  const awaitOurPrice = waitFor === "zones-and-our-price";
   // Серый слой очереди снимается по перечитыванию её самой: сводка статуса считается ≈ 12 с и
   // схемы с экранами «Против нашей цены» не нужны, чтобы строка ушла, — их не ждём.
   const rest = [
     qc.invalidateQueries({ queryKey: other }),
     qc.invalidateQueries({ queryKey: qk.semanticQueue.status }),
     qc.invalidateQueries({ queryKey: qk.workFamilies.schemasAll }),
-    qc.invalidateQueries({ queryKey: qk.tenders.ourPriceAll }),
     // Источник и цена в файле подрядчику считаются по тем же аналогам; отправленные не меняются.
     qc.invalidateQueries({ queryKey: qk.tenders.kpFilePreviewsAll }),
   ];
+  // Не в `rest` при ожидании: одно перечитывание, а не два.
+  const ourPrice = qc.invalidateQueries({ queryKey: qk.tenders.ourPriceAll });
   const ownRefetch = qc.invalidateQueries({ queryKey: own });
-  if (!waitFor) return Promise.all([ownRefetch, ...rest]);
-  void Promise.all(rest);
-  return ownRefetch;
+  if (!waitFor) return Promise.all([ownRefetch, ourPrice, ...rest]);
+  void Promise.all(awaitOurPrice ? rest : [ourPrice, ...rest]);
+  return awaitOurPrice ? Promise.all([ownRefetch, ourPrice]) : ownRefetch;
 }
 
 /**
@@ -3402,14 +3407,19 @@ function invalidateAfterLadderDecision(
  */
 export const zoneDecisionMutationKey = ["zone-decision"] as const;
 
-/** Решение человека по зоне цепочки разделов (`PUT /section-chains/{id}/zone`, 204). */
-export function useDecideChainZone() {
+/**
+ * Решение человека по зоне цепочки разделов (`PUT /section-chains/{id}/zone`, 204).
+ * `awaitOurPrice` — решение из панели строки КП: мутация держится и до перечитывания экранов
+ * «Против нашей цены», а с ними — ответа самой панели.
+ */
+export function useDecideChainZone(options: { awaitOurPrice?: boolean } = {}) {
   const qc = useQueryClient();
+  const waitFor = options.awaitOurPrice === true ? "zones-and-our-price" : "zones";
   return useMutation({
     mutationKey: zoneDecisionMutationKey,
     mutationFn: ({ chainId, zone }: { chainId: number; zone: SectionZone }) =>
       semanticApi.decideChainZone(chainId, zone),
-    onSuccess: () => invalidateAfterLadderDecision(qc, "zones"),
+    onSuccess: () => invalidateAfterLadderDecision(qc, waitFor),
     onError: toastApiError,
   });
 }

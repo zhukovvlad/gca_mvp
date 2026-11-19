@@ -110,6 +110,7 @@ describe("справка аналогов", () => {
     renderTable({ analogs: [ourPriceAnalogFixture({ analog_id: 1 })] });
     const where = within(screen.getByTestId("analog-1")).getByTestId("line-where");
     expect(where).toHaveTextContent("4.2.4 Вертикальные конструкции");
+    expect(within(where).getByText("статья классификатора")).toBeInTheDocument();
     expect(where).toHaveTextContent("в смете договора");
     expect(where).toHaveTextContent("п. 4 — Корпус 1");
   });

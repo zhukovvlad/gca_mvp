@@ -6,6 +6,12 @@ import { articleRefFixture, chapterPathFixture } from "@/test/fixtures";
 import { LineWhere } from "./LineWhere";
 
 describe("«где строка»", () => {
+  it("подпись цепочки статей — «статья классификатора»", () => {
+    render(<LineWhere article={articleRefFixture()} chapterPath={[]} />);
+    const label = within(screen.getByTestId("line-where")).getByText("статья классификатора");
+    expect(label.textContent).toBe("статья классификатора");
+  });
+
   it("цепочка статей от корня: код и название каждой, в порядке цепочки", () => {
     render(<LineWhere article={articleRefFixture()} chapterPath={[]} />);
     const steps = within(screen.getByTestId("where-article")).getAllByRole("listitem");

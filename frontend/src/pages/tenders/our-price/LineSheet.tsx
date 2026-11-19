@@ -33,6 +33,9 @@ import {
   groupMembership,
   lineStateLabel,
   manualRungTag,
+  NO_ZONE_COMPARE,
+  NO_ZONE_COMPARE_ADMIN_TAIL,
+  NO_ZONE_COMPARE_NO_CHAIN,
   priceBasisLabel,
   RECALC_LABEL,
   ratioNote,
@@ -58,6 +61,7 @@ import {
 } from "./ourPriceCopy";
 import { ExportBlock } from "./ExportBlock";
 import { LineStateText } from "./LineStateText";
+import { LineZoneBlock } from "./LineZoneBlock";
 import { RecalcOverlay } from "./RecalcOverlay";
 import { RungSaveBar } from "./RungSaveBar";
 
@@ -230,13 +234,24 @@ function PanelContent({
         </p>
       )}
       <UnitWarn line={line} vat={vat} />
-      {((line.article ?? null) !== null || line.chapter_path.length > 0) && (
+      {/* У работы секция есть всегда: блок «Зона места» стоит в ней и без статьи и пути. */}
+      {(line.kind === "work" || (line.article ?? null) !== null || line.chapter_path.length > 0) && (
         <Section title={SHEET_SECTION.where} testId="sheet-where">
           <LineWhere article={line.article} chapterPath={line.chapter_path} />
+          {line.kind === "work" && <LineZoneBlock chain={data.zone_chain} canEdit={canEdit} />}
         </Section>
       )}
       <Prices line={line} vat={vat} vatRate={vatRate} />
       <WorkParamsSection params={line.params} basis={line.params_basis} kind={line.kind} />
+      {line.kind === "work" && line.state === "no_zone" && (
+        <Section title={SHEET_SECTION.comparison} testId="sheet-comparison">
+          <p data-testid="no-zone-compare" className="text-sm text-fg-secondary">
+            {data.zone_chain === null
+              ? NO_ZONE_COMPARE_NO_CHAIN
+              : `${NO_ZONE_COMPARE}${canEdit ? NO_ZONE_COMPARE_ADMIN_TAIL : ""}`}
+          </p>
+        </Section>
+      )}
       {line.kind === "work" && line.no_history_reason === "composite" && (
         <Section title={SHEET_SECTION.comparison} testId="sheet-comparison">
           <p
