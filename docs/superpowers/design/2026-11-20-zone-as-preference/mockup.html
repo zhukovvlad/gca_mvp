@@ -100,6 +100,21 @@
   .del { text-decoration: line-through; opacity: .55; }
   .ins { text-decoration: underline; text-decoration-color: var(--new); text-decoration-thickness: 2px; }
   .ellipsis { color: var(--fg3); font-size: 12px; }
+  .surface { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; display: grid; gap: 14px; max-width: 640px; }
+  .surface h3 { margin: 0; font-size: 18px; font-weight: 500; }
+  .fld { display: grid; gap: 4px; font-size: 13px; }
+  .fld label { font-weight: 500; }
+  .inp { border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; background: var(--surface); }
+  .blk { border-top: 1px solid var(--subtle); padding-top: 12px; display: grid; gap: 8px; }
+  .blk.new { outline: 2px solid var(--new); outline-offset: 6px; border-radius: 2px; }
+  .blk h4 { margin: 0; font-size: 16px; font-weight: 500; }
+  .switch { display: inline-flex; align-items: center; gap: 8px; font-size: 13.5px; }
+  .switch i { width: 32px; height: 18px; border-radius: 9px; background: var(--action); position: relative; display: inline-block; }
+  .switch i::after { content: ""; position: absolute; top: 2px; left: 16px; width: 14px; height: 14px; border-radius: 50%; background: var(--action-text); }
+  .switch.off i { background: var(--chip); }
+  .switch.off i::after { left: 2px; background: var(--fg3); }
+  .btn { font-size: 13px; border-radius: 8px; padding: 5px 12px; border: 1px solid var(--border); background: var(--surface); color: var(--fg); }
+  .side { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; max-width: 520px; }
   .legend { font-size: 12.5px; color: var(--fg2); max-width: 1000px; }
   .legend li { margin: 3px 0; }
   @media (max-width: 680px) { .pair { grid-template-columns: 1fr; } }
@@ -112,7 +127,7 @@
   <b>Макет к дизайну 2026-11-20-zone-as-preference.</b> Разметка повторяет боевые компоненты экрана
   «Против нашей цены»: таблица строк (<span class="mono">OfferLinesTable</span>), панель строки
   (<span class="mono">LineSheet</span>: «Где строка», «Цены», «Сравнение» с карточками цели и списком аналогов,
-  справочные блоки), плашка разбора каталога. Новое выделено синим. Работы, договоры и цены условные.
+  справочные блоки), плашка разбора каталога. Новое выделено синим. Работы, договоры и цены условные. Редакция 2: состояния 5 и 6 — флажок семьи «зона обязательна».
 </div>
 <div class="bar"><button onclick="document.documentElement.dataset.theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'">Светлая / тёмная тема</button></div>
 
@@ -328,10 +343,79 @@
   </div>
 </div>
 
+
+<!-- ===================== 5. Карточка семьи ===================== -->
+<div class="state">
+  <h2>5. Карточка семьи: флажок «Зона обязательна»</h2>
+  <div class="sub">Страница «Семьи», карточка выбранной семьи. Новый блок «Зона при подборе» — под «Схемой и вариантами», перед «Связями».
+    Переключатель меняет администратор; обычный пользователь видит то же без переключателя — строкой «Зона обязательна» или «Зона — подсказка».</div>
+  <div class="pair">
+    <div class="surface">
+      <div class="row" style="justify-content:flex-start"><h3>Семья «Двери»</h3><span class="b out">активна</span></div>
+      <div class="fld"><label>Название</label><div class="inp">Двери</div></div>
+      <div class="fld"><label>Единица</label><div class="inp" style="color:var(--fg3)">шт</div></div>
+      <div class="ellipsis">… определение, категория, кнопки «Сохранить», «Слить», «В архив» — как сегодня</div>
+      <div class="blk"><h4>Схема и варианты</h4><div class="small fg2">Версия схемы 3</div><div class="ellipsis">… как сегодня</div></div>
+      <div class="blk new">
+        <h4>Зона при подборе</h4>
+        <span class="switch"><i></i>Зона обязательна</span>
+        <p class="xs fg3" style="margin:0">Аналоги строкам этой семьи берутся только из договоров с той же зоной раздела, как раньше: у этой семьи зона подменяет
+          тип изделия (противопожарная дверь в подвале, квартирная — на этаже). Без флажка аналоги ищутся сначала в своей зоне, нет — в других.
+          Флажок снимают, когда схема семьи различит такие изделия параметрами.</p>
+        <span class="xs fg3">Поставил admin@…, 21.11.2026</span>
+      </div>
+      <div class="blk"><div class="row"><h4>Связи</h4><span class="btn">Добавить связь…</span></div><div class="ellipsis">… как сегодня</div></div>
+    </div>
+    <div class="surface">
+      <div class="row" style="justify-content:flex-start"><h3>Семья «Устройство жб конструкций»</h3><span class="b out">активна</span></div>
+      <div class="ellipsis">… поля и схема — как сегодня</div>
+      <div class="blk new">
+        <h4>Зона при подборе</h4>
+        <span class="switch off"><i></i>Зона обязательна</span>
+        <p class="xs fg3" style="margin:0">Аналоги ищутся сначала в договорах с той же зоной раздела; если там нет ни одного — в договорах других зон, с пометкой «другая зона».</p>
+      </div>
+      <div class="xs fg2">По умолчанию флажка нет ни у одной семьи. Стартовый список по замеру — двери, облицовка керамогранитом, покраска стен, вывоз грунта,
+        светильники, монтаж и изоляция воздуховодов — администратор отмечает руками.</div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== 6. Строка семьи с флажком ===================== -->
+<div class="state">
+  <h2>6. Панель строки семьи с флажком</h2>
+  <div class="sub">Всё как сегодня: аналоги только своей зоны, справка «та же работа в другой зоне», подпись в таблице. Добавлено одно пояснение — почему справочные
+    аналоги не стали сравнением.</div>
+  <div class="pair">
+    <div class="sheet">
+      <div class="sh-head"><div class="sh-title">Дверь металлическая противопожарная EI60 ДПМ-01 1000×2100</div><div class="sh-desc">Двери</div></div>
+      <div class="sh-body">
+        <p class="small fg2" style="margin:0">нет аналога в зоне «Подземная» · есть в зоне «Надземная»: 4 строки, 2 договора</p>
+        <div class="why new">У семьи «Двери» зона обязательна: аналоги из других зон не берутся в сравнение. Они ниже — для справки.</div>
+        <div class="sec"><h4>Где строка</h4>
+          <div class="zone"><div class="zhead"><span><span class="lbl" style="display:inline">Зона места</span><span class="q">?</span><span class="zname">Подземная часть</span></span><span class="src">по правилу</span></div></div>
+        </div>
+        <div class="sec"><h4>Цены</h4><p class="small" style="margin:0 0 4px;font-weight:500">без НДС</p>
+          <dl class="prices"><dt>Цена КП</dt><dd class="mono">68 500,00 ₽/шт</dd><dt>Объём</dt><dd class="mono">42,00 шт</dd><dt>К самой низкой</dt><dd class="mono">—</dd><dt>Самая низкая</dt><dd class="mono">—</dd></dl></div>
+        <div class="sec"><h4>Справочно: та же работа в другой зоне</h4>
+          <div class="refgroup">
+            <div class="row"><span class="b out">тот же вариант</span><span class="b sec">зона: Надземная</span></div>
+            <div class="analog"><div class="top"><div><b>ЖК «Северный»</b> <span class="xs fg2">· дог. 22/2026 · ООО «ДверьСнаб»</span></div><div><b class="mono">24 300,00</b> <span class="mono xs fg2">04.2026</span></div></div><div class="fg2">Дверь металлическая квартирная 960×2050</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="side">
+      <div class="small">Без флажка эта противопожарная дверь сравнилась бы с квартирной за 24 300 ₽ — «КП выше на 44 200,00 за шт», и это ушло бы в файл подрядчику.
+        Флажок держит семью на сегодняшнем правиле, пока схема дверей не различит огнестойкость (дизайн §8).</div>
+    </div>
+  </div>
+</div>
+
 <ul class="legend">
-  <li><b>Порядок подбора:</b> ступени 1–4 в своей зоне; ничего — ступени 1–4 по всем другим зонам вместе. Своя зона на ступени 4 побеждает чужую на ступени 1.</li>
-  <li><b>«другая зона»</b> — серая метка рядом с подписью ступени, как «другой класс»: по замеру такой аналог в среднем не хуже.</li>
-  <li><b>Уходит:</b> справка «Справочно: та же работа в другой зоне» и подпись «нет аналога в зоне … · есть в зоне …».</li>
+  <li><b>Порядок подбора:</b> ступени 1–4 в своей зоне; ничего — ступени 1–4 по всем другим зонам вместе (и строки договоров без зоны). Своя зона на ступени 4 побеждает чужую на ступени 1.</li>
+  <li><b>Семья с флажком «зона обязательна»</b> — всё как сегодня, со справкой «та же работа в другой зоне».</li>
+  <li><b>«другая зона»</b> — серая метка рядом с подписью ступени, как «другой класс».</li>
+  <li><b>Уходит у семей без флажка:</b> справка «Справочно: та же работа в другой зоне» и подпись «нет аналога в зоне … · есть в зоне …».</li>
 </ul>
 
 </div>
