@@ -45,13 +45,27 @@ import {
 import { zoneModelText, zoneNeedsConfirm, zoneSourceText } from "./lineZoneRules";
 import { RecalcOverlay } from "./RecalcOverlay";
 
+/** Состояние запроса, чьи данные показывает панель (спека §2 п. 4а): его передаёт `LineSheet`. */
+export interface PanelAnswer {
+  failed: boolean;
+  fetching: boolean;
+}
+
 /**
  * Блок «Зона места» панели строки КП (спека зоны в панели строки §2–3): зона цепочки разделов,
  * кто и когда её поставил, охват решения и ответ модели. `canEdit` (администратор) получает
  * кнопки зон, окно подтверждения и ссылку на очередь «Зоны»; остальные видят то же, но без правки.
  * Строка без цепочки разделов — одной строкой: назначать зону некуда.
  */
-export function LineZoneBlock({ chain, canEdit }: { chain: ZoneChainInfo | null; canEdit: boolean }) {
+export function LineZoneBlock({
+  chain,
+  canEdit,
+  answer,
+}: {
+  chain: ZoneChainInfo | null;
+  canEdit: boolean;
+  answer: PanelAnswer;
+}) {
   if (chain === null) {
     return (
       <p
@@ -62,43 +76,39 @@ export function LineZoneBlock({ chain, canEdit }: { chain: ZoneChainInfo | null;
       </p>
     );
   }
-  return <ChainZoneBlock chain={chain} canEdit={canEdit} />;
+  return <ChainZoneBlock chain={chain} canEdit={canEdit} answer={answer} />;
 }
 
-function ChainZoneBlock({ chain, canEdit }: { chain: ZoneChainInfo; canEdit: boolean }) {
+function ChainZoneBlock({ chain, canEdit, answer }: { chain: ZoneChainInfo; canEdit: boolean; answer: PanelAnswer }) {
   // Решение из панели держит мутацию до свежего ответа панели: пока она идёт, кнопки заняты.
   const qc = useQueryClient();
   const decide = useDecideChainZone({ awaitOurPrice: true });
   const deciding = useIsMutating({ mutationKey: zoneDecisionMutationKey }) > 0;
-  // Зона, которую сохранил этот блок: ожидание перечитывания не отличает успех от ошибки, и при
-  // ошибке панель держит прежний ответ (спека §2 п. 4а).
-  const [saved, setSaved] = useState<{ chainId: number; zone: SectionZone } | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
-  if (saved !== null && (saved.chainId !== chain.id || chain.zone === saved.zone)) setSaved(null);
-  const stale = saved !== null && saved.chainId === chain.id && chain.zone !== saved.zone;
-  const busy = deciding || refreshing || stale;
+  // Ожидание перечитывания не отличает успех от ошибки, а при ошибке панель держит прежний ответ — и
+  // в кэше, после закрытия и повторного открытия (спека §2 п. 4а): кнопки открыты, только когда
+  // запрос панели подтверждён, и это не зависит от времени жизни блока.
+  const confirmed = !answer.failed && !answer.fetching;
+  const busy = deciding || !confirmed;
   // Окно держит выбранную зону и после закрытия: текст не мигает, пока оно гаснет.
   const [confirm, setConfirm] = useState<{ zone: SectionZone; open: boolean } | null>(null);
 
   const undecided = chain.zone === null;
   const source = zoneSourceText(chain);
   const model = zoneModelText(chain);
-  const decideNow = (zone: SectionZone) =>
-    decide.mutate(
-      { chainId: chain.id, zone },
-      // Per-call onSuccess идёт после перечитывания, ждущего в хуке.
-      { onSuccess: () => setSaved({ chainId: chain.id, zone }) }
-    );
+  const decideNow = (zone: SectionZone) => decide.mutate({ chainId: chain.id, zone });
   const refresh = () => {
-    setRefreshing(true);
-    qc.refetchQueries({ queryKey: qk.tenders.ourPriceAll, type: "active" }, { throwOnError: true })
-      .then(() => setSaved(null))
-      .catch(() => undefined)
-      .finally(() => setRefreshing(false));
+    void qc
+      .refetchQueries({ queryKey: qk.tenders.ourPriceAll, type: "active" }, { throwOnError: true })
+      .catch(() => undefined);
   };
+  const refreshing = canEdit && answer.fetching;
 
   return (
-    <RecalcOverlay active={deciding || refreshing} label={refreshing ? ZONE_REFRESHING_LABEL : SAVING_LABEL} placement="center">
+    <RecalcOverlay
+      active={deciding || refreshing}
+      label={deciding ? SAVING_LABEL : ZONE_REFRESHING_LABEL}
+      placement="center"
+    >
       <div
         data-testid="line-zone-block"
         className={cn(
@@ -150,12 +160,12 @@ function ChainZoneBlock({ chain, canEdit }: { chain: ZoneChainInfo; canEdit: boo
             {model}
           </p>
         )}
-        {canEdit && stale && (
+        {canEdit && answer.failed && (
           <div className="flex flex-wrap items-center justify-between gap-2.5">
             <p data-testid="zone-stale" className="text-[0.8125rem] text-warning-text">
               {ZONE_STALE_TEXT}
             </p>
-            <Button variant="outline" size="sm" onClick={refresh} disabled={refreshing}>
+            <Button variant="outline" size="sm" onClick={refresh} disabled={answer.fetching}>
               {ZONE_STALE_REFRESH}
             </Button>
           </div>

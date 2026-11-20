@@ -61,7 +61,7 @@ import {
 } from "./ourPriceCopy";
 import { ExportBlock } from "./ExportBlock";
 import { LineStateText } from "./LineStateText";
-import { LineZoneBlock } from "./LineZoneBlock";
+import { LineZoneBlock, type PanelAnswer } from "./LineZoneBlock";
 import { RecalcOverlay } from "./RecalcOverlay";
 import { RungSaveBar } from "./RungSaveBar";
 
@@ -179,6 +179,7 @@ function LineSheetBody({
             vatRate={vatRate}
             canResolve={canResolve}
             canEdit={canEdit}
+            answer={{ failed: query.isError, fetching: query.isFetching || query.isPlaceholderData }}
             seriesId={seriesId}
             rung={rung}
             onRung={setRung}
@@ -204,6 +205,8 @@ interface PanelContentProps {
   vatRate: Decimal | null;
   canResolve: boolean;
   canEdit: boolean;
+  /** Состояние запроса панели: блок зоны открывает кнопки только на подтверждённом ответе. */
+  answer: PanelAnswer;
   /** Ряд ИПЦ экрана: выбор цели работы проверяется сервером с ним. */
   seriesId: number | null;
   rung: Rung | null;
@@ -220,6 +223,7 @@ function PanelContent({
   vatRate,
   canResolve,
   canEdit,
+  answer,
   seriesId,
   rung,
   onRung,
@@ -238,7 +242,7 @@ function PanelContent({
       {(line.kind === "work" || (line.article ?? null) !== null || line.chapter_path.length > 0) && (
         <Section title={SHEET_SECTION.where} testId="sheet-where">
           <LineWhere article={line.article} chapterPath={line.chapter_path} />
-          {line.kind === "work" && <LineZoneBlock chain={data.zone_chain} canEdit={canEdit} />}
+          {line.kind === "work" && <LineZoneBlock chain={data.zone_chain} canEdit={canEdit} answer={answer} />}
         </Section>
       )}
       <Prices line={line} vat={vat} vatRate={vatRate} />

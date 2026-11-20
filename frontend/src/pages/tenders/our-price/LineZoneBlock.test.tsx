@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
@@ -55,8 +55,14 @@ function holdable() {
   return { hold, release };
 }
 
-function renderBlock(chain: ZoneChainInfo | null, canEdit = true) {
-  return renderWithProviders(<LineZoneBlock chain={chain} canEdit={canEdit} />);
+interface Answer {
+  failed: boolean;
+  fetching: boolean;
+}
+const CONFIRMED: Answer = { failed: false, fetching: false };
+
+function renderBlock(chain: ZoneChainInfo | null, canEdit = true, answer: Answer = CONFIRMED) {
+  return renderWithProviders(<LineZoneBlock chain={chain} canEdit={canEdit} answer={answer} />);
 }
 
 const block = () => screen.getByTestId("line-zone-block");
@@ -324,7 +330,7 @@ describe("LineZoneBlock: общая блокировка", () => {
     const user = userEvent.setup();
     const { hold, release } = holdable();
     const calls = servePut({ hold });
-    const view = renderBlock(zoneChainFixture({ rows_contracts: 0 }));
+    renderBlock(zoneChainFixture({ rows_contracts: 0 }));
 
     await user.click(within(block()).getByRole("button", { name: "Подземная" }));
 
@@ -338,11 +344,47 @@ describe("LineZoneBlock: общая блокировка", () => {
 
     release();
     await waitFor(() => expect(screen.queryByTestId("recalc-overlay")).not.toBeInTheDocument(), LATER);
-    // Панель ответила сохранённой зоной (в этом тесте её нет — блок получает её свойством).
-    view.rerender(<LineZoneBlock chain={zoneChainFixture({ rows_contracts: 0, zone: "underground" })} canEdit />);
     for (const name of ZONE_NAMES) {
       expect(within(block()).getByRole("button", { name })).toBeEnabled();
     }
+  });
+});
+
+describe("LineZoneBlock: ответ панели", () => {
+  it("перечитывание идёт: кнопки закрыты, слой «Обновляем…», строки про устаревшую панель нет", () => {
+    renderBlock(zoneChainFixture(), true, { failed: false, fetching: true });
+    for (const name of ZONE_NAMES) {
+      expect(within(block()).getByRole("button", { name })).toBeDisabled();
+    }
+    expect(screen.getByTestId("recalc-overlay")).toHaveTextContent("Обновляем…");
+    expect(screen.queryByTestId("zone-stale")).not.toBeInTheDocument();
+  });
+
+  it("ответ не удался: строка про устаревшую панель и «Обновить», кнопки закрыты, слоя нет", () => {
+    renderBlock(zoneChainFixture(), true, { failed: true, fetching: false });
+    expect(screen.getByTestId("zone-stale")).toHaveTextContent(
+      "Панель не обновилась: зона на экране может быть устаревшей. Обновите панель, прежде чем менять зону."
+    );
+    expect(within(block()).getByRole("button", { name: "Обновить" })).toBeEnabled();
+    for (const name of ZONE_NAMES) {
+      expect(within(block()).getByRole("button", { name })).toBeDisabled();
+    }
+    expect(screen.queryByTestId("recalc-overlay")).not.toBeInTheDocument();
+  });
+
+  it("ошибка и перечитывание вместе: «Обновить» занята", () => {
+    renderBlock(zoneChainFixture(), true, { failed: true, fetching: true });
+    expect(within(block()).getByRole("button", { name: "Обновить" })).toBeDisabled();
+  });
+
+  it("не администратор: ни строки про устаревшую панель, ни слоя", () => {
+    renderBlock(zoneChainFixture(), false, { failed: true, fetching: false });
+    expect(screen.queryByTestId("zone-stale")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("recalc-overlay")).not.toBeInTheDocument();
+    cleanup();
+    renderBlock(zoneChainFixture(), false, { failed: false, fetching: true });
+    expect(screen.queryByTestId("zone-stale")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("recalc-overlay")).not.toBeInTheDocument();
   });
 });
 
@@ -358,7 +400,8 @@ describe("LineZoneBlock: свежая панель после решения", (
       null
     );
     if (query.data === undefined) return null;
-    return <LineZoneBlock chain={query.data.zone_chain} canEdit />;
+    const answer = { failed: query.isError, fetching: query.isFetching || query.isPlaceholderData };
+    return <LineZoneBlock chain={query.data.zone_chain} canEdit answer={answer} />;
   }
 
   it("кнопки заняты, пока не ответила панель; второй выбор не уходит; после ответа смена зоны требует окна", async () => {
@@ -444,7 +487,7 @@ describe("LineZoneBlock: свежая панель после решения", (
 
     const stale = await screen.findByTestId("zone-stale", undefined, LATER);
     expect(stale).toHaveTextContent(
-      "Зона сохранена, но панель не обновилась — обновите её, прежде чем менять зону снова."
+      "Панель не обновилась: зона на экране может быть устаревшей. Обновите панель, прежде чем менять зону."
     );
     await waitFor(() => expect(screen.queryByTestId("recalc-overlay")).not.toBeInTheDocument(), LATER);
     expect(screen.getByTestId("zone-name")).toHaveTextContent("не определена");

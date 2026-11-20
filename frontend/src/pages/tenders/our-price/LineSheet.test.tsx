@@ -22,7 +22,14 @@ import { server } from "@/test/server";
 import { createTestQueryClient, renderWithProviders, waitForDialogFocus } from "@/test/utils";
 import { OUR_PRICE_POLL_MS } from "@/services/queries";
 import { qk } from "@/services/queryKeys";
-import type { ManualRung, MoneyPair, OurPriceLine, OurPriceLineView, OurPriceRungContract } from "@/types/domain";
+import type {
+  ManualRung,
+  MoneyPair,
+  OurPriceLine,
+  OurPriceLineView,
+  OurPriceRungContract,
+  ZoneChainInfo,
+} from "@/types/domain";
 
 import { LineSheet, type LineSheetProps } from "./LineSheet";
 import OurPriceOfferPage from "./OurPriceOfferPage";
@@ -1259,5 +1266,67 @@ describe("LineSheet: блок «Зона места»", () => {
     expect(within(zone).queryByRole("link")).not.toBeInTheDocument();
     expect(within(zone).queryByRole("button", { name: "Подземная" })).not.toBeInTheDocument();
     expect(zone).toHaveTextContent("Зону раздела меняет администратор.");
+  });
+
+  it("сохранение, ответ панели 500, панель закрыта и открыта снова: кнопки закрыты до успешного ответа, после него смена требует окна", async () => {
+    const user = userEvent.setup();
+    const decisions: string[] = [];
+    let current = zoneChainFixture({ rows_contracts: 0, model_state: "none" });
+    let decided = false;
+    let panelOk = false;
+    server.use(
+      http.put("/api/v1/semantic/section-chains/:id/zone", async ({ request }) => {
+        const { zone } = (await request.json()) as { zone: string };
+        decisions.push(zone);
+        current = zoneChainFixture({
+          zone: zone as ZoneChainInfo["zone"],
+          zone_source: "human",
+          decided_at: "2026-11-19T12:00:00+00:00",
+          model_state: null,
+        });
+        decided = true;
+        return new HttpResponse(null, { status: 204 });
+      }),
+      http.get(LINE_PATH, () => {
+        if (decided && !panelOk) return new HttpResponse(null, { status: 500 });
+        return HttpResponse.json({ ...ourPriceLineViewFixture(), zone_chain: current });
+      })
+    );
+    const names = ["Подземная", "Надземная", "Территория", "Весь объект"];
+    const zoneBlock = () => screen.getByTestId("line-zone-block");
+    // Как в приложении, кэш переживает закрытие панели (в тестовом клиенте gcTime = 0 его бы стёр).
+    const queryClient = createTestQueryClient();
+    queryClient.setDefaultOptions({ queries: { retry: false, gcTime: 300_000, staleTime: 0 } });
+    const view = renderWithProviders(<LineSheet {...baseProps} />, { initialUser: ADMIN_USER, queryClient });
+    await screen.findByTestId("line-zone-block");
+
+    await user.click(within(zoneBlock()).getByRole("button", { name: "Подземная" }));
+    await screen.findByTestId("zone-stale", undefined, { timeout: 8000 });
+    expect(decisions).toEqual(["underground"]);
+
+    view.rerender(<LineSheet {...baseProps} positionItemId={null} />);
+    await waitFor(() => expect(screen.queryByTestId("line-zone-block")).not.toBeInTheDocument());
+    view.rerender(<LineSheet {...baseProps} />);
+    await screen.findByTestId("line-zone-block", undefined, { timeout: 8000 });
+    await screen.findByTestId("zone-stale", undefined, { timeout: 8000 });
+    await waitFor(() => expect(screen.queryByTestId("recalc-overlay")).not.toBeInTheDocument(), { timeout: 8000 });
+
+    for (const name of names) {
+      expect(within(zoneBlock()).getByRole("button", { name })).toBeDisabled();
+    }
+    await user.click(within(zoneBlock()).getByRole("button", { name: "Весь объект" }));
+    expect(decisions).toEqual(["underground"]);
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+
+    panelOk = true;
+    await user.click(within(zoneBlock()).getByRole("button", { name: "Обновить" }));
+    await waitFor(() => expect(screen.queryByTestId("zone-stale")).not.toBeInTheDocument(), { timeout: 8000 });
+    await waitFor(() => expect(screen.queryByTestId("recalc-overlay")).not.toBeInTheDocument(), { timeout: 8000 });
+    expect(screen.getByTestId("zone-name")).toHaveTextContent("Подземная часть");
+
+    await user.click(within(zoneBlock()).getByRole("button", { name: "Весь объект" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent("Подземная часть → Весь объект");
+    expect(decisions).toEqual(["underground"]);
   });
 });
