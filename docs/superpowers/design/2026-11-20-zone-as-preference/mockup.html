@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Зона как предпочтение</title>
+<style>
+  :root {
+    --bg: #f3f1ec; --surface: #ffffff; --sunken: #f6f5f1; --border: #e3e0d8; --fg: #1d1f22;
+    --fg2: #6b6f76; --muted: #9a9ea5; --warn: #b45309; --warn-soft: #fdf3e3; --warn-border: #f0d7ad;
+    --accent: #2f6b4f; --accent-soft: #eaf3ee; --accent-border: #b9d6c6; --info: #2563eb;
+    --primary: #23302a; --primary-fg: #ffffff; --chip: #efede7; --overlay: rgba(20,22,25,.45);
+    --new: #2563eb; --new-soft: #eaf0fd; --old: #9a9ea5;
+  }
+  :root[data-theme="dark"] {
+    --bg: #0e1013; --surface: #181b20; --sunken: #121418; --border: #2a2e36; --fg: #e8e8e8;
+    --fg2: #9aa0a8; --muted: #6b717a; --warn: #f0a35e; --warn-soft: #2a1f12; --warn-border: #6b4a23;
+    --accent: #7fc8a0; --accent-soft: #17251e; --accent-border: #2f5a43; --info: #7fb4ff;
+    --primary: #e8e8e8; --primary-fg: #121418; --chip: #23272e; --overlay: rgba(0,0,0,.6);
+    --new: #7fb4ff; --new-soft: #16223a; --old: #6b717a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .wrap { max-width: 1500px; margin: 0 auto; padding: 16px; }
+  .note { border: 1px dashed var(--muted); border-radius: 10px; padding: 10px 14px; color: var(--fg2); font-size: 13px; margin-bottom: 14px; max-width: 980px; }
+  .note b { color: var(--fg); }
+  .bar { display: flex; gap: 10px; align-items: center; margin-bottom: 18px; flex-wrap: wrap; }
+  .bar button { font: inherit; font-size: 13px; padding: 5px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); color: var(--fg); cursor: pointer; }
+  .state { margin-bottom: 28px; }
+  .state h2 { font-size: 14px; margin: 0 0 8px; }
+  .state .sub { font-size: 12px; color: var(--fg2); margin: -4px 0 10px; max-width: 980px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(560px, 1fr)); gap: 22px; align-items: start; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; overflow-x: auto; }
+  .tag { display: inline-block; font-size: 11px; letter-spacing: .05em; text-transform: uppercase; border-radius: 5px; padding: 1px 7px; margin-bottom: 8px; }
+  .tag.before { background: var(--chip); color: var(--fg2); }
+  .tag.after { background: var(--new-soft); color: var(--new); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th { text-align: left; font-weight: 500; color: var(--fg2); font-size: 12px; padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  td { padding: 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  td.num { text-align: right; font-family: ui-monospace, Consolas, monospace; white-space: nowrap; }
+  th.num { text-align: right; }
+  .cap { display: block; font-size: 12px; color: var(--fg2); font-family: system-ui, sans-serif; margin-top: 2px; }
+  .cap .mk { color: var(--fg); background: var(--chip); border-radius: 5px; padding: 0 5px; }
+  .state-l { font-size: 12px; color: var(--warn); }
+  .dash { color: var(--muted); }
+  .diff-up { color: var(--warn); }
+  .diff-dn { color: var(--accent); }
+  .sheet { position: relative; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px 18px; }
+  .sheet .t { font-family: Georgia, "Times New Roman", serif; font-size: 16px; }
+  .sheet .fam { color: var(--fg2); font-size: 13px; margin-top: 2px; }
+  .sec { margin-top: 18px; }
+  .sec > h4 { margin: 0 0 8px; font-size: 12px; letter-spacing: .05em; text-transform: uppercase; color: var(--fg); }
+  .lbl { font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--fg2); margin: 8px 0 3px; }
+  .tree { font-size: 13px; }
+  .tree div { padding-left: calc(var(--d) * 14px); }
+  .tree .n { color: var(--fg2); font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+  .zone { margin-top: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--sunken); padding: 10px 12px; display: grid; gap: 6px; }
+  .zone.undecided { border-color: var(--warn-border); background: var(--warn-soft); }
+  .zhead { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .zname { font-weight: 600; }
+  .zname.warn { color: var(--warn); }
+  .src { font-size: 12px; color: var(--fg2); background: var(--chip); border-radius: 6px; padding: 1px 7px; white-space: nowrap; }
+  .model { font-size: 12.5px; color: var(--fg2); }
+  .model b { color: var(--fg); font-weight: 500; }
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; font-size: 12.5px; background: var(--surface); }
+  .toggle span { padding: 4px 9px; border-right: 1px solid var(--border); }
+  .toggle span:last-child { border-right: 0; }
+  .link { font-size: 12.5px; color: var(--info); text-decoration: underline; text-underline-offset: 2px; }
+  .cmp { font-size: 13px; color: var(--fg2); }
+  .badge { display: inline-block; font-size: 12px; background: var(--chip); color: var(--fg); border-radius: 6px; padding: 2px 8px; margin-right: 6px; }
+  .why { font-size: 12.5px; color: var(--fg); background: var(--sunken); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; margin-top: 8px; }
+  .tiles { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-top: 8px; }
+  .tile { border: 1px solid var(--border); border-top: 3px solid var(--accent); border-radius: 10px; padding: 8px 10px; font-size: 12px; color: var(--fg2); }
+  .tile b { display: block; font-size: 17px; color: var(--fg); font-family: ui-monospace, Consolas, monospace; margin-top: 3px; }
+  .zb { display: inline-block; font-size: 11.5px; color: var(--fg2); background: var(--chip); border-radius: 5px; padding: 0 6px; white-space: nowrap; }
+  .tip { background: var(--primary); color: var(--primary-fg); font-size: 12.5px; border-radius: 8px; padding: 9px 11px; max-width: 380px; }
+  .dialog { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; max-width: 460px; box-shadow: 0 10px 30px rgba(0,0,0,.18); }
+  .dialog h5 { margin: 0 0 8px; font-size: 15px; }
+  .dialog p { margin: 0 0 8px; font-size: 13px; color: var(--fg2); }
+  .dialog p b { color: var(--fg); font-weight: 600; }
+  .del { text-decoration: line-through; color: var(--old); }
+  .ins { color: var(--new); }
+  .ellipsis { color: var(--muted); font-size: 12px; margin-top: 10px; }
+  .legend { font-size: 12.5px; color: var(--fg2); max-width: 980px; }
+  .legend li { margin: 3px 0; }
+  @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } .tiles { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="note">
+  <b>Макет к дизайну 2026-11-20-zone-as-preference.</b> Экран «Против нашей цены», таблица строк и панель строки.
+  Меняются только подписи о зоне и пояснение в «Сравнении»; остальное — как сегодня, здесь сокращено.
+  Работы, цены и счётчики условные.
+</div>
+<div class="bar">
+  <button onclick="document.documentElement.dataset.theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'">Светлая / тёмная тема</button>
+</div>
+
+<!-- 1 -->
+<div class="state">
+  <h2>1. Таблица строк: было и стало</h2>
+  <div class="sub">Первая строка сравнивается в своей зоне — не меняется ничего. Вторая сегодня без сравнения из-за зоны, третья — без зоны.</div>
+  <div class="grid">
+    <div class="card">
+      <span class="tag before">сегодня</span>
+      <table>
+        <tr><th>Работа</th><th class="num">КП, ₽/ед.</th><th class="num">Наша цена</th><th class="num">Разница</th></tr>
+        <tr><td>Стены монолитные B30 W8<span class="cap">подземная часть</span></td><td class="num">12 400</td><td class="num">11 500<span class="cap">без учёта: марка W · 2 аналога</span></td><td class="num diff-up">+7,8 %</td></tr>
+        <tr><td>Геотекстиль иглопробивной термофиксированный<span class="cap">подземная часть</span></td><td class="num">96,00</td><td class="num dash">—</td><td><span class="state-l">нет аналога в зоне «Подземная часть» · есть в зоне «Надземная часть»: 3 строки, 2 договора</span></td></tr>
+        <tr><td>Дренажный слой с геотекстилем, 10 мм<span class="cap">зона не определена</span></td><td class="num">540,00</td><td class="num dash">—</td><td><span class="state-l">ждёт решения администратора</span></td></tr>
+      </table>
+    </div>
+    <div class="card">
+      <span class="tag after">станет</span>
+      <table>
+        <tr><th>Работа</th><th class="num">КП, ₽/ед.</th><th class="num">Наша цена</th><th class="num">Разница</th></tr>
+        <tr><td>Стены монолитные B30 W8<span class="cap">подземная часть</span></td><td class="num">12 400</td><td class="num">11 500<span class="cap">без учёта: марка W · 2 аналога</span></td><td class="num diff-up">+7,8 %</td></tr>
+        <tr><td>Геотекстиль иглопробивной термофиксированный<span class="cap">подземная часть</span></td><td class="num">96,00</td><td class="num">88,40<span class="cap">тот же вариант · 3 аналога · <span class="mk">другая зона</span></span></td><td class="num diff-up">+8,6 %</td></tr>
+        <tr><td>Дренажный слой с геотекстилем, 10 мм<span class="cap">зона не определена</span></td><td class="num">540,00</td><td class="num">495,55<span class="cap">тот же вариант · 4 аналога · <span class="mk">зона не определена</span></span></td><td class="num diff-up">+9,0 %</td></tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- 2 -->
+<div class="state">
+  <h2>2. Панель строки: аналоги из другой зоны</h2>
+  <div class="sub">В своей зоне ни на одной ступени ничего нет — взяты все другие зоны одной выборкой. Справки «Справочно: та же работа в другой зоне» больше нет: эти аналоги теперь и есть сравнение.</div>
+  <div class="grid">
+    <div class="sheet">
+      <div class="t">Геотекстиль иглопробивной термофиксированный</div>
+      <div class="fam">Устройство разделительного слоя из геотекстиля</div>
+      <div class="sec"><h4>Где строка</h4>
+        <div class="zone">
+          <div class="zhead"><span><span class="lbl" style="display:inline;margin:0">Зона места · </span><span class="zname">Подземная часть</span></span><span class="src">по правилу</span></div>
+        </div>
+      </div>
+      <div class="sec"><h4>Сравнение</h4>
+        <div class="cmp"><span class="badge">тот же вариант</span>3 аналога в 2 договорах</div>
+        <div class="why">В зоне «Подземная часть» аналогов нет — взяты из зон «Надземная часть» (2) и «Весь объект» (1).</div>
+        <div class="tiles"><div class="tile">самая низкая<b>88,40</b></div><div class="tile">самая свежая<b>91,20</b></div><div class="tile">с этим подрядчиком<b>—</b></div></div>
+      </div>
+      <div class="sec"><h4>Аналоги</h4>
+        <table>
+          <tr><th>Договор</th><th>Зона</th><th class="num">Цена, ₽/м²</th></tr>
+          <tr><td>ЖК «Северный», корпус 2 · 03.2026</td><td><span class="zb">надземная часть</span></td><td class="num">88,40</td></tr>
+          <tr><td>ЖК «Северный», корпус 2 · 03.2026</td><td><span class="zb">надземная часть</span></td><td class="num">90,10</td></tr>
+          <tr><td>ЖК «Парковый» · 07.2026</td><td><span class="zb">весь объект</span></td><td class="num">91,20</td></tr>
+        </table>
+      </div>
+      <div class="ellipsis">… цены, работа, цель, файл подрядчику — без изменений</div>
+    </div>
+    <div class="sheet">
+      <div class="t">Стены монолитные B30 W8</div>
+      <div class="fam">Бетонирование монолитных стен</div>
+      <div class="sec"><h4>Сравнение · для сравнения: своя зона есть</h4>
+        <div class="cmp"><span class="badge">без учёта: марка W</span>2 аналога в 2 договорах · подземная часть</div>
+        <div class="tiles"><div class="tile">самая низкая<b>11 500</b></div><div class="tile">самая свежая<b>11 900</b></div><div class="tile">с этим подрядчиком<b>—</b></div></div>
+      </div>
+      <div class="sec"><h4>Аналоги</h4>
+        <table>
+          <tr><th>Договор</th><th>Зона</th><th class="num">Цена, ₽/м³</th></tr>
+          <tr><td>ЖК «Северный», корпус 1 · 02.2026</td><td class="dash">—</td><td class="num">11 500</td></tr>
+          <tr><td>ЖК «Парковый» · 07.2026</td><td class="dash">—</td><td class="num">11 900</td></tr>
+        </table>
+        <div class="cmp" style="margin-top:6px;font-size:12px">Аналог своей зоны метки не получает. Стены B30 W8 из надземной части (12 000) не берутся: своя зона нашла аналоги на ступени 2.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 3 -->
+<div class="state">
+  <h2>3. Панель строки: зона раздела не определена</h2>
+  <div class="sub">Модель не уверена, решения администратора ещё нет. Строка больше не ждёт: сравнивается со всеми зонами без предпочтения. Пока модель определяет зону — по-прежнему «разбирает».</div>
+  <div class="grid">
+    <div class="sheet">
+      <div class="t">Дренажный слой с геотекстилем (1160 кн/м2), толщиной 10 мм</div>
+      <div class="fam">Устройство дренажной профилированной мембраны</div>
+      <div class="sec"><h4>Где строка</h4>
+        <div class="lbl">В смете КП</div>
+        <div class="tree">
+          <div style="--d:0"><span class="n">п. 412</span> — 1 Этап ЖК</div>
+          <div style="--d:1"><span class="n">п. 413</span> — Устройство кровли над подземной автостоянкой</div>
+        </div>
+        <div class="zone undecided">
+          <div class="zhead"><span><span class="lbl" style="display:inline;margin:0">Зона места · </span><span class="zname warn">не определена</span></span><span class="src">ждёт решения администратора</span></div>
+          <div class="model">Модель предлагает: <b>подземная · 0,85</b> — ниже порога 0,95, решает администратор</div>
+          <div class="row"><div class="toggle"><span>Подземная</span><span>Надземная</span><span>Территория</span><span>Весь объект</span></div><a class="link" href="#">открыть в очереди «Зоны» →</a></div>
+        </div>
+      </div>
+      <div class="sec"><h4>Сравнение</h4>
+        <div class="cmp"><span class="badge">тот же вариант</span>4 аналога в 3 договорах</div>
+        <div class="why">Зона раздела не определена — аналоги из всех зон.</div>
+        <div class="tiles"><div class="tile">самая низкая<b>495,55</b></div><div class="tile">самая свежая<b>1 178,06</b></div><div class="tile">с этим подрядчиком<b>—</b></div></div>
+      </div>
+      <div class="sec"><h4>Аналоги</h4>
+        <table>
+          <tr><th>Договор</th><th>Зона</th><th class="num">Цена, ₽/м²</th></tr>
+          <tr><td>ЖК «Северный», корпус 1 · 02.2026</td><td><span class="zb">подземная часть</span></td><td class="num">495,55</td></tr>
+          <tr><td>ЖК «Северный», корпус 2 · 03.2026</td><td><span class="zb">надземная часть</span></td><td class="num">612,00</td></tr>
+          <tr><td>ЖК «Парковый» · 07.2026</td><td><span class="zb">надземная часть</span></td><td class="num">1 178,06</td></tr>
+          <tr><td>ЖК «Речной» · 11.2025</td><td><span class="zb">подземная часть</span></td><td class="num">701,30</td></tr>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <span class="tag before">сегодня</span>
+      <div class="cmp" style="color:var(--warn)">Сравнение: не с чем сравнить — зона раздела не определена — выберите её выше.</div>
+      <div style="height:14px"></div>
+      <span class="tag before">плашка экрана КП, сегодня</span>
+      <div class="cmp">Каталог разбирает 12 строк · 184 строки ждут решения администратора</div>
+      <div style="height:6px"></div>
+      <span class="tag after">станет</span>
+      <div class="cmp">Каталог разбирает 12 строк · 31 строка ждёт решения администратора</div>
+      <div class="cmp" style="font-size:12px;margin-top:4px">Строки без зоны, которые теперь сравниваются, в «ждут решения» не считаются. Разбор зон по-прежнему виден в очереди «Зоны» и в блоке «Зона места».</div>
+    </div>
+  </div>
+</div>
+
+<!-- 4 -->
+<div class="state">
+  <h2>4. Тексты про зону в блоке «Зона места»</h2>
+  <div class="grid">
+    <div class="card">
+      <div class="lbl">Подсказка «?»</div>
+      <div class="tip">Зона — часть объекта, где выполняется работа: подземная, надземная, территория или весь объект. Её определяют разделы сметы выше, а не название работы. <span class="del">Аналоги строке подбираются только из договоров с той же зоной.</span> <span class="ins" style="color:inherit;text-decoration:underline">Аналоги строке ищутся сначала в договорах с той же зоной; если там нет ни одного — в договорах других зон.</span></div>
+    </div>
+    <div class="card">
+      <div class="lbl">Окно «Сменить зону раздела?», вторая строка охвата</div>
+      <div class="dialog">
+        <h5>Сменить зону раздела?</h5>
+        <p><b>Подземная часть → Весь объект</b></p>
+        <p>Зона назначается строкам раздела во всех сметах: <b>КП — 56, договоры — 4</b>.</p>
+        <p>Строки договоров этого раздела (4) служат аналогами для строк других КП <span class="del">той же зоны</span> <span class="ins">— в первую очередь той же зоны</span>: решение меняет и их сравнение.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<ul class="legend">
+  <li><b>Порядок подбора:</b> ступени 1–4 в своей зоне; ничего — ступени 1–4 по всем другим зонам вместе. Своя зона на ступени 4 побеждает чужую на ступени 1.</li>
+  <li><b>Пометка «другая зона»</b> — нейтральная, как «другой класс»: по замеру такой аналог в среднем не хуже.</li>
+  <li><b>Строка без зоны:</b> пока модель определяет — «разбирает»; иначе — все зоны без предпочтения, пометка «зона не определена».</li>
+  <li><b>Уходит:</b> справка «Справочно: та же работа в другой зоне» и подпись «нет аналога в зоне … · есть в зоне …».</li>
+</ul>
+
+</div>
+</body>
+</html>
