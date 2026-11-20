@@ -324,7 +324,7 @@ describe("LineZoneBlock: общая блокировка", () => {
     const user = userEvent.setup();
     const { hold, release } = holdable();
     const calls = servePut({ hold });
-    renderBlock(zoneChainFixture({ rows_contracts: 0 }));
+    const view = renderBlock(zoneChainFixture({ rows_contracts: 0 }));
 
     await user.click(within(block()).getByRole("button", { name: "Подземная" }));
 
@@ -338,6 +338,8 @@ describe("LineZoneBlock: общая блокировка", () => {
 
     release();
     await waitFor(() => expect(screen.queryByTestId("recalc-overlay")).not.toBeInTheDocument(), LATER);
+    // Панель ответила сохранённой зоной (в этом тесте её нет — блок получает её свойством).
+    view.rerender(<LineZoneBlock chain={zoneChainFixture({ rows_contracts: 0, zone: "underground" })} canEdit />);
     for (const name of ZONE_NAMES) {
       expect(within(block()).getByRole("button", { name })).toBeEnabled();
     }
@@ -404,6 +406,65 @@ describe("LineZoneBlock: свежая панель после решения", (
     await waitFor(() => expect(screen.queryByTestId("recalc-overlay")).not.toBeInTheDocument(), LATER);
     expect(screen.getByTestId("zone-name")).toHaveTextContent("Подземная часть");
     expect(within(block()).getByRole("button", { name: "Подземная" })).toHaveAttribute("aria-pressed", "true");
+
+    await user.click(within(block()).getByRole("button", { name: "Весь объект" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent("«Раздел А / Подраздел Б»: Подземная часть → Весь объект.");
+    expect(decisions).toEqual(["underground"]);
+  });
+
+  it("панель не ответила после сохранения: текст про устаревшую панель, кнопки закрыты; «Обновить» — пока 500, текст остаётся; после ответа текст снят и смена зоны требует окна", async () => {
+    const user = userEvent.setup();
+    const decisions: string[] = [];
+    let current = zoneChainFixture({ rows_contracts: 0, model_state: "none" });
+    let decided = false;
+    let panelOk = false;
+    server.use(
+      http.put(PUT_URL, async ({ request }) => {
+        const { zone } = (await request.json()) as { zone: string };
+        decisions.push(zone);
+        current = zoneChainFixture({
+          zone: zone as ZoneChainInfo["zone"],
+          zone_source: "human",
+          decided_at: "2026-11-19T12:00:00+00:00",
+          model_state: null,
+        });
+        decided = true;
+        return new HttpResponse(null, { status: 204 });
+      }),
+      http.get(LINE_PATH, () => {
+        if (decided && !panelOk) return new HttpResponse(null, { status: 500 });
+        return HttpResponse.json({ ...ourPriceLineViewFixture(), zone_chain: current });
+      })
+    );
+    renderWithProviders(<PanelHarness />);
+    await screen.findByTestId("line-zone-block");
+
+    await user.click(within(block()).getByRole("button", { name: "Подземная" }));
+
+    const stale = await screen.findByTestId("zone-stale", undefined, LATER);
+    expect(stale).toHaveTextContent(
+      "Зона сохранена, но панель не обновилась — обновите её, прежде чем менять зону снова."
+    );
+    await waitFor(() => expect(screen.queryByTestId("recalc-overlay")).not.toBeInTheDocument(), LATER);
+    expect(screen.getByTestId("zone-name")).toHaveTextContent("не определена");
+    for (const name of ZONE_NAMES) {
+      expect(within(block()).getByRole("button", { name })).toBeDisabled();
+    }
+    await user.click(within(block()).getByRole("button", { name: "Весь объект" }));
+    expect(decisions).toEqual(["underground"]);
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+
+    await user.click(within(block()).getByRole("button", { name: "Обновить" }));
+    await waitFor(() => expect(screen.queryByTestId("recalc-overlay")).not.toBeInTheDocument(), LATER);
+    expect(screen.getByTestId("zone-stale")).toBeInTheDocument();
+    expect(screen.getByTestId("zone-name")).toHaveTextContent("не определена");
+
+    panelOk = true;
+    await user.click(within(block()).getByRole("button", { name: "Обновить" }));
+    await waitFor(() => expect(screen.queryByTestId("zone-stale")).not.toBeInTheDocument(), LATER);
+    await waitFor(() => expect(screen.queryByTestId("recalc-overlay")).not.toBeInTheDocument(), LATER);
+    expect(screen.getByTestId("zone-name")).toHaveTextContent("Подземная часть");
 
     await user.click(within(block()).getByRole("button", { name: "Весь объект" }));
     const dialog = await screen.findByRole("alertdialog");

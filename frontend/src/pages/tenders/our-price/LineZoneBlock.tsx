@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useIsMutating } from "@tanstack/react-query";
+import { useIsMutating, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 
 import {
@@ -17,6 +17,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { cn } from "@/lib/utils";
 import { ZoneToggle } from "@/pages/families/ZonesQueue";
 import { useDecideChainZone, zoneDecisionMutationKey } from "@/services/queries";
+import { qk } from "@/services/queryKeys";
 import type { SectionZone, ZoneChainInfo } from "@/types/domain";
 
 import {
@@ -29,7 +30,10 @@ import {
   ZONE_HINT_LABEL,
   ZONE_NO_CHAIN,
   ZONE_QUEUE_LINK,
+  ZONE_REFRESHING_LABEL,
   ZONE_READONLY,
+  ZONE_STALE_REFRESH,
+  ZONE_STALE_TEXT,
   ZONE_UNDEFINED,
   ZONE_UNDEFINED_TITLE,
   zoneDialogChange,
@@ -63,18 +67,38 @@ export function LineZoneBlock({ chain, canEdit }: { chain: ZoneChainInfo | null;
 
 function ChainZoneBlock({ chain, canEdit }: { chain: ZoneChainInfo; canEdit: boolean }) {
   // Решение из панели держит мутацию до свежего ответа панели: пока она идёт, кнопки заняты.
+  const qc = useQueryClient();
   const decide = useDecideChainZone({ awaitOurPrice: true });
-  const busy = useIsMutating({ mutationKey: zoneDecisionMutationKey }) > 0;
+  const deciding = useIsMutating({ mutationKey: zoneDecisionMutationKey }) > 0;
+  // Зона, которую сохранил этот блок: ожидание перечитывания не отличает успех от ошибки, и при
+  // ошибке панель держит прежний ответ (спека §2 п. 4а).
+  const [saved, setSaved] = useState<{ chainId: number; zone: SectionZone } | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  if (saved !== null && (saved.chainId !== chain.id || chain.zone === saved.zone)) setSaved(null);
+  const stale = saved !== null && saved.chainId === chain.id && chain.zone !== saved.zone;
+  const busy = deciding || refreshing || stale;
   // Окно держит выбранную зону и после закрытия: текст не мигает, пока оно гаснет.
   const [confirm, setConfirm] = useState<{ zone: SectionZone; open: boolean } | null>(null);
 
   const undecided = chain.zone === null;
   const source = zoneSourceText(chain);
   const model = zoneModelText(chain);
-  const decideNow = (zone: SectionZone) => decide.mutate({ chainId: chain.id, zone });
+  const decideNow = (zone: SectionZone) =>
+    decide.mutate(
+      { chainId: chain.id, zone },
+      // Per-call onSuccess идёт после перечитывания, ждущего в хуке.
+      { onSuccess: () => setSaved({ chainId: chain.id, zone }) }
+    );
+  const refresh = () => {
+    setRefreshing(true);
+    qc.refetchQueries({ queryKey: qk.tenders.ourPriceAll, type: "active" }, { throwOnError: true })
+      .then(() => setSaved(null))
+      .catch(() => undefined)
+      .finally(() => setRefreshing(false));
+  };
 
   return (
-    <RecalcOverlay active={busy} label={SAVING_LABEL} placement="center">
+    <RecalcOverlay active={deciding || refreshing} label={refreshing ? ZONE_REFRESHING_LABEL : SAVING_LABEL} placement="center">
       <div
         data-testid="line-zone-block"
         className={cn(
@@ -125,6 +149,16 @@ function ChainZoneBlock({ chain, canEdit }: { chain: ZoneChainInfo; canEdit: boo
           <p data-testid="zone-model" className="text-[0.8125rem] text-fg-secondary">
             {model}
           </p>
+        )}
+        {canEdit && stale && (
+          <div className="flex flex-wrap items-center justify-between gap-2.5">
+            <p data-testid="zone-stale" className="text-[0.8125rem] text-warning-text">
+              {ZONE_STALE_TEXT}
+            </p>
+            <Button variant="outline" size="sm" onClick={refresh} disabled={refreshing}>
+              {ZONE_STALE_REFRESH}
+            </Button>
+          </div>
         )}
         {canEdit ? (
           <div className="flex flex-wrap items-center justify-between gap-2.5">

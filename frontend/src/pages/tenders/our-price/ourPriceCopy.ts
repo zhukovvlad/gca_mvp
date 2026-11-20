@@ -567,6 +567,12 @@ export const NO_ZONE_COMPARE = "Не с чем сравнить: зона раз
 export const NO_ZONE_COMPARE_ADMIN_TAIL = " — выберите её выше";
 export const NO_ZONE_COMPARE_NO_CHAIN = "Не с чем сравнить: строка вне разделов сметы";
 
+/** Решение сохранено, а панель не обновилась (спека §3 п. 9). */
+export const ZONE_STALE_TEXT =
+  "Зона сохранена, но панель не обновилась — обновите её, прежде чем менять зону снова.";
+export const ZONE_STALE_REFRESH = "Обновить";
+export const ZONE_REFRESHING_LABEL = "Обновляем…";
+
 /** Окно подтверждения смены зоны (спека §3 п. 8). */
 export const ZONE_DIALOG_TITLE = "Сменить зону раздела?";
 export const ZONE_DIALOG_CANCEL = "Отмена";
