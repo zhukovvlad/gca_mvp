@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import json
 import random
+import uuid
 from decimal import Decimal
 
 import pytest
@@ -20,13 +22,14 @@ import sqlalchemy as sa
 
 import crud.section_chains as chains_crud
 from config import settings as app_settings
-from crud.common import DomainError
+from crud.common import DomainError, iso
 from crud.section_chains import (
     assign_section_chains,
     backfill_chains,
     decide_zone,
     get_chain,
     list_chains,
+    zone_chain_info,
 )
 from models import (
     ImportJob,
@@ -34,13 +37,16 @@ from models import (
     PositionItem,
     SectionChain,
     SemanticJob,
+    SemanticJobAttempt,
     SemanticJobKind,
     SemanticJobStatus,
+    SemanticWorkerState,
 )
 from services.context_routing import RoutingError
 from services.zone_request import render_zone_request
 from services.zone_rules import chain_key
 from tests.integration.test_import_pipeline import fake_parse, job_env  # noqa: F401
+from tests.integration.test_our_price_signal import _pause
 from tests.payloads import payload_for, position
 
 pytestmark = pytest.mark.integration
@@ -827,6 +833,375 @@ class TestGetChain:
         db_session.commit()
 
         assert anon_client.get(CHAIN_URL.format(chain.id)).status_code in (401, 403)
+
+
+# ---------------------------------------------------------------------------
+#  zone_chain_info: блок «Зона места» панели строки
+# ---------------------------------------------------------------------------
+
+def _zone_job(db, chain, status="pending") -> SemanticJob:
+    """Задание `section_zone` цепочки в заданном статусе (парные поля статуса — как у очереди)."""
+    job = SemanticJob(
+        kind=SemanticJobKind.section_zone.value,
+        section_chain_id=chain.id,
+        request_hash=uuid.uuid4().hex,
+        status=status,
+        claim_token=uuid.uuid4() if status == "running" else None,
+        cancel_reason="input_changed" if status == "cancelled" else None,
+        privacy_matches=(
+            [{"text": "иное имя", "kind": "contractor", "where": "context"}]
+            if status == "privacy_hold" else None
+        ),
+        prompt_version="1",
+        model_requested="m",
+        place_dictionary_version=1,
+        candidates_hash="c",
+        prefix_hash="p",
+        input_hash="i",
+        response_schema_version="1",
+        serialization_version="1",
+    )
+    db.add(job)
+    db.flush()
+    return job
+
+
+def _attempt(db, job, *, outcome="ok", raw=None) -> SemanticJobAttempt:
+    attempt = SemanticJobAttempt(
+        job_id=job.id,
+        claim_token=uuid.uuid4(),
+        retry_generation=0,
+        started_at=dt.datetime.now(dt.UTC),
+        finished_at=dt.datetime.now(dt.UTC),
+        outcome=outcome,
+        raw_response=raw,
+        reserve_usd=0,
+        prefix_hash="p",
+        privacy_dictionary_hash="d",
+    )
+    db.add(attempt)
+    db.flush()
+    return attempt
+
+
+def _answer(zone, confidence, reason) -> str:
+    return json.dumps({"zone": zone, "confidence": confidence, "reason": reason}, ensure_ascii=False)
+
+
+def _budget_pause(db, job, *, until):
+    """Пауза провайдера по времени до `until`; парные поля требуют попытку-причину."""
+    attempt = _attempt(db, job, outcome="budget_refused")
+    db.execute(
+        sa.update(SemanticWorkerState)
+        .where(SemanticWorkerState.id == 1)
+        .values(
+            budget_paused_until=until,
+            budget_pause_attempt_id=attempt.id,
+            budget_pause_source="provider_credits",
+        )
+    )
+    db.flush()
+
+
+class TestZoneChainInfo:
+    FORM = {
+        "id", "titles", "zone", "zone_source", "decided_at", "rows_kp", "rows_contracts",
+        "model_state", "model_answer", "threshold",
+    }
+
+    def _undecided(self, db, key="цепочка", **fields) -> SectionChain:
+        return _chain(db, key, titles=["Раздел", "Подраздел"], **fields)
+
+    def test_form_is_exactly_the_spec_shape(self, db_session, factories):
+        chain = self._undecided(db_session)
+
+        info = zone_chain_info(db_session, chain.id)
+
+        assert set(info) == self.FORM
+        assert info["id"] == chain.id
+        assert info["titles"] == ["Раздел", "Подраздел"]
+        assert info["threshold"] == "0.95"
+
+    def test_unknown_chain_is_404(self, db_session):
+        with pytest.raises(DomainError) as caught:
+            zone_chain_info(db_session, 987654321)
+
+        assert caught.value.status_code == 404
+
+    def test_rows_equal_the_queue_element(self, db_session, factories):
+        titles = ["Раздел без шаблонов", "Подраздел"]
+        _scene(factories, titles, "Р1", "Р2", kp=True)
+        _scene(factories, titles, "Р3")
+        backfill_chains(db_session, enqueue=False, reapply_rule=False)
+        (chain,) = db_session.execute(sa.select(SectionChain)).scalars().all()
+
+        info = zone_chain_info(db_session, chain.id)
+
+        (listed,) = list_chains(db_session, filter="all", q=None, page=1)["items"]
+        assert (info["rows_kp"], info["rows_contracts"]) == (2, 1)
+        assert (info["rows_kp"], info["rows_contracts"]) == (
+            listed["rows_kp"], listed["rows_contracts"]
+        )
+
+    def test_chain_without_rows_has_zero_counts(self, db_session, factories):
+        chain = self._undecided(db_session)
+
+        info = zone_chain_info(db_session, chain.id)
+
+        assert (info["rows_kp"], info["rows_contracts"]) == (0, 0)
+
+    # -- model_state: по фикстуре на каждое значение, в порядке спеки ---------
+
+    def test_live_job_is_running(self, db_session, factories):
+        chain = self._undecided(db_session)
+        _zone_job(db_session, chain, "pending")
+
+        info = zone_chain_info(db_session, chain.id)
+
+        assert info["model_state"] == "running"
+        assert info["zone"] is None and info["zone_source"] is None
+        assert info["model_answer"] is None
+
+    def test_a_job_in_work_is_running_too(self, db_session, factories):
+        chain = self._undecided(db_session)
+        _zone_job(db_session, chain, "running")
+
+        assert zone_chain_info(db_session, chain.id)["model_state"] == "running"
+
+    def test_a_disputed_proposal_with_a_live_job_is_running_not_proposed(
+        self, db_session, factories
+    ):
+        chain = self._undecided(
+            db_session, proposed_zone="whole", proposed_confidence=Decimal("0.6"),
+            proposed_reason="Причина",
+        )
+        _zone_job(db_session, chain, "pending")
+
+        info = zone_chain_info(db_session, chain.id)
+
+        assert info["model_state"] == "running"
+        assert info["model_answer"]["zone"] == "whole"
+
+    def test_the_same_disputed_proposal_without_a_job_is_proposed(self, db_session, factories):
+        chain = self._undecided(
+            db_session, proposed_zone="whole", proposed_confidence=Decimal("0.6"),
+            proposed_reason="Причина",
+        )
+
+        info = zone_chain_info(db_session, chain.id)
+
+        assert info["model_state"] == "proposed"
+        assert info["model_answer"] == {
+            "zone": "whole", "confidence": "0.6", "reason": "Причина"
+        }
+
+    def test_claim_paused_with_a_live_job_is_stopped(self, db_session, factories):
+        chain = self._undecided(db_session)
+        _zone_job(db_session, chain, "pending")
+        _pause(db_session)
+
+        assert zone_chain_info(db_session, chain.id)["model_state"] == "stopped"
+
+    def test_claim_paused_without_a_live_job_is_not_stopped(self, db_session, factories):
+        chain = self._undecided(db_session)
+        _pause(db_session)
+
+        assert zone_chain_info(db_session, chain.id)["model_state"] == "none"
+
+    def test_disputed_proposal_with_stopped_claim_and_a_live_job_is_stopped(
+        self, db_session, factories
+    ):
+        chain = self._undecided(
+            db_session, proposed_zone="whole", proposed_confidence=Decimal("0.6"),
+            proposed_reason="Причина",
+        )
+        _zone_job(db_session, chain, "pending")
+        _pause(db_session)
+
+        assert zone_chain_info(db_session, chain.id)["model_state"] == "stopped"
+
+    def test_budget_pause_in_the_future_with_a_live_job_is_paused(self, db_session, factories):
+        chain = self._undecided(db_session)
+        job = _zone_job(db_session, chain, "pending")
+        _budget_pause(
+            db_session, job, until=dt.datetime.now(dt.UTC) + dt.timedelta(hours=1)
+        )
+
+        assert zone_chain_info(db_session, chain.id)["model_state"] == "paused"
+
+    def test_budget_pause_in_the_past_with_a_live_job_is_running(self, db_session, factories):
+        chain = self._undecided(db_session)
+        job = _zone_job(db_session, chain, "pending")
+        _budget_pause(
+            db_session, job, until=dt.datetime.now(dt.UTC) - dt.timedelta(minutes=1)
+        )
+
+        assert zone_chain_info(db_session, chain.id)["model_state"] == "running"
+
+    def test_stop_and_budget_pause_together_are_stopped(self, db_session, factories):
+        chain = self._undecided(db_session)
+        job = _zone_job(db_session, chain, "pending")
+        _pause(db_session)
+        _budget_pause(
+            db_session, job, until=dt.datetime.now(dt.UTC) + dt.timedelta(hours=1)
+        )
+
+        assert zone_chain_info(db_session, chain.id)["model_state"] == "stopped"
+
+    def test_budget_pause_without_a_live_job_is_not_paused(self, db_session, factories):
+        chain = self._undecided(db_session)
+        job = _zone_job(db_session, chain, "done")
+        _budget_pause(
+            db_session, job, until=dt.datetime.now(dt.UTC) + dt.timedelta(hours=1)
+        )
+
+        assert zone_chain_info(db_session, chain.id)["model_state"] == "none"
+
+    def test_unknown_answer_keeps_a_high_confidence_as_a_string(self, db_session, factories):
+        chain = self._undecided(
+            db_session, proposed_zone="unknown", proposed_confidence=Decimal("0.97"),
+            proposed_reason="Не ясно",
+        )
+
+        info = zone_chain_info(db_session, chain.id)
+
+        assert info["model_state"] == "unknown"
+        assert info["model_answer"] == {
+            "zone": "unknown", "confidence": "0.97", "reason": "Не ясно"
+        }
+
+    @pytest.mark.parametrize("status", ["error", "privacy_hold"])
+    def test_a_stuck_job_without_a_proposal_is_failed(self, db_session, factories, status):
+        chain = self._undecided(db_session)
+        _zone_job(db_session, chain, status)
+
+        info = zone_chain_info(db_session, chain.id)
+
+        assert info["model_state"] == "failed"
+        assert info["model_answer"] is None
+
+    def test_a_proposal_wins_over_a_stuck_job(self, db_session, factories):
+        chain = self._undecided(
+            db_session, proposed_zone="whole", proposed_confidence=Decimal("0.6"),
+            proposed_reason="Причина",
+        )
+        _zone_job(db_session, chain, "error")
+
+        assert zone_chain_info(db_session, chain.id)["model_state"] == "proposed"
+
+    @pytest.mark.parametrize("status", [None, "done", "cancelled"])
+    def test_nothing_live_and_nothing_proposed_is_none(self, db_session, factories, status):
+        chain = self._undecided(db_session)
+        if status is not None:
+            _zone_job(db_session, chain, status)
+
+        info = zone_chain_info(db_session, chain.id)
+
+        assert info["model_state"] == "none"
+        assert info["model_answer"] is None
+
+    def test_a_job_of_another_chain_does_not_count(self, db_session, factories):
+        chain = self._undecided(db_session)
+        other = self._undecided(db_session, key="другая")
+        _zone_job(db_session, other, "pending")
+
+        assert zone_chain_info(db_session, chain.id)["model_state"] == "none"
+
+    # -- цепочка с зоной ---------------------------------------------------------
+
+    def _human(self, db, factories, key="человек", **fields) -> SectionChain:
+        user = factories.UserFactory.create()
+        return _chain(
+            db, key, titles=["Раздел"], zone="underground", zone_source="human",
+            decided_by=user.id, decided_at=dt.datetime(2026, 11, 19, 1, 24, tzinfo=dt.UTC),
+            **fields,
+        )
+
+    def test_human_chain_has_no_model_state_and_a_decision_moment(self, db_session, factories):
+        chain = self._human(db_session, factories)
+        _zone_job(db_session, chain, "pending")
+
+        info = zone_chain_info(db_session, chain.id)
+
+        assert info["zone"] == "underground" and info["zone_source"] == "human"
+        assert info["model_state"] is None
+        assert info["decided_at"] == iso(chain.decided_at)
+        assert info["decided_at"] is not None
+
+    def test_model_answer_is_the_last_ok_attempt_by_id(self, db_session, factories):
+        chain = self._human(db_session, factories)
+        job = _zone_job(db_session, chain, "done")
+        _attempt(db_session, job, raw=_answer("aboveground", 0.4, "Первая"))
+        _attempt(db_session, job, raw=_answer("underground", 0.85, "Вторая"))
+        _attempt(db_session, job, outcome="schema_error", raw=_answer("whole", 0.99, "Не ok"))
+
+        info = zone_chain_info(db_session, chain.id)
+
+        assert info["model_answer"] == {
+            "zone": "underground", "confidence": "0.85", "reason": "Вторая"
+        }
+
+    def test_model_answer_spans_all_jobs_of_the_chain(self, db_session, factories):
+        chain = self._human(db_session, factories)
+        other = self._human(db_session, factories, key="соседняя")
+        old = _zone_job(db_session, chain, "done")
+        _attempt(db_session, old, raw=_answer("whole", 0.7, "Старое задание"))
+        _attempt(db_session, _zone_job(db_session, other, "done"), raw=_answer("territory", 0.9, "Чужое"))
+
+        info = zone_chain_info(db_session, chain.id)
+
+        assert info["model_answer"]["reason"] == "Старое задание"
+
+    def test_model_may_say_unknown_on_a_decided_chain(self, db_session, factories):
+        chain = self._human(db_session, factories)
+        job = _zone_job(db_session, chain, "done")
+        _attempt(db_session, job, raw=_answer("unknown", 0.97, "Не ясно"))
+
+        info = zone_chain_info(db_session, chain.id)
+
+        assert info["model_answer"] == {
+            "zone": "unknown", "confidence": "0.97", "reason": "Не ясно"
+        }
+
+    @pytest.mark.parametrize("raw", ["не json", _answer("nowhere", 0.5, "Причина"), None])
+    def test_an_unparsable_last_answer_is_null_not_an_error(self, db_session, factories, raw):
+        chain = self._human(db_session, factories)
+        job = _zone_job(db_session, chain, "done")
+        _attempt(db_session, job, raw=_answer("whole", 0.9, "Прежняя, разбирается"))
+        _attempt(db_session, job, raw=raw)
+
+        info = zone_chain_info(db_session, chain.id)
+
+        assert info["model_answer"] is None
+
+    def test_decided_chain_without_attempts_has_no_answer(self, db_session, factories):
+        chain = self._human(db_session, factories)
+        _zone_job(db_session, chain, "done")
+
+        assert zone_chain_info(db_session, chain.id)["model_answer"] is None
+
+    def test_rule_chain_without_jobs_has_nothing_from_the_model(self, db_session, factories):
+        chain = _chain(
+            db_session, "правило", titles=["Раздел"], zone="whole", zone_source="rule"
+        )
+
+        info = zone_chain_info(db_session, chain.id)
+
+        assert info["zone_source"] == "rule"
+        assert info["model_answer"] is None and info["model_state"] is None
+        assert info["decided_at"] is None
+
+    def test_model_chain_shows_the_answer_that_set_the_zone(self, db_session, factories):
+        chain = _chain(
+            db_session, "модель", titles=["Раздел"], zone="whole", zone_source="model"
+        )
+        job = _zone_job(db_session, chain, "done")
+        _attempt(db_session, job, raw=_answer("whole", 0.97, "Причина"))
+
+        info = zone_chain_info(db_session, chain.id)
+
+        assert info["zone_source"] == "model" and info["decided_at"] is None
+        assert info["model_answer"] == {"zone": "whole", "confidence": "0.97", "reason": "Причина"}
 
 
 # ---------------------------------------------------------------------------

@@ -59,7 +59,7 @@ export function ZoneToggle({
   busy,
   onDecide,
 }: {
-  chain: SectionChainRow;
+  chain: Pick<SectionChainRow, "zone" | "zone_source">;
   busy: boolean;
   onDecide: (zone: SectionZone) => void;
 }) {

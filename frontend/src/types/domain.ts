@@ -4044,6 +4044,8 @@ export interface OurPriceLineView {
   /** Блок Г: семьи по связи (спека §2.9). */
   reference_links: ReferenceLinkGroup[];
   vat_dropped: OurPriceVatDropped[];
+  /** Зона цепочки разделов строки; `null` у системы и у строки без цепочки (спека зоны в панели строки §1). */
+  zone_chain: ZoneChainInfo | null;
   /**
    * Комментарий строки: `text` - свой, если задан, иначе шаблонный; `template_text` -
    * шаблонный всегда (`null` у КП с неизвестной базой НДС).
@@ -4152,6 +4154,29 @@ export interface SectionChainRow {
   rows_kp: number;
   rows_contracts: number;
   sample_titles: string[];
+}
+
+/**
+ * Состояние модели у цепочки без зоны (`crud/section_chains.py::zone_chain_info`): первое
+ * подходящее сверху. `null` у цепочки с зоной.
+ */
+export type ZoneModelState = "stopped" | "paused" | "running" | "unknown" | "proposed" | "failed" | "none";
+
+/** Блок «Зона места» панели строки КП (спека зоны в панели строки §1). */
+export interface ZoneChainInfo {
+  id: number;
+  titles: string[];
+  zone: SectionZone | null;
+  zone_source: "rule" | "model" | "human" | null;
+  /** Момент решения человека (ISO); не `null` только при `zone_source = "human"`. */
+  decided_at: string | null;
+  rows_kp: number;
+  rows_contracts: number;
+  model_state: ZoneModelState | null;
+  /** `zone` — код зоны или `unknown`; `confidence` — строка Decimal. */
+  model_answer: { zone: SectionZone | "unknown"; confidence: string; reason: string } | null;
+  /** Порог автопринятия зоны моделью — строка Decimal. */
+  threshold: string;
 }
 
 export interface SectionChainList {

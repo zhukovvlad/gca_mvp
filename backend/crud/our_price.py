@@ -47,6 +47,7 @@ from crud.our_price_load import (
     load_work_history,
 )
 from crud.reference_lines import ReferenceLine, load_link_values, load_reference_lines
+from crud.section_chains import zone_chain_info
 from crud.stage_summary import pct_str
 from models import (
     Contractor,
@@ -2091,6 +2092,11 @@ def build_line_view(
         "reference_links": reference_links,
         "parts_reference": _parts_reference_view(db, scene, participant, row, result),
         "vat_dropped": vat_dropped,
+        "zone_chain": (
+            None
+            if row.line.is_system or row.line.section_chain_id is None
+            else zone_chain_info(db, row.line.section_chain_id)
+        ),
         "comment": {
             "kind": line["comment_kind"],
             "text": own_comment[0] if own_comment is not None else template,

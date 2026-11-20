@@ -348,7 +348,7 @@ describe("панель работы: «где строка»", () => {
     expect(within(screen.getByTestId("sheet-where")).getByTestId("where-article")).not.toHaveTextContent("4.2.2");
   });
 
-  it("пути нет и статьи нет: блок «где строка» не рисуется, панель открывается", async () => {
+  it("пути нет и статьи нет: цепочки статей и пути не рисуются (в секции только блок зоны), панель открывается", async () => {
     serve(() =>
       workLineViewFixture({
         line: { article: null, chapter_path: [] },
@@ -357,7 +357,9 @@ describe("панель работы: «где строка»", () => {
     );
     renderSheet();
     expect(await screen.findByTestId("sheet-comparison")).toBeInTheDocument();
-    expect(screen.queryByTestId("sheet-where")).not.toBeInTheDocument();
+    const where = screen.getByTestId("sheet-where");
+    expect(within(where).queryByTestId("line-where")).not.toBeInTheDocument();
+    expect(within(where).getByTestId("line-zone-block")).toBeInTheDocument();
     expect(within(screen.getByTestId("analog-8001")).queryByTestId("line-where")).not.toBeInTheDocument();
   });
 });

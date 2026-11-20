@@ -95,7 +95,7 @@ LINE_KEYS = {
 }
 PANEL_KEYS = {
     "line", "group_lines", "contracts", "analogs", "reference_zones", "reference_links", "parts_reference",
-    "vat_dropped", "comment", "analog_columns",
+    "vat_dropped", "comment", "analog_columns", "zone_chain",
 }
 TOLERANCE = D("1e-20")
 
@@ -1146,6 +1146,61 @@ class TestTotals:
 # ---------------------------------------------------------------------------
 #  Панель строки: авто, предпросмотр ступени, отказ ступени
 # ---------------------------------------------------------------------------
+
+
+ZONE_CHAIN_KEYS = {
+    "id", "titles", "zone", "zone_source", "decided_at", "rows_kp", "rows_contracts",
+    "model_state", "model_answer", "threshold",
+}
+
+
+class TestLinePanelZoneChain:
+    def test_work_panel_carries_the_chain_of_its_line_in_the_spec_shape(self, member_client, stage):
+        rnd, part, item = _scene(stage)
+
+        panel = _panel(member_client, stage.tender, rnd, part, item)
+
+        chain = panel["zone_chain"]
+        assert chain["id"] == panel["line"]["section_chain_id"]
+        assert set(chain) == ZONE_CHAIN_KEYS
+        assert chain["zone"] == "whole" and chain["zone_source"] == "rule"
+        assert chain["model_state"] is None and chain["threshold"] == "0.95"
+        assert "zone_chain" not in panel["line"]
+
+    def test_chain_counts_the_rows_of_all_estimates(self, member_client, stage):
+        rnd, part, item = _scene(stage)
+
+        chain = _panel(member_client, stage.tender, rnd, part, item)["zone_chain"]
+
+        # две строки истории (договоры) и одна строка КП в общей цепочке сцены
+        assert (chain["rows_kp"], chain["rows_contracts"]) == (1, 2)
+
+    def test_system_panel_has_no_zone_chain(self, member_client, stage, db_session):
+        rnd, part, items = _system_scene(stage)
+
+        panel = _panel(member_client, stage.tender, rnd, part, items[0])
+
+        stored = db_session.execute(
+            sa.select(PositionItem.section_chain_id).where(PositionItem.id == items[0].id)
+        ).scalar_one()
+        assert stored is not None
+        assert panel["line"]["kind"] == "system"
+        assert panel["zone_chain"] is None
+
+    def test_work_line_without_a_chain_is_200_with_a_null_zone_chain(
+        self, member_client, stage, db_session
+    ):
+        rnd, part, item = _scene(stage)
+        db_session.execute(
+            sa.update(PositionItem).where(PositionItem.id == item.id).values(section_chain_id=None)
+        )
+        db_session.flush()
+
+        panel = _panel(member_client, stage.tender, rnd, part, item)
+
+        assert panel["line"]["kind"] == "work"
+        assert panel["line"]["section_chain_id"] is None
+        assert panel["zone_chain"] is None
 
 
 class TestLinePanelAuto:

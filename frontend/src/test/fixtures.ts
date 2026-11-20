@@ -72,6 +72,7 @@ import type {
   Direction,
   TenderCard,
   TenderRow,
+  ZoneChainInfo,
 } from "@/types/domain";
 
 export const sampleAdminUsers: AdminUser[] = [
@@ -3235,7 +3236,28 @@ export function ourPriceLineViewFixture(
     reference_zones: [],
     reference_links: [],
     vat_dropped: [],
+    zone_chain: null,
     comment: { kind: "template", text: KP_FILE_TEMPLATE_TEXT, template_text: KP_FILE_TEMPLATE_TEXT },
+  };
+}
+
+/**
+ * Блок «Зона места» панели строки (спека зоны в панели строки §1): по умолчанию цепочка без зоны
+ * и без строк договоров, модель определяет. Названия разделов условные.
+ */
+export function zoneChainFixture(overrides: Partial<ZoneChainInfo> = {}): ZoneChainInfo {
+  return {
+    id: 91,
+    titles: ["Раздел А", "Подраздел Б"],
+    zone: null,
+    zone_source: null,
+    decided_at: null,
+    rows_kp: 56,
+    rows_contracts: 0,
+    model_state: "running",
+    model_answer: null,
+    threshold: "0.95",
+    ...overrides,
   };
 }
 

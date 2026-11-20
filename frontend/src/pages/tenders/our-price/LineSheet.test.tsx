@@ -16,12 +16,20 @@ import {
   OUR_PRICE_TENDER_ID,
   ourPriceLineFixture,
   ourPriceLineViewFixture,
+  zoneChainFixture,
 } from "@/test/fixtures";
 import { server } from "@/test/server";
 import { createTestQueryClient, renderWithProviders, waitForDialogFocus } from "@/test/utils";
 import { OUR_PRICE_POLL_MS } from "@/services/queries";
 import { qk } from "@/services/queryKeys";
-import type { ManualRung, MoneyPair, OurPriceLine, OurPriceLineView, OurPriceRungContract } from "@/types/domain";
+import type {
+  ManualRung,
+  MoneyPair,
+  OurPriceLine,
+  OurPriceLineView,
+  OurPriceRungContract,
+  ZoneChainInfo,
+} from "@/types/domain";
 
 import { LineSheet, type LineSheetProps } from "./LineSheet";
 import OurPriceOfferPage from "./OurPriceOfferPage";
@@ -1159,5 +1167,166 @@ describe("LineSheet: подпись «ждёт решения администр
     } else {
       expect(within(state).queryByRole("link")).not.toBeInTheDocument();
     }
+  });
+});
+
+describe("LineSheet: блок «Зона места»", () => {
+  const ADMIN_USER = { id: 1, email: "admin@example.test", role: "admin" } as const;
+  const MEMBER_USER = { id: 2, email: "member@example.test", role: "member" } as const;
+  const bare: Partial<OurPriceLine> = { article: null, chapter_path: [] };
+
+  it("работа без статьи и пути, но с цепочкой: секция «Где строка» есть, в ней блок", async () => {
+    serveView(() => view({ ...bare }, { zone_chain: zoneChainFixture() }));
+    renderSheet({}, ADMIN_USER);
+
+    const where = await screen.findByTestId("sheet-where");
+
+    expect(within(where).getByTestId("line-zone-block")).toBeInTheDocument();
+    expect(where).toHaveTextContent("Зона места");
+    expect(within(where).queryByTestId("line-where")).not.toBeInTheDocument();
+  });
+
+  it("при статье и пути блок стоит после пути", async () => {
+    serveView(() => view({}, { zone_chain: zoneChainFixture() }));
+    renderSheet({}, ADMIN_USER);
+
+    const where = await screen.findByTestId("sheet-where");
+    const path = within(where).getByTestId("where-path");
+    const zone = within(where).getByTestId("line-zone-block");
+
+    expect(path.compareDocumentPosition(zone) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("работа без цепочки: секция есть, блок одной строкой", async () => {
+    serveView(() => view({ ...bare, section_chain_id: null }, { zone_chain: null }));
+    renderSheet({}, ADMIN_USER);
+
+    const zone = await screen.findByTestId("line-zone-block");
+
+    expect(zone).toHaveTextContent(
+      "Зона места · не определена — строка стоит вне разделов сметы, зону назначить некуда"
+    );
+  });
+
+  it("система: блока нет", async () => {
+    serveView(() => view({ kind: "system", ...bare }, { zone_chain: null }));
+    renderSheet({}, ADMIN_USER);
+
+    await opened();
+    await screen.findByTestId("sheet-prices");
+
+    expect(screen.queryByTestId("line-zone-block")).not.toBeInTheDocument();
+  });
+
+  it("no_zone: у admin «Сравнение» зовёт выбрать зону выше", async () => {
+    serveView(() => view({ state: "no_zone" }, { zone_chain: zoneChainFixture({ model_state: "none" }) }));
+    renderSheet({}, ADMIN_USER);
+
+    const compare = await screen.findByTestId("sheet-comparison");
+
+    expect(compare).toHaveTextContent("Не с чем сравнить: зона раздела не определена — выберите её выше");
+  });
+
+  it("no_zone: у member тот же текст без хвоста", async () => {
+    serveView(() => view({ state: "no_zone" }, { zone_chain: zoneChainFixture({ model_state: "none" }) }));
+    renderSheet({}, MEMBER_USER);
+
+    const compare = await screen.findByTestId("sheet-comparison");
+
+    expect(compare.textContent).toContain("Не с чем сравнить: зона раздела не определена");
+    expect(compare).not.toHaveTextContent("выберите её выше");
+  });
+
+  it("no_zone у строки вне разделов сметы: «строка вне разделов сметы», без «выберите её выше»", async () => {
+    serveView(() => view({ state: "no_zone", section_chain_id: null }, { zone_chain: null }));
+    renderSheet({}, ADMIN_USER);
+
+    const compare = await screen.findByTestId("sheet-comparison");
+
+    expect(compare).toHaveTextContent("Не с чем сравнить: строка вне разделов сметы");
+    expect(compare).not.toHaveTextContent("выберите её выше");
+    expect(compare).not.toHaveTextContent("зона раздела не определена");
+  });
+
+  it("сравнимая строка: раздела «Сравнение» с текстом «Не с чем сравнить» нет", async () => {
+    serveView(() => view({ state: "comparable" }, { zone_chain: zoneChainFixture({ zone: "whole", zone_source: "rule", model_state: null }) }));
+    renderSheet({}, ADMIN_USER);
+
+    await screen.findByTestId("line-zone-block");
+
+    expect(screen.queryByText(/Не с чем сравнить/)).not.toBeInTheDocument();
+  });
+
+  it("у member в блоке нет кнопок зон и ссылки на очередь", async () => {
+    serveView(() => view({}, { zone_chain: zoneChainFixture({ zone: "whole", zone_source: "rule", model_state: null }) }));
+    renderSheet({}, MEMBER_USER);
+
+    const zone = await screen.findByTestId("line-zone-block");
+
+    expect(within(zone).queryByRole("link")).not.toBeInTheDocument();
+    expect(within(zone).queryByRole("button", { name: "Подземная" })).not.toBeInTheDocument();
+    expect(zone).toHaveTextContent("Зону раздела меняет администратор.");
+  });
+
+  it("сохранение, ответ панели 500, панель закрыта и открыта снова: кнопки закрыты до успешного ответа, после него смена требует окна", async () => {
+    const user = userEvent.setup();
+    const decisions: string[] = [];
+    let current = zoneChainFixture({ rows_contracts: 0, model_state: "none" });
+    let decided = false;
+    let panelOk = false;
+    server.use(
+      http.put("/api/v1/semantic/section-chains/:id/zone", async ({ request }) => {
+        const { zone } = (await request.json()) as { zone: string };
+        decisions.push(zone);
+        current = zoneChainFixture({
+          zone: zone as ZoneChainInfo["zone"],
+          zone_source: "human",
+          decided_at: "2026-11-19T12:00:00+00:00",
+          model_state: null,
+        });
+        decided = true;
+        return new HttpResponse(null, { status: 204 });
+      }),
+      http.get(LINE_PATH, () => {
+        if (decided && !panelOk) return new HttpResponse(null, { status: 500 });
+        return HttpResponse.json({ ...ourPriceLineViewFixture(), zone_chain: current });
+      })
+    );
+    const names = ["Подземная", "Надземная", "Территория", "Весь объект"];
+    const zoneBlock = () => screen.getByTestId("line-zone-block");
+    // Как в приложении, кэш переживает закрытие панели (в тестовом клиенте gcTime = 0 его бы стёр).
+    const queryClient = createTestQueryClient();
+    queryClient.setDefaultOptions({ queries: { retry: false, gcTime: 300_000, staleTime: 0 } });
+    const view = renderWithProviders(<LineSheet {...baseProps} />, { initialUser: ADMIN_USER, queryClient });
+    await screen.findByTestId("line-zone-block");
+
+    await user.click(within(zoneBlock()).getByRole("button", { name: "Подземная" }));
+    await screen.findByTestId("zone-stale", undefined, { timeout: 8000 });
+    expect(decisions).toEqual(["underground"]);
+
+    view.rerender(<LineSheet {...baseProps} positionItemId={null} />);
+    await waitFor(() => expect(screen.queryByTestId("line-zone-block")).not.toBeInTheDocument());
+    view.rerender(<LineSheet {...baseProps} />);
+    await screen.findByTestId("line-zone-block", undefined, { timeout: 8000 });
+    await screen.findByTestId("zone-stale", undefined, { timeout: 8000 });
+    await waitFor(() => expect(screen.queryByTestId("recalc-overlay")).not.toBeInTheDocument(), { timeout: 8000 });
+
+    for (const name of names) {
+      expect(within(zoneBlock()).getByRole("button", { name })).toBeDisabled();
+    }
+    await user.click(within(zoneBlock()).getByRole("button", { name: "Весь объект" }));
+    expect(decisions).toEqual(["underground"]);
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+
+    panelOk = true;
+    await user.click(within(zoneBlock()).getByRole("button", { name: "Обновить" }));
+    await waitFor(() => expect(screen.queryByTestId("zone-stale")).not.toBeInTheDocument(), { timeout: 8000 });
+    await waitFor(() => expect(screen.queryByTestId("recalc-overlay")).not.toBeInTheDocument(), { timeout: 8000 });
+    expect(screen.getByTestId("zone-name")).toHaveTextContent("Подземная часть");
+
+    await user.click(within(zoneBlock()).getByRole("button", { name: "Весь объект" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent("Подземная часть → Весь объект");
+    expect(decisions).toEqual(["underground"]);
   });
 });
