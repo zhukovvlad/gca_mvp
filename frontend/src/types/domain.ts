@@ -2186,6 +2186,12 @@ export interface WorkFamily {
    * удержанная пачка) — число, по которому открытие семей отказывает `discovery_unit_busy`.
    */
   unit_busy_jobs: number;
+  /** Флажок «зона обязательна» (спека зоны как предпочтения §4): подбор аналогов не выходит за зону. */
+  zone_required: boolean;
+  /** Когда флажок менялся в последний раз; `null` — записи нет. */
+  zone_required_changed_at: string | null;
+  /** Кто менял; `null` при стартовом списке миграции (или без записи). */
+  zone_required_changed_by: { id: number; email: string } | null;
 }
 
 /**

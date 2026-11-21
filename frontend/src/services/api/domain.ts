@@ -656,6 +656,11 @@ export const semanticApi = {
   archiveFamily: (id: number): Promise<WorkFamily> =>
     api.post<WorkFamily>(`/v1/semantic/families/${id}/archive`).then((r) => r.data),
 
+  setFamilyZoneRequired: (id: number, value: boolean): Promise<WorkFamily> =>
+    api
+      .put<WorkFamily>(`/v1/semantic/families/${id}/zone-required`, { zone_required: value })
+      .then((r) => r.data),
+
   mergeFamilies: (id: number, targetFamilyId: number): Promise<WorkFamily> =>
     api
       .post<WorkFamily>(`/v1/semantic/families/${id}/merge`, { target_family_id: targetFamilyId })

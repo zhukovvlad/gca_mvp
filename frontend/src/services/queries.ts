@@ -1683,6 +1683,19 @@ export function useArchiveWorkFamily() {
   });
 }
 
+export function useSetFamilyZoneRequired() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, value }: { id: number; value: boolean }) => semanticApi.setFamilyZoneRequired(id, value),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.workFamilies.all });
+      // Область подбора аналогов зависит от флажка семьи.
+      qc.invalidateQueries({ queryKey: qk.tenders.ourPriceAll });
+    },
+    onError: toastApiError,
+  });
+}
+
 export function useMergeWorkFamilies() {
   const qc = useQueryClient();
   return useMutation({
@@ -1691,6 +1704,8 @@ export function useMergeWorkFamilies() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.workFamilies.all });
       qc.invalidateQueries({ queryKey: qk.semanticContexts.all });
+      // Флажок зоны переезжает на цель: подбор аналогов на экранах «Против нашей цены» меняется.
+      qc.invalidateQueries({ queryKey: qk.tenders.ourPriceAll });
       toast.success("Семьи слиты");
     },
     onError: toastApiError,

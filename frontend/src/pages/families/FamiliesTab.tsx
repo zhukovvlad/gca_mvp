@@ -66,6 +66,7 @@ import {
   MERGE_FAMILY_SCHEMA_FAILED,
   MERGE_FAMILY_SCHEMA_LOADING,
   MERGE_FAMILY_SCHEMA_LOSS_TITLE,
+  mergeZoneRequiredWarning,
   PARAMETER_ORIGIN_LABEL,
   PARAMETER_ROLE_LABEL,
 } from "./labels";
@@ -73,6 +74,7 @@ import { FetchingBar, ListSkeleton } from "./pending";
 import { RerunResetWarning, UnitCheckFailedWarning } from "./RerunResetWarning";
 import { FamilyLinksBlock } from "./FamilyLinksBlock";
 import { SchemaBlock } from "./SchemaBlock";
+import { ZoneRequiredBlock } from "./ZoneRequiredBlock";
 import { usePersistedPageSize } from "./usePersistedPageSize";
 
 /**
@@ -648,6 +650,7 @@ function FamilyPanel({
         <p className="text-xs text-fg-tertiary">{discoveryRefusalLabel("activate_without_category")}</p>
       )}
       <SchemaBlock family={family} />
+      <ZoneRequiredBlock family={family} />
       <FamilyLinksBlock family={family} />
     </Surface>
   );
@@ -808,6 +811,8 @@ function MergeFamilyDialog({
   const schemaQ = useFamilySchema(family?.id ?? 0, { enabled: family !== null });
 
   const candidates = (activeFamilies.data ?? []).filter((f) => f.id !== family?.id);
+  const target = candidates.find((f) => f.id === targetId) ?? null;
+  const zoneWarning = family && target ? mergeZoneRequiredWarning(family, target) : null;
 
   async function handleMerge() {
     if (!family || targetId === null) return;
@@ -831,6 +836,14 @@ function MergeFamilyDialog({
         </DialogHeader>
         {family && <RerunResetWarning family={family} />}
         {family && <MergeSchemaLoss schemaQ={schemaQ} />}
+        {zoneWarning && (
+          <p
+            role="note"
+            className="rounded-md border border-warning-border bg-warning-soft px-3 py-2 text-sm text-warning-text"
+          >
+            {zoneWarning}
+          </p>
+        )}
         <div className="grid gap-2 py-4">
           <Label htmlFor="merge-target-family">Целевая семья</Label>
           <EntityCombobox

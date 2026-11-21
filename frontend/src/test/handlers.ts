@@ -561,6 +561,8 @@ interface HandlerState {
   lastCreateFamilyRequest: Record<string, unknown> | null;
   lastUpdateFamilyRequest: { id: number; body: Record<string, unknown> } | null;
   lastMergeFamiliesRequest: { id: number; targetFamilyId: number } | null;
+  /** Тела `PUT /families/:id/zone-required` по порядку. */
+  zoneRequiredRequests: Array<{ id: number; body: { zone_required: boolean } }>;
   /** Живые задания предложений по `unit_id` (ответ `GET /semantic/unit-busy-jobs`); нет ключа — ноль. */
   unitBusyByUnitId: Record<number, number>;
   /** Пока не `null`, ответ `GET /semantic/unit-busy-jobs` ждёт этот промис (запрос «в пути»). */
@@ -1181,6 +1183,9 @@ function initialWorkFamilies(): WorkFamily[] {
       family_category_id: linked ? WORK_CATEGORY_ID : null,
       family_category_title: linked ? "Работа" : null,
       unit_busy_jobs: 0,
+      zone_required: false,
+      zone_required_changed_at: null,
+      zone_required_changed_by: null,
     };
   });
   const active: WorkFamily = {
@@ -1204,6 +1209,9 @@ function initialWorkFamilies(): WorkFamily[] {
     family_category_id: WORK_CATEGORY_ID,
     family_category_title: "Работа",
     unit_busy_jobs: 0,
+    zone_required: false,
+    zone_required_changed_at: null,
+    zone_required_changed_by: null,
   };
   const archived: WorkFamily = {
     id: 44,
@@ -1224,6 +1232,9 @@ function initialWorkFamilies(): WorkFamily[] {
     family_category_id: null,
     family_category_title: null,
     unit_busy_jobs: 0,
+    zone_required: false,
+    zone_required_changed_at: null,
+    zone_required_changed_by: null,
   };
   return [...drafts, active, archived];
 }
@@ -2164,6 +2175,7 @@ export const handlerState: HandlerState = {
   lastCreateFamilyRequest: null,
   lastUpdateFamilyRequest: null,
   lastMergeFamiliesRequest: null,
+  zoneRequiredRequests: [],
   unitBusyByUnitId: {},
   unitBusyGate: null,
   unitBusyRequests: 0,
@@ -2862,6 +2874,7 @@ export function resetHandlerState() {
   handlerState.lastCreateFamilyRequest = null;
   handlerState.lastUpdateFamilyRequest = null;
   handlerState.lastMergeFamiliesRequest = null;
+  handlerState.zoneRequiredRequests = [];
   handlerState.unitBusyByUnitId = {};
   handlerState.unitBusyGate = null;
   handlerState.unitBusyRequests = 0;
@@ -4974,6 +4987,9 @@ export const handlers = [
       family_category_id: category?.id ?? null,
       family_category_title: category?.title ?? null,
       unit_busy_jobs: 0,
+      zone_required: false,
+      zone_required_changed_at: null,
+      zone_required_changed_by: null,
     };
     handlerState.workFamilies.push(family);
     return HttpResponse.json(family, { status: 201 });
@@ -5115,6 +5131,23 @@ export const handlers = [
     }
     family.status = "archived";
     family.archived_at = isoNow();
+    return HttpResponse.json(family);
+  }),
+
+  http.put("/api/v1/semantic/families/:id/zone-required", async ({ params, request }) => {
+    const id = Number(params.id);
+    const body = (await request.json()) as { zone_required: boolean };
+    handlerState.zoneRequiredRequests.push({ id, body });
+    const family = handlerState.workFamilies.find((f) => f.id === id);
+    if (!family) {
+      return HttpResponse.json({ detail: `семья ${id} не найдена` }, { status: 404 });
+    }
+    if (family.status === "archived") {
+      return HttpResponse.json({ detail: { code: "family_archived" } }, { status: 409 });
+    }
+    family.zone_required = body.zone_required;
+    family.zone_required_changed_at = isoNow();
+    family.zone_required_changed_by = { id: 1, email: "admin@example.com" };
     return HttpResponse.json(family);
   }),
 
