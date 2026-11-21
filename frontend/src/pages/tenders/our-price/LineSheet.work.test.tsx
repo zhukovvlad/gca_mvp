@@ -20,6 +20,7 @@ import {
   ourPriceLineViewFixture,
   ourPriceParamFixture,
   workLineViewFixture,
+  zoneChainFixture,
 } from "@/test/fixtures";
 import { server } from "@/test/server";
 import { renderWithProviders } from "@/test/utils";
@@ -83,9 +84,104 @@ describe("панель строки-работы: сравнение", () => {
     expect(screen.getByTestId("sheet-zone")).toHaveTextContent("надземная часть");
   });
 
+  describe("область подбора по зоне", () => {
+    const three = () => [
+      ourPriceAnalogFixture({ analog_id: 1, zone: "aboveground" }),
+      ourPriceAnalogFixture({ analog_id: 2, contract_id: 102, zone: "aboveground" }),
+      ourPriceAnalogFixture({ analog_id: 3, contract_id: 103, zone: "whole" }),
+    ];
+    const scoped = (zone_scope: "own" | "other" | "any", analogs = three()) =>
+      workLineViewFixture({
+        line: {
+          zone: "underground",
+          analogs_count: analogs.length,
+          work_rung: { no: 1, released: [], other_class: false, zone_scope },
+        },
+        analogs,
+      });
+
+    it("own: ни второй метки, ни пояснения, ни меток зоны у аналогов", async () => {
+      serve(() => scoped("own"));
+      renderSheet();
+      const comparison = await screen.findByTestId("sheet-comparison");
+      expect(comparison).not.toHaveTextContent("другая зона");
+      expect(comparison).not.toHaveTextContent("зона не определена");
+      expect(screen.queryByTestId("zone-scope-why")).not.toBeInTheDocument();
+      expect(screen.queryByText(/^зона:/)).not.toBeInTheDocument();
+    });
+
+    it("other: метка «другая зона», пояснение со списком зон и метки зон у аналогов", async () => {
+      serve(() => scoped("other"));
+      renderSheet();
+      const comparison = await screen.findByTestId("sheet-comparison");
+      expect(within(comparison).getByText("другая зона")).toBeInTheDocument();
+      expect(screen.getByTestId("zone-scope-why")).toHaveTextContent(
+        "В зоне «Подземная часть» аналогов нет — взяты из зон «Надземная часть» (2) и «Весь объект» (1)."
+      );
+      expect(within(screen.getByTestId("analog-1")).getByText("зона: Надземная")).toBeInTheDocument();
+      expect(within(screen.getByTestId("analog-3")).getByText("зона: Весь объект")).toBeInTheDocument();
+    });
+
+    it("any: метка «зона не определена», пояснение спеки и «зона: не определена» у аналога без зоны", async () => {
+      serve(() =>
+        scoped("any", [
+          ourPriceAnalogFixture({ analog_id: 1, zone: null }),
+          ourPriceAnalogFixture({ analog_id: 2, contract_id: 102, zone: "territory" }),
+        ])
+      );
+      renderSheet();
+      const comparison = await screen.findByTestId("sheet-comparison");
+      expect(within(comparison).getByText("зона не определена")).toBeInTheDocument();
+      expect(screen.getByTestId("zone-scope-why")).toHaveTextContent(
+        "Зона раздела не определена — аналоги из всех зон. Когда зону выберут, сравнение пересчитается."
+      );
+      expect(within(screen.getByTestId("analog-1")).getByText("зона: не определена")).toBeInTheDocument();
+      expect(within(screen.getByTestId("analog-2")).getByText("зона: Территория")).toBeInTheDocument();
+    });
+  });
+
+  describe("семья с флажком «зона обязательна»", () => {
+    const base = { family: "Двери", work_rung: null, lowest: null, to_lowest: null, analogs_count: 0 };
+
+    it("no_zone_match: строка над справкой", async () => {
+      serve(() =>
+        workLineViewFixture({ line: { ...base, state: "no_history", no_history_reason: "no_zone_match" }, analogs: [] })
+      );
+      renderSheet();
+      expect(await screen.findByTestId("zone-required-note")).toHaveTextContent(
+        "У семьи «Двери» зона обязательна: аналоги из других зон не берутся в сравнение. Они ниже — для справки."
+      );
+    });
+
+    it("no_zone: префикс к тексту «Сравнения»", async () => {
+      serve(() => ({
+        ...workLineViewFixture({ line: { ...base, state: "no_zone", zone: null, section_chain_id: 91 }, analogs: [] }),
+        zone_chain: zoneChainFixture({ model_state: "none" }),
+      }));
+      renderSheet({}, MEMBER);
+      expect(await screen.findByTestId("no-zone-compare")).toHaveTextContent(
+        "У семьи «Двери» зона обязательна. Не с чем сравнить: зона раздела не определена"
+      );
+      expect(screen.queryByTestId("zone-required-note")).not.toBeInTheDocument();
+    });
+
+    it("обычные строки (comparable и no_family) этих текстов не имеют", async () => {
+      serve(() => workLineViewFixture());
+      const first = renderSheet();
+      await screen.findByTestId("sheet-comparison");
+      expect(screen.queryByTestId("zone-required-note")).not.toBeInTheDocument();
+      expect(screen.queryByText(/зона обязательна/)).not.toBeInTheDocument();
+      first.unmount();
+      serve(() => workLineViewFixture({ line: { ...base, state: "no_history", no_history_reason: "no_family" }, analogs: [] }));
+      renderSheet();
+      await screen.findByTestId("sheet-state");
+      expect(screen.queryByTestId("zone-required-note")).not.toBeInTheDocument();
+    });
+  });
+
   it("ступень 2 с другим классом: «без …» и «другой класс»", async () => {
     serve(() =>
-      workLineViewFixture({ line: { work_rung: { no: 4, released: ["Марка W", "Толщина"], other_class: true } } })
+      workLineViewFixture({ line: { work_rung: { no: 4, released: ["Марка W", "Толщина"], other_class: true, zone_scope: "own" } } })
     );
     renderSheet();
     expect(await screen.findByTestId("sheet-comparison")).toHaveTextContent("без учёта: марка W, толщина · другой класс");
@@ -738,7 +834,7 @@ describe("панель строки: параметры варианта", () =>
   it("колонки аналогов: имя из analog_columns, значение и подсветка у аналога", async () => {
     serve(() => {
       const view = workLineViewFixture({
-        line: { work_rung: { no: 2, released: ["Марка W"], other_class: false } },
+        line: { work_rung: { no: 2, released: ["Марка W"], other_class: false, zone_scope: "own" } },
         analogs: [
           ourPriceAnalogFixture({
             analog_id: 8001,

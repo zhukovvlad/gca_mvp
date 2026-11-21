@@ -3309,6 +3309,7 @@ export function ourPriceAnalogFixture(overrides: Partial<OurPriceAnalog> = {}): 
     selectable: true,
     article: articleRefFixture(),
     chapter_path: chapterPathFixture("Корпус 1", "Надземная часть"),
+    zone: null,
     released_values: [],
     ...overrides,
   };
@@ -3317,7 +3318,7 @@ export function ourPriceAnalogFixture(overrides: Partial<OurPriceAnalog> = {}): 
 /** Строка-работа лестницы аналогов: ступень 1, зона, самая низкая и самая свежая от аналогов. */
 export function workLineFixture(overrides: Partial<OurPriceLine> = {}): OurPriceLine {
   return ourPriceLineFixture({
-    work_rung: { no: 1, released: [], other_class: false },
+    work_rung: { no: 1, released: [], other_class: false, zone_scope: "own" },
     rung: null,
     rungs: [],
     zone: "aboveground",
@@ -3431,6 +3432,7 @@ export function compositeLineViewFixture(
               period: "2025-03",
             },
             other_class: false,
+            zone_scope: "own",
           },
           {
             value_id: 502,
@@ -3447,6 +3449,7 @@ export function compositeLineViewFixture(
               period: "2024-11",
             },
             other_class: true,
+            zone_scope: "own",
           },
         ],
       },

@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import { ourPriceLineFixture } from "@/test/fixtures";
+import type { WorkRung } from "@/types/domain";
 
-import { formatRatio, linesCount, offerSubtitle, progressCaption, roundSubtitle, priceBasisLabel,VAT_NET_LABEL, VAT_UNKNOWN_LABEL, inflationCaptionOf, KP_NOT_ADJUSTED_NOTE, groupLinesCaption, ratioNote, unitWarnContracts, unitWarnKp, isWaitingAdminLine, LINE_STATE_LABEL, lineStateLabel, periodRu, targetInactiveNote, WAITING_ADMIN_LABEL, workRungCaption, workRungLabel, analogsMore, COMPOSITE_NO_TARGET, EXPORT_SOURCE, TARGET_CARD, TARGET_MARK, targetSameContract, otherZonesLabel, refLinkTitle, refSections, refTruncated } from "./ourPriceCopy";
+import { formatRatio, linesCount, offerSubtitle, progressCaption, roundSubtitle, priceBasisLabel,VAT_NET_LABEL, VAT_UNKNOWN_LABEL, inflationCaptionOf, KP_NOT_ADJUSTED_NOTE, groupLinesCaption, ratioNote, unitWarnContracts, unitWarnKp, isWaitingAdminLine, LINE_STATE_LABEL, lineStateLabel, periodRu, targetInactiveNote, WAITING_ADMIN_LABEL, workRungCaption, workRungLabel, analogsMore, COMPOSITE_NO_TARGET, EXPORT_SOURCE, TARGET_CARD, TARGET_MARK, targetSameContract, otherZonesLabel, zoneScopeMark, otherZonesWhy, ANY_ZONE_WHY, analogZoneBadge, zoneRequiredNote, zoneRequiredNoZonePrefix, refLinkTitle, refSections, refTruncated } from "./ourPriceCopy";
 
 describe("groupLinesCaption", () => {
   it.each([
@@ -137,7 +138,7 @@ describe("лестница аналогов: подписи", () => {
   });
 
   it("«N аналогов»: склонение 1, 2-4, 5, 11, 21", () => {
-    const caption = (n: number) => workRungCaption({ work_rung: { no: 1, released: [], other_class: false }, analogs_count: n });
+    const caption = (n: number) => workRungCaption({ work_rung: { no: 1, released: [], other_class: false, zone_scope: "own" }, analogs_count: n });
     expect(caption(1)).toBe("тот же вариант · 1 аналог");
     expect(caption(3)).toBe("тот же вариант · 3 аналога");
     expect(caption(5)).toBe("тот же вариант · 5 аналогов");
@@ -295,5 +296,63 @@ describe("тексты справочных блоков", () => {
 
   it("предел поиска назван числом", () => {
     expect(refTruncated(50)).toBe("показаны первые 50, уточните запрос");
+  });
+});
+
+describe("зона как предпочтение: подписи (спека §5)", () => {
+  it("метка области: own — нет, other — «другая зона», any — «зона не определена»", () => {
+    expect(zoneScopeMark("own")).toBeNull();
+    expect(zoneScopeMark("other")).toBe("другая зона");
+    expect(zoneScopeMark("any")).toBe("зона не определена");
+  });
+
+  it("подпись под вилкой: к ступени добавляется метка области", () => {
+    const rung = (zone_scope: "own" | "other" | "any") => ({
+      work_rung: { no: 1 as const, released: [], other_class: false, zone_scope },
+      analogs_count: 3,
+    });
+    expect(workRungCaption(rung("own"))).toBe("тот же вариант · 3 аналога");
+    expect(workRungCaption(rung("other"))).toBe("тот же вариант · 3 аналога · другая зона");
+    expect(workRungCaption(rung("any"))).toBe("тот же вариант · 3 аналога · зона не определена");
+  });
+
+  it("workRungLabel не меняется от области (им подписаны группы справки А)", () => {
+    const rung: WorkRung = { no: 1, released: [], other_class: false, zone_scope: "other" };
+    expect(workRungLabel(rung)).toBe("тот же вариант");
+  });
+
+  it("пояснение «other»: одна зона, две зоны, порядок SECTION_ZONES, строки без зоны последними", () => {
+    expect(otherZonesWhy("underground", [{ zone: "aboveground" }, { zone: "aboveground" }])).toBe(
+      "В зоне «Подземная часть» аналогов нет — взяты из зоны «Надземная часть» (2)."
+    );
+    expect(otherZonesWhy("underground", [{ zone: "whole" }, { zone: "aboveground" }, { zone: "aboveground" }])).toBe(
+      "В зоне «Подземная часть» аналогов нет — взяты из зон «Надземная часть» (2) и «Весь объект» (1)."
+    );
+    expect(otherZonesWhy("underground", [{ zone: null }, { zone: null }, { zone: null }])).toBe(
+      "В зоне «Подземная часть» аналогов нет — взяты из строк без зоны (3)."
+    );
+    expect(otherZonesWhy("underground", [{ zone: "aboveground" }, { zone: null }])).toBe(
+      "В зоне «Подземная часть» аналогов нет — взяты из зоны «Надземная часть» (1) и строк без зоны (1)."
+    );
+    expect(otherZonesWhy("whole", [{ zone: "territory" }, { zone: "underground" }, { zone: null }])).toBe(
+      "В зоне «Весь объект» аналогов нет — взяты из зон «Подземная часть» (1), «Территория» (1) и строк без зоны (1)."
+    );
+  });
+
+  it("пояснение «any» — литерал спеки", () => {
+    expect(ANY_ZONE_WHY).toBe("Зона раздела не определена — аналоги из всех зон. Когда зону выберут, сравнение пересчитается.");
+  });
+
+  it("метка зоны аналога", () => {
+    expect(analogZoneBadge("aboveground")).toBe("зона: Надземная");
+    expect(analogZoneBadge("whole")).toBe("зона: Весь объект");
+    expect(analogZoneBadge(null)).toBe("зона: не определена");
+  });
+
+  it("тексты семьи с флажком", () => {
+    expect(zoneRequiredNote("Двери")).toBe(
+      "У семьи «Двери» зона обязательна: аналоги из других зон не берутся в сравнение. Они ниже — для справки."
+    );
+    expect(zoneRequiredNoZonePrefix("Двери")).toBe("У семьи «Двери» зона обязательна. ");
   });
 });

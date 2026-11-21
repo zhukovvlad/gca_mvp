@@ -3498,7 +3498,12 @@ export interface WorkRung {
   no: 1 | 2 | 3 | 4;
   released: string[];
   other_class: boolean;
+  /** Из каких зон взяты аналоги ступени (спека зоны как предпочтения §3): своя, другие, любые. */
+  zone_scope: ZoneScope;
 }
+
+/** Область подбора аналогов по зоне: `own` - зона строки КП, `other` - остальные зоны и строки без зоны, `any` - все. */
+export type ZoneScope = "own" | "other" | "any";
 
 export type NoHistoryReason = "no_family" | "path_conflict" | "composite" | "no_params" | "no_zone_match";
 
@@ -3583,6 +3588,8 @@ export interface OurPriceAnalog {
   article: OurPriceArticleRef | null;
   /** Путь по смете договора от её корня; может быть пустым. */
   chapter_path: OurPriceChapterStep[];
+  /** Зона строки ДОГОВОРА; `null` - зона раздела не определена. */
+  zone: SectionZone | null;
   /** Значения отпущенных параметров в порядке `analog_columns` панели (спека параметров варианта §2.5). */
   released_values: Array<{ value: string | null; conflict: boolean; differs: boolean }>;
 }
@@ -3645,6 +3652,8 @@ export interface OurPricePartReference {
   } | null;
   /** Кандидатов класса тендера нет, взяты из другого класса. */
   other_class: boolean;
+  /** Область подбора части; `null` - у части нет ступени. */
+  zone_scope: ZoneScope | null;
 }
 
 export interface OurPricePartsGroup {

@@ -2,6 +2,7 @@ import { formatDecimalMoney, formatNumber, pluralRu, roundDecimal } from "@/lib/
 import type {
   Decimal,
   NoHistoryReason,
+  OurPriceAnalog,
   OurPriceLine,
   OurPriceLineState,
   OurPriceParticipant,
@@ -13,9 +14,10 @@ import type {
   Zone,
   TargetResetReason,
   WorkRung,
+  ZoneScope,
 } from "@/types/domain";
 
-import { ZONE_LABEL } from "@/pages/families/labels";
+import { SECTION_ZONES, ZONE_LABEL } from "@/pages/families/labels";
 
 import type { OfferFilter } from "./offerFilter";
 import { lowerFirst } from "./paramsCopy";
@@ -381,7 +383,7 @@ function analogsCount(n: number): string {
  * Подпись ступени работы (спека лестницы аналогов §2.8, спека параметров варианта §2.6):
  * «тот же вариант», «без учёта: …», «… · другой класс».
  */
-export function workRungLabel(rung: WorkRung): string {
+export function workRungLabel(rung: Pick<WorkRung, "no" | "released" | "other_class">): string {
   const base =
     rung.no === 1 || rung.no === 3 ? "тот же вариант" : `без учёта: ${rung.released.map(lowerFirst).join(", ")}`;
   return rung.other_class ? `${base} · другой класс` : base;
@@ -390,7 +392,49 @@ export function workRungLabel(rung: WorkRung): string {
 /** Подпись под ценой в таблице строк: ступень и число аналогов; без ступени подписи нет. */
 export function workRungCaption(line: Pick<OurPriceLine, "work_rung" | "analogs_count">): string | null {
   if (line.work_rung === null) return null;
-  return `${workRungLabel(line.work_rung)} · ${analogsCount(line.analogs_count)}`;
+  const mark = zoneScopeMark(line.work_rung.zone_scope);
+  return `${workRungLabel(line.work_rung)} · ${analogsCount(line.analogs_count)}${mark === null ? "" : ` · ${mark}`}`;
+}
+
+/** Метка области подбора по зоне (спека зоны как предпочтения §5 п. 1-2): у своей зоны её нет. */
+export function zoneScopeMark(scope: ZoneScope): string | null {
+  if (scope === "other") return "другая зона";
+  if (scope === "any") return "зона не определена";
+  return null;
+}
+
+/** Пояснение к области `other`: из каких зон взяты аналоги (зоны - в порядке `SECTION_ZONES`, строки без зоны - последними). */
+export function otherZonesWhy(lineZone: SectionZone, analogs: Pick<OurPriceAnalog, "zone">[]): string {
+  const items: string[] = [];
+  let zoned = 0;
+  for (const zone of SECTION_ZONES) {
+    const n = analogs.filter((a) => a.zone === zone).length;
+    if (n === 0) continue;
+    zoned += 1;
+    items.push(`«${zoneTitle(zone)}» (${n})`);
+  }
+  const unzoned = analogs.filter((a) => a.zone === null).length;
+  const head = zoned === 0 ? "" : zoned === 1 ? "зоны " : "зон ";
+  const tail = unzoned > 0 ? [`строк без зоны (${unzoned})`] : [];
+  const parts = [...items, ...tail];
+  const list = parts.length > 1 ? `${parts.slice(0, -1).join(", ")} и ${parts[parts.length - 1]}` : parts.join("");
+  return `В зоне «${zoneTitle(lineZone)}» аналогов нет — взяты из ${head}${list}.`;
+}
+
+export const ANY_ZONE_WHY = "Зона раздела не определена — аналоги из всех зон. Когда зону выберут, сравнение пересчитается.";
+
+/** Метка зоны аналога в справке панели (при области не `own`). */
+export function analogZoneBadge(zone: SectionZone | null): string {
+  return zone === null ? "зона: не определена" : `зона: ${ZONE_LABEL[zone]}`;
+}
+
+/** Семья с флажком «зона обязательна» (спека §5 п. 4): строка над справкой и префикс к «Сравнению». */
+export function zoneRequiredNote(family: string): string {
+  return `У семьи «${family}» зона обязательна: аналоги из других зон не берутся в сравнение. Они ниже — для справки.`;
+}
+
+export function zoneRequiredNoZonePrefix(family: string): string {
+  return `У семьи «${family}» зона обязательна. `;
 }
 
 /** Метка цели в таблице строк, если цель — не самая низкая и не «договорились». */
@@ -507,7 +551,7 @@ export const WHERE_PATH = { kp: "в смете КП", contract: "в смете �
 export const ZONE_BLOCK_TITLE = "Зона места";
 export const ZONE_HINT_LABEL = "Что такое зона";
 export const ZONE_HINT =
-  "Зона — часть объекта, где выполняется работа: подземная, надземная, территория или весь объект. Её определяют разделы сметы, а не название работы: один и тот же дренаж бывает и над паркингом, и на кровле корпуса. Аналоги строке подбираются только из договоров с той же зоной.";
+  "Зона — часть объекта, где выполняется работа: подземная, надземная, территория или весь объект. Её определяют разделы сметы, а не название работы: один и тот же дренаж бывает и над паркингом, и на кровле корпуса. Аналоги строке ищутся сначала в договорах с той же зоной; если там нет ни одного — в договорах других зон. У семей с отметкой «зона обязательна» — только в той же зоне.";
 export const ZONE_UNDEFINED = "не определена";
 export const ZONE_UNDEFINED_TITLE = "Не определена";
 export const ZONE_QUEUE_LINK = "открыть в очереди «Зоны» →";
@@ -537,7 +581,7 @@ export function zoneScopeRows(kp: number, contracts: number): string {
 }
 
 export function zoneScopeContracts(contracts: number): string {
-  return `Строки договоров этого раздела (${contracts}) служат аналогами для строк других КП той же зоны: решение меняет и их сравнение.`;
+  return `Строки договоров этого раздела (${contracts}) служат аналогами для строк других КП — в первую очередь той же зоны: решение меняет и их сравнение.`;
 }
 
 /** Модель у цепочки без зоны: подпись на каждое состояние (спека §3 п. 5). */

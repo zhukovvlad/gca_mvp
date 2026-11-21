@@ -10,6 +10,7 @@ import {
   PARTS_OTHER_CLASS,
   PARTS_SAME_CLASS,
   periodRu,
+  zoneScopeMark,
 } from "./ourPriceCopy";
 
 export interface PartsReferenceProps {
@@ -34,6 +35,9 @@ function Part({ part, vat, unit }: { part: OurPricePartReference; vat: VatView; 
           <span className="text-xs text-fg-secondary">
             · {part.analogs === 0 ? PARTS_NO_ANALOGS : analogsInContracts(part.analogs, part.contracts)}
             {part.analogs > 0 && ` · ${part.other_class ? PARTS_OTHER_CLASS : PARTS_SAME_CLASS}`}
+            {part.analogs > 0 && part.zone_scope !== null && zoneScopeMark(part.zone_scope) !== null && (
+              <span data-testid={`part-zone-${part.value_id}`}> · {zoneScopeMark(part.zone_scope)}</span>
+            )}
           </span>
         </span>
         {range !== null && (
