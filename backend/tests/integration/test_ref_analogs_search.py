@@ -29,6 +29,7 @@ from tests.integration.test_ref_analogs_panel import (
     _kp_part,
     _row,
     _set_value,
+    _strict,
     _underground,
 )
 
@@ -408,6 +409,21 @@ def test_ref_analogs_search_rows_of_a_zone_group_equal_the_panel_rows(member_cli
     for found in body["rows"]:
         assert _without_kind(found) == panel_rows[found["analog_id"]]
     assert panel_rows[rows[3].id]["outlier_ratio"] == "10"
+
+
+@pytest.mark.parametrize("strict", [True, False], ids=["flagged", "unflagged"])
+def test_ref_analogs_search_zoneless_contract_rows_follow_the_flag_of_the_family(member_client, stage, strict) -> None:
+    """Поиск читает флажок «зона обязательна»: строки договоров без зоны у семьи с флажком не кандидаты —
+    ни ступени, ни блока А, пометок нет; без флажка они ступень области `other` и выброс помечен."""
+    if strict:
+        _strict(stage)
+    zoneless = stage.world.chain(("Раздел без зоны",), None)
+    prices = ("100", "100", "100", "1000")
+    rows = [_contract_row(stage, D(price), chain=zoneless, title="Подготовка")[1] for price in prices]
+    rnd, part, item = _kp_scene(stage)
+    body = _search(member_client, stage, rnd, part, item, "Подготовка")
+    marks = {row["analog_id"]: row["outlier_ratio"] for row in body["rows"]}
+    assert marks == {row.id: (None if strict or row is not rows[3] else "10") for row in rows}
 
 
 def test_ref_analogs_search_rows_of_the_own_rung_carry_the_ladder_mark(member_client, stage) -> None:

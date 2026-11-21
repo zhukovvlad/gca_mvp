@@ -28,6 +28,7 @@ from tests.integration.test_ref_analogs_panel import (
     _kp_part,
     _row,
     _set_value,
+    _strict,
     _underground,
 )
 from tests.integration.test_semantic_queue_api import _unit_id
@@ -763,6 +764,7 @@ def _state_scene(stage, state) -> Ctx:
     elif state == "no_variant":
         item = stage.kp(part, D("144"), variant=False)
     elif state == "no_zone":
+        _strict(stage)  # без флажка семьи строка без зоны сравнима (область `any`)
         item = _row(stage, part.proposal, D("144"), chain=stage.world.chain(("Раздел Б",), None))
     else:
         assert state == "no_price"
@@ -948,6 +950,25 @@ def test_ref_analogs_target_own_analogs_hint_appears_with_an_own_rung(admin_clie
     choice = panel["line"]["choice"]
     assert choice["hints"]["own_analogs"] is True
     assert (choice["active"], panel["line"]["target_kind"]) == (True, "reference")
+
+
+def test_ref_analogs_target_a_link_target_stays_when_an_unflagged_family_row_becomes_comparable(
+    admin_client, stage
+) -> None:
+    """Утверждение 7: семья строки КП без флажка; строка без своих аналогов сравнилась (своя зона) —
+    справочная цель действует, подсказка `own_analogs` истинна."""
+    scene, ctx = _linked(stage)
+    seen = _link_conversion(_panel_row(ctx.panel(admin_client), scene.ref_item.id))
+    _save_ctx(admin_client, ctx, _body(scene.ref_item.id, "link", seen))
+    assert ctx.offer_line(admin_client)["state"] == "no_history"
+    _contract_row(stage, D("11000"), family=scene.kp_family, variant=scene.kp_variant, unit="M3", title="Бетон")
+    _contract_row(stage, D("12000"), family=scene.kp_family, variant=scene.kp_variant, unit="M3", title="Бетон")
+    panel = ctx.panel(admin_client)
+    assert panel["line"]["state"] == "comparable"
+    assert panel["line"]["work_rung"]["zone_scope"] == "own"
+    choice = panel["line"]["choice"]
+    assert (choice["active"], choice["reset_reason"], panel["line"]["target_kind"]) == (True, None, "reference")
+    assert choice["hints"]["own_analogs"] is True
 
 
 def test_ref_analogs_target_a_target_chosen_with_own_analogs_gets_no_own_analogs_hint(admin_client, stage) -> None:

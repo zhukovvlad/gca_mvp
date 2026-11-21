@@ -681,6 +681,11 @@ def _conflicts_of(
     return conflicts.get(context_id, {}).get(schema_id, frozenset())
 
 
+def _zone_required_families(db: Session) -> frozenset[int]:
+    """Семьи с флажком «зона обязательна»: один запрос на сцену, кэша нет (смена видна следующей сцене)."""
+    return frozenset(db.execute(sa.select(WorkFamily.id).where(WorkFamily.zone_required.is_(True))).scalars())
+
+
 def load_work_history(
     db: Session, *, estimate_of: Mapping[int, int], family_ids: Collection[int] | None = None
 ) -> tuple[list[WorkHistoryLine], dict[int, FamilyLadderInfo]]:
@@ -692,7 +697,8 @@ def load_work_history(
     сметы под договором со старым периодом и коэффициентом ИПЦ. Состав истории (договор
     объекта тендера и сметы КП не входят) наследуется от `load_history`. Строка — не глава,
     не система, с вариантом в неархивном контексте, ценой и весом, прошедшими предикаты, и с
-    цепочкой, у которой зона определена: аналог без зоны не аналог (спека §2.8). Строка с
+    цепочкой; зона может быть `None` — такая строка кандидат только в областях `other` и `any` у семей без
+    флажка «зона обязательна» (спека «зона как предпочтение» §3); строка без цепочки не приходит. Строка с
     неизвестной базой НДС остаётся — ядро называет по ней выпавший договор. Строки читаются
     по идентификаторам смет. Число запросов фиксировано: строки, три запроса вариантов,
     конфликтные параметры контекстов, семьи. `family_ids` — только строки этих семей (поиск
@@ -725,7 +731,6 @@ def load_work_history(
         .where(
             Estimate.id.in_(list(contract_of)),
             PositionItem.is_chapter.is_(False),
-            SectionChain.zone.is_not(None),
             CatalogContext.work_variant_id.is_not(None),
             CatalogContext.archived_at.is_(None),
             sa.not_(is_system),
@@ -895,12 +900,17 @@ def _releasable_live(db: Session, current_schema_of: Mapping[int, int]) -> set[i
 
 
 def load_kp_lines(
-    db: Session, estimate_ids: Sequence[int], *, only_position_item_id: int | None = None
+    db: Session,
+    estimate_ids: Sequence[int],
+    *,
+    only_position_item_id: int | None = None,
+    zone_required: frozenset[int] | None = None,
 ) -> dict[int, list[KpLineRow]]:
     """Строки КП заданных смет (не главы) с семантикой и сигналом каталога.
 
     `only_position_item_id` — только эта строка (поиск справочных строк не читает всю смету);
-    её `KpLineRow` равна той, что даёт полный вызов.
+    её `KpLineRow` равна той, что даёт полный вызов. `zone_required` — семьи с флажком, прочитанные
+    сценой (`_zone_required_families`); `None` — читается здесь. Тот же набор обязан идти в `WorkHistory`.
 
     Строки отдаются все, без предикатов цены и веса: пригодность решает ядро.
     Число запросов не зависит от числа строк: строки, сигнал каталога, три
@@ -912,6 +922,8 @@ def load_kp_lines(
     result: dict[int, list[KpLineRow]] = {estimate_id: [] for estimate_id in estimate_ids}
     if not result:
         return result
+    if zone_required is None:
+        zone_required = _zone_required_families(db)
     chapter = aliased(PositionItem)
     rows = db.execute(
         sa.select(
@@ -1013,6 +1025,7 @@ def load_kp_lines(
                     waiting_admin=signal.waiting_admin,
                     section_chain_id=chain_id,
                     zone=chain.zone if chain is not None else None,
+                    zone_required=info is not None and info.family_id in zone_required,
                     chain_titles=chain.titles if chain is not None else frozenset(),
                     schema_id=info.schema_id if info is not None else None,
                     main_values=info.main_values if info is not None else {},

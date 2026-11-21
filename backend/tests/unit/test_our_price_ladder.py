@@ -12,7 +12,7 @@ from decimal import Decimal
 
 import pytest
 
-from services.analog_ladder import FamilyLadderInfo, WorkHistoryLine
+from services.analog_ladder import FamilyLadderInfo, WorkHistory, WorkHistoryLine
 from services.our_price import (
     MISMATCH_HIGH,
     MISMATCH_LOW,
@@ -34,10 +34,12 @@ from services.our_price import (
     auto_rung,
     available_rungs,
     evaluate_offer,
+    kp_work_of,
     lines_totals,
     offer_totals,
     rate_range,
     unit_mismatch,
+    work_ladder_of,
 )
 
 D = Decimal
@@ -922,3 +924,37 @@ def test_lines_totals_counts_a_repeated_id_once():
 def test_lines_totals_ignores_ids_that_are_not_in_the_evaluation():
     evaluation, _ = _mixed_offer()
     assert lines_totals(evaluation, [1, 12345]) == lines_totals(evaluation, [1])
+
+
+# --- зона как предпочтение: флажок семьи и строка без зоны (спека «зона как предпочтение» §2) ----------
+
+
+def _zoneless(*, zone_required: bool) -> KpLine:
+    return replace(kp(), zone=None, zone_required=zone_required)
+
+
+def test_kp_work_carries_the_flag_of_the_line():
+    assert kp_work_of(_zoneless(zone_required=True), D(100)).zone_required is True
+    assert kp_work_of(_zoneless(zone_required=False), D(100)).zone_required is False
+
+
+@pytest.mark.parametrize(("zone_required", "has_ladder"), [(False, True), (True, False)])
+def test_a_zoneless_line_reaches_the_ladder_only_without_the_flag(zone_required, has_ladder):
+    families = {5: FamilyLadderInfo(schema_id=3, main_parameter_ids=(), releasable_ids=frozenset(), names={})}
+    net, ladder = work_ladder_of(
+        _zoneless(zone_required=zone_required),
+        kp_vat_base=D(0),
+        work_history=WorkHistory([], families, {}, factors=None),
+        tender_class_id=TENDER_CLASS,
+        tender_contractor_id=99,
+        target_month=None,
+    )
+    assert net == D(150)
+    assert (ladder is not None) is has_ladder
+
+
+@pytest.mark.parametrize(("zone_required", "state"), [(False, LineState.comparable), (True, LineState.no_zone)])
+def test_a_zoneless_line_is_no_zone_only_with_the_flag(zone_required, state):
+    index = history({1: D(100)})
+    line = _zoneless(zone_required=zone_required)
+    assert one([line], index).state is state

@@ -535,7 +535,7 @@ class TestLineForm:
 
         line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
 
-        assert line["work_rung"] == {"no": 3, "released": [], "other_class": True}
+        assert line["work_rung"] == {"no": 3, "released": [], "other_class": True, "zone_scope": "own"}
         assert _pair(line["lowest"]["value"]) == (D("100"), D("100"))
         assert line["lowest"]["from_all_classes"] is True
 
@@ -550,7 +550,7 @@ class TestLineForm:
 
         line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
 
-        assert line["work_rung"] == {"no": 1, "released": [], "other_class": False}
+        assert line["work_rung"] == {"no": 1, "released": [], "other_class": False, "zone_scope": "own"}
         # ступени 4а — только у систем; у работы вариант v2 аналогом не бывает
         assert (line["rung"], line["rungs"]) == (None, [])
         assert line["analogs_count"] == 2
@@ -591,7 +591,7 @@ class TestLineForm:
         line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
 
         # ступень 1 — свой класс: аналог 200; договор чужого класса 100 на ступень не попадает
-        assert line["work_rung"] == {"no": 1, "released": [], "other_class": False}
+        assert line["work_rung"] == {"no": 1, "released": [], "other_class": False, "zone_scope": "own"}
         assert _pair(line["lowest"]["value"]) == (D("200"), D("200"))
         assert {k: _pair(v) for k, v in line["range"].items()}["min"] == (D("200"), D("200"))
         assert line["to_lowest"] == {"net": "-50.00", "shown": "-50.00"}
@@ -1270,6 +1270,7 @@ class TestLinePanelAuto:
             "outlier_ratio",
             "with_this_contractor",
             "place_match",
+            "zone",
             "selectable",
             "released_values",
         }
@@ -1283,6 +1284,7 @@ class TestLinePanelAuto:
         assert second["contractor_title"] == high.contractor.title
         assert first["section_titles"] == ["Общий раздел"]
         assert first["unit"] == stage.db.get(UnitOfMeasure, stage.world.unit_id).symbol
+        assert first["zone"] == "whole"
         assert first["title"]
         assert _pair(first["price"]) == (D("100"), D("120"))
         assert _pair(first["nominal"]) == (D("100"), D("120"))
@@ -1616,7 +1618,7 @@ class TestVatDropped:
 
         panel = _panel(member_client, stage.tender, rnd, part, item)
 
-        assert panel["line"]["work_rung"] == {"no": 3, "released": [], "other_class": True}
+        assert panel["line"]["work_rung"] == {"no": 3, "released": [], "other_class": True, "zone_scope": "own"}
         assert [d["contract_id"] for d in panel["vat_dropped"]] == [foreign.id]
 
     def test_a_dropped_contract_of_another_variant_is_not_on_the_variant_rung(self, member_client, stage):
