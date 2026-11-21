@@ -28,6 +28,9 @@ MIN_NOMINAL: Decimal = Decimal(1)
 
 RungNo = Literal[1, 2, 3, 4]
 NoHistoryReason = Literal["no_family", "path_conflict", "composite", "no_params", "no_zone_match"]
+#: Область подбора (спека «зона как предпочтение» §1 п. 1): `own` — зона строки КП; `other` — все остальные
+#: зоны и строки договоров без зоны; `any` — вся история семьи (у строки КП без зоны).
+ZoneScope = Literal["own", "other", "any"]
 #: Форма значения контекста (спека упрощения каталога §2.2): id составного значения либо `"simple"`
 #: (простое, «не уточнено» и конфликт).
 Form = Literal["simple"] | int
@@ -56,6 +59,8 @@ class KpWork:
     conflicted: frozenset[int] = frozenset()
     #: parameter_id -> форма значения; составные значения — только у варианта на действующей версии.
     forms: Mapping[int, Form] = field(default_factory=dict)
+    #: Семья с флажком «зона обязательна»: подбор только в зоне строки КП (спека «зона как предпочтение» §1 п. 2).
+    zone_required: bool = False
 
 
 @dataclass(frozen=True)
@@ -106,6 +111,8 @@ class Analog:
     place_match: int
     #: Цена к медиане цен остальных аналогов ступени; `None` — аналог в остатке.
     outlier_ratio: Decimal | None
+    #: Зона строки договора; `None` — у строки зоны нет.
+    zone: Zone | None = None
 
 
 @dataclass(frozen=True)
@@ -133,6 +140,8 @@ class WorkLadder:
     vat_dropped: tuple[int, ...]
     #: Самая свежая расценка среди аналогов остатка с подрядчиком участника КП (спека упрощения §2.9).
     contractor: Figure | None = None
+    #: Область, в которой найдена ступень; `None` ровно тогда, когда `rung_no is None`.
+    zone_scope: ZoneScope | None = None
 
 
 @dataclass(frozen=True)
@@ -159,6 +168,8 @@ class PartReference:
     lowest_contract_id: int | None
     #: Кандидатов класса тендера нет, взяты из другого класса.
     other_class: bool
+    #: Область, из которой взяты кандидаты части; `None` — кандидатов нет.
+    zone_scope: ZoneScope | None = None
 
 
 @dataclass(frozen=True)
@@ -301,21 +312,28 @@ _Unknown = tuple[WorkHistoryLine, HistoryContract]
 class _FamilyPool:
     """Кандидаты одной семьи, не зависящие от строки КП, разложенные под ступени.
 
-    Ступени 1 и 3 берут кандидатов зоны строки КП с её вариантом (`by_variant`), ступени 2 и 4 —
-    кандидатов зоны на действующей версии схемы семьи с теми же значениями неотпускаемых главных
-    параметров (`by_values`); класс договора ступень отбирает сама. Внутри каждого списка — порядок
-    строк истории, как при сплошном переборе.
+    Ступени 1 и 3 берут кандидатов области подбора (`own`, `other`, `any`; спека «зона как предпочтение»
+    §1) с вариантом строки КП, ступени 2 и 4 — кандидатов области на действующей версии схемы семьи с теми
+    же значениями неотпускаемых главных параметров. `own` читается из срезов с зоной в ключе
+    (`by_variant`, `by_values`), `other` и `any` — из срезов без зоны (`any_by_*`; `other` отбрасывает
+    зону строки КП). Класс договора ступень отбирает сама. Внутри каждого списка — порядок строк истории,
+    как при сплошном переборе.
     """
 
-    #: Все кандидаты семьи любого класса и любой зоны (для причины «нет истории»).
+    #: Все кандидаты семьи любого класса, любой зоны и без зоны (для причины «нет истории»).
     candidates: tuple[_Candidate, ...]
     #: (зона, вариант) -> кандидаты.
-    by_variant: Mapping[tuple[Zone, int], tuple[_Candidate, ...]]
+    by_variant: Mapping[tuple[Zone | None, int], tuple[_Candidate, ...]]
     #: (зона, ключ значений) -> кандидаты на действующей версии схемы семьи.
-    by_values: Mapping[tuple[Zone, _ValuesKey], tuple[_Candidate, ...]]
+    by_values: Mapping[tuple[Zone | None, _ValuesKey], tuple[_Candidate, ...]]
     #: Строки с неизвестной базой НДС, разложенные так же.
-    unknown_by_variant: Mapping[tuple[Zone, int], tuple[_Unknown, ...]]
-    unknown_by_values: Mapping[tuple[Zone, _ValuesKey], tuple[_Unknown, ...]]
+    unknown_by_variant: Mapping[tuple[Zone | None, int], tuple[_Unknown, ...]]
+    unknown_by_values: Mapping[tuple[Zone | None, _ValuesKey], tuple[_Unknown, ...]]
+    #: То же без зоны в ключе (все зоны и строки без зоны): из них собираются области `other` и `any`.
+    any_by_variant: Mapping[int, tuple[_Candidate, ...]]
+    any_by_values: Mapping[_ValuesKey, tuple[_Candidate, ...]]
+    unknown_any_by_variant: Mapping[int, tuple[_Unknown, ...]]
+    unknown_any_by_values: Mapping[_ValuesKey, tuple[_Unknown, ...]]
     #: Варианты кандидатов без конфликтных главных параметров.
     variant_ids: frozenset[int]
     #: Ключи значений у кандидатов на действующей версии схемы семьи.
@@ -325,9 +343,9 @@ class _FamilyPool:
 class WorkHistory:
     """Строки истории по работам, разложенные по семье, с кандидатами, посчитанными один раз.
 
-    Кандидат строки КП (§2.8: договор в истории, цена и вес пригодны, зона определена, номинал не
-    символический) зависит только от семьи строки, договоров и множителей ИПЦ, поэтому считается
-    на семью при первом обращении и переиспользуется всеми строками КП сцены. Живёт один запрос:
+    Кандидат строки КП (§2.8: договор в истории, цена и вес пригодны, номинал не символический;
+    строка без зоны — кандидат, кроме семей с флажком «зона обязательна») зависит только от семьи
+    строки, договоров и множителей ИПЦ, поэтому считается на семью при первом обращении и переиспользуется всеми строками КП сцены. Живёт один запрос:
     состояния между запросами не держит.
     """
 
@@ -338,10 +356,13 @@ class WorkHistory:
         contracts: Mapping[int, HistoryContract],
         *,
         factors: Mapping[int, Decimal] | None,
+        zone_required: frozenset[int] = frozenset(),
     ) -> None:
         self.families = families
         self.contracts = contracts
         self.factors = factors
+        #: Семьи с флажком «зона обязательна»: пул такой семьи не берёт строки договоров без зоны.
+        self.zone_required = zone_required
         self._lines_by_family: dict[int, list[WorkHistoryLine]] = {}
         for line in lines:
             self._lines_by_family.setdefault(line.family_id, []).append(line)
@@ -364,7 +385,9 @@ class WorkHistory:
             contract = self.contracts.get(line.contract_id)
             if contract is None:
                 continue
-            if not is_price(line.unit_price) or not is_weight(line.weight) or line.zone is None:
+            if not is_price(line.unit_price) or not is_weight(line.weight):
+                continue
+            if line.zone is None and family_id in self.zone_required:
                 continue
             assert line.unit_price is not None
             if line.vat_base is None:
@@ -387,31 +410,41 @@ class WorkHistory:
                 return None
             return _values_key(line.main_values, line.forms, line.conflicted, required, releasable)
 
-        by_variant: dict[tuple[Zone, int], list[_Candidate]] = {}
-        by_values: dict[tuple[Zone, _ValuesKey], list[_Candidate]] = {}
+        by_variant: dict[tuple[Zone | None, int], list[_Candidate]] = {}
+        by_values: dict[tuple[Zone | None, _ValuesKey], list[_Candidate]] = {}
+        any_by_variant: dict[int, list[_Candidate]] = {}
+        any_by_values: dict[_ValuesKey, list[_Candidate]] = {}
         for cand in candidates:
             zone = cand.line.zone
-            assert zone is not None
             if not cand.line.conflicted:
                 by_variant.setdefault((zone, cand.line.variant_id), []).append(cand)
+                any_by_variant.setdefault(cand.line.variant_id, []).append(cand)
             key = values_key(cand.line)
             if key is not None:
                 by_values.setdefault((zone, key), []).append(cand)
-        unknown_by_variant: dict[tuple[Zone, int], list[_Unknown]] = {}
-        unknown_by_values: dict[tuple[Zone, _ValuesKey], list[_Unknown]] = {}
+                any_by_values.setdefault(key, []).append(cand)
+        unknown_by_variant: dict[tuple[Zone | None, int], list[_Unknown]] = {}
+        unknown_by_values: dict[tuple[Zone | None, _ValuesKey], list[_Unknown]] = {}
+        unknown_any_by_variant: dict[int, list[_Unknown]] = {}
+        unknown_any_by_values: dict[_ValuesKey, list[_Unknown]] = {}
         for line, contract in unknown_base:
-            assert line.zone is not None
             if not line.conflicted:
                 unknown_by_variant.setdefault((line.zone, line.variant_id), []).append((line, contract))
+                unknown_any_by_variant.setdefault(line.variant_id, []).append((line, contract))
             key = values_key(line)
             if key is not None:
                 unknown_by_values.setdefault((line.zone, key), []).append((line, contract))
+                unknown_any_by_values.setdefault(key, []).append((line, contract))
         return _FamilyPool(
             candidates=tuple(candidates),
             by_variant={k: tuple(v) for k, v in by_variant.items()},
             by_values={k: tuple(v) for k, v in by_values.items()},
             unknown_by_variant={k: tuple(v) for k, v in unknown_by_variant.items()},
             unknown_by_values={k: tuple(v) for k, v in unknown_by_values.items()},
+            any_by_variant={k: tuple(v) for k, v in any_by_variant.items()},
+            any_by_values={k: tuple(v) for k, v in any_by_values.items()},
+            unknown_any_by_variant={k: tuple(v) for k, v in unknown_any_by_variant.items()},
+            unknown_any_by_values={k: tuple(v) for k, v in unknown_any_by_values.items()},
             variant_ids=frozenset(variant_id for _, variant_id in by_variant),
             values_keys=frozenset(key for _, key in by_values),
         )
@@ -427,6 +460,7 @@ def evaluate_work_ladder(
     tender_contractor_id: int,
     target_month: YearMonth | None,
     factors: Mapping[int, Decimal] | None,
+    zone_required: frozenset[int] = frozenset(),
 ) -> WorkLadder:
     """Ступень, справка, остаток и цифры строки КП-работы.
 
@@ -437,7 +471,7 @@ def evaluate_work_ladder(
     """
     return ladder_for(
         kp,
-        WorkHistory(lines, families, contracts, factors=factors),
+        WorkHistory(lines, families, contracts, factors=factors, zone_required=zone_required),
         tender_class_id=tender_class_id,
         tender_contractor_id=tender_contractor_id,
         target_month=target_month,
@@ -467,42 +501,65 @@ def ladder_for(
     by_values_blocked = bool(kp.conflicted & set(required))
     pool = history.pool(kp.family_id)
 
-    # Ступень берёт строки зоны строки КП (вне её — ни одна, §2.8): ступени 1 и 3 — с вариантом
-    # строки КП, ступени 2 и 4 — с её значениями неотпускаемых параметров на действующей версии
-    # схемы, и только если у строки КП доступна лестница отпускаемых. Класс: 1 и 2 — класс тендера.
-    def rung_slice(rung_no: RungNo, by_variant: Mapping, by_values: Mapping) -> tuple:
-        if kp.zone is None:
-            return ()
+    # Область (спека «зона как предпочтение» §1 п. 2): семья с флажком — только своя зона; строка КП без
+    # зоны — вся история; иначе своя зона, а если в ней ни одна ступень ничего не нашла — все остальные.
+    strict = kp.zone_required or kp.family_id in history.zone_required
+    scopes = _scopes(kp.zone, strict=strict)
+
+    # Ступень берёт строки области: ступени 1 и 3 — с вариантом строки КП, ступени 2 и 4 — с её значениями
+    # неотпускаемых параметров на действующей версии схемы, и только если у строки КП доступна лестница
+    # отпускаемых. Класс: 1 и 2 — класс тендера.
+    def rung_slice(scope: ZoneScope, rung_no: RungNo, zoned: Mapping, anywhere: Mapping) -> tuple:
         if rung_no in (1, 3):
-            return () if by_variant_blocked else by_variant.get((kp.zone, kp.variant_id), ())
-        if not releasable_ladder or by_values_blocked:
-            return ()
-        return by_values.get((kp.zone, kp_values), ())
+            if by_variant_blocked:
+                return ()
+            tail: int | _ValuesKey = kp.variant_id
+        else:
+            if not releasable_ladder or by_values_blocked:
+                return ()
+            tail = kp_values
+        if scope == "own":
+            return () if kp.zone is None else zoned.get((kp.zone, tail), ())
+        everywhere = anywhere.get(tail, ())
+        if scope == "any":
+            return everywhere
+        return tuple(item for item in everywhere if _zone_of(item) != kp.zone)
+
+    def known(scope: ZoneScope, rung_no: RungNo) -> tuple:
+        return rung_slice(scope, rung_no, *_known_maps(rung_no, pool))
 
     def class_fits(rung_no: RungNo, contract: HistoryContract) -> bool:
         return (contract.rate_class_id == tender_class_id) == (rung_no in (1, 2))
 
-    def dropped_on(rung_no: RungNo, picked_ids: set[int]) -> set[int]:
+    def dropped_on(scope: ZoneScope, rung_no: RungNo, picked_ids: set[int]) -> set[int]:
+        unknown = rung_slice(scope, rung_no, *_unknown_maps(rung_no, pool))
         return {
             contract.contract_id
-            for _line, contract in rung_slice(rung_no, pool.unknown_by_variant, pool.unknown_by_values)
+            for _line, contract in unknown
             if class_fits(rung_no, contract) and contract.contract_id not in picked_ids
         }
 
     def _dropped_on_first_rung() -> tuple[int, ...]:
-        """Без ступени — выпавшие на первой ступени, где они нашлись бы (как в 4а)."""
-        for rung_no in _RUNGS:
-            found = dropped_on(rung_no, set())
-            if found:
-                return tuple(sorted(found))
+        """Без ступени — выпавшие в первой паре «область, ступень», где они нашлись бы (порядок подбора)."""
+        for scope in scopes:
+            for rung_no in _RUNGS:
+                found = dropped_on(scope, rung_no, set())
+                if found:
+                    return tuple(sorted(found))
         return ()
 
+    # «Ступень найдена» решает переход в следующую область, а не «цена посчитана»: выбросы области не отменяют.
     chosen: RungNo | None = None
+    chosen_scope: ZoneScope | None = None
     picked: list[_Candidate] = []
-    for rung_no in _RUNGS:
-        picked = [c for c in rung_slice(rung_no, pool.by_variant, pool.by_values) if class_fits(rung_no, c.contract)]
-        if picked:
-            chosen = rung_no
+    for scope in scopes:
+        for rung_no in _RUNGS:
+            picked = [c for c in known(scope, rung_no) if class_fits(rung_no, c.contract)]
+            if picked:
+                chosen = rung_no
+                chosen_scope = scope
+                break
+        if chosen is not None:
             break
 
     if chosen is None:
@@ -523,9 +580,11 @@ def ladder_for(
                 kp_values if releasable_ladder and not by_values_blocked else None,
                 conflicted=by_variant_blocked and (by_values_blocked or not releasable_ladder),
                 composite=any(form != "simple" and p not in kp.conflicted for p, form in kp.forms.items()),
+                zone_strict=strict,
             ),
             vat_dropped=_dropped_on_first_rung(),
         )
+    assert chosen_scope is not None
 
     outlier_ratio = _outlier_ratios(picked)
     remainder = [c for c in picked if outlier_ratio[c.line.position_item_id] is None]
@@ -567,11 +626,12 @@ def ladder_for(
             period=c.contract.period,
             place_match=place(c),
             outlier_ratio=outlier_ratio[c.line.position_item_id],
+            zone=c.line.zone,
         )
         for c in reference
     )
 
-    dropped = dropped_on(chosen, {c.contract.contract_id for c in picked})
+    dropped = dropped_on(chosen_scope, chosen, {c.contract.contract_id for c in picked})
 
     return WorkLadder(
         rung_no=chosen,
@@ -587,7 +647,32 @@ def ladder_for(
         no_history_reason=None,
         vat_dropped=tuple(sorted(dropped)),
         contractor=contractor,
+        zone_scope=chosen_scope,
     )
+
+
+def _scopes(zone: Zone | None, *, strict: bool) -> tuple[ZoneScope, ...]:
+    """Области подбора в порядке обхода (спека «зона как предпочтение» §1 п. 2)."""
+    if strict:
+        return ("own",)
+    return ("any",) if zone is None else ("own", "other")
+
+
+def _zone_of(item: _Candidate | _Unknown) -> Zone | None:
+    return item.line.zone if isinstance(item, _Candidate) else item[0].zone
+
+
+def _known_maps(rung_no: RungNo, pool: _FamilyPool) -> tuple[Mapping, Mapping]:
+    """Кандидаты ступени с зоной в ключе (область `own`) и без неё (`other`, `any`)."""
+    if rung_no in (1, 3):
+        return pool.by_variant, pool.any_by_variant
+    return pool.by_values, pool.any_by_values
+
+
+def _unknown_maps(rung_no: RungNo, pool: _FamilyPool) -> tuple[Mapping, Mapping]:
+    if rung_no in (1, 3):
+        return pool.unknown_by_variant, pool.unknown_any_by_variant
+    return pool.unknown_by_values, pool.unknown_any_by_values
 
 
 def _outlier_ratios(picked: Sequence[_Candidate]) -> dict[int, Decimal | None]:
@@ -636,7 +721,8 @@ def parts_reference(
     """Справка «по частям» для сборной строки КП (спека упрощения каталога §2.8); на цифры строки не влияет.
 
     Для каждого составного главного параметра строки (`composites`: parameter_id -> значение) и каждой его
-    части `p` — кандидаты той же семьи, версии схемы и зоны, у которых этот параметр равен `p` по `value_id`,
+    части `p` — кандидаты той же семьи и версии схемы из области подбора части (§1 п. 6: `own`, нет — `other`,
+    у строки без зоны — `any`, у семьи с флажком — только `own`), у которых этот параметр равен `p` по `value_id`,
     даже если он отпускаемый; остальные главные параметры — по ключу ступени 2. Сначала класс тендера,
     пусто — другой класс. Выбросы — как в лестнице, отдельно по каждой части. Части целью не становятся.
     """
@@ -647,6 +733,7 @@ def parts_reference(
     releasable = _releasable_ids(info)
     blocked = bool(kp.conflicted & set(required))
     candidates = history.pool(kp.family_id).candidates
+    strict = kp.zone_required or kp.family_id in history.zone_required
     result: list[dict] = []
     for parameter_id in info.main_parameter_ids:
         composite = composites.get(parameter_id)
@@ -660,7 +747,6 @@ def parts_reference(
             c
             for c in candidates
             if not blocked
-            and c.line.zone == kp.zone
             and c.line.schema_id == info.schema_id
             and not c.line.conflicted & unusable
             and _values_key(c.line.main_values, c.line.forms, c.line.conflicted, rest_required, rest_releasable)
@@ -668,7 +754,8 @@ def parts_reference(
         ]
         parts = []
         for value_id, text in composite.parts:
-            matched = [c for c in matching if c.line.main_values.get(parameter_id) == value_id]
+            in_parameter = [c for c in matching if c.line.main_values.get(parameter_id) == value_id]
+            matched, zone_scope = _part_scope(in_parameter, kp.zone, strict=strict)
             in_class = [c for c in matched if c.contract.rate_class_id == tender_class_id]
             picked = in_class or matched
             ratios = _outlier_ratios(picked)
@@ -689,6 +776,7 @@ def parts_reference(
                     lowest_analog_id=None if low is None else low.line.position_item_id,
                     lowest_contract_id=None if low is None else low.contract.contract_id,
                     other_class=bool(matched) and not in_class,
+                    zone_scope=zone_scope,
                 )
             )
         result.append(
@@ -700,6 +788,24 @@ def parts_reference(
             }
         )
     return result
+
+
+def _part_scope(
+    matched: list[_Candidate], zone: Zone | None, *, strict: bool
+) -> tuple[list[_Candidate], ZoneScope | None]:
+    """Кандидаты части и их область (спека «зона как предпочтение» §1 п. 6): своя зона; нет в ней — остальные
+    и строки без зоны; у строки КП без зоны — все; у семьи с флажком — только своя зона."""
+    if zone is None:
+        if strict:
+            return [], None
+        return matched, "any" if matched else None
+    own = [c for c in matched if c.line.zone == zone]
+    if own:
+        return own, "own"
+    if strict:
+        return [], None
+    other = [c for c in matched if c.line.zone != zone]
+    return other, "other" if other else None
 
 
 def _released_names(rung_no: RungNo, info: FamilyLadderInfo | None) -> tuple[str, ...]:
@@ -715,12 +821,14 @@ def _no_history_reason(
     *,
     conflicted: bool = False,
     composite: bool = False,
+    zone_strict: bool = False,
 ) -> NoHistoryReason:
     """Первая причина по кандидатам семьи любого класса и любой зоны (§2.10). Параметры совпали —
     у кандидата тот же вариант либо (ступени 2 и 4 доступны, `values_key` задан) тот же ключ ступеней
     2 и 4. `conflicted` — у строки КП есть конфликтный главный параметр, мешающий на всех ступенях:
     причина раньше `no_params`. `composite` — у строки составное главное значение (спека упрощения
-    каталога §2.8): причина раньше `no_params` и `no_zone_match`."""
+    каталога §2.8): причина раньше `no_params` и `no_zone_match`. `no_zone_match` — только у семьи с
+    флажком «зона обязательна» (`zone_strict`): у остальных зона не отсекает, и цепочка кончается `no_params`."""
     if not pool.candidates:
         return "no_family"
     if conflicted:
@@ -729,4 +837,4 @@ def _no_history_reason(
         return "composite"
     if variant_id not in pool.variant_ids and (values_key is None or values_key not in pool.values_keys):
         return "no_params"
-    return "no_zone_match"
+    return "no_zone_match" if zone_strict else "no_params"

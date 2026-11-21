@@ -227,12 +227,13 @@ def three_info() -> FamilyLadderInfo:
     )
 
 
-def reference(work, lines, contracts, *, families=None, composites=None, cls=CLASS_A):
+def reference(work, lines, contracts, *, families=None, composites=None, cls=CLASS_A, zone_required=frozenset()):
     history = WorkHistory(
         lines,
         {FAMILY: type_info()} if families is None else families,
         {c.contract_id: c for c in contracts},
         factors=None,
+        zone_required=zone_required,
     )
     return parts_reference(
         work,
@@ -294,6 +295,7 @@ class TestPartsReference:
             lowest_analog_id=1,
             lowest_contract_id=1,
             other_class=False,
+            zone_scope="own",
         )
         assert parts[BEAMS] == PartReference(
             value_id=BEAMS,
@@ -305,6 +307,7 @@ class TestPartsReference:
             lowest_analog_id=11,
             lowest_contract_id=11,
             other_class=False,
+            zone_scope="own",
         )
 
     def test_a_part_with_candidates_only_in_another_class_is_marked_other_class(self):
@@ -337,6 +340,7 @@ class TestPartsReference:
             lowest_analog_id=None,
             lowest_contract_id=None,
             other_class=False,
+            zone_scope=None,
         )
 
     def test_the_outlier_of_a_part_is_in_the_count_but_not_in_the_fork_or_the_lowest(self):
@@ -388,7 +392,7 @@ class TestPartsReference:
     def test_a_row_without_a_zone_finds_no_analogs(self):
         lines, contracts = two_parts_scene()
 
-        parts = parts_of(reference(composite_kp(zone=None), lines, contracts))
+        parts = parts_of(reference(composite_kp(zone=None, zone_required=True), lines, contracts))
 
         assert [part.analogs for part in parts.values()] == [0, 0]
 
@@ -520,7 +524,7 @@ class TestContractorFigure:
     def test_a_row_without_a_ladder_has_no_figure(self):
         rows = [row(1, "100", contractor=CONTRACTOR, period=YearMonth(2026, 8), zone="aboveground")]
 
-        ladder = contractor_run(rows)
+        ladder = contractor_run(rows, work=kp(zone_required=True))
 
         assert (ladder.rung_no, ladder.contractor) == (None, None)
 
@@ -589,3 +593,72 @@ class TestResolveContractorTarget:
         choice = resolve_target(("contractor", None), res, is_system=False)
 
         assert target_analog(res, choice) == LOW
+
+
+# ---------------------------------------------------------------------------
+#  Справка «по частям» по областям подбора (спека «зона как предпочтение» §1 п. 6)
+# ---------------------------------------------------------------------------
+
+ABOVE = "aboveground"
+STRICT_FAMILY = frozenset({FAMILY})
+
+
+class TestPartsReferenceScopes:
+    def test_a_part_with_own_candidates_takes_only_them(self):
+        lines = [
+            hline(1, 1, "50", PLATES, variant=301),
+            hline(2, 2, "10", PLATES, variant=302, zone=ABOVE),
+            hline(3, 3, "10", PLATES, variant=303, zone=None),
+        ]
+
+        part = parts_of(reference(composite_kp(), lines, contracts_of(1, 2, 3)))[PLATES]
+
+        assert (part.zone_scope, part.analogs, part.min, part.max) == ("own", 1, D("50"), D("50"))
+
+    def test_a_part_without_own_candidates_takes_other_zones_and_zoneless_lines(self):
+        lines = [
+            hline(1, 1, "50", PLATES, variant=301, zone=ABOVE),
+            hline(2, 2, "60", PLATES, variant=302, zone=None),
+        ]
+
+        part = parts_of(reference(composite_kp(), lines, contracts_of(1, 2)))[PLATES]
+
+        assert (part.zone_scope, part.analogs, part.min, part.max) == ("other", 2, D("50"), D("60"))
+
+    def test_each_part_chooses_its_scope_on_its_own(self):
+        lines = [
+            hline(1, 1, "50", PLATES, variant=301),
+            hline(2, 2, "70", BEAMS, variant=302, zone=ABOVE),
+        ]
+
+        parts = parts_of(reference(composite_kp(), lines, contracts_of(1, 2)))
+
+        assert (parts[PLATES].zone_scope, parts[BEAMS].zone_scope) == ("own", "other")
+
+    def test_a_row_without_a_zone_takes_any(self):
+        lines = [
+            hline(1, 1, "50", PLATES, variant=301),
+            hline(2, 2, "60", PLATES, variant=302, zone=ABOVE),
+            hline(3, 3, "70", PLATES, variant=303, zone=None),
+        ]
+
+        part = parts_of(reference(composite_kp(zone=None), lines, contracts_of(1, 2, 3)))[PLATES]
+
+        assert (part.zone_scope, part.analogs) == ("any", 3)
+
+    def test_a_flagged_family_takes_only_own_and_a_part_without_them_has_no_scope(self):
+        lines = [
+            hline(1, 1, "50", PLATES, variant=301),
+            hline(2, 2, "60", BEAMS, variant=302, zone=ABOVE),
+            hline(3, 3, "70", BEAMS, variant=303, zone=None),
+        ]
+
+        parts = parts_of(reference(composite_kp(), lines, contracts_of(1, 2, 3), zone_required=STRICT_FAMILY))
+
+        assert (parts[PLATES].zone_scope, parts[PLATES].analogs) == ("own", 1)
+        assert (parts[BEAMS].zone_scope, parts[BEAMS].analogs) == (None, 0)
+
+    def test_a_part_without_candidates_anywhere_has_no_scope(self):
+        parts = parts_of(reference(composite_kp(), [hline(1, 1, "50", PLATES, variant=301)], contracts_of(1)))
+
+        assert parts[BEAMS].zone_scope is None
