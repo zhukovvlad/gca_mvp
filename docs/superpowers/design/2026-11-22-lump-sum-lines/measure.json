@@ -1,0 +1,342 @@
+{
+ "lines_total": {
+  "history": 4766,
+  "kp": 63575
+ },
+ "volume_one": {
+  "history": {
+   "<50": {
+    "MON": 4,
+    "PCS": 20,
+    "_all": 24
+   },
+   "<200": {
+    "MON": 4,
+    "PCS": 16,
+    "TON": 1,
+    "_all": 21
+   },
+   "<2": {
+    "PCS": 168,
+    "M3": 1,
+    "M2": 1,
+    "_all": 170
+   },
+   "нет обычной ставки": {
+    "SET": 2,
+    "M2": 17,
+    "M": 16,
+    "PCS": 17,
+    "_all": 52
+   },
+   "<5": {
+    "PCS": 36,
+    "TON": 1,
+    "M2": 1,
+    "_all": 38
+   },
+   "<10": {
+    "PCS": 17,
+    "TON": 2,
+    "_all": 19
+   },
+   "<20": {
+    "PCS": 20,
+    "MON": 7,
+    "_all": 27
+   },
+   ">=200": {
+    "PCS": 37,
+    "M": 85,
+    "M2": 21,
+    "MON": 1,
+    "_all": 144
+   }
+  },
+  "kp": {
+   "<20": {
+    "MON": 8,
+    "PCS": 75,
+    "M2": 23,
+    "_all": 106
+   },
+   "нет обычной ставки": {
+    "PCS": 86,
+    "M2": 50,
+    "M": 24,
+    "M3": 1,
+    "SET": 2,
+    "_all": 163
+   },
+   "<2": {
+    "PCS": 1777,
+    "M3": 337,
+    "M2": 657,
+    "M": 94,
+    "TON": 35,
+    "MON": 27,
+    "_all": 2927
+   },
+   "<10": {
+    "PCS": 131,
+    "MON": 5,
+    "M2": 14,
+    "M": 1,
+    "M3": 2,
+    "_all": 153
+   },
+   ">=200": {
+    "M2": 430,
+    "M": 175,
+    "PCS": 175,
+    "TON": 10,
+    "MON": 4,
+    "M3": 68,
+    "_all": 862
+   },
+   "<200": {
+    "PCS": 109,
+    "MON": 14,
+    "M3": 30,
+    "M2": 126,
+    "TON": 1,
+    "_all": 280
+   },
+   "<5": {
+    "PCS": 618,
+    "M3": 17,
+    "M": 8,
+    "MON": 9,
+    "TON": 9,
+    "M2": 6,
+    "_all": 667
+   },
+   "<50": {
+    "PCS": 167,
+    "MON": 13,
+    "M2": 66,
+    "TON": 4,
+    "M3": 3,
+    "_all": 253
+   }
+  }
+ },
+ "thresholds": {
+  "10/50": {
+   "history_sums": 198,
+   "history_families": 36,
+   "history_zones": {
+    "territory": 16,
+    "whole": 5,
+    "null": 131,
+    "underground": 19,
+    "aboveground": 27
+   },
+   "kp_sums_all_estimates": 1313,
+   "kp_sums_in_snapshot": 1203,
+   "kp_zones_in_snapshot": {
+    "underground": 220,
+    "aboveground": 507,
+    "null": 277,
+    "territory": 172,
+    "whole": 27
+   },
+   "kp_states_today": {
+    "unit_mismatch": 538,
+    "no_history": 378,
+    "comparable": 181,
+    "no_variant": 63,
+    "no_zone": 43
+   },
+   "kp_not_territory": 1031,
+   "kp_find_family_sum": 351,
+   "kp_find_variant_sum": 325,
+   "kp_find_family_sum_states_today": {
+    "comparable": 170,
+    "unit_mismatch": 97,
+    "no_zone": 43,
+    "no_history": 41
+   }
+  },
+  "20/50": {
+   "history_sums": 198,
+   "history_families": 36,
+   "history_zones": {
+    "territory": 16,
+    "whole": 5,
+    "null": 131,
+    "underground": 19,
+    "aboveground": 27
+   },
+   "kp_sums_all_estimates": 1290,
+   "kp_sums_in_snapshot": 1180,
+   "kp_zones_in_snapshot": {
+    "underground": 216,
+    "aboveground": 493,
+    "null": 277,
+    "territory": 167,
+    "whole": 27
+   },
+   "kp_states_today": {
+    "unit_mismatch": 528,
+    "no_history": 370,
+    "comparable": 181,
+    "no_variant": 58,
+    "no_zone": 43
+   },
+   "kp_not_territory": 1013,
+   "kp_find_family_sum": 351,
+   "kp_find_variant_sum": 325,
+   "kp_find_family_sum_states_today": {
+    "comparable": 170,
+    "unit_mismatch": 97,
+    "no_zone": 43,
+    "no_history": 41
+   }
+  },
+  "50/50": {
+   "history_sums": 198,
+   "history_families": 36,
+   "history_zones": {
+    "territory": 16,
+    "whole": 5,
+    "null": 131,
+    "underground": 19,
+    "aboveground": 27
+   },
+   "kp_sums_all_estimates": 1217,
+   "kp_sums_in_snapshot": 1107,
+   "kp_zones_in_snapshot": {
+    "underground": 212,
+    "aboveground": 433,
+    "null": 277,
+    "territory": 158,
+    "whole": 27
+   },
+   "kp_states_today": {
+    "unit_mismatch": 493,
+    "no_history": 350,
+    "comparable": 181,
+    "no_zone": 43,
+    "no_variant": 40
+   },
+   "kp_not_territory": 949,
+   "kp_find_family_sum": 347,
+   "kp_find_variant_sum": 325,
+   "kp_find_family_sum_states_today": {
+    "comparable": 170,
+    "unit_mismatch": 93,
+    "no_zone": 43,
+    "no_history": 41
+   }
+  },
+  "10/20": {
+   "history_sums": 222,
+   "history_families": 42,
+   "history_zones": {
+    "territory": 33,
+    "whole": 7,
+    "null": 132,
+    "underground": 21,
+    "aboveground": 29
+   },
+   "kp_sums_all_estimates": 1493,
+   "kp_sums_in_snapshot": 1363,
+   "kp_zones_in_snapshot": {
+    "underground": 228,
+    "aboveground": 540,
+    "null": 279,
+    "territory": 288,
+    "whole": 28
+   },
+   "kp_states_today": {
+    "unit_mismatch": 609,
+    "no_history": 447,
+    "comparable": 201,
+    "no_variant": 63,
+    "no_zone": 43
+   },
+   "kp_not_territory": 1075,
+   "kp_find_family_sum": 357,
+   "kp_find_variant_sum": 329,
+   "kp_find_family_sum_states_today": {
+    "comparable": 171,
+    "unit_mismatch": 97,
+    "no_history": 46,
+    "no_zone": 43
+   }
+  },
+  "10/100": {
+   "history_sums": 188,
+   "history_families": 33,
+   "history_zones": {
+    "whole": 5,
+    "null": 131,
+    "territory": 10,
+    "underground": 17,
+    "aboveground": 25
+   },
+   "kp_sums_all_estimates": 1227,
+   "kp_sums_in_snapshot": 1134,
+   "kp_zones_in_snapshot": {
+    "underground": 213,
+    "aboveground": 494,
+    "null": 276,
+    "territory": 124,
+    "whole": 27
+   },
+   "kp_states_today": {
+    "unit_mismatch": 511,
+    "no_history": 349,
+    "comparable": 168,
+    "no_variant": 63,
+    "no_zone": 43
+   },
+   "kp_not_territory": 1010,
+   "kp_find_family_sum": 346,
+   "kp_find_variant_sum": 322,
+   "kp_find_family_sum_states_today": {
+    "comparable": 168,
+    "unit_mismatch": 97,
+    "no_zone": 43,
+    "no_history": 38
+   }
+  },
+  "5/50": {
+   "history_sums": 200,
+   "history_families": 36,
+   "history_zones": {
+    "territory": 16,
+    "whole": 5,
+    "null": 133,
+    "underground": 19,
+    "aboveground": 27
+   },
+   "kp_sums_all_estimates": 1330,
+   "kp_sums_in_snapshot": 1219,
+   "kp_zones_in_snapshot": {
+    "underground": 224,
+    "aboveground": 516,
+    "null": 280,
+    "territory": 172,
+    "whole": 27
+   },
+   "kp_states_today": {
+    "unit_mismatch": 540,
+    "no_history": 386,
+    "comparable": 182,
+    "no_variant": 68,
+    "no_zone": 43
+   },
+   "kp_not_territory": 1047,
+   "kp_find_family_sum": 351,
+   "kp_find_variant_sum": 327,
+   "kp_find_family_sum_states_today": {
+    "comparable": 170,
+    "unit_mismatch": 97,
+    "no_zone": 43,
+    "no_history": 41
+   }
+  }
+ }
+}
