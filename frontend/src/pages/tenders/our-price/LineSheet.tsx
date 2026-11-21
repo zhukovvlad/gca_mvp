@@ -243,7 +243,10 @@ function PanelContent({
         </p>
       )}
       {line.kind === "work" && line.no_history_reason === "no_zone_match" && line.family !== null && (
-        <p data-testid="zone-required-note" className="text-sm text-fg-secondary">
+        <p
+          data-testid="zone-required-note"
+          className="rounded-md border border-border bg-surface-sunken px-2.5 py-1.5 text-[12.5px] text-fg"
+        >
           {zoneRequiredNote(line.family)}
         </p>
       )}
@@ -513,7 +516,10 @@ function WorkComparison({ tenderId, roundId, offerId, seriesId, line, data, vat,
         </span>
       </div>
       {scopeWhy !== null && (
-        <p data-testid="zone-scope-why" className="text-sm text-fg-secondary">
+        <p
+          data-testid="zone-scope-why"
+          className="rounded-md border border-border bg-surface-sunken px-2.5 py-1.5 text-[12.5px] text-fg"
+        >
           {scopeWhy}
         </p>
       )}
