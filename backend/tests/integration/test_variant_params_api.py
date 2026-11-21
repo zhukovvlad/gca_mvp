@@ -256,7 +256,7 @@ class TestReleasedColumns:
 
         panel = _panel(member_client, stage.tender, rnd, part, item)
 
-        assert panel["line"]["work_rung"] == {"no": 2, "released": ["Марка", "Отделка"], "other_class": False}
+        assert panel["line"]["work_rung"] == {"no": 2, "released": ["Марка", "Отделка"], "other_class": False, "zone_scope": "own"}
         assert panel["analog_columns"] == [{"name": "Марка"}, {"name": "Отделка"}]
         by_value = {
             a["released_values"][0]["value"] + "/" + a["released_values"][1]["value"]: a for a in panel["analogs"]
