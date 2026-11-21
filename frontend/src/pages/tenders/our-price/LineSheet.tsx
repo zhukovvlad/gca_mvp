@@ -54,6 +54,11 @@ import {
   UNIT_WARN_TAIL,
   UNIT_WARN_TITLE,
   workRungLabel,
+  zoneScopeMark,
+  otherZonesWhy,
+  ANY_ZONE_WHY,
+  zoneRequiredNote,
+  zoneRequiredNoZonePrefix,
   ZONE_CAPTION,
   unitWarnContracts,
   unitWarnKp,
@@ -237,6 +242,14 @@ function PanelContent({
           <LineStateText line={line} label={stateText} canResolve={canResolve} />
         </p>
       )}
+      {line.kind === "work" && line.no_history_reason === "no_zone_match" && line.family !== null && (
+        <p
+          data-testid="zone-required-note"
+          className="rounded-md border border-border bg-surface-sunken px-2.5 py-1.5 text-[12.5px] text-fg"
+        >
+          {zoneRequiredNote(line.family)}
+        </p>
+      )}
       <UnitWarn line={line} vat={vat} />
       {/* У работы секция есть всегда: блок «Зона места» стоит в ней и без статьи и пути. */}
       {(line.kind === "work" || (line.article ?? null) !== null || line.chapter_path.length > 0) && (
@@ -250,6 +263,7 @@ function PanelContent({
       {line.kind === "work" && line.state === "no_zone" && (
         <Section title={SHEET_SECTION.comparison} testId="sheet-comparison">
           <p data-testid="no-zone-compare" className="text-sm text-fg-secondary">
+            {line.family !== null && zoneRequiredNoZonePrefix(line.family)}
             {data.zone_chain === null
               ? NO_ZONE_COMPARE_NO_CHAIN
               : `${NO_ZONE_COMPARE}${canEdit ? NO_ZONE_COMPARE_ADMIN_TAIL : ""}`}
@@ -473,6 +487,10 @@ function WorkComparison({ tenderId, roundId, offerId, seriesId, line, data, vat,
   const del = useDeleteTarget(tenderId, roundId, offerId);
   const rungNo = line.work_rung;
   if (rungNo === null) return null;
+  const scope = rungNo.zone_scope;
+  const scopeMark = zoneScopeMark(scope);
+  const scopeWhy =
+    scope === "any" ? ANY_ZONE_WHY : scope === "other" && line.zone !== null ? otherZonesWhy(line.zone, data.analogs) : null;
   const contracts = new Set(data.analogs.map((a) => a.contract_id)).size;
   const choice = line.choice;
   const pinnedAnalogId = choice !== null && choice.active && choice.kind === "analog" ? choice.analog_id : null;
@@ -486,6 +504,7 @@ function WorkComparison({ tenderId, roundId, offerId, seriesId, line, data, vat,
     <Section title={SHEET_SECTION.comparison} testId="sheet-comparison">
       <div className="flex flex-wrap items-center gap-1.5 text-sm">
         <Badge variant="secondary">{workRungLabel(rungNo)}</Badge>
+        {scopeMark !== null && <Badge variant="secondary">{scopeMark}</Badge>}
         <span className="text-fg-secondary">
           {analogsInContracts(line.analogs_count, contracts)}
           {line.zone !== null && (
@@ -496,6 +515,14 @@ function WorkComparison({ tenderId, roundId, offerId, seriesId, line, data, vat,
           )}
         </span>
       </div>
+      {scopeWhy !== null && (
+        <p
+          data-testid="zone-scope-why"
+          className="rounded-md border border-border bg-surface-sunken px-2.5 py-1.5 text-[12.5px] text-fg"
+        >
+          {scopeWhy}
+        </p>
+      )}
       <TargetCards
         line={line}
         analogs={data.analogs}
@@ -514,6 +541,7 @@ function WorkComparison({ tenderId, roundId, offerId, seriesId, line, data, vat,
         contractorAnalogId={line.contractor?.analog_id ?? null}
         busy={put.isPending || del.isPending}
         columns={data.analog_columns}
+        zoneScope={scope}
         onChoose={(analogId) => put.mutate({ positionItemId: line.position_item_id, kind: "analog", analogId })}
       />
     </Section>

@@ -1,0 +1,524 @@
+{
+ "part1": {
+  "offers": 63,
+  "offers_ok": 58,
+  "offers_err": {
+   "DomainError:422": 5
+  },
+  "strict_families_found": [
+   "Вывоз и утилизация грунта",
+   "Двери",
+   "Изоляция воздуховодов",
+   "Монтаж воздуховодов вентиляции",
+   "Облицовка керамогранитом",
+   "Покраска стен",
+   "Светильники",
+   "Светильники"
+  ],
+  "states": {
+   "before": {
+    "no_variant": 15382,
+    "unit_mismatch": 2770,
+    "comparable": 17420,
+    "no_history": 35573,
+    "no_zone": 3042,
+    "no_price": 9302
+   },
+   "v1": {
+    "no_variant": 15382,
+    "unit_mismatch": 3467,
+    "comparable": 20549,
+    "no_history": 34789,
+    "no_price": 9302
+   },
+   "v1_strict": {
+    "no_variant": 15382,
+    "unit_mismatch": 3454,
+    "comparable": 20506,
+    "no_history": 34780,
+    "no_zone": 65,
+    "no_price": 9302
+   }
+  },
+  "transitions_of_not_comparable": {
+   "v1": {
+    "no_history/no_params -> no_history": 28776,
+    "no_variant -> no_variant": 15382,
+    "no_price -> no_price": 9302,
+    "unit_mismatch -> unit_mismatch": 2770,
+    "no_history/no_zone_match -> comparable": 2392,
+    "no_history/no_family -> no_history": 2128,
+    "no_zone -> no_history": 2120,
+    "no_history/composite -> no_history": 1342,
+    "no_zone -> comparable": 687,
+    "no_history/no_zone_match -> unit_mismatch": 448,
+    "no_history/path_conflict -> no_history": 423,
+    "no_zone -> unit_mismatch": 235,
+    "no_history/composite -> comparable": 50,
+    "no_history/composite -> unit_mismatch": 14
+   },
+   "v1_strict": {
+    "no_history/no_params -> no_history": 28776,
+    "no_variant -> no_variant": 15382,
+    "no_price -> no_price": 9302,
+    "unit_mismatch -> unit_mismatch": 2770,
+    "no_history/no_zone_match -> comparable": 2364,
+    "no_history/no_family -> no_history": 2128,
+    "no_zone -> no_history": 2071,
+    "no_history/composite -> no_history": 1342,
+    "no_zone -> comparable": 672,
+    "no_history/no_zone_match -> unit_mismatch": 436,
+    "no_history/path_conflict -> no_history": 423,
+    "no_zone -> unit_mismatch": 234,
+    "no_zone -> no_zone": 65,
+    "no_history/composite -> comparable": 50,
+    "no_history/no_zone_match -> no_history": 40,
+    "no_history/composite -> unit_mismatch": 14
+   }
+  },
+  "comparable_before_changed": {
+   "v1": 0,
+   "v1_strict": 0
+  },
+  "comparable_before_changed_sample": {
+   "v1": [],
+   "v1_strict": []
+  },
+  "fallback_rungs_found": {
+   "other_zone": 2904,
+   "no_zone": 922,
+   "strict:other_zone": 2864,
+   "strict:no_zone": 906
+  },
+  "fallback_by_family_v1_top": [
+   [
+    "Устройство жб конструкций",
+    641
+   ],
+   [
+    "Устройство пленочного слоя (паро-/гидроизоляция)",
+    550
+   ],
+   [
+    "ЦПС",
+    446
+   ],
+   [
+    "Светопрозрачные перегородки",
+    308
+   ],
+   [
+    "Обработка бетонных поверхностей",
+    265
+   ],
+   [
+    "Устройство перегородок и коробов",
+    215
+   ],
+   [
+    "Посадка растений",
+    209
+   ],
+   [
+    "Укладка гидроизоляции",
+    182
+   ],
+   [
+    "Устройство плитной теплоизоляции",
+    174
+   ],
+   [
+    "Огрунтовка/праймер битумный",
+    115
+   ],
+   [
+    "Грунтовка поверхностей",
+    64
+   ],
+   [
+    "Устройство дренажной профилированной мембраны",
+    61
+   ],
+   [
+    "Геотекстиль",
+    59
+   ],
+   [
+    "Ворота",
+    52
+   ],
+   [
+    "Устройство песчаного основания",
+    44
+   ],
+   [
+    "Устройство уклонообразующего слоя кровли",
+    41
+   ],
+   [
+    "Монтаж металлоконструкций",
+    40
+   ],
+   [
+    "Лифты",
+    32
+   ],
+   [
+    "Шпатлевание",
+    32
+   ],
+   [
+    "Дорожные знаки и указатели",
+    32
+   ],
+   [
+    "Облицовка керамогранитом",
+    28
+   ],
+   [
+    "МАФ",
+    27
+   ],
+   [
+    "Устройство бетонной подготовки (подбетонки)",
+    24
+   ],
+   [
+    "Индивидуальный МАФ",
+    18
+   ],
+   [
+    "Шлагбаумы",
+    15
+   ]
+  ]
+ },
+ "part2": {
+  "contracts": 7,
+  "history_lines_with_zone": 4091,
+  "zone_counts": {
+   "territory": 910,
+   "underground": 867,
+   "aboveground": 2156,
+   "whole": 158
+  },
+  "groups_with_pairs": 691,
+  "pairs_same_zone": {
+   "n": 9990,
+   "share_equal": 0.679,
+   "share_le_1.05": 0.749,
+   "share_le_1.10": 0.778,
+   "share_gt_1.25": 0.156,
+   "p50": 1.0,
+   "p75": 1.052,
+   "p90": 1.459,
+   "max": 107295462.0
+  },
+  "pairs_cross_zone": {
+   "n": 2076,
+   "share_equal": 0.413,
+   "share_le_1.05": 0.547,
+   "share_le_1.10": 0.636,
+   "share_gt_1.25": 0.22,
+   "p50": 1.036,
+   "p75": 1.194,
+   "p90": 1.839,
+   "max": 182.307
+  },
+  "groups_same_zone_median": {
+   "n": 636,
+   "share_equal": 0.613,
+   "share_le_1.05": 0.693,
+   "share_le_1.10": 0.736,
+   "share_gt_1.25": 0.182,
+   "p50": 1.0,
+   "p75": 1.134,
+   "p90": 1.92,
+   "max": 107295462.0
+  },
+  "groups_cross_zone_median": {
+   "n": 196,
+   "share_equal": 0.413,
+   "share_le_1.05": 0.566,
+   "share_le_1.10": 0.658,
+   "share_gt_1.25": 0.26,
+   "p50": 1.036,
+   "p75": 1.271,
+   "p90": 1.905,
+   "max": 13.482
+  },
+  "cross_zone_by_family": [
+   {
+    "family": "Устройство жб конструкций",
+    "groups": 35,
+    "median": 1.036,
+    "max": 1.077,
+    "groups_gt_1.10": 0
+   },
+   {
+    "family": "Устройство перегородок и коробов",
+    "groups": 23,
+    "median": 1.0,
+    "max": 1.285,
+    "groups_gt_1.10": 6
+   },
+   {
+    "family": "Двери",
+    "groups": 13,
+    "median": 1.442,
+    "max": 3.398,
+    "groups_gt_1.10": 11
+   },
+   {
+    "family": "Облицовка керамогранитом",
+    "groups": 11,
+    "median": 1.271,
+    "max": 2.772,
+    "groups_gt_1.10": 8
+   },
+   {
+    "family": "Ревизионные люки и дверцы скрытого монтажа",
+    "groups": 11,
+    "median": 1.0,
+    "max": 2.087,
+    "groups_gt_1.10": 3
+   },
+   {
+    "family": "ЦПС",
+    "groups": 10,
+    "median": 1.002,
+    "max": 7.274,
+    "groups_gt_1.10": 4
+   },
+   {
+    "family": "Обработка бетонных поверхностей",
+    "groups": 10,
+    "median": 1.0,
+    "max": 13.482,
+    "groups_gt_1.10": 2
+   },
+   {
+    "family": "Устройство стен",
+    "groups": 6,
+    "median": 1.0,
+    "max": 1.073,
+    "groups_gt_1.10": 0
+   },
+   {
+    "family": "Покраска стен",
+    "groups": 5,
+    "median": 1.134,
+    "max": 3.259,
+    "groups_gt_1.10": 3
+   },
+   {
+    "family": "Вывоз и утилизация грунта",
+    "groups": 5,
+    "median": 1.229,
+    "max": 2.177,
+    "groups_gt_1.10": 3
+   },
+   {
+    "family": "Укладка гидроизоляции",
+    "groups": 5,
+    "median": 1.023,
+    "max": 2.285,
+    "groups_gt_1.10": 1
+   },
+   {
+    "family": "Грунтовка поверхностей",
+    "groups": 5,
+    "median": 1.0,
+    "max": 1.076,
+    "groups_gt_1.10": 0
+   },
+   {
+    "family": "Устройство пленочного слоя (паро-/гидроизоляция)",
+    "groups": 5,
+    "median": 1.0,
+    "max": 2.14,
+    "groups_gt_1.10": 2
+   },
+   {
+    "family": "Светильники",
+    "groups": 4,
+    "median": 3.611,
+    "max": 4.072,
+    "groups_gt_1.10": 4
+   },
+   {
+    "family": "Монтаж воздуховодов вентиляции",
+    "groups": 4,
+    "median": 1.841,
+    "max": 1.905,
+    "groups_gt_1.10": 4
+   },
+   {
+    "family": "Изоляция воздуховодов",
+    "groups": 4,
+    "median": 1.64,
+    "max": 1.857,
+    "groups_gt_1.10": 4
+   },
+   {
+    "family": "Геотекстиль",
+    "groups": 4,
+    "median": 1.022,
+    "max": 1.298,
+    "groups_gt_1.10": 1
+   },
+   {
+    "family": "Комплексная отделка стен (штукатурка/шпатлевка с окраской)",
+    "groups": 4,
+    "median": 1.025,
+    "max": 1.145,
+    "groups_gt_1.10": 1
+   },
+   {
+    "family": "Дорожные знаки и указатели",
+    "groups": 4,
+    "median": 1.0,
+    "max": 1.667,
+    "groups_gt_1.10": 1
+   },
+   {
+    "family": "Устройство плинтуса",
+    "groups": 2,
+    "median": 1.087,
+    "max": 1.173,
+    "groups_gt_1.10": 1
+   },
+   {
+    "family": "Монтаж металлоконструкций",
+    "groups": 2,
+    "median": 1.22,
+    "max": 1.439,
+    "groups_gt_1.10": 1
+   },
+   {
+    "family": "Огрунтовка/праймер битумный",
+    "groups": 2,
+    "median": 1.064,
+    "max": 1.127,
+    "groups_gt_1.10": 1
+   },
+   {
+    "family": "Устройство покрытия из бетонной плитки/плит",
+    "groups": 2,
+    "median": 1.05,
+    "max": 1.1,
+    "groups_gt_1.10": 0
+   },
+   {
+    "family": "Шпатлевание",
+    "groups": 2,
+    "median": 1.0,
+    "max": 1.0,
+    "groups_gt_1.10": 0
+   },
+   {
+    "family": "Отделка стен декоративным покрытием",
+    "groups": 2,
+    "median": 1.54,
+    "max": 2.012,
+    "groups_gt_1.10": 1
+   },
+   {
+    "family": "Устройство дренажной профилированной мембраны",
+    "groups": 2,
+    "median": 1.404,
+    "max": 1.809,
+    "groups_gt_1.10": 1
+   },
+   {
+    "family": "Посадка растений",
+    "groups": 2,
+    "median": 1.345,
+    "max": 1.598,
+    "groups_gt_1.10": 1
+   },
+   {
+    "family": "Устройство поручней",
+    "groups": 2,
+    "median": 1.0,
+    "max": 1.0,
+    "groups_gt_1.10": 0
+   },
+   {
+    "family": "Устройство потолка",
+    "groups": 1,
+    "median": 1.0,
+    "max": 1.0,
+    "groups_gt_1.10": 0
+   },
+   {
+    "family": "Штукатурка",
+    "groups": 1,
+    "median": 1.0,
+    "max": 1.0,
+    "groups_gt_1.10": 0
+   },
+   {
+    "family": "Устройство газона",
+    "groups": 1,
+    "median": 1.0,
+    "max": 1.0,
+    "groups_gt_1.10": 0
+   },
+   {
+    "family": "Устройство плитной теплоизоляции",
+    "groups": 1,
+    "median": 1.251,
+    "max": 1.251,
+    "groups_gt_1.10": 1
+   },
+   {
+    "family": "Велопарковки",
+    "groups": 1,
+    "median": 1.483,
+    "max": 1.483,
+    "groups_gt_1.10": 1
+   },
+   {
+    "family": "Грунт растительный",
+    "groups": 1,
+    "median": 1.002,
+    "max": 1.002,
+    "groups_gt_1.10": 0
+   },
+   {
+    "family": "МАФ",
+    "groups": 1,
+    "median": 4.292,
+    "max": 4.292,
+    "groups_gt_1.10": 1
+   },
+   {
+    "family": "Устройство уклонообразующего слоя кровли",
+    "groups": 1,
+    "median": 1.0,
+    "max": 1.0,
+    "groups_gt_1.10": 0
+   },
+   {
+    "family": "Шлагбаумы",
+    "groups": 1,
+    "median": 1.0,
+    "max": 1.0,
+    "groups_gt_1.10": 0
+   },
+   {
+    "family": "Устройство щебеночного основания",
+    "groups": 1,
+    "median": 1.0,
+    "max": 1.0,
+    "groups_gt_1.10": 0
+   }
+  ]
+ },
+ "part3": {
+  "history_work_lines_any_zone": 4646,
+  "without_chain": 0,
+  "chain_without_zone": 555
+ }
+}

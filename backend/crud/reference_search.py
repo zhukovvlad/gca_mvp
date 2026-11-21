@@ -20,6 +20,7 @@ from crud.our_price import reference_row_view, search_context
 from crud.our_price_inflation import plan_history_inflation, round_target_month
 from crud.our_price_load import (
     KpLineRow,
+    _zone_required_families,
     load_analog_details,
     load_history,
     load_kp_lines,
@@ -109,8 +110,10 @@ def _word_conditions(words: Sequence[str]) -> list[sa.ColumnElement[bool]]:
     return conditions
 
 
-def _find_row(db: Session, estimate_id: int, offer_id: int, pid: int) -> KpLineRow:
-    found = load_kp_lines(db, [estimate_id], only_position_item_id=pid)[estimate_id]
+def _find_row(
+    db: Session, estimate_id: int, offer_id: int, pid: int, zone_required: frozenset[int]
+) -> KpLineRow:
+    found = load_kp_lines(db, [estimate_id], only_position_item_id=pid, zone_required=zone_required)[estimate_id]
     if not found:
         raise DomainError(404, f"Строка {pid} не найдена в КП оффера {offer_id}.")
     (row,) = found
@@ -150,7 +153,8 @@ def search_reference(
     words = parse_query(q)
     context = search_context(db, tender_id, round_id, offer_id)
     head, participant = context.head, context.participant
-    row = _find_row(db, context.estimate_id, offer_id, pid)
+    zone_required = _zone_required_families(db)
+    row = _find_row(db, context.estimate_id, offer_id, pid, zone_required)
     kp_family = None if row.line.key is None else row.line.key.family_id
 
     contracts, _history_lines = load_history(db, exclude_object_id=head.object_id)
@@ -170,7 +174,7 @@ def search_reference(
         db, estimate_of={c.contract_id: c.estimate_id for c in contracts}, family_ids=family_ids
     )
     contract_of = {c.contract_id: c for c in contracts}
-    history = WorkHistory(work_lines, families, contract_of, factors=factors)
+    history = WorkHistory(work_lines, families, contract_of, factors=factors, zone_required=zone_required)
 
     lines = _find_lines(db, contracts, words, row, units, factors)
 

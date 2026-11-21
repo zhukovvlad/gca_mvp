@@ -225,14 +225,15 @@ def _info() -> dict[int, FamilyLadderInfo]:
 
 
 def _history(lines: list[WorkHistoryLine], contracts: list[HistoryContract]) -> WorkHistory:
-    return WorkHistory(lines, _info(), {c.contract_id: c for c in contracts}, factors=None)
+    return WorkHistory(lines, _info(), {c.contract_id: c for c in contracts}, factors=None,
+                       zone_required=frozenset({KP_FAMILY}))
 
 
 def _kp(*, zone="aboveground", variant=W1, values=None, net="100", titles=()) -> KpWork:
     return KpWork(
         position_item_id=KP_PID, family_id=KP_FAMILY, variant_id=variant, schema_id=SCHEMA,
         main_values={RELEASED: 1, REQUIRED: 5} if values is None else values,
-        zone=zone, chain_titles=frozenset(titles), net=D(net),
+        zone=zone, zone_required=True, chain_titles=frozenset(titles), net=D(net),
     )
 
 

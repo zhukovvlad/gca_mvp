@@ -76,6 +76,7 @@ from services.work_families import (
     load_seed,
     merge_families,
     set_unit,
+    set_zone_required,
     update_family,
 )
 from tests.factories import seed_category_id
@@ -2424,3 +2425,103 @@ class TestAssignVsArchiveRace:
 
         # Свидетель — ТРЕТЬИМ, диагностика.
         assert a_blocked_on_b, "A (архивирование) не встала в очередь на лок, который держит B"
+
+
+# ---------------------------------------------------------------------------
+#  Флажок «зона обязательна» (спека зоны как предпочтения §4 п. 2)
+# ---------------------------------------------------------------------------
+
+def _zone_family(db, factories, *, active=True):
+    user = factories.UserFactory.create()
+    fam = create_family(
+        db, title=f"Зона {_uid()}", unit_name=None, definition="Определение",
+        actor_id=user.id, family_category_id=seed_category_id(db),
+    )
+    if active:
+        activate_family(db, family_id=fam.id, actor_id=user.id)
+    return fam, user
+
+
+def test_set_zone_required_change_writes_value_author_and_time(db_session, factories):
+    fam, user = _zone_family(db_session, factories)
+    other = factories.UserFactory.create()
+    before = dt.datetime.now(dt.UTC)
+
+    result = set_zone_required(db_session, family_id=fam.id, value=True, actor_id=user.id)
+
+    assert result.id == fam.id
+    db_session.refresh(fam)
+    assert fam.zone_required is True
+    assert fam.zone_required_changed_by == user.id
+    assert fam.zone_required_changed_at >= before
+
+    # Обратная смена другим актором переписывает и значение, и автора.
+    set_zone_required(db_session, family_id=fam.id, value=False, actor_id=other.id)
+    db_session.refresh(fam)
+    assert fam.zone_required is False
+    assert fam.zone_required_changed_by == other.id
+
+
+def test_set_zone_required_same_value_keeps_author_and_time(db_session, factories):
+    fam, user = _zone_family(db_session, factories)
+    other = factories.UserFactory.create()
+    set_zone_required(db_session, family_id=fam.id, value=True, actor_id=user.id)
+    db_session.refresh(fam)
+    changed_at = fam.zone_required_changed_at
+
+    set_zone_required(db_session, family_id=fam.id, value=True, actor_id=other.id)
+
+    db_session.refresh(fam)
+    assert fam.zone_required is True
+    assert fam.zone_required_changed_by == user.id
+    assert fam.zone_required_changed_at == changed_at
+
+
+def test_set_zone_required_same_default_value_writes_no_author(db_session, factories):
+    """Значение по умолчанию (`false`) подтверждено — автора и времени не появляется."""
+    fam, user = _zone_family(db_session, factories)
+
+    set_zone_required(db_session, family_id=fam.id, value=False, actor_id=user.id)
+
+    db_session.refresh(fam)
+    assert (fam.zone_required_changed_by, fam.zone_required_changed_at) == (None, None)
+
+
+def test_set_zone_required_unknown_family_refuses(db_session, factories):
+    user = factories.UserFactory.create()
+    with pytest.raises(WorkFamilyError) as exc:
+        set_zone_required(db_session, family_id=987654321, value=True, actor_id=user.id)
+    assert exc.value.code == REFUSE_FAMILY_NOT_FOUND
+
+
+def test_set_zone_required_archived_family_refuses_and_changes_nothing(db_session, factories):
+    fam, user = _zone_family(db_session, factories)
+    archive_family(db_session, family_id=fam.id, actor_id=user.id)
+
+    with pytest.raises(WorkFamilyError) as exc:
+        set_zone_required(db_session, family_id=fam.id, value=True, actor_id=user.id)
+
+    assert exc.value.code == REFUSE_UPDATE_ARCHIVED
+    db_session.refresh(fam)
+    assert fam.zone_required is False
+    assert fam.zone_required_changed_at is None
+
+
+def test_set_zone_required_locks_the_family_row_for_update(db_session, factories):
+    fam, user = _zone_family(db_session, factories)
+    statements: list[str] = []
+
+    def capture(conn, cursor, statement, *args):
+        statements.append(statement)
+
+    bind = db_session.get_bind()
+    event.listen(bind, "before_cursor_execute", capture)
+    try:
+        set_zone_required(db_session, family_id=fam.id, value=True, actor_id=user.id)
+    finally:
+        event.remove(bind, "before_cursor_execute", capture)
+
+    locks = [
+        st for st in statements if "FROM work_families" in st and "FOR UPDATE" in st
+    ]
+    assert locks, statements

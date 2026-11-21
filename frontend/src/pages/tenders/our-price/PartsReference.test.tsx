@@ -33,6 +33,28 @@ describe("справка «по частям»", () => {
     expect(screen.getByTestId("part-502")).toHaveTextContent("другой класс объекта");
   });
 
+  it("подписи частей: other — «другая зона», any — «зона не определена»; own и null — без метки", () => {
+    const g = groups();
+    g[0].parts[0] = { ...g[0].parts[0], zone_scope: "other" };
+    g[0].parts[1] = { ...g[0].parts[1], zone_scope: "any" };
+    const view = render(<PartsReference groups={g} vat="net" />);
+    expect(screen.getByTestId("part-501")).toHaveTextContent("тот же класс объекта · другая зона");
+    expect(screen.getByTestId("part-502")).toHaveTextContent("другой класс объекта · зона не определена");
+    view.unmount();
+    const plain = groups();
+    plain[0].parts[1] = { ...plain[0].parts[1], zone_scope: null };
+    render(<PartsReference groups={plain} vat="net" />);
+    expect(screen.getByTestId("part-501")).not.toHaveTextContent("зона");
+    expect(screen.getByTestId("part-502")).not.toHaveTextContent("зона");
+  });
+
+  it("часть без аналогов: метки зоны нет, даже если область пришла", () => {
+    const g = groups();
+    g[0].parts[1] = { ...g[0].parts[1], analogs: 0, contracts: 0, min: null, max: null, lowest: null, zone_scope: "other" };
+    render(<PartsReference groups={g} vat="net" />);
+    expect(screen.getByTestId("part-502")).not.toHaveTextContent("зона");
+  });
+
   it("целью части не становятся: ни одной кнопки", () => {
     render(<PartsReference groups={groups()} vat="net" />);
     expect(screen.queryByRole("button")).not.toBeInTheDocument();

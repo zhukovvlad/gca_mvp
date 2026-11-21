@@ -13,7 +13,7 @@ import pytest
 import sqlalchemy as sa
 
 from crud.our_price_load import load_history, load_work_history
-from models import CatalogContext, ContextParameterValue, FamilyParameterSchema, PositionItem, SemanticJob
+from models import CatalogContext, ContextParameterValue, FamilyParameterSchema, PositionItem, SemanticJob, WorkFamily
 from services.family_links import LinkInput, create_link
 from services.price_basis import _CONTEXT
 from tests.integration.test_our_price_load import World
@@ -277,7 +277,17 @@ def test_ref_analogs_panel_a_comparable_row_has_no_reference_blocks(member_clien
 # ---------------------------------------------------------------------------
 
 
+def _strict(stage, family=None) -> None:
+    """Флажок «зона обязательна» у семьи сцены: только у семьи с флажком бывают `no_zone_match` и блок А."""
+    family = family or stage.family
+    stage.db.execute(sa.update(WorkFamily).where(WorkFamily.id == family.id).values(zone_required=True))
+    stage.db.flush()
+    stage.db.refresh(family)
+
+
 def _underground(stage):
+    """Подземная цепочка для сцен «строка КП без ступени в своей зоне»: семья сцены получает флажок."""
+    _strict(stage)
     return stage.world.chain(("Корпус", "Подземная часть"), "underground")
 
 

@@ -45,6 +45,7 @@ def kp(
     titles: tuple[str, ...] = (),
     net: str = "100",
     conflicted: frozenset[int] = frozenset(),
+    zone_required: bool = False,
 ) -> KpWork:
     return KpWork(
         position_item_id=9000,
@@ -56,6 +57,7 @@ def kp(
         chain_titles=frozenset(titles),
         net=D(net),
         conflicted=conflicted,
+        zone_required=zone_required,
     )
 
 
@@ -131,6 +133,7 @@ def run(
     target: YearMonth | None = YearMonth(2026, 1),
     factors: dict[int, Decimal] | None = None,
     contractor: int = 99,
+    zone_required: frozenset[int] = frozenset(),
 ) -> WorkLadder:
     return evaluate_work_ladder(
         work,
@@ -141,6 +144,7 @@ def run(
         tender_contractor_id=contractor,
         target_month=target,
         factors=factors,
+        zone_required=zone_required,
     )
 
 
@@ -173,22 +177,33 @@ def test_candidate_baseline_is_an_analog() -> None:
         pytest.param(line(1, 1, "100", weight="0"), [1], "no_family", id="3-zero-weight"),
         pytest.param(line(1, 1, "100", weight=None), [1], "no_family", id="3-no-weight"),
         pytest.param(line(1, 1, "0.99"), [1], "no_family", id="4-below-one-ruble"),
-        pytest.param(line(1, 1, "100", zone=None), [1], "no_family", id="5-zone-undefined"),
-        pytest.param(line(1, 1, "100", zone="aboveground"), [1], "no_zone_match", id="zone-differs"),
         pytest.param(line(1, 1, "100", vat=None), [1], "no_family", id="vat-base-unknown"),
         pytest.param(line(1, 1, "100", family=2), [1], "no_family", id="other-family"),
     ],
 )
+@pytest.mark.parametrize("flagged", [True, False], ids=["flagged-family", "unflagged-family"])
 def test_candidate_each_condition_alone_excludes_the_line(
-    bad_line: WorkHistoryLine, known_contracts: list[int], reason: str
+    bad_line: WorkHistoryLine, known_contracts: list[int], reason: str, flagged: bool
 ) -> None:
     """Причина «нет истории» отличает «не кандидат» от «кандидат, но не та зона»:
     строка с неопределённой зоной у КП с зоной не попала бы в ступень и будучи
     кандидатом, поэтому одного `rung_no is None` для условия 5 мало."""
-    ladder = run(kp(), [bad_line], [contract(c) for c in known_contracts])
+    ladder = run(
+        kp(zone_required=flagged),
+        [bad_line],
+        [contract(c) for c in known_contracts],
+        zone_required=STRICT if flagged else frozenset(),
+    )
     assert ladder.rung_no is None
     assert ladder.analogs == ()
     assert ladder.no_history_reason == reason
+
+
+def test_zone_conditions_exclude_the_line_only_in_a_flagged_family() -> None:
+    """Зона: у семьи с флажком строка без зоны не кандидат, а чужая зона — «кандидат, но не та зона»."""
+    for bad_line, reason in [(line(1, 1, "100", zone=None), "no_family"), (line(1, 1, "100", zone="aboveground"), "no_zone_match")]:
+        ladder = run(kp(zone_required=True), [bad_line], [contract(1)], zone_required=STRICT)
+        assert (ladder.rung_no, ladder.analogs, ladder.no_history_reason) == (None, (), reason)
 
 
 def test_k4_only_symbolic_analog_on_rung_one_normal_on_rung_two() -> None:
@@ -359,7 +374,8 @@ def test_rungs_two_and_four_absent_without_family_info() -> None:
 
 def test_kp_zone_is_echoed_and_undefined_zone_matches_nothing() -> None:
     assert run(kp(), [line(1, 1, "100")], [contract(1)]).zone == "underground"
-    ladder = run(kp(zone=None), [line(1, 1, "100", zone=None)], [contract(1)])
+    flagged = kp(zone=None, zone_required=True)
+    ladder = run(flagged, [line(1, 1, "100", zone=None)], [contract(1)], zone_required=STRICT)
     assert (ladder.zone, ladder.rung_no) == (None, None)
 
 
@@ -711,17 +727,19 @@ def test_no_history_reason_no_params_without_releasable() -> None:
 
 
 def test_no_history_reason_no_zone_match_by_variant() -> None:
-    ladder = run(kp(), [line(1, 1, "100", zone="aboveground")], [contract(1)])
+    ladder = run(kp(zone_required=True), [line(1, 1, "100", zone="aboveground")], [contract(1)], zone_required=STRICT)
     assert ladder.no_history_reason == "no_zone_match"
 
 
 def test_no_history_reason_no_zone_match_by_required_values() -> None:
     lines = [line(1, 1, "100", variant=W8, values=OTHER_VARIANT, zone="territory")]
-    assert run(kp(), lines, [contract(1)]).no_history_reason == "no_zone_match"
+    ladder = run(kp(zone_required=True), lines, [contract(1)], zone_required=STRICT)
+    assert ladder.no_history_reason == "no_zone_match"
 
 
 def test_no_history_reason_counts_candidates_of_any_class() -> None:
-    ladder = run(kp(), [line(1, 1, "100", zone="territory")], [contract(1, cls=CLASS_B)])
+    lines = [line(1, 1, "100", zone="territory")]
+    ladder = run(kp(zone_required=True), lines, [contract(1, cls=CLASS_B)], zone_required=STRICT)
     assert ladder.no_history_reason == "no_zone_match"
 
 
@@ -973,3 +991,255 @@ def test_conflict_applies_to_unknown_vat_base_lines() -> None:
     assert run(clean_work, [unknown], [contract(1)]).vat_dropped == (1,)
     conflicted_unknown = line(1, 1, "100", values=EMPTY_REQUIRED, vat=None, conflicted=CONFLICT_REQUIRED)
     assert run(clean_work, [conflicted_unknown], [contract(1)]).vat_dropped == ()
+
+
+# ---------------------------------------------------------------------------
+#  Зона как предпочтение: области own / other / any (спека «зона как предпочтение» §1)
+# ---------------------------------------------------------------------------
+
+ABOVE = "aboveground"
+TERRITORY = "territory"
+STRICT = frozenset({FAMILY})
+CONFLICT_RELEASED_ONLY = frozenset({RELEASED})
+
+
+def zones_of(ladder: WorkLadder) -> dict[int, str | None]:
+    return {a.position_item_id: a.zone for a in ladder.analogs}
+
+
+def test_claim1_own_rung_four_beats_other_rung_one() -> None:
+    """Своя зона на любой ступени побеждает: «own, ступень 4» раньше «other, ступень 1»."""
+    lines = [
+        line(1, 1, "100", variant=W8, values=OTHER_VARIANT),  # своя зона, класс B -> ступень 4
+        line(2, 2, "50", zone=ABOVE),  # чужая зона, вариант и класс те же -> ступень 1 в other
+    ]
+    ladder = run(kp(), lines, [contract(1, cls=CLASS_B), contract(2)])
+    assert (ladder.rung_no, ladder.zone_scope) == (4, "own")
+    assert ids(ladder) == [1]
+    assert zones_of(ladder) == {1: ZONE}
+
+
+def test_claim2_nothing_in_own_goes_to_other_as_one_sample() -> None:
+    lines = [
+        line(1, 1, "100", zone=ABOVE),
+        line(2, 2, "102", zone=ABOVE),
+        line(3, 3, "104", zone=TERRITORY),
+        line(4, 4, "900", zone=None),
+    ]
+    ladder = run(kp(), lines, [contract(i) for i in (1, 2, 3, 4)])
+    assert (ladder.rung_no, ladder.zone_scope) == (1, "other")
+    assert zones_of(ladder) == {1: ABOVE, 2: ABOVE, 3: TERRITORY, 4: None}
+    # выброс 500 найден по общей выборке: отдельно, в своей зоне, он был бы один и выбросом не стал
+    outlier = {a.position_item_id for a in ladder.analogs if a.outlier_ratio is not None}
+    assert outlier == {4}
+    assert ladder.remainder_ids == frozenset({1, 2, 3})
+    assert ladder.lowest is not None and ladder.lowest.analog_id == 1
+
+
+def test_claim2_other_runs_rungs_one_to_four() -> None:
+    lines = [line(1, 1, "100", zone=ABOVE, variant=W8, values=OTHER_VARIANT)]
+    ladder = run(kp(), lines, [contract(1, cls=CLASS_B)])
+    assert (ladder.rung_no, ladder.zone_scope, ids(ladder)) == (4, "other", [1])
+
+
+def test_claim3_zoneless_line_alone_is_found_in_other_not_own() -> None:
+    ladder = run(kp(), [line(1, 1, "100", zone=None)], [contract(1)])
+    assert (ladder.rung_no, ladder.zone_scope) == (1, "other")
+    assert zones_of(ladder) == {1: None}
+
+
+def test_claim3_zoneless_line_does_not_win_over_own_lower_rung() -> None:
+    lines = [
+        line(1, 1, "100", variant=W8, values=OTHER_VARIANT),  # своя зона, ступень 4
+        line(2, 2, "50", zone=None),  # без зоны, ступень 1: в own не входит
+    ]
+    ladder = run(kp(), lines, [contract(1, cls=CLASS_B), contract(2)])
+    assert (ladder.rung_no, ladder.zone_scope, ids(ladder)) == (4, "own", [1])
+
+
+def test_claim4_kp_without_zone_searches_any() -> None:
+    lines = [
+        line(1, 1, "100", zone=ZONE),
+        line(2, 2, "110", zone=None),
+        line(3, 3, "120", zone=ABOVE),
+    ]
+    ladder = run(kp(zone=None), lines, [contract(i) for i in (1, 2, 3)])
+    assert (ladder.zone, ladder.rung_no, ladder.zone_scope) == (None, 1, "any")
+    assert zones_of(ladder) == {1: ZONE, 2: None, 3: ABOVE}
+
+
+def test_claim4_kp_without_zone_runs_all_rungs_in_any() -> None:
+    lines = [line(1, 1, "100", zone=None, variant=W8, values=OTHER_VARIANT)]
+    ladder = run(kp(zone=None), lines, [contract(1, cls=CLASS_B)])
+    assert (ladder.rung_no, ladder.zone_scope) == (4, "any")
+
+
+def test_claim5_flagged_family_stays_in_own_and_takes_no_zoneless_line() -> None:
+    lines = [line(1, 1, "100", zone=ABOVE), line(2, 2, "100", zone=None)]
+    ladder = run(kp(zone_required=True), lines, [contract(1), contract(2)], zone_required=STRICT)
+    assert (ladder.rung_no, ladder.zone_scope, ladder.analogs) == (None, None, ())
+    assert ladder.no_history_reason == "no_zone_match"
+
+
+def test_claim5_flagged_family_with_own_candidate_ignores_other_zones() -> None:
+    lines = [line(1, 1, "100", variant=W8, values=OTHER_VARIANT), line(2, 2, "50", zone=ABOVE)]
+    contracts = [contract(1, cls=CLASS_B), contract(2)]
+    ladder = run(kp(zone_required=True), lines, contracts, zone_required=STRICT)
+    assert (ladder.rung_no, ladder.zone_scope, ids(ladder)) == (4, "own", [1])
+
+
+def test_claim5_zoneless_line_is_not_a_candidate_of_a_flagged_family() -> None:
+    ladder = run(kp(zone_required=True), [line(1, 1, "100", zone=None)], [contract(1)], zone_required=STRICT)
+    assert (ladder.rung_no, ladder.no_history_reason) == (None, "no_family")
+
+
+def test_claim5_flag_in_history_alone_keeps_the_pool_strict() -> None:
+    # строка КП без флажка, но семья отмечена в истории: пул без строк без зоны, подбор только в own
+    lines = [line(1, 1, "100", zone=None), line(2, 2, "100", zone=ABOVE)]
+    ladder = run(kp(), lines, [contract(1), contract(2)], zone_required=STRICT)
+    assert (ladder.rung_no, ladder.no_history_reason) == (None, "no_zone_match")
+
+
+def test_claim5_flag_on_kp_alone_searches_only_own() -> None:
+    ladder = run(kp(zone_required=True), [line(1, 1, "100", zone=ABOVE)], [contract(1)])
+    assert (ladder.rung_no, ladder.zone_scope, ladder.no_history_reason) == (None, None, "no_zone_match")
+
+
+def test_claim5_flagged_kp_without_zone_finds_no_rung() -> None:
+    work = kp(zone=None, zone_required=True)
+    ladder = run(work, [line(1, 1, "100", zone=ZONE)], [contract(1)], zone_required=STRICT)
+    assert ladder.rung_no is None and ladder.zone_scope is None
+
+
+OTHER_PARAMS = {RELEASED: 1, REQUIRED: 6}
+
+
+@pytest.mark.parametrize(
+    ("work", "lines", "contracts", "reason"),
+    [
+        pytest.param(kp(), [], [], "no_family", id="no-history"),
+        pytest.param(kp(), [line(1, 1, "100", zone=ABOVE, family=2)], [1], "no_family", id="other-family"),
+        pytest.param(
+            kp(conflicted=frozenset({REQUIRED})), [line(1, 1, "100", zone=ABOVE)], [1], "path_conflict", id="conflict"
+        ),
+        pytest.param(
+            kp(), [line(1, 1, "100", variant=W8, values=OTHER_PARAMS, zone=ABOVE)], [1], "no_params", id="other-zone"
+        ),
+        pytest.param(
+            kp(), [line(1, 1, "100", variant=W8, values=OTHER_PARAMS, zone=None)], [1], "no_params", id="zoneless"
+        ),
+        pytest.param(
+            kp(zone=None),
+            [line(1, 1, "100", variant=W8, values=OTHER_PARAMS, zone=ABOVE)],
+            [1],
+            "no_params",
+            id="kp-without-zone",
+        ),
+        pytest.param(
+            kp(conflicted=CONFLICT_RELEASED_ONLY),
+            [line(1, 1, "100", values=OTHER_PARAMS, zone=ABOVE)],
+            [1],
+            "no_params",
+            id="variant-known-but-blocked-values-differ",
+        ),
+    ],
+)
+def test_claim6_unflagged_family_never_reports_no_zone_match(work, lines, contracts, reason) -> None:
+    ladder = run(work, lines, [contract(c) for c in contracts])
+    assert ladder.rung_no is None
+    assert ladder.no_history_reason == reason
+
+
+def test_claim6_the_same_blocked_input_in_a_flagged_family_keeps_no_zone_match() -> None:
+    lines = [line(1, 1, "100", values=OTHER_PARAMS, zone=ABOVE)]
+    work = kp(conflicted=CONFLICT_RELEASED_ONLY, zone_required=True)
+    ladder = run(work, lines, [contract(1)], zone_required=STRICT)
+    assert ladder.no_history_reason == "no_zone_match"
+
+
+def test_claim7_all_outliers_in_other_stays_in_other() -> None:
+    lines = [
+        line(1, 1, "10", zone=ABOVE),
+        line(2, 2, "100", zone=TERRITORY),
+        line(3, 3, "100", zone=ABOVE, variant=W8, values=OTHER_VARIANT),  # ступень 2 без выброса: не берётся
+    ]
+    ladder = run(kp(), lines, [contract(1), contract(2), contract(3)])
+    assert (ladder.rung_no, ladder.zone_scope, ladder.all_outliers) == (1, "other", True)
+    assert ladder.lowest is None
+    assert sorted(ids(ladder)) == [1, 2]
+
+
+def test_claim7a_own_rung_found_with_all_outliers_does_not_move_to_other() -> None:
+    lines = [
+        line(1, 1, "10", variant=W8, values=OTHER_VARIANT),  # своя зона, ступень 4: оба выбросы
+        line(2, 2, "100", variant=W8, values=OTHER_VARIANT),
+        line(3, 3, "100", zone=ABOVE),  # чужая зона, ступень 1: без выброса
+        line(4, 4, "100", zone=ABOVE, variant=W8, values=OTHER_VARIANT),  # чужая зона, ступень 4
+    ]
+    contracts = [contract(1, cls=CLASS_B), contract(2, cls=CLASS_B), contract(3), contract(4, cls=CLASS_B)]
+    ladder = run(kp(), lines, contracts)
+    assert (ladder.rung_no, ladder.zone_scope, ladder.all_outliers) == (4, "own", True)
+    assert sorted(ids(ladder)) == [1, 2]
+    assert ladder.lowest is None
+
+
+def test_claim8_vat_dropped_with_rung_other_counts_only_other() -> None:
+    lines = [
+        line(1, 1, "100", zone=ABOVE),
+        line(2, 2, "100", zone=TERRITORY, vat=None),
+        line(3, 3, "100", zone=None, vat=None),
+        line(4, 4, "100", zone=ZONE, vat=None),  # своя зона: ступень в other её не считает
+    ]
+    ladder = run(kp(), lines, [contract(i) for i in (1, 2, 3, 4)])
+    assert (ladder.zone_scope, ladder.vat_dropped) == ("other", (2, 3))
+
+
+def test_claim8_vat_dropped_with_rung_own_counts_only_own() -> None:
+    lines = [
+        line(1, 1, "100"),
+        line(2, 2, "100", vat=None),
+        line(3, 3, "100", zone=ABOVE, vat=None),
+        line(4, 4, "100", zone=None, vat=None),
+    ]
+    ladder = run(kp(), lines, [contract(i) for i in (1, 2, 3, 4)])
+    assert (ladder.zone_scope, ladder.vat_dropped) == ("own", (2,))
+
+
+def test_claim8_vat_dropped_with_rung_any_counts_everything() -> None:
+    lines = [
+        line(1, 1, "100", zone=ZONE),
+        line(2, 2, "100", zone=ABOVE, vat=None),
+        line(3, 3, "100", zone=None, vat=None),
+    ]
+    ladder = run(kp(zone=None), lines, [contract(i) for i in (1, 2, 3)])
+    assert (ladder.zone_scope, ladder.vat_dropped) == ("any", (2, 3))
+
+
+def test_claim8_vat_dropped_without_rung_takes_own_before_other() -> None:
+    # свой выпавший подходит только ступени 3 (класс B), чужой — ступени 1: порядок «own 1–4, затем other 1–4»
+    lines = [line(1, 1, "100", vat=None), line(2, 2, "100", zone=ABOVE, vat=None)]
+    ladder = run(kp(), lines, [contract(1, cls=CLASS_B), contract(2)])
+    assert (ladder.rung_no, ladder.vat_dropped) == (None, (1,))
+
+
+def test_claim8_vat_dropped_without_rung_uses_first_rung_of_other_when_own_has_none() -> None:
+    lines = [
+        line(1, 1, "100", zone=ABOVE, vat=None, variant=W8, values=OTHER_VARIANT),  # ступень 2
+        line(2, 2, "100", zone=TERRITORY, vat=None),  # ступень 3 (класс B)
+        line(3, 3, "100", zone=None, vat=None, variant=W8, values=OTHER_VARIANT),  # ступень 2
+    ]
+    ladder = run(kp(), lines, [contract(1), contract(2, cls=CLASS_B), contract(3)])
+    assert (ladder.rung_no, ladder.vat_dropped) == (None, (1, 3))
+
+
+def test_claim8_vat_dropped_in_a_flagged_family_ignores_other_zones_and_zoneless() -> None:
+    lines = [line(1, 1, "100", zone=ABOVE, vat=None), line(2, 2, "100", zone=None, vat=None)]
+    ladder = run(kp(zone_required=True), lines, [contract(1), contract(2)], zone_required=STRICT)
+    assert (ladder.rung_no, ladder.vat_dropped) == (None, ())
+
+
+def test_zone_scope_is_none_exactly_when_there_is_no_rung() -> None:
+    none = run(kp(), [], [])
+    assert (none.rung_no, none.zone_scope) == (None, None)
+    found = run(kp(), [line(1, 1, "100")], [contract(1)])
+    assert (found.rung_no, found.zone_scope) == (1, "own")

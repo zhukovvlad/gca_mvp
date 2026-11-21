@@ -512,6 +512,11 @@ FAMILY_LINK_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
 )
 assert len(FAMILY_LINK_ROUTE_TEMPLATES) == 4
 
+#: Флажок семьи «зона обязательна» (спека зоны как предпочтения §4 п. 2) — шаблоном пути.
+ZONE_REQUIRED_ROUTE_TEMPLATES: frozenset[tuple[str, str]] = frozenset(
+    {("PUT", f"{BASE}/families/{{family_id}}/zone-required")}
+)
+
 
 def test_route_set_under_prefix_equals_twenty_one_literal():
     """Множество путей под `/api/v1/semantic`, собранное из `app.routes`,
@@ -540,6 +545,7 @@ def test_route_set_under_prefix_equals_twenty_one_literal():
         | LADDER_ROUTE_TEMPLATES
         | JOURNAL_ROUTE_TEMPLATES
         | FAMILY_LINK_ROUTE_TEMPLATES
+        | ZONE_REQUIRED_ROUTE_TEMPLATES
     )
     # Возврата семьи из архива нет; «Вернуть» бывает только у черновиков открытия.
     assert not any(
@@ -901,6 +907,7 @@ class TestFamilies:
             "seed_key", "created_by", "created_at", "updated_at",
             "activated_by", "activated_at", "archived_at", "context_count",
             "family_category_id", "family_category_title", "unit_busy_jobs",
+            "zone_required", "zone_required_changed_at", "zone_required_changed_by",
         })
         m2 = "M2"
 
@@ -4782,3 +4789,85 @@ class TestMemberGroupMergeOrder:
         assert member_paths[0]["member_count"] == 3
         assert [sg["chapter_item_ids"] for sg in stale_groups] == [[10, 20]]
         assert stale_groups[0]["count"] == 2
+
+
+# ---------------------------------------------------------------------------
+#  Флажок семьи «зона обязательна» (спека зоны как предпочтения §4 п. 2-3)
+# ---------------------------------------------------------------------------
+
+_ZONE_KEYS = {"zone_required", "zone_required_changed_at", "zone_required_changed_by"}
+
+
+class TestZoneRequiredRoute:
+    def test_member_is_rejected(self, member_client):
+        response = member_client.put(
+            f"{BASE}/families/1/zone-required", json={"zone_required": True}
+        )
+        assert response.status_code == 403
+
+    def test_anonymous_is_rejected(self, anon_client):
+        response = anon_client.put(
+            f"{BASE}/families/1/zone-required", json={"zone_required": True}
+        )
+        assert response.status_code in (401, 403)
+
+    def test_admin_sets_the_flag_and_gets_the_family_row(self, admin_client, db_session):
+        family = _family(db_session, admin_client.user, title="Зона через маршрут")
+
+        response = admin_client.put(
+            f"{BASE}/families/{family.id}/zone-required", json={"zone_required": True}
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["id"] == family.id
+        assert body.keys() >= _ZONE_KEYS
+        assert body["zone_required"] is True
+        assert body["zone_required_changed_at"] is not None
+        assert body["zone_required_changed_by"] == {
+            "id": admin_client.user.id, "email": admin_client.user.email,
+        }
+
+    def test_unknown_family_is_404(self, admin_client):
+        response = admin_client.put(
+            f"{BASE}/families/987654321/zone-required", json={"zone_required": True}
+        )
+        assert response.status_code == 404
+        assert response.json()["detail"]["code"] == work_families.REFUSE_FAMILY_NOT_FOUND
+
+    def test_archived_family_is_409_by_the_shared_code_mapping(self, admin_client, db_session):
+        """Спека §4 п. 2 называет 422, но код `update_archived` уже сидит в `_STATUS_CONFLICT`
+        (то же поведение у `PATCH /families/{id}`): статус общий для кода, не для маршрута."""
+        family = _family(db_session, admin_client.user, title="Архивная зона")
+        archived = admin_client.post(f"{BASE}/families/{family.id}/archive")
+        assert archived.status_code == 200
+
+        response = admin_client.put(
+            f"{BASE}/families/{family.id}/zone-required", json={"zone_required": True}
+        )
+
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == work_families.REFUSE_UPDATE_ARCHIVED
+
+    def test_body_without_the_field_is_422(self, admin_client, db_session):
+        family = _family(db_session, admin_client.user, title="Пустое тело")
+        response = admin_client.put(f"{BASE}/families/{family.id}/zone-required", json={})
+        assert response.status_code == 422
+
+    def test_list_gives_the_three_fields_on_every_row(self, admin_client, db_session):
+        flagged = _family(db_session, admin_client.user, title="С флажком")
+        plain = _family(db_session, admin_client.user, title="Без флажка")
+        admin_client.put(
+            f"{BASE}/families/{flagged.id}/zone-required", json={"zone_required": True}
+        )
+
+        listed = admin_client.get(f"{BASE}/families")
+
+        assert listed.status_code == 200
+        rows = {row["id"]: row for row in listed.json()["items"]}
+        assert all(row.keys() >= _ZONE_KEYS for row in rows.values())
+        assert rows[flagged.id]["zone_required"] is True
+        assert rows[flagged.id]["zone_required_changed_by"]["id"] == admin_client.user.id
+        assert rows[plain.id]["zone_required"] is False
+        assert rows[plain.id]["zone_required_changed_at"] is None
+        assert rows[plain.id]["zone_required_changed_by"] is None

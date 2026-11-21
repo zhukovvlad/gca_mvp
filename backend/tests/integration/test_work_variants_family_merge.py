@@ -28,6 +28,7 @@ from services.semantic_reconcile import reconcile_or_defer
 from services.work_families import (
     REFUSE_MERGE_SCHEMA_BUILDING,
     WorkFamilyError,
+    assign_family,
     merge_families,
 )
 from services.work_variants import rebuild_schema
@@ -728,3 +729,84 @@ class TestOnlyValueJobsAreReconciled:
         _merge(db_session, source.family, target, actor)
 
         assert _suggestion_jobs(db_session) == before
+
+
+# ---------------------------------------------------------------------------
+#  Флажок «зона обязательна» при слиянии (спека зоны как предпочтения §4 п. 4)
+# ---------------------------------------------------------------------------
+
+def _flagged(db, family, *, author):
+    family.zone_required = True
+    family.zone_required_changed_by = author
+    family.zone_required_changed_at = sa.func.now() - sa.text("interval '1 day'")
+    db.flush()
+    db.refresh(family)
+
+
+def _flag(db, family):
+    db.refresh(family)
+    return (
+        family.zone_required, family.zone_required_changed_by, family.zone_required_changed_at,
+    )
+
+
+def test_merge_moves_the_flag_to_a_target_without_it(db_session, factories):
+    source = _family(db_session, status="active", definition=f"Источник {_uid()}")
+    target = _family(db_session, status="active", definition=f"Цель {_uid()}")
+    flagger, merger = _actor(factories), _actor(factories)
+    _flagged(db_session, source, author=flagger)
+
+    _merge(db_session, source, target, merger)
+
+    required, author, changed_at = _flag(db_session, target)
+    assert required is True
+    assert author == merger  # автор — сливающий, не автор флажка источника
+    now = db_session.execute(sa.select(sa.func.now())).scalar_one()
+    assert abs((now - changed_at).total_seconds()) < 60  # момент слияния, не вчера
+
+
+def test_merge_leaves_a_target_that_already_has_the_flag_untouched(db_session, factories):
+    source = _family(db_session, status="active", definition=f"Источник {_uid()}")
+    target = _family(db_session, status="active", definition=f"Цель {_uid()}")
+    flagger, merger = _actor(factories), _actor(factories)
+    _flagged(db_session, source, author=merger)
+    _flagged(db_session, target, author=flagger)
+    before = _flag(db_session, target)
+
+    _merge(db_session, source, target, merger)
+
+    assert _flag(db_session, target) == before
+    assert before[1] == flagger
+
+
+def test_merge_without_the_flag_on_the_source_changes_nothing(db_session, factories):
+    source = _family(db_session, status="active", definition=f"Источник {_uid()}")
+    target = _family(db_session, status="active", definition=f"Цель {_uid()}")
+    merger = _actor(factories)
+
+    _merge(db_session, source, target, merger)
+    assert _flag(db_session, target) == (False, None, None)
+
+    # Флажок только у цели — тоже не меняется.
+    source2 = _family(db_session, status="active", definition=f"Источник {_uid()}")
+    target2 = _family(db_session, status="active", definition=f"Цель {_uid()}")
+    _flagged(db_session, target2, author=merger)
+    before = _flag(db_session, target2)
+    _merge(db_session, source2, target2, merger)
+    assert _flag(db_session, target2) == before
+
+
+def test_moving_a_context_to_another_family_does_not_touch_flags(db_session, factories):
+    world = _settled_world(db_session, factories)
+    target = _family(db_session, status="active", definition=f"Цель {_uid()}")
+    actor = _actor(factories)
+    _flagged(db_session, world.family, author=actor)
+    before_source = _flag(db_session, world.family)
+    before_target = _flag(db_session, target)
+
+    assign_family(
+        db_session, context_id=world.context_id, family_id=target.id, actor_id=actor
+    )
+
+    assert _flag(db_session, world.family) == before_source
+    assert _flag(db_session, target) == before_target == (False, None, None)

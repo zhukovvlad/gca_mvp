@@ -34,6 +34,7 @@ from crud.our_price_load import (
     ArticleMeta,
     CategoryMeta,
     KpLineRow,
+    _zone_required_families,
     category_roots,
     category_rows,
     category_tree,
@@ -396,7 +397,8 @@ def _build_scene(
     bases = kp_vat_bases(db, kp_ids)
     participants = [_Participant(*raw, base=bases.get(raw[3])) for raw in participants_raw]
 
-    kp_lines = load_kp_lines(db, kp_ids)
+    zone_required = _zone_required_families(db)
+    kp_lines = load_kp_lines(db, kp_ids, zone_required=zone_required)
     if require_line is not None and not any(
         row.line.position_item_id == require_line for rows in kp_lines.values() for row in rows
     ):
@@ -417,7 +419,9 @@ def _build_scene(
         )
     factors = plan.factor_by_estimate if plan is not None else None
     index = HistoryIndex(contracts, history_lines, factor_by_estimate=factors)
-    ladder_history = WorkHistory(work_history, families, index.contracts, factors=factors)
+    ladder_history = WorkHistory(
+        work_history, families, index.contracts, factors=factors, zone_required=zone_required
+    )
 
     root_of, root_meta = category_roots(db)
     roots_by_estimate = net_by_root(
@@ -944,7 +948,12 @@ def _line_view(
         "work_rung": (
             None
             if ladder is None or ladder.rung_no is None
-            else {"no": ladder.rung_no, "released": list(ladder.released), "other_class": ladder.other_class}
+            else {
+                "no": ladder.rung_no,
+                "released": list(ladder.released),
+                "other_class": ladder.other_class,
+                "zone_scope": ladder.zone_scope,
+            }
         ),
         "rung": (
             None
@@ -1706,6 +1715,7 @@ def _analogs_view(
                 "outlier_ratio": analog.outlier_ratio,
                 "with_this_contractor": contract.contractor_id == participant.contractor_id,
                 "place_match": analog.place_match,
+                "zone": analog.zone,
                 "selectable": analog.outlier_ratio is None,
                 "released_values": released_values.get(analog.position_item_id, []),
             }
@@ -1753,6 +1763,7 @@ def _parts_reference_view(
                     "max": money_pair(part.max, rate, unit=True),
                     "lowest": lowest,
                     "other_class": part.other_class,
+                    "zone_scope": part.zone_scope,
                 }
             )
         view.append({**group, "parts": parts})

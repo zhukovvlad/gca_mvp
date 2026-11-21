@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { compareDecimalStrings } from "@/lib/decimal";
 import { cn } from "@/lib/utils";
-import type { OurPriceAnalog } from "@/types/domain";
+import type { OurPriceAnalog, ZoneScope } from "@/types/domain";
 
 import { LineWhere } from "./LineWhere";
 import { formatMoney, formatUnitPrice, pick, type VatView } from "./money";
@@ -18,6 +18,7 @@ import {
   ANALOGS_LESS,
   ANALOGS_NOMINAL_TITLE,
   analogsMore,
+  analogZoneBadge,
   periodRu,
 } from "./ourPriceCopy";
 import { releasedValueText } from "./paramsCopy";
@@ -39,6 +40,8 @@ export interface AnalogsTableProps {
   onChoose: (analogId: number) => void;
   /** Отпускаемые параметры ступени 2/4 (`analog_columns`): у каждого аналога - значение по порядку; пусто - колонок нет. */
   columns: Array<{ name: string }>;
+  /** Область подбора ступени: при `other` и `any` у каждого аналога метка его зоны. */
+  zoneScope: ZoneScope;
 }
 
 const DASH = "—";
@@ -92,6 +95,7 @@ export function AnalogsTable({
   busy,
   onChoose,
   columns,
+  zoneScope,
 }: AnalogsTableProps) {
   const [open, setOpen] = useState(false);
   if (analogs.length === 0) {
@@ -102,6 +106,7 @@ export function AnalogsTable({
     );
   }
   const list = ordered(analogs, contractorAnalogId, targetAnalogId);
+  const showZone = zoneScope !== "own";
   const shown = open ? list : list.slice(0, ANALOG_FIRST);
   const hidden = list.length - ANALOG_FIRST;
   return (
@@ -157,7 +162,7 @@ export function AnalogsTable({
                   </span>
                 </div>
               </div>
-              {(marks.length > 0 || isTarget || a.outlier_ratio !== null) && (
+              {(marks.length > 0 || isTarget || a.outlier_ratio !== null || showZone) && (
                 <div className="flex flex-wrap gap-1.5">
                   {marks.map((m) => (
                     <TargetMark key={m} kind={m} />
@@ -168,6 +173,11 @@ export function AnalogsTable({
                     </Badge>
                   )}
                   {isTarget && <TargetMark kind="target" />}
+                  {showZone && (
+                    <Badge variant="secondary" data-testid={`analog-zone-${a.analog_id}`} className="h-auto py-0.5">
+                      {analogZoneBadge(a.zone)}
+                    </Badge>
+                  )}
                 </div>
               )}
               <p

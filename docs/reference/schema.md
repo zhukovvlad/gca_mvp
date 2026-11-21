@@ -153,6 +153,9 @@ work_families                 # семья: тип работы, объедин�
   created_by NULL → users     # NULL = заведено seed-командой (CHECK: автор ⟺ не seed)
   activated_by, activated_at, archived_at
   family_category_id NULL → family_categories ON DELETE RESTRICT   # 0021, раздел 8; CHECK-а «активна ⟹ категория» нет
+  zone_required boolean NOT NULL DEFAULT false   # 0028: «зона обязательна» — подбор аналога держится зоны строки
+  zone_required_changed_by NULL → users ON DELETE RESTRICT, zone_required_changed_at timestamptz NULL   # кто и когда сменил
+  # CHECK ck_work_families_zone_required_author: автор задан ⟹ время задано; время без автора — запись стартового списка 0028
   # UNIQUE (seed_key) — NULL-ы различны, ручные семьи не сталкиваются
   # UNIQUE (lower(btrim(title)), COALESCE(unit_id,-1)) WHERE status='active' — raw SQL;
   #   имя семьи не ключ, но две АКТИВНЫЕ семьи с одним именем и единицей — ошибка оператора
@@ -835,3 +838,7 @@ kp_line_targets                      -- (+7 колонок, 0027): цель-«с
 **Направление множителя хранится, а не выводится.** `factor_from_id` — семья левой части равенства «1 [ед. этой семьи] = `factor` [ед. другой]»; `factor` пишется ровно так, как его ввёл человек, и при упорядочивании пары не обращается. Единицы сторон запоминаются: смена единицы семьи делает связь недействующей (`units_changed`), пока правка не перезапомнит их.
 
 **Миграция.** `upgrade` ничего не отказывает. `downgrade` отказывает, ничего не удалив, если есть хоть одна связь или цель `reference` (`_downgrade_blockers`); на пустых таблицах снимает всё новое и возвращает прежние CHECK вида и аналога цели.
+
+## 13. Флажок семьи «зона обязательна»
+
+Миграция `0028` ([спека зоны как предпочтения](../superpowers/specs/2026-11-20-zone-as-preference-design.md), раздел 4): три колонки `work_families` — `zone_required` (`NOT NULL`, по умолчанию `false`), `zone_required_changed_by` (`users`, `RESTRICT`) и `zone_required_changed_at`; CHECK `ck_work_families_zone_required_author` — автор без времени не бывает, время без автора — запись стартового списка. Стартовый список — семь названий (`lower(btrim(title))`: двери, облицовка керамогранитом, покраска стен, вывоз и утилизация грунта, светильники, монтаж воздуховодов вентиляции, изоляция воздуховодов) у неархивных семей во всех единицах; не найденные названия миграция печатает в вывод. `downgrade` снимает три колонки и ограничение. Литерал CHECK продублирован константой в `models.py` и в миграции, паритет — `test_zone_required_schema.py::TestParityWithMigration`.

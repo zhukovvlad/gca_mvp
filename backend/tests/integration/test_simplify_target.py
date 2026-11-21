@@ -548,6 +548,7 @@ class TestPartsReference:
         )
         assert (_pair(plates["min"]), _pair(plates["max"])) == ((D("36"), D("36")), (D("42"), D("42")))
         assert plates["lowest"]["analog_id"] == scene.ids["p36"]
+        assert (plates["zone_scope"], beams["zone_scope"]) == ("own", "own")
         assert _pair(plates["lowest"]["value"]) == (D("36"), D("36"))
         assert plates["lowest"]["object_title"] == scene.contracts["p36"].object.title
         assert plates["lowest"]["contract_number"] == scene.contracts["p36"].contract_number
@@ -567,6 +568,7 @@ class TestPartsReference:
         assert columns["value"] == "колонны"
         assert (columns["analogs"], columns["contracts"], columns["other_class"]) == (0, 0, False)
         assert (columns["min"], columns["max"], columns["lowest"]) == (None, None, None)
+        assert columns["zone_scope"] is None
         assert body["line"]["target_kind"] is None
         assert body["analogs"] == []
 

@@ -1,4 +1,4 @@
-import { formatConfidence } from "@/lib/format";
+import { formatConfidence, formatDate } from "@/lib/format";
 import type {
   SectionChainFilter,
   SectionChainRow,
@@ -26,6 +26,7 @@ import type {
   SemanticState,
   SuggestionBand,
   VariantState,
+  WorkFamily,
   WorkFamilyStatus,
 } from "@/types/domain";
 
@@ -798,4 +799,39 @@ export function linkRefusalText(code: string | undefined, reason: string | undef
     return LINK_INVALID_TEXT[reason as LinkInvalidReason];
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+//  Флажок семьи «зона обязательна» (спека зоны как предпочтения §4, §5 п. 7–8;
+//  тексты — макет, состояние 5).
+// ---------------------------------------------------------------------------
+
+export const ZONE_REQUIRED_TITLE = "Зона при подборе";
+export const ZONE_REQUIRED_SWITCH = "Зона обязательна";
+/** Пояснение при поставленном флажке. */
+export const ZONE_REQUIRED_ON =
+  "Аналоги строкам этой семьи берутся только из договоров с той же зоной раздела, как раньше: у этой семьи зона подменяет тип изделия (противопожарная дверь в подвале, квартирная — на этаже). Без флажка аналоги ищутся сначала в своей зоне, нет — в других. Флажок снимают, когда схема семьи различит такие изделия параметрами.";
+/** Пояснение без флажка. */
+export const ZONE_REQUIRED_OFF =
+  "Аналоги ищутся сначала в договорах с той же зоной раздела; если там нет ни одного — в договорах других зон, с пометкой «другая зона».";
+
+/**
+ * Подпись последней смены флажка: «Поставил {email}, {дата}» / «Снял {email}, {дата}»;
+ * «Поставлен при обновлении, {дата}» — стартовый список миграции (автора нет); записи нет — `null`.
+ */
+export function zoneRequiredAuthor(family: WorkFamily): string | null {
+  if (family.zone_required_changed_at === null) return null;
+  const date = formatDate(family.zone_required_changed_at);
+  const author = family.zone_required_changed_by;
+  if (author === null) return `Поставлен при обновлении, ${date}`;
+  return `${family.zone_required ? "Поставил" : "Снял"} ${author.email}, ${date}`;
+}
+
+/** Строка окна слияния при разных флажках у пары; одинаковые флажки — `null` (спека §5 п. 8). */
+export function mergeZoneRequiredWarning(source: WorkFamily, target: WorkFamily): string | null {
+  if (source.zone_required === target.zone_required) return null;
+  if (source.zone_required) {
+    return `У семьи «${source.title}» зона обязательна — у «${target.title}» после слияния она тоже будет обязательной.`;
+  }
+  return `У семьи «${target.title}» зона обязательна — строки «${source.title}» после слияния тоже будут подбираться только в своей зоне.`;
 }

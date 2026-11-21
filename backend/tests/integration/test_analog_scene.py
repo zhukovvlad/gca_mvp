@@ -16,9 +16,11 @@ from decimal import Decimal
 import pytest
 import sqlalchemy as sa
 
-from crud.our_price_load import load_history, load_kp_lines, load_work_history
-from models import ContextParameterValue, FamilyParameter, SemanticJob, WorkVariantValue
+from crud.our_price_load import _zone_required_families, load_history, load_kp_lines, load_work_history
+from models import ContextParameterValue, FamilyParameter, SemanticJob, WorkFamily, WorkVariantValue
 from services.analog_ladder import FamilyLadderInfo
+from services.work_families import merge_families
+from tests.integration.test_analog_chains import _budget_pause
 from tests.integration.test_our_price_load import World
 from tests.integration.test_our_price_offer_api import (
     TOLERANCE,
@@ -142,6 +144,15 @@ def _releasable_job(db, family_id, schema_id, status):
     return _job(db, "releasable_params", status, family_id=family_id, schema_id=schema_id)
 
 
+def _strict(stage, family=None):
+    """Флажок «зона обязательна» у семьи (по умолчанию семьи сцены): без него строка без зоны идёт в
+    подбор `any`, а чужая зона — кандидат области `other`."""
+    family = family or stage.family
+    stage.db.execute(sa.update(WorkFamily).where(WorkFamily.id == family.id).values(zone_required=True))
+    stage.db.flush()
+    stage.db.refresh(family)
+
+
 def _writes(seen) -> list[str]:
     return [s for s in seen if s.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE"))]
 
@@ -188,6 +199,17 @@ class TestWorkHistoryLoader:
         assert dict(line.main_values) == {param.id: value_id}
         assert (line.unit_price, line.weight, line.vat_base) == (D("100"), D("10"), D("0"))
 
+    def test_a_contract_line_with_a_chain_without_a_zone_comes_with_zone_none(self, stage, world, db_session):
+        """Утверждение 1: строка без зоны — кандидат области `other`/`any`; без цепочки не приходит."""
+        chain = world.chain(("Раздел Б",), None)
+        _, _, zoneless = _hist(stage, D("100"), chain=chain)
+        _, _, chainless = _hist(stage, D("100"), chain=None)
+
+        lines, _ = _load_work(db_session, stage)
+
+        assert {line.position_item_id: line.zone for line in lines} == {zoneless.id: None}
+        assert chainless.id not in {line.position_item_id for line in lines}
+
     @pytest.mark.parametrize(
         "why",
         [
@@ -195,7 +217,6 @@ class TestWorkHistoryLoader:
             "kp_estimate",
             "system",
             "no_chain",
-            "undetermined_zone",
             "archived_context",
             "no_variant",
             "zero_price",
@@ -213,8 +234,6 @@ class TestWorkHistoryLoader:
             offending = _hist(stage, D("100"), chain=chain, kind="SYSTEM")[2]
         elif why == "no_chain":
             offending = _hist(stage, D("100"), chain=None)[2]
-        elif why == "undetermined_zone":
-            offending = _hist(stage, D("100"), chain=world.chain(("Раздел Б",), None))[2]
         elif why == "archived_context":
             offending = _hist(stage, D("100"), chain=chain, archived=True)[2]
         elif why == "no_variant":
@@ -462,6 +481,7 @@ def _scene_with_chain(stage, chain, *, price=D("100")):
 
 class TestStates:
     def test_a_work_without_a_zone_is_no_zone_with_the_empty_comparison(self, member_client, stage, world):
+        _strict(stage)
         chain = world.chain(("Раздел Б",), None)
         _hist(stage, D("100"), chain=world.chain(("Раздел А",), "whole"))
         rnd, part, item = _scene_with_chain(stage, chain)
@@ -487,6 +507,7 @@ class TestStates:
     def test_no_zone_waits_for_the_administrator_by_the_state_of_the_chain(
         self, member_client, stage, world, db_session, kind, expected
     ):
+        _strict(stage)
         chain = world.chain(("Раздел Б",), None, proposed="territory" if kind == "disputed" else None)
         if kind in ("error", "privacy_hold"):
             _zone_job(db_session, chain, kind)
@@ -511,6 +532,7 @@ class TestStates:
     def test_the_progress_counts_waiting_admin_by_the_rule_of_the_line_flag(
         self, member_client, stage, world, db_session, kind, waits
     ):
+        _strict(stage)
         chain = world.chain(("Раздел Б",), None, proposed="territory" if kind == "disputed" else None)
         if kind in ("error", "live"):
             _zone_job(db_session, chain, "error" if kind == "error" else "pending")
@@ -546,6 +568,7 @@ class TestStates:
         assert _line_of(_ok(member_client, stage.tender, rnd, part), item)["state"] == "in_progress"
 
     def test_the_states_above_no_zone_win_over_it(self, member_client, stage, world):
+        _strict(stage)
         chain = world.chain(("Раздел Б",), None)
         rnd, part = _kp_part(stage)
         no_price = _line(stage, part.proposal, D("0"), chain=chain)
@@ -602,6 +625,8 @@ class TestAnalogs:
         ],
     )
     def test_no_history_gives_the_first_reason_by_the_candidates(self, member_client, stage, world, history, reason):
+        if history == "other_zone":
+            _strict(stage)
         chain = world.chain(("Подземная часть",), "underground")
         other = world.chain(("Кровля",), "aboveground")
         if history == "other_family":
@@ -681,7 +706,7 @@ class TestAnalogs:
         line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
 
         assert line["state"] == "comparable"
-        assert line["work_rung"] == {"no": 2, "released": ["Марка"], "other_class": False}
+        assert line["work_rung"] == {"no": 2, "released": ["Марка"], "other_class": False, "zone_scope": "own"}
 
     def test_rung_four_is_the_other_class_with_the_released_parameter(
         self, member_client, stage, world, db_session, factories
@@ -690,7 +715,7 @@ class TestAnalogs:
 
         line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
 
-        assert line["work_rung"] == {"no": 4, "released": ["Марка"], "other_class": True}
+        assert line["work_rung"] == {"no": 4, "released": ["Марка"], "other_class": True, "zone_scope": "own"}
         assert line["lowest"]["from_all_classes"] is True
 
     def test_without_a_released_parameter_the_other_variant_is_not_an_analog(
@@ -935,9 +960,12 @@ class TestCoverage:
 
 
 class TestReadOnly:
-    def test_the_three_reads_write_nothing_on_the_new_paths(self, member_client, stage, world, db_session):
+    @pytest.mark.parametrize("strict", [True, False], ids=["flagged", "unflagged"])
+    def test_the_three_reads_write_nothing_on_the_new_paths(self, member_client, stage, world, db_session, strict):
         """К9: чтение не пишет. Сцена трогает все новые пути: цепочки, задания зон и признака,
-        справку аналогов, ряд ИПЦ."""
+        справку аналогов, ряд ИПЦ; без флажка — подбор `any` строки без зоны."""
+        if strict:
+            _strict(stage)
         rnd, part, item, series_id = _inflation_scene(stage, db_session, "ok")
         chain = world.chain(("Раздел Б",), None, proposed="territory")
         disputed = _line(stage, part.proposal, D("100"), chain=chain)
@@ -953,7 +981,7 @@ class TestReadOnly:
             round_body = _round_get(member_client, stage.tender, rnd, inflation_series_id=series_id)
 
         assert round_body.status_code == 200
-        assert _line_of(offer, disputed)["state"] == "no_zone"
+        assert _line_of(offer, disputed)["state"] == ("no_zone" if strict else "comparable")
         assert _line_of(offer, busy)["state"] == "in_progress"
         assert panel["analogs"]
         assert seen and _writes(seen) == []
@@ -989,3 +1017,223 @@ class TestReadOnly:
 
         (ratio,) = (a["outlier_ratio"] for a in panel["analogs"] if a["outlier_ratio"] is not None)
         assert abs(D(ratio) - D("6.6666666666666666666666666667")) < TOLERANCE
+
+
+# ---------------------------------------------------------------------------
+#  Зона как предпочтение: флажок семьи, область подбора, ответ (спека «зона как предпочтение» §2, §3)
+# ---------------------------------------------------------------------------
+
+
+def _unflag(stage, family=None):
+    family = family or stage.family
+    stage.db.execute(sa.update(WorkFamily).where(WorkFamily.id == family.id).values(zone_required=False))
+    stage.db.flush()
+    stage.db.refresh(family)
+
+
+def _no_zone_scene(stage, world, db_session, kind, *, strict):
+    """Строка КП без зоны в состоянии `kind` и договор в зоне «вся» с той же ценой (сравнимая сцена)."""
+    if strict:
+        _strict(stage)
+    chain = world.chain(("Раздел Б",), None, proposed="territory" if kind == "disputed" else None)
+    live_job = None
+    if kind in ("error", "privacy_hold"):
+        _zone_job(db_session, chain, kind)
+    if kind in ("live", "paused_live", "live_budget_pause"):
+        live_job = _zone_job(db_session, chain, "pending")
+    if kind == "paused_live":
+        _pause(db_session)
+    if kind == "live_budget_pause":
+        _budget_pause(db_session, live_job, until=dt.datetime.now(dt.UTC) + dt.timedelta(hours=1))
+    _hist(stage, D("100"), chain=world.chain(("Раздел А",), "whole"))
+    return _scene_with_chain(stage, chain)
+
+
+class TestZoneRequiredLoading:
+    def test_the_flag_set_is_read_per_scene_and_has_no_cache(self, stage, db_session):
+        """Утверждение 2: набор семей — один запрос; смена флажка видна следующему чтению."""
+        assert stage.family.id not in _zone_required_families(db_session)
+        _strict(stage)
+        assert _zone_required_families(db_session) == frozenset({stage.family.id})
+        _unflag(stage)
+        assert _zone_required_families(db_session) == frozenset()
+
+    def test_kp_line_carries_the_flag_of_the_family_of_its_variant(self, stage, world, db_session):
+        chain = world.chain(("Раздел Б",), None)
+        _, part = _kp_part(stage)
+        item = _line(stage, part.proposal, D("100"), chain=chain)
+        family2, variant2 = _other_family(stage)
+        other = _line(stage, part.proposal, D("100"), chain=chain, variant=variant2, family=family2)
+        bare = _line(stage, part.proposal, D("100"), chain=chain, variant=None)
+        _strict(stage)
+
+        assert _kp_row(db_session, part, item).zone_required is True
+        assert _kp_row(db_session, part, other).zone_required is False
+        assert _kp_row(db_session, part, bare).zone_required is False
+
+    def test_the_flag_toggle_changes_the_next_scene(self, member_client, stage, world, db_session):
+        chain = world.chain(("Раздел Б",), None)
+        _hist(stage, D("100"), chain=world.chain(("Раздел А",), "whole"))
+        rnd, part, item = _scene_with_chain(stage, chain)
+
+        assert _line_of(_ok(member_client, stage.tender, rnd, part), item)["state"] == "comparable"
+        _strict(stage)
+        assert _line_of(_ok(member_client, stage.tender, rnd, part), item)["state"] == "no_zone"
+        _unflag(stage)
+        assert _line_of(_ok(member_client, stage.tender, rnd, part), item)["state"] == "comparable"
+
+
+class TestZonelessLinePriority:
+    """Утверждения 3 и 4: строка без зоны — подбор `any` у семьи без флажка, `no_zone` с флажком; живое
+    задание и остановка захвата имеют приоритет по правилам `in_progress` (спека §2 п. 3)."""
+
+    @pytest.mark.parametrize("strict", [False, True], ids=["unflagged", "flagged"])
+    @pytest.mark.parametrize(
+        ("kind", "waits_when_strict"),
+        [
+            pytest.param("disputed", True, id="below-threshold-proposal"),
+            pytest.param("error", True, id="error"),
+            pytest.param("privacy_hold", True, id="privacy_hold"),
+            pytest.param("undetermined", False, id="no-answer"),
+            pytest.param("paused_live", True, id="claim-paused-with-a-live-job"),
+            pytest.param("live", None, id="live-job"),
+            pytest.param("live_budget_pause", None, id="live-job-in-a-provider-pause"),
+        ],
+    )
+    def test_each_state_of_a_zoneless_line(
+        self, member_client, stage, world, db_session, kind, waits_when_strict, strict
+    ):
+        rnd, part, item = _no_zone_scene(stage, world, db_session, kind, strict=strict)
+
+        body = _ok(member_client, stage.tender, rnd, part)
+        line = _line_of(body, item)
+
+        if waits_when_strict is None:
+            assert line["state"] == "in_progress"
+            assert body["progress"] == {"lines_total": 1, "in_progress": 1, "waiting_admin": 0}
+        elif strict:
+            assert line["state"] == "no_zone"
+            assert line["waiting_admin"] is waits_when_strict
+            assert body["progress"]["waiting_admin"] == int(waits_when_strict)
+        else:
+            assert line["state"] == "comparable"
+            assert line["work_rung"]["zone_scope"] == "any"
+            assert line["waiting_admin"] is False
+            assert body["progress"]["waiting_admin"] == 0
+            assert _round_get(member_client, stage.tender, rnd).json()["progress"]["waiting_admin"] == 0
+
+
+class TestZoneScopeInTheAnswer:
+    def test_a_line_comparable_in_its_own_zone_answers_as_before_with_the_own_scope(
+        self, member_client, stage, world, db_session
+    ):
+        """Утверждение 6: ни флажок, ни чужие зоны, ни строки договоров без зоны не меняют ответ строки,
+        сравнимой по своей зоне; у `work_rung` добавилось только `zone_scope = "own"`."""
+        own = world.chain(("Раздел А",), "whole")
+        for price in ("100", "110", "120"):
+            _hist(stage, D(price), chain=own)
+        rnd, part, item = _scene_with_chain(stage, own, price=D("130"))
+
+        unflagged = _line_of(_ok(member_client, stage.tender, rnd, part), item)
+        panel_unflagged = _panel(member_client, stage.tender, rnd, part, item)
+        _strict(stage)
+        flagged = _line_of(_ok(member_client, stage.tender, rnd, part), item)
+        _unflag(stage)
+        _hist(stage, D("10"), chain=world.chain(("Кровля",), "aboveground"))
+        _hist(stage, D("5"), chain=world.chain(("Раздел В",), None))
+        distracted = _line_of(_ok(member_client, stage.tender, rnd, part), item)
+        panel_distracted = _panel(member_client, stage.tender, rnd, part, item)
+
+        assert unflagged["state"] == "comparable"
+        assert unflagged["work_rung"]["zone_scope"] == "own"
+        assert unflagged == flagged == distracted
+        assert panel_distracted["analogs"] == panel_unflagged["analogs"]
+        assert {a["zone"] for a in panel_distracted["analogs"]} == {"whole"}
+        assert panel_distracted["line"] == panel_unflagged["line"]
+
+    def test_the_other_zone_scope_and_the_zone_of_the_analog_in_the_panel(self, member_client, stage, world):
+        """Утверждение 5: семья без флажка берёт чужую зону и называет область и зону аналога; блока А нет."""
+        underground = world.chain(("Подземная часть",), "underground")
+        above = world.chain(("Кровля",), "aboveground")
+        _hist(stage, D("100"), chain=above)
+        rnd, part, item = _scene_with_chain(stage, underground)
+
+        panel = _panel(member_client, stage.tender, rnd, part, item)
+
+        assert panel["line"]["state"] == "comparable"
+        assert panel["line"]["work_rung"]["zone_scope"] == "other"
+        assert [a["zone"] for a in panel["analogs"]] == ["aboveground"]
+        assert panel["line"]["no_history_reason"] is None
+        assert "other_zones" not in panel["line"] and panel["reference_zones"] == []
+
+    def test_the_any_scope_names_the_zone_of_a_zoneless_contract_line_as_null(self, member_client, stage, world):
+        zoneless = world.chain(("Раздел В",), None)
+        _hist(stage, D("100"), chain=zoneless)
+        rnd, part, item = _scene_with_chain(stage, world.chain(("Раздел Г",), None))
+
+        panel = _panel(member_client, stage.tender, rnd, part, item)
+
+        assert panel["line"]["work_rung"]["zone_scope"] == "any"
+        assert [a["zone"] for a in panel["analogs"]] == [None]
+
+    def test_a_flagged_family_keeps_no_zone_match_and_the_other_zone_reference(self, member_client, stage, world):
+        _strict(stage)
+        underground = world.chain(("Подземная часть",), "underground")
+        _hist(stage, D("100"), chain=world.chain(("Кровля",), "aboveground"))
+        _hist(stage, D("100"), chain=world.chain(("Раздел В",), None))
+        rnd, part, item = _scene_with_chain(stage, underground)
+
+        panel = _panel(member_client, stage.tender, rnd, part, item)
+
+        assert panel["line"]["state"] == "no_history"
+        assert panel["line"]["no_history_reason"] == "no_zone_match"
+        assert panel["line"]["work_rung"] is None
+        assert panel["line"]["other_zones"] == [{"zone": "aboveground", "lines": 1, "contracts": 1}]
+        assert [g["zone"] for g in panel["reference_zones"]] == ["aboveground"]
+
+    def test_a_flagged_family_does_not_take_zoneless_contract_lines(self, member_client, stage, world):
+        """Пул семьи с флажком не берёт строки договоров без зоны (флажок `WorkHistory` сцены): в истории
+        только такая строка — кандидатов нет, причина `no_family`, а не `no_zone_match` с пустым блоком А."""
+        _strict(stage)
+        _hist(stage, D("100"), chain=world.chain(("Раздел В",), None))
+        rnd, part, item = _scene_with_chain(stage, world.chain(("Подземная часть",), "underground"))
+
+        line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
+
+        assert line["state"] == "no_history"
+        assert line["no_history_reason"] == "no_family"
+        assert "other_zones" not in line
+
+    def test_an_unflagged_family_never_answers_no_zone_match(self, member_client, stage, world):
+        """Ни в одной зоне ничего нет по причине зоны: причина — `no_family`, а не `no_zone_match`."""
+        family2, variant2 = _other_family(stage)
+        _hist(stage, D("100"), chain=world.chain(("Кровля",), "aboveground"), variant=variant2, family=family2)
+        rnd, part, item = _scene_with_chain(stage, world.chain(("Подземная часть",), "underground"))
+
+        line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
+
+        assert line["no_history_reason"] == "no_family"
+        assert "other_zones" not in line
+
+
+class TestZoneRequiredAfterMerge:
+    def test_the_target_of_a_merge_takes_the_flag_of_the_source_and_a_zoneless_line_waits(
+        self, member_client, stage, world, db_session
+    ):
+        """Утверждение 8: источник с флажком влит в цель без него — строка цели без зоны не берёт чужие зоны."""
+        source, _ = _other_family(stage)
+        _strict(stage, source)
+        _hist(stage, D("100"), chain=world.chain(("Раздел А",), "whole"))
+        rnd, part, item = _scene_with_chain(stage, world.chain(("Раздел Б",), None))
+        assert _line_of(_ok(member_client, stage.tender, rnd, part), item)["state"] == "comparable"
+
+        merge_families(
+            db_session, source_family_id=source.id, target_family_id=stage.family.id, actor_id=stage.world.admin.id
+        )
+        db_session.refresh(stage.family)
+        db_session.execute(sa.delete(SemanticJob))  # слияние ставит задания каталога: их «разбирает» не предмет теста
+        db_session.flush()
+
+        assert stage.family.zone_required is True
+        line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
+        assert line["state"] == "no_zone"

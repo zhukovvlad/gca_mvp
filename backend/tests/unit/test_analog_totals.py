@@ -97,6 +97,7 @@ def work(
     zone: str | None = ZONE,
     in_progress: bool = False,
     is_system: bool = False,
+    zone_required: bool = False,
 ) -> KpLine:
     unit = None if price is None else D(price)
     w = None if weight is None else D(weight)
@@ -110,6 +111,7 @@ def work(
         in_progress=in_progress,
         waiting_admin=False,
         zone=zone,  # type: ignore[arg-type]
+        zone_required=zone_required,
         schema_id=SCHEMA,
         main_values={RELEASED: 1, REQUIRED: 5},
     )
@@ -186,7 +188,8 @@ def test_line_state_declaration_order_puts_no_zone_between_no_variant_and_no_his
 @pytest.mark.parametrize(
     ("line", "base", "expected"),
     [
-        (work(zone=None), D(0), LineState.no_zone),
+        (work(zone=None, zone_required=True), D(0), LineState.no_zone),
+        (work(zone=None), D(0), LineState.no_history),
         (work(zone=None, key=None), D(0), LineState.no_variant),
         (work(zone=None, price=None), D(0), LineState.no_price),
         (work(zone=None, in_progress=True), D(0), LineState.in_progress),
@@ -277,7 +280,9 @@ def test_work_kp_in_other_units_keeps_the_numbers_but_not_the_sums():
 
 
 def test_work_without_candidates_is_no_history_with_a_reason():
-    result = evaluate([work()], contracts=[contract(1)], work_lines=[wline(1001, 1, "100", zone="territory")])
+    result = evaluate(
+        [work(zone_required=True)], contracts=[contract(1)], work_lines=[wline(1001, 1, "100", zone="territory")]
+    )
     line = result.lines[1]
     assert line.state is LineState.no_history
     assert line.ladder.no_history_reason == "no_zone_match"

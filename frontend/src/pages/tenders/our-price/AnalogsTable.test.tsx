@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { ourPriceAnalogFixture } from "@/test/fixtures";
 import { renderWithProviders } from "@/test/utils";
-import type { OurPriceAnalog } from "@/types/domain";
+import type { OurPriceAnalog, ZoneScope } from "@/types/domain";
 
 import { AnalogsTable, type AnalogsTableProps } from "./AnalogsTable";
 
@@ -30,6 +30,7 @@ function renderTable(props: Partial<AnalogsTableProps> = {}) {
       busy={props.busy ?? false}
       onChoose={props.onChoose ?? (() => undefined)}
       columns={props.columns ?? []}
+      zoneScope={props.zoneScope ?? "own"}
     />
   );
 }
@@ -54,6 +55,29 @@ describe("справка аналогов", () => {
     const five = renderTable({ analogs: many(10) });
     expect(screen.getByRole("button", { name: "ещё 5 аналогов из 10" })).toBeInTheDocument();
     five.unmount();
+  });
+
+  it("область не own: у каждого аналога метка его зоны, у аналога без зоны — «зона: не определена»", () => {
+    const list = [
+      ourPriceAnalogFixture({ analog_id: 1, zone: "aboveground" }),
+      ourPriceAnalogFixture({ analog_id: 2, zone: "whole" }),
+      ourPriceAnalogFixture({ analog_id: 3, zone: null }),
+    ];
+    for (const scope of ["other", "any"] as ZoneScope[]) {
+      const view = renderTable({ analogs: list, zoneScope: scope });
+      expect(within(screen.getByTestId("analog-1")).getByText("зона: Надземная")).toBeInTheDocument();
+      expect(within(screen.getByTestId("analog-2")).getByText("зона: Весь объект")).toBeInTheDocument();
+      expect(within(screen.getByTestId("analog-3")).getByText("зона: не определена")).toBeInTheDocument();
+      view.unmount();
+    }
+  });
+
+  it("область own: меток зоны нет, даже если зона аналога известна", () => {
+    renderTable({
+      analogs: [ourPriceAnalogFixture({ analog_id: 1, zone: "aboveground" }), ourPriceAnalogFixture({ analog_id: 2, zone: null })],
+      zoneScope: "own",
+    });
+    expect(screen.queryByText(/^зона:/)).not.toBeInTheDocument();
   });
 
   it("пять и меньше: кнопки «ещё» нет", () => {

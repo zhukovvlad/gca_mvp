@@ -151,8 +151,11 @@ class KpLine:
     waiting_admin: bool
     #: Цепочка разделов строки (работа); `None` — у строки нет цепочки.
     section_chain_id: int | None = None
-    #: Зона цепочки; `None` — не определена (состояние `no_zone`).
+    #: Зона цепочки; `None` — не определена (у семьи с флажком — состояние `no_zone`, без флажка — подбор
+    #: в области `any`).
     zone: Zone | None = None
+    #: Флажок «зона обязательна» семьи варианта строки (спека «зона как предпочтение» §2).
+    zone_required: bool = False
     #: Нормализованные названия цепочки (множество) — близость места справки.
     chain_titles: frozenset[str] = frozenset()
     #: Версия схемы варианта строки.
@@ -729,6 +732,7 @@ def kp_work_of(line: KpLine, net: Decimal) -> KpWork:
         schema_id=line.schema_id,
         main_values=line.main_values,
         zone=line.zone,
+        zone_required=line.zone_required,
         chain_titles=line.chain_titles,
         net=net,
         conflicted=line.conflicted,
@@ -747,7 +751,7 @@ def work_ladder_of(
 ) -> tuple[Decimal | None, WorkLadder | None]:
     """Нетто цены за единицу строки КП и её лестница — те, что считает `evaluate_offer`; лестницы
     нет (`None`), если строка до неё не доходит: в работе, без базы НДС, система, без цены или веса,
-    без варианта или зоны."""
+    без варианта или (у семьи с флажком) зоны."""
     kp_unit_net = _net(line.unit_price, kp_vat_base)
     if (
         line.in_progress
@@ -755,7 +759,7 @@ def work_ladder_of(
         or line.is_system
         or not (is_price(line.unit_price) and is_weight(line.weight))
         or line.key is None
-        or line.zone is None
+        or (line.zone is None and line.zone_required)
     ):
         return kp_unit_net, None
     assert kp_unit_net is not None
@@ -1081,7 +1085,7 @@ def evaluate_offer(
             state = LineState.no_price
         elif line.key is None:
             state = LineState.no_variant
-        elif line.zone is None:
+        elif line.zone is None and line.zone_required:
             state = LineState.no_zone
 
         if state is not None:
