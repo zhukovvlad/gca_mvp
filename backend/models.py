@@ -1530,6 +1530,11 @@ CK_FAMILY_ACTIVE_NEEDS_DEFINITION = (
 )
 CK_FAMILY_ACTIVATION_PAIR = "(activated_at IS NULL) = (activated_by IS NULL)"
 CK_FAMILY_AUTHOR_IFF_NOT_SEED = "(created_by IS NULL) = (seed_key IS NOT NULL)"
+# Флажок «зона обязательна» (миграция 0028, спека зоны как предпочтения §4): автор без времени
+# не бывает; время без автора — запись стартового списка миграции.
+CK_FAMILY_ZONE_REQUIRED_AUTHOR = (
+    "zone_required_changed_by IS NULL OR zone_required_changed_at IS NOT NULL"
+)
 #: ОДИН тотальный предикат из двух полных ветвей — НЕ пара равносильностей.
 #: Пара `num_nonnulls(work_family_id, family_source, family_at) IN (0, 3)` плюс
 #: `(family_source = 'manual') = (family_by IS NOT NULL)` пропускала одинокий
@@ -1762,6 +1767,13 @@ class WorkFamily(Base):
         BigInteger, ForeignKey("family_categories.id", ondelete="RESTRICT"), nullable=True
     )
 
+    # Флажок «зона обязательна» (миграция 0028): подбор аналога держится зоны строки.
+    zone_required = Column(Boolean, nullable=False, server_default=sa_text("false"))
+    zone_required_changed_by = Column(
+        Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=True
+    )
+    zone_required_changed_at = Column(DateTime(timezone=True), nullable=True)
+
     unit = relationship("UnitOfMeasure")
 
     __table_args__ = (
@@ -1773,6 +1785,9 @@ class WorkFamily(Base):
         ),
         CheckConstraint(CK_FAMILY_ACTIVATION_PAIR, name="ck_work_families_activation_pair"),
         CheckConstraint(CK_FAMILY_AUTHOR_IFF_NOT_SEED, name="ck_work_families_author_iff_not_seed"),
+        CheckConstraint(
+            CK_FAMILY_ZONE_REQUIRED_AUTHOR, name="ck_work_families_zone_required_author"
+        ),
         # UNIQUE (lower(btrim(title)), COALESCE(unit_id,-1)) WHERE status = 'active' —
         # частичный уникальный индекс по выражению, raw SQL в миграции 0017
         # (alembic/env.py RAW_SQL_INDEXES: uq_work_families_active_name_unit).

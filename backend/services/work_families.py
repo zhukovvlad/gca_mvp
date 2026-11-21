@@ -1186,6 +1186,42 @@ def _move_schema_versions(
     return became_current
 
 
+def set_zone_required(
+    db: Session, *, family_id: int, value: bool, actor_id: int
+) -> WorkFamily:
+    """Включает или снимает флажок семьи «зона обязательна» (спека зоны как предпочтения
+    §4 п. 2). Строка семьи берётся `FOR UPDATE`, состояние перечитывается после лока. То же
+    значение — без смены автора и времени; иначе пишутся значение, `actor_id` и `now()`.
+
+    Raises:
+        WorkFamilyError: семьи нет (`REFUSE_FAMILY_NOT_FOUND`); семья в архиве
+            (`REFUSE_UPDATE_ARCHIVED`), перечитанное.
+    """
+    family = db.get(WorkFamily, family_id)
+    if family is None:
+        raise WorkFamilyError(
+            REFUSE_FAMILY_NOT_FOUND, f"семья {family_id} не найдена", family_id=family_id
+        )
+
+    _lock_families(db, [family_id], exclusive=True)  # FOR UPDATE
+    db.expire_all()
+
+    family = db.get(WorkFamily, family_id)  # ПЕРЕЧИТАННОЕ после лока
+    if family.status == FamilyStatus.archived.value:
+        raise WorkFamilyError(
+            REFUSE_UPDATE_ARCHIVED,
+            f"семья {family_id} в архиве: флажок не меняется",
+            family_id=family_id,
+        )
+    if family.zone_required == value:
+        return family
+    family.zone_required = value
+    family.zone_required_changed_by = actor_id
+    family.zone_required_changed_at = _now()
+    db.flush()
+    return family
+
+
 def merge_families(
     db: Session, *, source_family_id: int, target_family_id: int, actor_id: int
 ) -> int:
@@ -1273,6 +1309,14 @@ def merge_families(
             role="source",
             status=source.status,
         )
+
+    # Флажок «зона обязательна» (спека зоны как предпочтения §4 п. 4): есть у источника,
+    # нет у цели — переходит к цели; автор — сливающий, время — момент слияния.
+    if source.zone_required and not target.zone_required:
+        target.zone_required = True
+        target.zone_required_changed_by = actor_id
+        target.zone_required_changed_at = _now()
+        db.flush()
 
     # Порядок блокировок: семьи, версии схем, варианты, контексты, предложения.
     schemas = _lock_schemas(db, ordered_ids)

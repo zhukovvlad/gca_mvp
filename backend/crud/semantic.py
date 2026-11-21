@@ -49,6 +49,7 @@ from models import (
     Proposal,
     SemanticEvent,
     UnitOfMeasure,
+    User,
     WorkCategory,
     WorkFamily,
 )
@@ -150,6 +151,9 @@ class ContextFilters:
 #  Семьи
 # ---------------------------------------------------------------------------
 
+ZoneAuthor = aliased(User)  # автор смены флажка «зона обязательна»
+
+
 def _family_row_select():
     """Строитель строки семьи, общий для списка (`list_families`) и
     сериализации ответов мутаций (`routers/semantic.py::_serialize_family`)
@@ -179,13 +183,20 @@ def _family_row_select():
             # соединение, что единица, третьего запроса нет.
             WorkFamily.family_category_id,
             FamilyCategory.title.label("family_category_title"),
+            # Флажок «зона обязательна» (миграция 0028): значение, время и автор смены.
+            WorkFamily.zone_required,
+            WorkFamily.zone_required_changed_at,
+            WorkFamily.zone_required_changed_by,
+            ZoneAuthor.email.label("zone_required_author_email"),
             sa.func.count(CatalogContext.id).label("context_count"),
         )
         .outerjoin(UnitOfMeasure, UnitOfMeasure.id == WorkFamily.unit_id)
+        .outerjoin(ZoneAuthor, ZoneAuthor.id == WorkFamily.zone_required_changed_by)
         .outerjoin(FamilyCategory, FamilyCategory.id == WorkFamily.family_category_id)
         .outerjoin(CatalogContext, CatalogContext.work_family_id == WorkFamily.id)
         .group_by(
-            WorkFamily.id, UnitOfMeasure.code, UnitOfMeasure.symbol, FamilyCategory.title
+            WorkFamily.id, UnitOfMeasure.code, UnitOfMeasure.symbol, FamilyCategory.title,
+            ZoneAuthor.email
         )
     )
 
@@ -215,6 +226,15 @@ def _family_row_to_dict(db: Session, row, busy: dict[int | None, int]) -> dict:
         "archived_at": row.archived_at,
         "family_category_id": row.family_category_id,
         "family_category_title": row.family_category_title,
+        "zone_required": row.zone_required,
+        "zone_required_changed_at": (
+            row.zone_required_changed_at.isoformat() if row.zone_required_changed_at else None
+        ),
+        "zone_required_changed_by": (
+            {"id": row.zone_required_changed_by, "email": row.zone_required_author_email}
+            if row.zone_required_changed_by is not None
+            else None
+        ),
         "context_count": row.context_count,
         "unit_busy_jobs": busy[row.unit_id],
     }

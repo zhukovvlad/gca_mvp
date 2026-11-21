@@ -438,6 +438,10 @@ class UpdateFamilyRequest(BaseModel):
     family_category_id: int | None = None
 
 
+class ZoneRequiredRequest(BaseModel):
+    zone_required: bool
+
+
 class CreateCategoryRequest(BaseModel):
     """Пустоту и пробельность имени и определения проверяет сервис
     (`category_blank_title`/`category_blank_definition`, `422` с кодом)."""
@@ -700,6 +704,21 @@ def archive_family_route(
     with _mutating(db):
         family = work_families.archive_family(db, family_id=family_id, actor_id=admin.id)
     return _serialize_family(db, family.id)
+
+
+@router.put("/families/{family_id}/zone-required")
+def set_zone_required_route(
+    family_id: int,
+    body: ZoneRequiredRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Флажок семьи «зона обязательна» (спека зоны как предпочтения §4 п. 2)."""
+    with _mutating(db):
+        work_families.set_zone_required(
+            db, family_id=family_id, value=body.zone_required, actor_id=admin.id
+        )
+    return _serialize_family(db, family_id)
 
 
 @router.post("/families/{family_id}/merge")
