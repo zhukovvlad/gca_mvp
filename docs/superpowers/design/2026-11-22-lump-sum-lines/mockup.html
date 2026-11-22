@@ -124,12 +124,12 @@
 <div class="wrap">
 
 <div class="note">
-  <b>Макет к дизайну 2026-11-22-lump-sum-lines, ред. 2.</b> Разметка повторяет боевые компоненты экрана
+  <b>Макет к дизайну 2026-11-22-lump-sum-lines, ред. 3.</b> Разметка повторяет боевые компоненты экрана
   «Против нашей цены»: таблица строк (<span class="mono">OfferLinesTable</span>), панель строки
   (<span class="mono">LineSheet</span>: «Цены», «Сравнение» с карточками цели и списком аналогов),
   поиск «Найти в договорах» (<span class="mono">ReferenceSearch</span>), карточка цели и «В файл подрядчику».
   Новое выделено синим. Строка воздуховодов — живая строка стенда (оффер 10, МИРА; цифры экрана без НДС, с ИПЦ);
-  остальные строки условные. Ред. 2: строка, похожая на сумму, не сравнивается со ставками; расчёт в ₽/м² отложен.
+  остальные строки условные. Ред. 3: строка, похожая на комплект, не сравнивается со ставками; расчёт в ₽/м² отложен.
 </div>
 <div class="bar"><button onclick="document.documentElement.dataset.theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'">Светлая / тёмная тема</button></div>
 
@@ -137,9 +137,9 @@
 <div class="state">
   <h2>1. Таблица строк: сегодня и станет</h2>
   <div class="sub">Первая строка — сумма на надземную часть: сегодня сравнивается с суммами других объектов как с ценой
-    квадратного метра, станет — «Похоже на сумму», без вилки. Вторая — сумма за все выключатели: сегодня «разные единицы»,
-    станет — та же честная метка. Третья — обычная ставка, у которой среди аналогов была сумма договора: сумма уходит, вилка
-    пересчитывается. Четвёртая — обычная ставка без сумм в аналогах: не меняется ничего.</div>
+    квадратного метра, станет — «Похоже на комплект», без вилки. Вторая — сумма за все выключатели: сегодня «разные единицы»,
+    станет — та же честная метка. Третья — обычная ставка, у которой среди аналогов был комплект договора: он уходит, вилка
+    пересчитывается. Четвёртая — обычная ставка без комплектов в аналогах: не меняется ничего.</div>
   <span class="tag before">сегодня</span>
   <div class="tablecard">
     <table>
@@ -179,13 +179,13 @@
         <td class="work">Вентиляция Общеобменная - Надземная часть / Воздуховоды<span class="cap">Монтаж воздуховодов вентиляции</span><span class="cap">Тип системы вентиляции: <span style="color:var(--fg)">общеобменная</span></span></td>
         <td>м2</td><td class="r mono">1,00</td><td class="r mono">69 259 002,83<span class="cap">₽/м2</span></td>
         <td class="mono">—</td>
-        <td class="r mono">—</td><td class="r"><span class="mono">—</span><span class="b state new">Похоже на сумму<span class="cap">цена в 16 989 раз выше обычной ставки семьи</span></span></td>
+        <td class="r mono">—</td><td class="r"><span class="mono">—</span><span class="b state new">Похоже на комплект<span class="cap">цена в 16 989 раз выше обычной ставки семьи</span></span></td>
       </tr>
       <tr>
         <td class="work">Выключатель одноклавишный<span class="cap">Электроустановочные изделия</span></td>
         <td>шт</td><td class="r mono">1,00</td><td class="r mono">2 073 655,00<span class="cap">₽/шт</span></td>
         <td class="mono">—</td>
-        <td class="r mono">—</td><td class="r"><span class="mono">—</span><span class="b state new">Похоже на сумму<span class="cap">цена в 2 362 раза выше обычной ставки семьи</span></span></td>
+        <td class="r mono">—</td><td class="r"><span class="mono">—</span><span class="b state new">Похоже на комплект<span class="cap">цена в 2 362 раза выше обычной ставки семьи</span></span></td>
       </tr>
       <tr>
         <td class="work">Изоляция воздуховодов, огнезащита EI 60<span class="cap">Изоляция воздуховодов</span></td>
@@ -201,12 +201,12 @@
       </tr>
     </table>
   </div>
-  <p class="xs fg2" style="margin:8px 0 0">Фильтр состояний над таблицей получает значение «Похоже на сумму». В плитках и итогах такие строки считаются со строками без сравнения.</p>
+  <p class="xs fg2" style="margin:8px 0 0">Фильтр состояний над таблицей получает значение «Похоже на комплект». В плитках и итогах такие строки считаются со строками без сравнения.</p>
 </div>
 
-<!-- ===================== 2. Панель: похоже на сумму ===================== -->
+<!-- ===================== 2. Панель: похоже на комплект ===================== -->
 <div class="state">
-  <h2>2. Панель строки, похожей на сумму</h2>
+  <h2>2. Панель строки, похожей на комплект</h2>
   <div class="sub">Сегодня сумма сравнивается с каждой суммой договора как с ценой квадратного метра: две суммы Тушино (два корпуса)
     идут отдельно, объекты разного размера стоят в одной вилке. Станет: сравнения нет, пояснение называет причину и цифры правила;
     администратор видит поправку. Цифры живые: оффер 10 стенда.</div>
@@ -241,14 +241,14 @@
           <div class="sec"><h4>Цены</h4><p class="small" style="margin:0 0 4px;font-weight:500">без НДС</p>
             <dl class="prices"><dt>Цена КП</dt><dd class="mono">69 259 002,83 ₽/м2</dd><dt>Объём</dt><dd class="mono">1,00 м2</dd></dl></div>
           <div class="sec"><h4>Сравнение</h4>
-            <div class="row" style="justify-content:flex-start;gap:6px;font-size:13px;margin-bottom:8px"><span class="b sec new">Похоже на сумму</span><span class="fg2">не сравнивается</span></div>
+            <div class="row" style="justify-content:flex-start;gap:6px;font-size:13px;margin-bottom:8px"><span class="b sec new">Похоже на комплект</span><span class="fg2">не сравнивается</span></div>
             <div class="why new" style="margin-bottom:10px">В смете: 1 м² × 83 110 803,39 ₽. Обычная ставка семьи «Монтаж воздуховодов вентиляции» — 4 892 ₽ за м²
-              (медиана 5 строк с настоящим объёмом, цены как в сметах). Цена строки выше в 16 989 раз: похоже, это одна сумма за
-              часть здания, а не цена квадратного метра. Со ставками договоров её не сравнить, а суммы объектов разного размера между
+              (медиана 5 строк с настоящим объёмом, цены как в сметах). Цена строки выше в 16 989 раз: похоже на цену
+              комплекта, а не квадратного метра. Со ставками договоров её не сравнить, а суммы объектов разного размера между
               собой не сравниваются.</div>
             <div class="blk new" style="border-top:0;padding-top:0">
               <div class="lbl">Сумма или ставка · только администратор</div>
-              <div class="toggle"><span class="on">Как решило правило</span><span>Это сумма</span><span>Это ставка — сравнивать</span></div>
+              <div class="toggle"><span class="on">Как решило правило</span><span>Это комплект</span><span>Это ставка — сравнивать</span></div>
               <span class="xs fg2">Поправка хранится у этой строки сметы и действует на всех экранах. «Это ставка» вернёт строку в обычное сравнение.</span>
             </div>
           </div>
@@ -261,10 +261,10 @@
 
 <!-- ===================== 3. Поправка ===================== -->
 <div class="state">
-  <h2>3. Поправка: строка КП, признанная ставкой, и сумма договора, которую правило пропустило</h2>
+  <h2>3. Поправка: строка КП, признанная ставкой, и комплект договора, который правило пропустило</h2>
   <div class="sub">Слева — администратор поправил «Это ставка»: строка сравнивается как обычная, у метки — кто и когда поправил.
-    Пользователь без прав видит то же, но без переключателя. Справа — у строки-ставки в аналогах оказалась сумма договора, которую
-    правило не узнало (отношение ниже порога): администратор убирает её из сравнения прямо из списка аналогов. Цифры условные.</div>
+    Пользователь без прав видит то же, но без переключателя. Справа — у строки-ставки в аналогах оказался комплект договора, который
+    правило не узнало (×28 в штуках — ниже порога 50): администратор убирает её из сравнения прямо из списка аналогов. Цифры условные.</div>
   <div class="pair">
     <div>
       <span class="tag after">станет · поправлено «это ставка»</span>
@@ -278,25 +278,25 @@
             </div>
             <div class="blk" style="margin-top:10px">
               <div class="lbl">Сумма или ставка · только администратор</div>
-              <div class="toggle"><span>Как решило правило</span><span>Это сумма</span><span class="on">Это ставка — сравнивать</span></div>
-              <span class="xs fg2">Правило: цена в 82 раза выше обычной ставки семьи — похоже на сумму. Поправка: ставка.</span>
+              <div class="toggle"><span>Как решило правило</span><span>Это комплект</span><span class="on">Это ставка — сравнивать</span></div>
+              <span class="xs fg2">Правило: цена в 82 раза выше обычной ставки семьи — похоже на комплект. Поправка: ставка.</span>
             </div>
           </div>
         </div>
       </div>
     </div>
     <div>
-      <span class="tag after">станет · сумма договора в аналогах строки-ставки</span>
+      <span class="tag after">станет · комплект договора в аналогах строки-ставки</span>
       <div class="sheet">
-        <div class="sh-head"><div class="sh-title">Металлоконструкции кровли</div><div class="sh-desc">Монтаж металлоконструкций</div></div>
+        <div class="sh-head"><div class="sh-title">Указатель настенный, навигация паркинга</div><div class="sh-desc">Навигационные элементы</div></div>
         <div class="sh-body">
           <div class="sec"><h4>Аналоги</h4>
-            <div class="analog"><div class="top"><div><b>ЖК «Парковый»</b> <span class="xs fg2">· дог. 7-П</span></div><div><b class="mono">298 400,00</b> <span class="xs fg2">₽/т</span> <span class="mono xs fg2">07.2026</span></div></div>
+            <div class="analog"><div class="top"><div><b>ЖК «Парковый»</b> <span class="xs fg2">· дог. 7-П</span></div><div><b class="mono">48 900,00</b> <span class="xs fg2">₽/шт</span> <span class="mono xs fg2">07.2026</span></div></div>
               <div class="row" style="justify-content:flex-start;gap:6px"><span class="b mk low">↓ самая низкая</span></div>
-              <div class="fg2">Монтаж м/к покрытия, сталь С255</div></div>
-            <div class="analog"><div class="top"><div><b>ЖК «Северный»</b> <span class="xs fg2">· дог. 14/2026</span></div><div><b class="mono">2 572 872,00</b> <span class="xs fg2">₽/т</span> <span class="mono xs fg2">03.2026</span></div></div>
-              <div class="fg2">М/к кровли · <span class="xs">объём 1,00 т</span></div>
-              <div class="row" style="justify-content:flex-start;gap:8px"><span class="b out">выброс</span><span class="link new" style="outline:2px solid var(--new);outline-offset:2px;border-radius:3px">это сумма — убрать из сравнения</span></div></div>
+              <div class="fg2">Указатель направления движения, композит</div></div>
+            <div class="analog"><div class="top"><div><b>ЖК «Северный»</b> <span class="xs fg2">· дог. 14/2026</span></div><div><b class="mono">1 375 000,00</b> <span class="xs fg2">₽/шт</span> <span class="mono xs fg2">03.2026</span></div></div>
+              <div class="fg2">Подвесная навигация по зонам, индивидуальное изготовление · <span class="xs">объём 1,00 шт</span></div>
+              <div class="row" style="justify-content:flex-start;gap:8px"><span class="b out">выброс</span><span class="link new" style="outline:2px solid var(--new);outline-offset:2px;border-radius:3px">это комплект — убрать из сравнения</span></div></div>
           </div>
         </div>
       </div>
@@ -307,9 +307,9 @@
 <!-- ===================== 4. Справки, цель, файл ===================== -->
 <div class="state">
   <h2>4. Поиск в договорах, недействующая цель, файл подрядчику</h2>
-  <div class="sub">В поиске строка договора, похожая на сумму, видна с пометкой, но целью не выбирается; администратор может поправить
+  <div class="sub">В поиске строка договора, похожая на комплект, видна с пометкой, но целью не выбирается; администратор может поправить
     её отсюда. Цель, выбранная раньше на такую строку, перестаёт действовать с причиной. В файле подрядчику у строки «Похоже на
-    сумму» нашей цены нет — как у строк без сравнения.</div>
+    комплект» нашей цены нет — как у строк без сравнения.</div>
   <div class="pair">
     <div>
       <span class="tag after">станет · «Найти в договорах»</span>
@@ -324,7 +324,7 @@
               <span class="xs" style="text-decoration:underline">сделать целью</span></div>
             <div class="analog"><div class="top"><div><b>Jois 1</b> <span class="xs fg2">· 2024</span></div><div><b class="mono">64 046 917,00</b> <span class="xs fg2">₽/м2</span></div></div>
               <div class="fg2">Оцинкованный воздуховод, толщиной не менее 0.5мм · <span class="xs">объём 1,00 м2</span></div>
-              <div class="row" style="justify-content:flex-start;gap:6px"><span class="b out">зона не определена</span><span class="b out">м2</span><span class="b sec new">Похоже на сумму</span></div>
+              <div class="row" style="justify-content:flex-start;gap:6px"><span class="b out">зона не определена</span><span class="b out">м2</span><span class="b sec new">Похоже на комплект</span></div>
               <span class="xs fg3">целью не выбирается: цена в 13 092 раза выше обычной ставки семьи</span>
               <span class="link new">поправить: это ставка</span></div>
           </div>
@@ -335,16 +335,16 @@
       <span class="tag after">станет · недействующая цель</span>
       <div class="sheet">
         <div class="sh-body" style="padding-top:16px">
-          <div class="why" style="border-color:var(--warn-border);background:var(--warn-soft);color:var(--warn-text)">Выбор не действует: <span class="hl">сумма вместо ставки</span> — строка договора похожа на сумму; цель: самая низкая</div>
+          <div class="why" style="border-color:var(--warn-border);background:var(--warn-soft);color:var(--warn-text)">Выбор не действует: <span class="hl">комплект вместо ставки</span> — строка договора похожа на сумму; цель: самая низкая</div>
         </div>
       </div>
       <div style="height:14px"></div>
-      <span class="tag after">станет · «В файл подрядчику» у строки «Похоже на сумму»</span>
+      <span class="tag after">станет · «В файл подрядчику» у строки «Похоже на комплект»</span>
       <div class="sheet">
         <div class="sh-body" style="padding-top:16px">
           <div class="sec"><h4>В файл подрядчику</h4>
             <dl class="prices"><dt>Наша цена</dt><dd class="mono">—</dd>
-              <dt>Источник</dt><dd class="small"><span class="hl">похоже на сумму — не сравнивается</span></dd></dl>
+              <dt>Источник</dt><dd class="small"><span class="hl">похоже на комплект — не сравнивается</span></dd></dl>
           </div>
         </div>
       </div>
@@ -353,8 +353,8 @@
 </div>
 
 <ul class="legend">
-  <li><b>Не меняется:</b> строки-ставки, у которых среди аналогов нет сумм (в том числе с объёмом 1, если цена не выходит за порог), системы.</li>
-  <li><b>Пороги распознавания (предварительные, до разметки выборки):</b> объём 1 и цена не меньше 10 обычных ставок семьи в мерной единице (м, м², м³, т, кг) или 50 — в штучной; обычной ставки нет — мерная единица считается суммой, штучная ставкой.</li>
+  <li><b>Не меняется:</b> строки-ставки, у которых среди аналогов нет комплектов (в том числе с объёмом 1, если цена не выходит за порог), системы.</li>
+  <li><b>Пороги распознавания (по разметке выборки):</b> объём 1 и цена не меньше 5 обычных ставок семьи в мерной единице (м, м², м³, т, кг) или 50 — в штучной; обычной ставки нет — мерная единица считается суммой, штучная ставкой.</li>
   <li><b>Отложено:</b> сравнение сумм между собой в ₽/м² части здания — отдельной работой.</li>
 </ul>
 
