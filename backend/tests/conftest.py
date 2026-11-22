@@ -574,6 +574,8 @@ _DOMAIN_TABLES = (
     "section_chains",
     "releasable_proposals",
     "kp_line_targets",
+    # Строки-суммы (миграция 0029): поправки «комплект или ставка» — ЯВНО.
+    "lump_sum_overrides",
     # Упрощение управления каталогом (миграция 0025): пять новых таблиц — ЯВНО.
     "family_value_parts",
     "composite_vetoes",
@@ -764,9 +766,12 @@ def _status_cache_off(monkeypatch) -> Iterator[None]:
     включённым кэшем они читали бы прежнее значение. Тесты кэша включают срок
     сами (спека кэша сводки §2.5)."""
     from config import settings
-    from services.status_cache import status_cache
+    from services.status_cache import status_cache, typical_rates_cache
 
     monkeypatch.setattr(settings, "SEMANTIC_STATUS_CACHE_TTL_S", 0)
+    monkeypatch.setattr(settings, "TYPICAL_RATES_CACHE_TTL_S", 0)
     status_cache.invalidate()
+    typical_rates_cache.invalidate()
     yield
     status_cache.invalidate()
+    typical_rates_cache.invalidate()

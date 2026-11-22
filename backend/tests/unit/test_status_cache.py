@@ -294,3 +294,36 @@ class TestStatusCacheComputeError:
         after.finish()
 
         assert (after.error, after.value, compute.calls) == (None, "ok", 1)
+
+
+class TestTypicalRatesCacheIsASeparateInstance:
+    """Второй кэш (обычные ставки «комплект или ставка», спека строк-сумм §2 п. 2): свой срок
+    `TYPICAL_RATES_CACHE_TTL_S`, свой экземпляр, сброс одного не стирает другое."""
+
+    def test_is_a_status_cache_distinct_from_the_status_one(self):
+        from services.status_cache import status_cache, typical_rates_cache
+
+        assert isinstance(typical_rates_cache, StatusCache)
+        assert typical_rates_cache is not status_cache
+
+    def test_uses_its_own_ttl_setting(self, monkeypatch):
+        from config import settings
+        from services.status_cache import status_cache, typical_rates_cache
+
+        monkeypatch.setattr(settings, "SEMANTIC_STATUS_CACHE_TTL_S", 0)
+        monkeypatch.setattr(settings, "TYPICAL_RATES_CACHE_TTL_S", 300)
+        typical_rates_cache.invalidate()
+        try:
+            compute = Counter("a", "b")
+            assert typical_rates_cache.get(compute) == "a"
+            assert typical_rates_cache.get(compute) == "a"  # срок сводки 0, а ставки держатся
+            assert compute.calls == 1
+            other = Counter("x", "y")
+            assert (status_cache.get(other), status_cache.get(other)) == ("x", "y")  # выключен
+        finally:
+            typical_rates_cache.invalidate()
+
+    def test_default_ttl_is_five_minutes(self):
+        from config import Settings
+
+        assert Settings.model_fields["TYPICAL_RATES_CACHE_TTL_S"].default == 300

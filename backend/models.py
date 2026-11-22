@@ -3804,3 +3804,31 @@ class CatalogAutoAction(Base):
         CheckConstraint(CK_AUTO_ACTION_KIND, name="ck_catalog_auto_actions_kind"),
         CheckConstraint(CK_AUTO_ACTION_UNDONE_PAIR, name="ck_catalog_auto_actions_undone_pair"),
     )
+
+
+#: Поправка «комплект или ставка» (миграция 0029, спека строк-сумм §3): значение вне двух
+#: не бывает. Выражение продублировано в миграции; паритет — test_lump_sum_load.py.
+CK_LUMP_SUM_VERDICT = "verdict IN ('lump', 'rate')"
+
+
+class LumpSumOverride(Base):
+    """Поправка администратора к правилу «похоже на комплект»: решение о строке сметы.
+    Отсутствие поправки — отсутствие строки («как решило правило»)."""
+    __tablename__ = "lump_sum_overrides"
+
+    position_item_id = Column(BigInteger, nullable=False)
+    verdict = Column(Text, nullable=False)
+    set_by = Column(Integer, nullable=False)
+    set_at = Column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
+
+    __table_args__ = (
+        PrimaryKeyConstraint("position_item_id", name="pk_lump_sum_overrides"),
+        ForeignKeyConstraint(
+            ["position_item_id"], ["position_items.id"], ondelete="CASCADE",
+            name="fk_lump_sum_overrides_position_item",
+        ),
+        ForeignKeyConstraint(
+            ["set_by"], ["users.id"], ondelete="RESTRICT", name="fk_lump_sum_overrides_set_by"
+        ),
+        CheckConstraint(CK_LUMP_SUM_VERDICT, name="ck_lump_sum_overrides_verdict"),
+    )

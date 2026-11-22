@@ -36,7 +36,7 @@ from routers import units
 from services.maintenance import run_startup_maintenance
 from services.semantic_client import ModelClient, OpenRouterClient
 from services.semantic_runner import SemanticRunner
-from services.status_cache import status_cache
+from services.status_cache import status_cache, typical_rates_cache
 from storage import get_storage
 
 
@@ -189,6 +189,7 @@ async def invalidate_status_cache_on_write(request: Request, call_next):
         return await call_next(request)
     finally:
         status_cache.invalidate()
+        typical_rates_cache.invalidate()
 
 
 # Auth router — без обязательной авторизации (login, me, refresh, logout)
