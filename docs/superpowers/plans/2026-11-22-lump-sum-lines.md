@@ -5,6 +5,11 @@
 **Спека:** [`docs/superpowers/specs/2026-11-22-lump-sum-lines-design.md`](../specs/2026-11-22-lump-sum-lines-design.md) (редакция 2)
 **Дизайн, макет, замер, выборка:** [`docs/superpowers/design/2026-11-22-lump-sum-lines.md`](../design/2026-11-22-lump-sum-lines.md) (редакция 4)
 **Ветка:** `feat/lump-sum-lines`, черновой PR #94
+**Редакция 2** — по ревью Codex к `eaf18cc` (P1): признак «цель указывает на
+комплект» считается одной функцией и доходит до всех трёх мест, где
+разрешается цель, — экран (`_decision_fields`), комментарий строки и файл
+подрядчику (`line_comment_inputs`); проверка — настоящей сборкой
+предпросмотра и XLSX (задача 4, Review Focus 3, решение плана 7).
 
 **Goal:** строка сметы с весом 1 и ценой, несоразмерной обычной ставке
 семьи, получает признак «Похоже на комплект»: строка КП не сравнивается,
@@ -121,6 +126,14 @@ v5, shadcn/ui (`toggle-group`, `alert-dialog`, `badge`, `dropdown-menu` —
    1–2 сравнение не меняют) новым скриптом `snapshot_lines.py` по образцу
    скрипта фичи «зона как предпочтение»; вывод — в `tasks/lump-sum-run/`
    (не под гитом).
+7. Признак цели (ред. 2): `_target_lump(scene, references, saved) -> bool`
+   в `crud/our_price.py` — единственное место, где он считается: строка
+   договора сохранённой цели вида `analog`/`reference` — комплект по
+   `WorkHistory.is_lump` или по `ReferenceLine.lump` справочных строк сцены.
+   Его зовут `_decision_fields`, `_comment_inputs` и сборка файла; файл
+   получает готовое множество `FileContext.lump_targets` (строки КП, чья цель
+   указывает на комплект), `line_comment_inputs` — флаг `target_lump`. Ядро
+   (`services/`) признак не вычисляет и в `crud` не ходит.
 
 ## Подготовка (оркестратор, до задачи 3)
 
@@ -385,16 +398,21 @@ class WorkHistory:
 `CODE_REFERENCE_IS_LUMP_SUM`); `crud/reference_lines.py` (вес и `lump` в
 `reference_lines_query`, `ReferenceLine`, `reference_lines_from_rows`);
 `crud/our_price.py` (`_line_view` — `lump`, `reference_row_view` — `lump`,
-`_decision_fields` — признак цели, `lump_view`); тесты
+`_target_lump`, `_decision_fields`, `_comment_inputs`, сборка `FileContext`,
+`lump_view`); `services/kp_file.py` (`FileContext.lump_targets`,
+`line_comment_inputs`, `_file_line`); тесты
 `test_our_price_offer_api.py`, `test_ref_analogs_target.py`,
-`test_ref_analogs_search.py`, `tests/unit/test_kp_file_rows.py`.
+`test_ref_analogs_search.py`, `tests/unit/test_kp_file_rows.py`,
+`tests/integration/test_kp_file_export.py` (предпросмотр и XLSX).
 
 **Interfaces**
 - Потребляет: задачи 1 и 3 (`LumpCheck`, `TypicalRates.unit_labels`,
   `KpLine.lump`, `WorkHistory.is_lump`, `LineState.lump_sum`); существуют
   `resolve_target`, `put_target`, `put_reference_target`,
   `CODE_TARGET_NOT_APPLICABLE`, `money_pair`, `_author`, `iso`,
-  `reference_row_view`, `_line_view`.
+  `reference_row_view`, `_line_view`, `_decision_fields`, `_comment_inputs`,
+  `_reference_targets`, `FileContext`, `line_comment_inputs`, `_file_line`,
+  `target_net`.
 - Производит:
 
 ```python
@@ -408,6 +426,10 @@ CODE_REFERENCE_IS_LUMP_SUM = "reference_is_lump_sum"
 # crud/reference_lines.py — ReferenceLine: weight: Decimal; lump: LumpCheck | None
 # crud/our_price.py
 def lump_view(check: LumpCheck, *, rate: Decimal | None, family: str, unit_label: str) -> dict
+def _target_lump(scene: _Scene, references: _ReferenceTargets | None, saved: SavedTarget | None) -> bool
+# services/kp_file.py
+# FileContext: lump_targets: frozenset[int] = frozenset()   # position_item_id строк КП
+def line_comment_inputs(..., target_lump: bool = False) -> CommentInputs   # передаёт в resolve_target
 # ответ: line.lump и row.lump — LumpView спеки §7 п. 1; choice.reset_reason: "lump_sum"
 ```
 
@@ -421,9 +443,18 @@ def lump_view(check: LumpCheck, *, rate: Decimal | None, family: str, unit_label
   `put_reference_target` у строки `lump_sum` — `target_not_applicable`, на
   строку договора-комплект — `422 reference_is_lump_sum`; оба — до проверок
   пересчёта (тело с неверным пересчётом получает эти коды).
-- Справочная цель, выбранная до поправки «это комплект» её строки
-  договора, — в ответе `choice.active = false`, `reset_reason =
-  "lump_sum"`; в строке файла подрядчику нашей цены нет (Review Focus 3).
+- Одно решение на трёх путях (ред. 2): строка КП `no_history` со
+  справочной целью; её строку договора помечают «это комплект» через
+  `PUT …/lump-sum`; затем — ответ панели (`choice.active = false`,
+  `reset_reason = "lump_sum"`), предпросмотр файла и выгруженный XLSX
+  (настоящая сборка, не прямой вызов `resolve_target`): нашей цены у строки
+  нет, шаблонного комментария нет (Review Focus 3).
+- Строка КП сравнимая, сохранённая цель `analog` на строку договора, которую
+  помечают «это комплект», а другие аналоги остаются: экран —
+  `reset_reason = "lump_sum"`; файл и комментарий — цена и источник по самой
+  низкой из оставшихся аналогов, как у строки без сохранённого выбора.
+- Снятие поправки (`DELETE`) в обоих сценариях возвращает цель в действие —
+  на экране и в файле.
 - «Договорились» у строки `lump_sum` ставится, и в файле подрядчику цена
   есть.
 - Поиск: строка-комплект в выдаче с `lump.is_lump = true`, порядок и
@@ -440,9 +471,10 @@ def lump_view(check: LumpCheck, *, rate: Decimal | None, family: str, unit_label
 **Проверка**
 - `pytest tests/integration/test_our_price_offer_api.py
   tests/integration/test_ref_analogs_target.py
-  tests/integration/test_ref_analogs_search.py tests/unit/test_kp_file_rows.py`
-  — ДО: 149 + 108 + 49 + 184 = 490, ПОСЛЕ: больше; один раз в конце —
-  `tests/unit`, `test_kp_file_export.py`, `test_ref_analogs_lines.py`,
+  tests/integration/test_ref_analogs_search.py tests/unit/test_kp_file_rows.py
+  tests/integration/test_kp_file_export.py`
+  — ДО: 149 + 108 + 49 + 184 + 101 = 591, ПОСЛЕ: больше; один раз в конце —
+  `tests/unit`, `test_ref_analogs_lines.py`,
   `test_ref_analogs_panel.py`, `test_ref_analogs_file.py`; `ruff check .`.
 
 - [ ] Тесты по утверждениям (красные) → реализация → зелёные → коммит.
