@@ -124,12 +124,12 @@
 <div class="wrap">
 
 <div class="note">
-  <b>Макет к дизайну 2026-11-22-lump-sum-lines.</b> Разметка повторяет боевые компоненты экрана
+  <b>Макет к дизайну 2026-11-22-lump-sum-lines, ред. 2.</b> Разметка повторяет боевые компоненты экрана
   «Против нашей цены»: таблица строк (<span class="mono">OfferLinesTable</span>), панель строки
   (<span class="mono">LineSheet</span>: «Цены», «Сравнение» с карточками цели и списком аналогов),
   поиск «Найти в договорах» (<span class="mono">ReferenceSearch</span>), карточка цели и «В файл подрядчику».
-  Новое выделено синим. Строка воздуховодов — живая строка стенда (оффер 10, МИРА; цифры без НДС, с ИПЦ, как на экране);
-  остальные строки условные.
+  Новое выделено синим. Строка воздуховодов — живая строка стенда (оффер 10, МИРА; цифры экрана без НДС, с ИПЦ);
+  остальные строки условные. Ред. 2: строка, похожая на сумму, не сравнивается со ставками; расчёт в ₽/м² отложен.
 </div>
 <div class="bar"><button onclick="document.documentElement.dataset.theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'">Светлая / тёмная тема</button></div>
 
@@ -137,9 +137,9 @@
 <div class="state">
   <h2>1. Таблица строк: сегодня и станет</h2>
   <div class="sub">Первая строка — сумма на надземную часть: сегодня сравнивается с суммами других объектов как с ценой
-    квадратного метра, станет — в рублях на м² надземной площади. Вторая — сумма за все выключатели: сегодня «разные
-    единицы», станет — честное «нет сумм этой семьи». Третья — сумма на территорию: площади нет. Четвёртая — обычная
-    ставка с объёмом: не меняется ничего.</div>
+    квадратного метра, станет — «Похоже на сумму», без вилки. Вторая — сумма за все выключатели: сегодня «разные единицы»,
+    станет — та же честная метка. Третья — обычная ставка, у которой среди аналогов была сумма договора: сумма уходит, вилка
+    пересчитывается. Четвёртая — обычная ставка без сумм в аналогах: не меняется ничего.</div>
   <span class="tag before">сегодня</span>
   <div class="tablecard">
     <table>
@@ -157,10 +157,10 @@
         <td class="r mono">—</td><td class="r"><span class="mono">—</span><span class="b state">разные единицы учёта</span></td>
       </tr>
       <tr>
-        <td class="work">Подсветка деревьев и МАФ<span class="cap">Светильники</span></td>
-        <td>шт</td><td class="r mono">1,00</td><td class="r mono">4 676 491,00<span class="cap">₽/шт</span></td>
-        <td class="mono">—</td>
-        <td class="r mono">—</td><td class="r"><span class="mono">—</span><span class="b state">нет наших договоров для сравнения</span></td>
+        <td class="work">Изоляция воздуховодов, огнезащита EI 60<span class="cap">Изоляция воздуховодов</span></td>
+        <td>м2</td><td class="r mono">2 140,00</td><td class="r mono">1 980,00<span class="cap">₽/м2</span></td>
+        <td><span class="mono">1 640,00 – 2 210,00</span><span class="cap">тот же вариант · 4 аналога · 1 выброс</span></td>
+        <td class="r mono">1 640,00</td><td class="r"><span class="mono">+727 600,00 ₽</span></td>
       </tr>
       <tr>
         <td class="work">Керамогранит 300х300<span class="cap">Облицовка керамогранитом</span><span class="cap">Формат плитки: <span style="color:var(--fg)">30x30</span></span></td>
@@ -177,23 +177,21 @@
       <tr><th>Работа в КП · вариант</th><th>Ед.</th><th class="r">Объём</th><th class="r">Цена КП</th><th>Наши договоры: вилка, ₽</th><th class="r">Самая низкая</th><th class="r">К самой низкой</th></tr>
       <tr>
         <td class="work">Вентиляция Общеобменная - Надземная часть / Воздуховоды<span class="cap">Монтаж воздуховодов вентиляции</span><span class="cap">Тип системы вентиляции: <span style="color:var(--fg)">общеобменная</span></span></td>
-        <td>м2</td><td class="r mono">1,00</td>
-        <td class="r mono">1 109,92<span class="cap"><span class="hl">₽/м² надземной площади</span></span><span class="cap">сумма 69 259 002,83 ₽</span></td>
-        <td><span class="mono">539,98 – 824,25</span><span class="cap"><span class="hl">сумма на надземную часть</span> · тот же вариант · 3 договора</span></td>
-        <td class="r mono">539,98</td><td class="r"><span class="mono">+35 564 164,70 ₽</span><span class="cap">569,94 ₽/м² × 62 400 м²</span></td>
+        <td>м2</td><td class="r mono">1,00</td><td class="r mono">69 259 002,83<span class="cap">₽/м2</span></td>
+        <td class="mono">—</td>
+        <td class="r mono">—</td><td class="r"><span class="mono">—</span><span class="b state new">Похоже на сумму<span class="cap">цена в 16 989 раз выше обычной ставки семьи</span></span></td>
       </tr>
       <tr>
         <td class="work">Выключатель одноклавишный<span class="cap">Электроустановочные изделия</span></td>
-        <td>шт</td><td class="r mono">1,00</td>
-        <td class="r mono">27,38<span class="cap"><span class="hl">₽/м² общей площади</span></span><span class="cap">сумма 2 073 655,00 ₽</span></td>
+        <td>шт</td><td class="r mono">1,00</td><td class="r mono">2 073 655,00<span class="cap">₽/шт</span></td>
         <td class="mono">—</td>
-        <td class="r mono">—</td><td class="r"><span class="mono">—</span><span class="b state">нет наших договоров для сравнения<span class="cap"><span class="hl">сумма на весь объект — в договорах нет сумм этой семьи</span></span></span></td>
+        <td class="r mono">—</td><td class="r"><span class="mono">—</span><span class="b state new">Похоже на сумму<span class="cap">цена в 2 362 раза выше обычной ставки семьи</span></span></td>
       </tr>
       <tr>
-        <td class="work">Подсветка деревьев и МАФ<span class="cap">Светильники</span></td>
-        <td>шт</td><td class="r mono">1,00</td><td class="r mono">4 676 491,00<span class="cap"><span class="hl">сумма на территорию</span></span></td>
-        <td class="mono">—</td>
-        <td class="r mono">—</td><td class="r"><span class="mono">—</span><span class="b state">нет площади<span class="cap"><span class="hl">у территории нет площади — сумму не к чему привести</span></span></span></td>
+        <td class="work">Изоляция воздуховодов, огнезащита EI 60<span class="cap">Изоляция воздуховодов</span></td>
+        <td>м2</td><td class="r mono">2 140,00</td><td class="r mono">1 980,00<span class="cap">₽/м2</span></td>
+        <td><span class="mono">1 640,00 – 2 210,00</span><span class="cap">тот же вариант · <span class="hl">3 аналога</span></span></td>
+        <td class="r mono">1 640,00</td><td class="r"><span class="mono">+727 600,00 ₽</span></td>
       </tr>
       <tr>
         <td class="work">Керамогранит 300х300<span class="cap">Облицовка керамогранитом</span><span class="cap">Формат плитки: <span style="color:var(--fg)">30x30</span></span></td>
@@ -203,15 +201,15 @@
       </tr>
     </table>
   </div>
+  <p class="xs fg2" style="margin:8px 0 0">Фильтр состояний над таблицей получает значение «Похоже на сумму». В плитках и итогах такие строки считаются со строками без сравнения.</p>
 </div>
 
-<!-- ===================== 2. Панель: сумма со сравнением ===================== -->
+<!-- ===================== 2. Панель: похоже на сумму ===================== -->
 <div class="state">
-  <h2>2. Панель строки-суммы: сравнение в ₽/м² своей части</h2>
+  <h2>2. Панель строки, похожей на сумму</h2>
   <div class="sub">Сегодня сумма сравнивается с каждой суммой договора как с ценой квадратного метра: две суммы Тушино (два корпуса)
-    идут отдельно, а самая большая сумма (VEER UB9) оказывается «самой дорогой», хотя у неё самая большая надземная часть.
-    Станет: суммы одной части одного договора складываются, каждая делится на площадь своей части — VEER UB9 становится самым
-    дешёвым на метр. Цифры живые: оффер 10 стенда, без НДС, с ИПЦ.</div>
+    идут отдельно, объекты разного размера стоят в одной вилке. Станет: сравнения нет, пояснение называет причину и цифры правила;
+    администратор видит поправку. Цифры живые: оффер 10 стенда.</div>
   <div class="pair">
     <div>
       <span class="tag before">сегодня</span>
@@ -236,73 +234,69 @@
       </div>
     </div>
     <div>
-      <span class="tag after">станет</span>
+      <span class="tag after">станет · администратор</span>
       <div class="sheet">
         <div class="sh-head"><div class="sh-title">Вентиляция Общеобменная - Надземная часть / Воздуховоды</div><div class="sh-desc">Монтаж воздуховодов вентиляции</div></div>
         <div class="sh-body">
           <div class="sec"><h4>Цены</h4><p class="small" style="margin:0 0 4px;font-weight:500">без НДС</p>
-            <dl class="prices"><dt>Сумма КП</dt><dd class="mono">69 259 002,83 ₽ <span class="xs fg2">(в КП: 1,00 м2 × 69 259 002,83)</span></dd><dt><span class="hl">Надземная площадь</span></dt><dd class="mono">62 400 м²</dd><dt><span class="hl">Цена КП на м²</span></dt><dd class="mono">1 109,92 ₽/м²</dd><dt>К самой низкой</dt><dd class="mono">+35 564 164,70 ₽</dd><dt>Самая низкая</dt><dd class="mono">539,98 ₽/м²</dd></dl></div>
+            <dl class="prices"><dt>Цена КП</dt><dd class="mono">69 259 002,83 ₽/м2</dd><dt>Объём</dt><dd class="mono">1,00 м2</dd></dl></div>
           <div class="sec"><h4>Сравнение</h4>
-            <div class="row" style="justify-content:flex-start;gap:6px;font-size:13px;margin-bottom:8px"><span class="b sec">тот же вариант</span><span class="b sec new">сумма на надземную часть</span><span class="fg2">3 договора</span></div>
-            <div class="why new" style="margin-bottom:8px">Строка — одна сумма на надземную часть: 1 м² × 69 259 002,83 ₽. Сравнивается в рублях на м² надземной площади объекта: 69 259 002,83 ÷ 62 400 м² = 1 109,92 ₽/м². Суммы договоров приведены так же — к надземной площади своего объекта.</div>
-            <div class="cards">
-              <div class="card low sel"><span><span class="b mk low">↓ самая низкая</span></span><span class="big mono">539,98 <span class="xs fg2" style="font-weight:400">₽/м²</span></span><span class="xs fg2">VEER 1 оч UB9 · ВЕР1-ГП · 07.2024</span><span class="xs up mono">КП выше на 569,94 за м² · +35 564 164,70 ₽</span><span class="xs" style="font-weight:600">цель · авто</span></div>
-              <div class="card fresh"><span><span class="b mk fresh">◷ самая свежая</span></span><span class="big mono">620,26 <span class="xs fg2" style="font-weight:400">₽/м²</span></span><span class="xs fg2">VEER 1 оч UB2 · UB2-CIW · 11.2024</span><span class="xs up mono">КП выше на 489,66 за м² · +30 554 762,04 ₽</span><span class="xs fg2" style="text-decoration:underline">сделать целью</span></div>
+            <div class="row" style="justify-content:flex-start;gap:6px;font-size:13px;margin-bottom:8px"><span class="b sec new">Похоже на сумму</span><span class="fg2">не сравнивается</span></div>
+            <div class="why new" style="margin-bottom:10px">В смете: 1 м² × 83 110 803,39 ₽. Обычная ставка семьи «Монтаж воздуховодов вентиляции» — 4 892 ₽ за м²
+              (медиана 5 строк с настоящим объёмом, цены как в сметах). Цена строки выше в 16 989 раз: похоже, это одна сумма за
+              часть здания, а не цена квадратного метра. Со ставками договоров её не сравнить, а суммы объектов разного размера между
+              собой не сравниваются.</div>
+            <div class="blk new" style="border-top:0;padding-top:0">
+              <div class="lbl">Сумма или ставка · только администратор</div>
+              <div class="toggle"><span class="on">Как решило правило</span><span>Это сумма</span><span>Это ставка — сравнивать</span></div>
+              <span class="xs fg2">Поправка хранится у этой строки сметы и действует на всех экранах. «Это ставка» вернёт строку в обычное сравнение.</span>
             </div>
-            <h4 style="margin:14px 0 6px">Аналоги</h4>
-            <div class="analog"><div class="top"><div><b>VEER 1 оч UB9</b> <span class="xs fg2">· ВЕР1-ГП · ООО «АНТТЕК»</span></div><div><b class="mono">539,98 ₽/м²</b> <span class="mono xs fg2">07.2024</span></div></div>
+          </div>
+          <div class="ellipsis">… «Найти в договорах» работает как справка, целью строка не обзаводится — состояние 4</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== 3. Поправка ===================== -->
+<div class="state">
+  <h2>3. Поправка: строка КП, признанная ставкой, и сумма договора, которую правило пропустило</h2>
+  <div class="sub">Слева — администратор поправил «Это ставка»: строка сравнивается как обычная, у метки — кто и когда поправил.
+    Пользователь без прав видит то же, но без переключателя. Справа — у строки-ставки в аналогах оказалась сумма договора, которую
+    правило не узнало (отношение ниже порога): администратор убирает её из сравнения прямо из списка аналогов. Цифры условные.</div>
+  <div class="pair">
+    <div>
+      <span class="tag after">станет · поправлено «это ставка»</span>
+      <div class="sheet">
+        <div class="sh-head"><div class="sh-title">Навес над входной группой</div><div class="sh-desc">Навесы и козырьки</div></div>
+        <div class="sh-body">
+          <div class="sec"><h4>Сравнение</h4>
+            <div class="row" style="justify-content:flex-start;gap:6px;font-size:13px;margin-bottom:8px"><span class="b sec">тот же вариант</span><span class="b out new">поправлено вручную: ставка · 22.11.2026</span><span class="fg2">3 аналога в 3 договорах</span></div>
+            <div class="cards">
+              <div class="card low sel"><span><span class="b mk low">↓ самая низкая</span></span><span class="big mono">34 200 000,00 <span class="xs fg2" style="font-weight:400">₽/шт</span></span><span class="xs fg2">ЖК «Северный» · дог. 14/2026 · 03.2026</span><span class="xs up mono">КП выше на 3 800 000,00 ₽</span><span class="xs" style="font-weight:600">цель · авто</span></div>
+            </div>
+            <div class="blk" style="margin-top:10px">
+              <div class="lbl">Сумма или ставка · только администратор</div>
+              <div class="toggle"><span>Как решило правило</span><span>Это сумма</span><span class="on">Это ставка — сравнивать</span></div>
+              <span class="xs fg2">Правило: цена в 82 раза выше обычной ставки семьи — похоже на сумму. Поправка: ставка.</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div>
+      <span class="tag after">станет · сумма договора в аналогах строки-ставки</span>
+      <div class="sheet">
+        <div class="sh-head"><div class="sh-title">Металлоконструкции кровли</div><div class="sh-desc">Монтаж металлоконструкций</div></div>
+        <div class="sh-body">
+          <div class="sec"><h4>Аналоги</h4>
+            <div class="analog"><div class="top"><div><b>ЖК «Парковый»</b> <span class="xs fg2">· дог. 7-П</span></div><div><b class="mono">298 400,00</b> <span class="xs fg2">₽/т</span> <span class="mono xs fg2">07.2026</span></div></div>
               <div class="row" style="justify-content:flex-start;gap:6px"><span class="b mk low">↓ самая низкая</span></div>
-              <div class="fg2">Вентиляция Общеобменная - Надземная часть / Воздуховоды</div>
-              <div class="xs fg2 mono"><span class="hl">79 376 182,94 ₽ ÷ 146 998 м² надземной площади</span></div></div>
-            <div class="analog"><div class="top"><div><b>VEER 1 оч UB2</b> <span class="xs fg2">· UB2-CIW · ООО «АНТТЕК»</span></div><div><b class="mono">620,26 ₽/м²</b> <span class="mono xs fg2">11.2024</span></div></div>
-              <div class="row" style="justify-content:flex-start;gap:6px"><span class="b mk fresh">◷ самая свежая</span></div>
-              <div class="fg2">Вентиляция Общеобменная - Надземная часть / Воздуховоды</div>
-              <div class="xs fg2 mono"><span class="hl">60 450 565,81 ₽ ÷ 97 460 м² надземной площади</span></div></div>
-            <div class="analog"><div class="top"><div><b>Тушино 1 оч. Cityzen</b> <span class="xs fg2">· ТУШ-1-СМР · ООО «АНТТЕК»</span></div><div><b class="mono">824,25 ₽/м²</b> <span class="mono xs fg2">08.2024</span></div></div>
-              <div class="fg2">Вентиляция Общеобменная - Надземная часть / Воздуховоды <span class="b sec new">2 строки</span></div>
-              <div class="xs fg2 mono"><span class="hl">(45 277 102,29 + 48 908 723,62) ₽ ÷ 114 268 м² надземной площади</span></div></div>
-          </div>
-          <div class="ellipsis">… «Договоры на этой ступени», «В файл подрядчику» — состояние 5</div>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- ===================== 3. Панель: другая часть и зона не определена ===================== -->
-<div class="state">
-  <h2>3. Сумма из другой части здания и сумма без зоны</h2>
-  <div class="sub">Часть здания работает как зона в фиче «зона как предпочтение»: сначала своя часть; нет — другие части, каждая сумма
-    на площади своей части, с пометкой. Сумма КП без зоны приводится к общей площади и сравнивается с суммами всех частей.
-    Сумма договора без зоны тоже идёт на общую площадь и «своей» не бывает. Цифры условные.</div>
-  <div class="pair">
-    <div>
-      <span class="tag after">станет · другая часть</span>
-      <div class="sheet">
-        <div class="sh-head"><div class="sh-title">Вентиляция Общеобменная - Подземная часть / Изоляция воздуховодов</div><div class="sh-desc">Изоляция воздуховодов</div></div>
-        <div class="sh-body">
-          <div class="sec"><h4>Сравнение</h4>
-            <div class="row" style="justify-content:flex-start;gap:6px;font-size:13px;margin-bottom:8px"><span class="b sec">тот же вариант</span><span class="b sec new">сумма на подземную часть</span><span class="b sec">другая зона</span><span class="fg2">2 договора</span></div>
-            <div class="why new" style="margin-bottom:8px">Строка — одна сумма на подземную часть: 15 210 000,00 ÷ 13 341 м² подземной площади = 1 140,09 ₽/м². В договорах сумм на подземную часть нет — взяты суммы на весь объект (2), каждая приведена к общей площади своего объекта.</div>
-            <div class="analog"><div class="top"><div><b>ЖК «Северный»</b> <span class="xs fg2">· дог. 14/2026</span></div><div><b class="mono">402,10 ₽/м²</b> <span class="mono xs fg2">03.2026</span></div></div>
-              <div class="row" style="justify-content:flex-start;gap:6px"><span class="b mk low">↓ самая низкая</span><span class="b sec">зона: Весь объект</span></div>
-              <div class="xs fg2 mono">52 552 616,00 ₽ ÷ 130 694 м² общей площади</div></div>
-            <div class="analog"><div class="top"><div><b>ЖК «Парковый»</b> <span class="xs fg2">· дог. 7-П</span></div><div><b class="mono">465,30 ₽/м²</b> <span class="mono xs fg2">07.2026</span></div></div>
-              <div class="row" style="justify-content:flex-start;gap:6px"><span class="b mk fresh">◷ самая свежая</span><span class="b sec">зона: не определена</span></div>
-              <div class="xs fg2 mono">28 717 546,00 ₽ ÷ 61 718 м² общей площади</div></div>
-          </div>
-        </div>
-      </div>
-    </div>
-    <div>
-      <span class="tag after">станет · зона не определена</span>
-      <div class="sheet">
-        <div class="sh-head"><div class="sh-title">Системы противодымной вентиляции / Воздуховоды</div><div class="sh-desc">Монтаж воздуховодов вентиляции</div></div>
-        <div class="sh-body">
-          <div class="sec"><h4>Сравнение</h4>
-            <div class="row" style="justify-content:flex-start;gap:6px;font-size:13px;margin-bottom:8px"><span class="b sec">тот же вариант</span><span class="b sec new">сумма на весь объект</span><span class="b sec">зона не определена</span><span class="fg2">4 договора</span></div>
-            <div class="why new" style="margin-bottom:8px">Строка — одна сумма; зона раздела не определена, поэтому сумма приведена к общей площади объекта: 55 069 147,00 ÷ 75 741 м² = 727,07 ₽/м². Сравнивается с суммами всех частей. Когда зону выберут, сравнение пересчитается.</div>
-            <div class="ellipsis">… карточки и аналоги — как в состоянии 2, у каждого аналога метка его зоны</div>
+              <div class="fg2">Монтаж м/к покрытия, сталь С255</div></div>
+            <div class="analog"><div class="top"><div><b>ЖК «Северный»</b> <span class="xs fg2">· дог. 14/2026</span></div><div><b class="mono">2 572 872,00</b> <span class="xs fg2">₽/т</span> <span class="mono xs fg2">03.2026</span></div></div>
+              <div class="fg2">М/к кровли · <span class="xs">объём 1,00 т</span></div>
+              <div class="row" style="justify-content:flex-start;gap:8px"><span class="b out">выброс</span><span class="link new" style="outline:2px solid var(--new);outline-offset:2px;border-radius:3px">это сумма — убрать из сравнения</span></div></div>
           </div>
         </div>
       </div>
@@ -310,58 +304,15 @@
   </div>
 </div>
 
-<!-- ===================== 4. Без сравнения ===================== -->
+<!-- ===================== 4. Справки, цель, файл ===================== -->
 <div class="state">
-  <h2>4. Строка-сумма без сравнения: причины</h2>
-  <div class="sub">Сегодня такие строки чаще всего стоят в «разные единицы учёта» — подпись неверна: единица та же, а цена — сумма.
-    Станет: состояние называет настоящую причину.</div>
+  <h2>4. Поиск в договорах, недействующая цель, файл подрядчику</h2>
+  <div class="sub">В поиске строка договора, похожая на сумму, видна с пометкой, но целью не выбирается; администратор может поправить
+    её отсюда. Цель, выбранная раньше на такую строку, перестаёт действовать с причиной. В файле подрядчику у строки «Похоже на
+    сумму» нашей цены нет — как у строк без сравнения.</div>
   <div class="pair">
     <div>
-      <span class="tag after">станет · сумм в договорах нет</span>
-      <div class="sheet">
-        <div class="sh-head"><div class="sh-title">Выключатель одноклавишный</div><div class="sh-desc">Электроустановочные изделия</div></div>
-        <div class="sh-body">
-          <div class="sec"><h4>Цены</h4><p class="small" style="margin:0 0 4px;font-weight:500">без НДС</p>
-            <dl class="prices"><dt>Сумма КП</dt><dd class="mono">2 073 655,00 ₽ <span class="xs fg2">(в КП: 1,00 шт × 2 073 655,00)</span></dd><dt>Общая площадь</dt><dd class="mono">75 741 м²</dd><dt>Цена КП на м²</dt><dd class="mono">27,38 ₽/м²</dd></dl></div>
-          <div class="sec"><h4>Сравнение</h4>
-            <div class="why new">Строка — одна сумма на весь объект, а не цена штуки: 2 073 655,00 ₽ за «1 шт» в 2 362 раза дороже обычной ставки семьи. В наших договорах сумм этой семьи нет — сравнивать не с чем. Строки договоров с ценой за штуку с суммой не сравниваются.</div>
-          </div>
-          <div class="ellipsis">… «Найти в договорах» — состояние 5</div>
-        </div>
-      </div>
-    </div>
-    <div>
-      <span class="tag after">станет · сумма на территорию</span>
-      <div class="sheet">
-        <div class="sh-head"><div class="sh-title">Подсветка деревьев и МАФ</div><div class="sh-desc">Светильники</div></div>
-        <div class="sh-body">
-          <div class="sec"><h4>Сравнение</h4>
-            <div class="why new">Строка — одна сумма на территорию. Площадь территории в объекте не хранится, поэтому сумму не к чему привести и сравнить нельзя.</div>
-          </div>
-        </div>
-      </div>
-      <div style="height:14px"></div>
-      <span class="tag after">станет · у объекта нет площадей частей</span>
-      <div class="sheet">
-        <div class="sh-body" style="padding-top:16px">
-          <div class="sec"><h4>Сравнение</h4>
-            <div class="why new">Строка — одна сумма на подземную часть. У объекта тендера не заданы надземная и подземная площади — задайте их в карточке объекта, и сравнение появится.</div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- ===================== 5. Справки, цель, файл ===================== -->
-<div class="state">
-  <h2>5. Поиск в договорах, недействующая цель, файл подрядчику</h2>
-  <div class="sub">Сумма из договоров в поиске помечена и целью для строки-ставки не делается (и наоборот). Цель, выбранная раньше на
-    строку, которая оказалась суммой, перестаёт действовать с причиной. В файле подрядчику у строки-суммы наша цена — тоже сумма:
-    ₽/м² цели × площадь части строки КП.</div>
-  <div class="pair">
-    <div>
-      <span class="tag after">станет · «Найти в договорах» у строки-ставки</span>
+      <span class="tag after">станет · «Найти в договорах»</span>
       <div class="sheet">
         <div class="sh-body" style="padding-top:16px">
           <div class="sec"><h4>Найти в договорах</h4>
@@ -371,10 +322,11 @@
               <div class="fg2">Оцинкованный воздуховод, толщиной не менее 0.5мм</div>
               <div class="row" style="justify-content:flex-start;gap:6px"><span class="b out">Надземная часть</span><span class="b out">м2</span></div>
               <span class="xs" style="text-decoration:underline">сделать целью</span></div>
-            <div class="analog"><div class="top"><div><b>Jois 1</b> <span class="xs fg2">· 2024</span></div><div><b class="mono">64 046 917,00</b> <span class="xs fg2">₽ за часть</span></div></div>
-              <div class="fg2">Оцинкованный воздуховод, толщиной не менее 0.5мм</div>
-              <div class="row" style="justify-content:flex-start;gap:6px"><span class="b out">зона не определена</span><span class="b out">м2</span><span class="b sec new">сумма на часть здания</span></div>
-              <span class="xs fg3">целью не делается: строка договора — сумма на часть здания, а у строки КП цена за м2</span></div>
+            <div class="analog"><div class="top"><div><b>Jois 1</b> <span class="xs fg2">· 2024</span></div><div><b class="mono">64 046 917,00</b> <span class="xs fg2">₽/м2</span></div></div>
+              <div class="fg2">Оцинкованный воздуховод, толщиной не менее 0.5мм · <span class="xs">объём 1,00 м2</span></div>
+              <div class="row" style="justify-content:flex-start;gap:6px"><span class="b out">зона не определена</span><span class="b out">м2</span><span class="b sec new">Похоже на сумму</span></div>
+              <span class="xs fg3">целью не выбирается: цена в 13 092 раза выше обычной ставки семьи</span>
+              <span class="link new">поправить: это ставка</span></div>
           </div>
         </div>
       </div>
@@ -383,17 +335,16 @@
       <span class="tag after">станет · недействующая цель</span>
       <div class="sheet">
         <div class="sh-body" style="padding-top:16px">
-          <div class="why" style="border-color:var(--warn-border);background:var(--warn-soft);color:var(--warn-text)">Выбор не действует: <span class="hl">строка договора оказалась суммой на часть здания</span> — цель: самая низкая</div>
+          <div class="why" style="border-color:var(--warn-border);background:var(--warn-soft);color:var(--warn-text)">Выбор не действует: <span class="hl">сумма вместо ставки</span> — строка договора похожа на сумму; цель: самая низкая</div>
         </div>
       </div>
       <div style="height:14px"></div>
-      <span class="tag after">станет · «В файл подрядчику» у строки-суммы</span>
+      <span class="tag after">станет · «В файл подрядчику» у строки «Похоже на сумму»</span>
       <div class="sheet">
         <div class="sh-body" style="padding-top:16px">
           <div class="sec"><h4>В файл подрядчику</h4>
-            <dl class="prices"><dt>Наша цена</dt><dd class="mono">33 694 752,00 ₽ <span class="xs fg2">за надземную часть</span></dd>
-              <dt>Источник</dt><dd class="small">наша расценка · цель: самая низкая · <span class="hl">сумма на надземную часть, 539,98 ₽/м² по договору VEER 1 оч UB9 (ВЕР1-ГП, 2024) × 62 400 м² надземной площади</span></dd>
-              <dt>Комментарий</dt><dd class="small fg2">Цена КП выше нашей на 35 564 164,70 ₽ (1 109,92 против 539,98 ₽ на м² надземной площади).</dd></dl>
+            <dl class="prices"><dt>Наша цена</dt><dd class="mono">—</dd>
+              <dt>Источник</dt><dd class="small"><span class="hl">похоже на сумму — не сравнивается</span></dd></dl>
           </div>
         </div>
       </div>
@@ -402,8 +353,9 @@
 </div>
 
 <ul class="legend">
-  <li><b>Не меняется:</b> строки-ставки (в том числе с объёмом 1, если цена не выходит за порог), системы, итоги по статьям — кроме того, что суммы в них теперь честные.</li>
-  <li><b>Пороги распознавания:</b> объём 1 и цена не меньше 10 обычных ставок семьи в мерной единице (м, м², м³, т, кг) или 50 — в штучной (шт, компл, мес).</li>
+  <li><b>Не меняется:</b> строки-ставки, у которых среди аналогов нет сумм (в том числе с объёмом 1, если цена не выходит за порог), системы.</li>
+  <li><b>Пороги распознавания (предварительные, до разметки выборки):</b> объём 1 и цена не меньше 10 обычных ставок семьи в мерной единице (м, м², м³, т, кг) или 50 — в штучной; обычной ставки нет — мерная единица считается суммой, штучная ставкой.</li>
+  <li><b>Отложено:</b> сравнение сумм между собой в ₽/м² части здания — отдельной работой.</li>
 </ul>
 
 </div>
