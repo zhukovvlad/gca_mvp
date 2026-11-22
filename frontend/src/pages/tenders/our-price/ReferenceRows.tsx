@@ -3,12 +3,26 @@ import { useState, type ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { roundDecimalPercent } from "@/lib/format";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
-import type { RefRow } from "@/types/domain";
+import { useSetLumpSum } from "@/services/queries";
+import type { LumpVerdict, LumpView, RefRow } from "@/types/domain";
 
 import { formatUnitPrice, pick, priceUnitLabel, type VatView } from "./money";
 import {
   analogOutlierNote,
+  LUMP_CHOICE_LABEL,
+  LUMP_NOT_TARGET,
+  LUMP_ROW_MENU,
+  lumpRuleChoiceLabel,
   periodRu,
   REF_FIRST,
   REF_LESS,
@@ -31,6 +45,8 @@ export interface ReferenceRowsProps<R extends RefRow> {
   kpUnit: string | null;
   /** «Сделать целью» — только `admin`. */
   canChoose: boolean;
+  /** Меню поправки «комплект или ставка» у строки с `lump` — только `admin` (спека комплектов §8 п. 5). */
+  canLump?: boolean;
   /** Цель сохраняется: кнопки выбора погашены. */
   busy: boolean;
   /** Приставка `data-testid` строк: блок или поиск. */
@@ -54,6 +70,7 @@ export function ReferenceRows<R extends RefRow>({
   vat,
   kpUnit,
   canChoose,
+  canLump = false,
   busy,
   testPrefix,
   fold = true,
@@ -72,6 +89,7 @@ export function ReferenceRows<R extends RefRow>({
           vat={vat}
           kpUnit={kpUnit}
           canChoose={canChoose}
+          lumpMenu={canLump}
           busy={busy}
           testId={`ref-row-${testPrefix}-${row.analog_id}`}
           extra={extra?.(row)}
@@ -99,6 +117,7 @@ function ReferenceRowCard({
   vat,
   kpUnit,
   canChoose,
+  lumpMenu,
   busy,
   testId,
   extra,
@@ -108,6 +127,7 @@ function ReferenceRowCard({
   vat: VatView;
   kpUnit: string | null;
   canChoose: boolean;
+  lumpMenu: boolean;
   busy: boolean;
   testId: string;
   extra: ReactNode;
@@ -127,6 +147,7 @@ function ReferenceRowCard({
         ? pathText(row.chapter_paths[0])
         : "";
   const contract = row.contract;
+  const isLump = row.lump?.is_lump === true;
   return (
     <div
       data-testid={testId}
@@ -215,12 +236,59 @@ function ReferenceRowCard({
         </div>
       )}
       {extra}
-      {canChoose && (
-        <Button type="button" size="sm" variant="outline" disabled={busy} onClick={onChoose}>
-          <span aria-hidden="true">◎</span>
-          {REF_MAKE_TARGET}
-        </Button>
+      {(canChoose || lumpMenu) && (
+        <div className="flex flex-wrap items-center gap-2">
+          {canChoose && (
+            <span title={isLump ? LUMP_NOT_TARGET : undefined} data-testid={isLump ? `${testId}-not-target` : undefined}>
+              <Button type="button" size="sm" variant="outline" disabled={busy || isLump} onClick={onChoose}>
+                <span aria-hidden="true">◎</span>
+                {REF_MAKE_TARGET}
+              </Button>
+            </span>
+          )}
+          {lumpMenu && row.lump !== null && <LumpRowMenu id={row.analog_id} lump={row.lump} testId={testId} />}
+        </div>
       )}
     </div>
+  );
+}
+
+type LumpChoice = "rule" | LumpVerdict;
+
+/** Поправка «комплект или ставка» в строке выдачи (спека комплектов §8 п. 5): три положения, выбор уходит сразу. */
+function LumpRowMenu({ id, lump, testId }: { id: number; lump: LumpView; testId: string }) {
+  const set = useSetLumpSum();
+  const current: LumpChoice = lump.override?.verdict ?? "rule";
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={<Button type="button" size="sm" variant="ghost" data-testid={`${testId}-lump-menu`} disabled={set.isPending} />}
+      >
+        {LUMP_ROW_MENU}
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-auto min-w-56">
+        <DropdownMenuGroup>
+          <DropdownMenuLabel>{LUMP_ROW_MENU}</DropdownMenuLabel>
+          <DropdownMenuRadioGroup
+            value={current}
+            onValueChange={(value) => {
+              const next = value as LumpChoice;
+              if (next === current) return;
+              set.mutate({ id, verdict: next === "rule" ? null : next });
+            }}
+          >
+            <DropdownMenuRadioItem value="rule" data-testid={`${testId}-lump-rule`}>
+              {lumpRuleChoiceLabel(lump)}
+            </DropdownMenuRadioItem>
+            <DropdownMenuRadioItem value="lump" data-testid={`${testId}-lump-lump`}>
+              {LUMP_CHOICE_LABEL.lump}
+            </DropdownMenuRadioItem>
+            <DropdownMenuRadioItem value="rate" data-testid={`${testId}-lump-rate`}>
+              {LUMP_CHOICE_LABEL.rate}
+            </DropdownMenuRadioItem>
+          </DropdownMenuRadioGroup>
+        </DropdownMenuGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

@@ -450,6 +450,20 @@ export const LUMP_BLOCK_HINT =
 export const LUMP_COMPARISON_NOTE = "не сравнивается";
 export const LUMP_CHOICE_LABEL = { rule: "Как решило правило", lump: "Это комплект", rate: "Это ставка" } as const;
 
+/** Действие в списке аналогов (спека комплектов §8 п. 4) и его подтверждение. */
+export const LUMP_ANALOG_ACTION = "это комплект — убрать из сравнения";
+export function lumpAnalogConfirm(title: string): string {
+  return `Строка договора «${title}» перестанет служить аналогом во всех КП. Вернуть — в «Найти в договорах».`;
+}
+export const LUMP_ANALOG_CONFIRM_TITLE = "Убрать строку из сравнения?";
+export const LUMP_ANALOG_CONFIRM_CANCEL = "Отмена";
+
+/** «Найти в договорах» (спека комплектов §8 п. 5): метка, пометка поправки, подсказка у «сделать целью». */
+export const LUMP_SEARCH_MARK = "похоже на комплект";
+export const LUMP_SEARCH_OVERRIDE = "поправлено вручную";
+export const LUMP_NOT_TARGET = "Похоже на комплект — не цель для ставки";
+export const LUMP_ROW_MENU = "Комплект или ставка";
+
 /** «Как решило правило (комплект)» — ответ правила в скобках. */
 export function lumpRuleChoiceLabel(lump: LumpView): string {
   return `${LUMP_CHOICE_LABEL.rule} (${lump.rule ? "комплект" : "ставка"})`;
@@ -611,6 +625,7 @@ export const TARGET_RESET_REASON: Record<TargetResetReason, string> = {
   no_freshest: "самой свежей расценки больше нет",
   no_contractor: "среди аналогов больше нет договора с этим подрядчиком",
   reference_unavailable: "строка договора больше не годится как справочная",
+  lump_sum: "комплект вместо ставки",
 };
 export function targetInactiveNote(reason: TargetResetReason | null): string {
   const why = reason === null ? "" : `: ${TARGET_RESET_REASON[reason]}`;

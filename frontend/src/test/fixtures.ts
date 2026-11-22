@@ -3656,6 +3656,7 @@ export function refRowFixture(overrides: Partial<RefRow> = {}): RefRow {
     with_this_contractor: false,
     param_value: null,
     family_id: 72,
+    lump: null,
     ...overrides,
   };
 }

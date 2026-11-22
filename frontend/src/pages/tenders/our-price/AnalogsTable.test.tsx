@@ -1,8 +1,12 @@
-import { fireEvent, screen, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { http, HttpResponse } from "msw";
 import { describe, expect, it, vi } from "vitest";
 
+import { qk } from "@/services/queryKeys";
 import { ourPriceAnalogFixture } from "@/test/fixtures";
-import { renderWithProviders } from "@/test/utils";
+import { server } from "@/test/server";
+import { createTestQueryClient, renderWithProviders } from "@/test/utils";
 import type { OurPriceAnalog, ZoneScope } from "@/types/domain";
 
 import { AnalogsTable, type AnalogsTableProps } from "./AnalogsTable";
@@ -24,6 +28,7 @@ function renderTable(props: Partial<AnalogsTableProps> = {}) {
       analogs={props.analogs ?? many(2)}
       vat={props.vat ?? "net"}
       canChoose={props.canChoose ?? true}
+      canLump={props.canLump}
       targetAnalogId={props.targetAnalogId ?? null}
       pinnedAnalogId={props.pinnedAnalogId ?? null}
       contractorAnalogId={props.contractorAnalogId ?? null}
@@ -78,6 +83,73 @@ describe("справка аналогов", () => {
       zoneScope: "own",
     });
     expect(screen.queryByText(/^зона:/)).not.toBeInTheDocument();
+  });
+
+  describe("«это комплект — убрать из сравнения»", () => {
+    const PATH = "/api/v1/position-items/:id/lump-sum";
+    const ACTION = "это комплект — убрать из сравнения";
+
+    function serveLump() {
+      const asked: Array<{ method: string; id: string; body: unknown }> = [];
+      server.use(
+        http.put(PATH, async ({ request, params }) => {
+          asked.push({ method: "PUT", id: String(params.id), body: await request.json() });
+          return HttpResponse.json({});
+        })
+      );
+      return asked;
+    }
+
+    it("admin: действие у каждого аналога; у member его нет", () => {
+      const admin = renderTable({ canLump: true });
+      expect(screen.getAllByRole("button", { name: ACTION })).toHaveLength(2);
+      admin.unmount();
+      renderTable({ canLump: false });
+      expect(screen.queryByRole("button", { name: ACTION })).not.toBeInTheDocument();
+    });
+
+    it("подтверждение называет строку договора и не шлёт запрос до «да»; «Отмена» ничего не шлёт", async () => {
+      const asked = serveLump();
+      renderTable({ canLump: true, analogs: [ourPriceAnalogFixture({ analog_id: 9100, title: "Монтаж вентиляции" })] });
+      await userEvent.click(screen.getByTestId("analog-lump-9100"));
+      expect(await screen.findByTestId("analog-lump-confirm")).toHaveTextContent(
+        "Строка договора «Монтаж вентиляции» перестанет служить аналогом во всех КП. Вернуть — в «Найти в договорах»."
+      );
+      expect(asked).toHaveLength(0);
+      await userEvent.click(screen.getByRole("button", { name: "Отмена" }));
+      await waitFor(() => expect(screen.queryByTestId("analog-lump-confirm")).not.toBeInTheDocument());
+      expect(asked).toHaveLength(0);
+    });
+
+    it("после подтверждения: PUT verdict=lump по analog_id и сброс ourPriceAll", async () => {
+      const asked = serveLump();
+      const queryClient = createTestQueryClient();
+      const spy = vi.spyOn(queryClient, "invalidateQueries");
+      renderWithProviders(
+        <AnalogsTable
+          analogs={[ourPriceAnalogFixture({ analog_id: 9100 }), ourPriceAnalogFixture({ analog_id: 9101 })]}
+          vat="net"
+          canChoose
+          canLump
+          targetAnalogId={null}
+          pinnedAnalogId={null}
+          contractorAnalogId={null}
+          busy={false}
+          onChoose={() => undefined}
+          columns={[]}
+          zoneScope="own"
+        />,
+        { queryClient }
+      );
+      await userEvent.click(screen.getByTestId("analog-lump-9101"));
+      await userEvent.click(await screen.findByTestId("analog-lump-confirm-ok"));
+      await waitFor(() => expect(asked).toHaveLength(1));
+      expect(asked[0]).toEqual({ method: "PUT", id: "9101", body: { verdict: "lump" } });
+      await waitFor(() => {
+        const keys = spy.mock.calls.map((call) => JSON.stringify((call[0] as { queryKey: unknown }).queryKey));
+        expect(keys).toContain(JSON.stringify(qk.tenders.ourPriceAll));
+      });
+    });
   });
 
   it("пять и меньше: кнопки «ещё» нет", () => {

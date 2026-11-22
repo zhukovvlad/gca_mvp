@@ -556,6 +556,7 @@ function WorkComparison({ tenderId, roundId, offerId, seriesId, line, data, vat,
         analogs={data.analogs}
         vat={vat}
         canChoose={canChoose}
+        canLump={canEdit}
         targetAnalogId={targetAnalogId(line)}
         pinnedAnalogId={pinnedAnalogId}
         contractorAnalogId={line.contractor?.analog_id ?? null}

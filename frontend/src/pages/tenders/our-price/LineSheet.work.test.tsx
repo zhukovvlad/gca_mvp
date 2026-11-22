@@ -513,7 +513,7 @@ describe("панель работы: не больше пяти аналогов
     await screen.findByTestId("analogs-table");
     expect(shownIds()[0]).toBe(9008);
     expect(shownIds()).toHaveLength(5);
-    expect(within(screen.getByTestId("analog-9008")).queryByRole("button")).not.toBeInTheDocument();
+    expect(within(screen.getByTestId("analog-9008")).queryByRole("button", { name: "сделать целью" })).not.toBeInTheDocument();
     expect(within(screen.getByTestId("analog-9008")).getByText("цель")).toBeInTheDocument();
   });
 
@@ -557,7 +557,7 @@ describe("карточки цели в панели", () => {
     renderSheet();
     await screen.findByTestId("analogs-table");
     expect(within(screen.getByTestId("analog-8001")).getByRole("button", { name: "сделать целью" })).toBeInTheDocument();
-    expect(within(screen.getByTestId("analog-8002")).queryByRole("button")).not.toBeInTheDocument();
+    expect(within(screen.getByTestId("analog-8002")).queryByRole("button", { name: "сделать целью" })).not.toBeInTheDocument();
   });
 
   it("«сделать целью» есть и у аналога, на котором уже стоит метка стратегии", async () => {

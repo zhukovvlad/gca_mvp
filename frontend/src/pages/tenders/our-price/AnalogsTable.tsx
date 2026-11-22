@@ -1,10 +1,20 @@
 import { useState } from "react";
 
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { compareDecimalStrings } from "@/lib/decimal";
 import { cn } from "@/lib/utils";
+import { useSetLumpSum } from "@/services/queries";
 import type { OurPriceAnalog, ZoneScope } from "@/types/domain";
 
 import { LineWhere } from "./LineWhere";
@@ -19,6 +29,10 @@ import {
   ANALOGS_NOMINAL_TITLE,
   analogsMore,
   analogZoneBadge,
+  LUMP_ANALOG_ACTION,
+  LUMP_ANALOG_CONFIRM_CANCEL,
+  LUMP_ANALOG_CONFIRM_TITLE,
+  lumpAnalogConfirm,
   periodRu,
 } from "./ourPriceCopy";
 import { releasedValueText } from "./paramsCopy";
@@ -42,6 +56,8 @@ export interface AnalogsTableProps {
   columns: Array<{ name: string }>;
   /** Область подбора ступени: при `other` и `any` у каждого аналога метка его зоны. */
   zoneScope: ZoneScope;
+  /** «Это комплект — убрать из сравнения» у каждого аналога — только `admin` (спека комплектов §8 п. 4). */
+  canLump?: boolean;
 }
 
 const DASH = "—";
@@ -96,8 +112,11 @@ export function AnalogsTable({
   onChoose,
   columns,
   zoneScope,
+  canLump = false,
 }: AnalogsTableProps) {
   const [open, setOpen] = useState(false);
+  const [pendingLump, setPendingLump] = useState<OurPriceAnalog | null>(null);
+  const setLump = useSetLumpSum();
   if (analogs.length === 0) {
     return (
       <p data-testid="analogs-empty" className="text-sm text-fg-secondary">
@@ -210,11 +229,27 @@ export function AnalogsTable({
                 </dl>
               )}
               <LineWhere article={a.article} chapterPath={a.chapter_path} scope="contract" />
-              {canChoose && a.selectable && a.analog_id !== pinnedAnalogId && (
-                <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => onChoose(a.analog_id)}>
-                  <span aria-hidden="true">◎</span>
-                  {ANALOG_MAKE_TARGET}
-                </Button>
+              {((canChoose && a.selectable && a.analog_id !== pinnedAnalogId) || canLump) && (
+                <div className="flex flex-wrap items-center gap-2">
+                  {canChoose && a.selectable && a.analog_id !== pinnedAnalogId && (
+                    <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => onChoose(a.analog_id)}>
+                      <span aria-hidden="true">◎</span>
+                      {ANALOG_MAKE_TARGET}
+                    </Button>
+                  )}
+                  {canLump && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      data-testid={`analog-lump-${a.analog_id}`}
+                      disabled={setLump.isPending}
+                      onClick={() => setPendingLump(a)}
+                    >
+                      {LUMP_ANALOG_ACTION}
+                    </Button>
+                  )}
+                </div>
               )}
             </div>
           );
@@ -226,6 +261,35 @@ export function AnalogsTable({
         >
           {open ? ANALOGS_LESS : analogsMore(hidden, list.length)}
         </CollapsibleTrigger>
+      )}
+      {canLump && (
+        <AlertDialog
+          open={pendingLump !== null}
+          onOpenChange={(next) => {
+            if (!next) setPendingLump(null);
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>{LUMP_ANALOG_CONFIRM_TITLE}</AlertDialogTitle>
+              <AlertDialogDescription data-testid="analog-lump-confirm">
+                {pendingLump !== null && lumpAnalogConfirm(pendingLump.title)}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel render={<Button variant="outline">{LUMP_ANALOG_CONFIRM_CANCEL}</Button>} />
+              <Button
+                data-testid="analog-lump-confirm-ok"
+                onClick={() => {
+                  if (pendingLump !== null) setLump.mutate({ id: pendingLump.analog_id, verdict: "lump" });
+                  setPendingLump(null);
+                }}
+              >
+                {LUMP_ANALOG_ACTION}
+              </Button>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       )}
     </Collapsible>
   );

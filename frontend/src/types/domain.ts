@@ -3539,7 +3539,8 @@ export type TargetResetReason =
   | "analog_unavailable"
   | "no_freshest"
   | "no_contractor"
-  | "reference_unavailable";
+  | "reference_unavailable"
+  | "lump_sum";
 
 /** Подсказки карточки справочной цели (спека справочных аналогов §2.14): на цифры не влияют. */
 export interface ReferenceHints {
@@ -3878,6 +3879,8 @@ export interface RefRow {
   param_value: string | null;
   /** Семья строки договора: сторона `b` связи при «Запомнить для семей». */
   family_id: number | null;
+  /** Правило «похоже на комплект» для строки договора (спека комплектов §7 п. 3); `null` — правило неприменимо. */
+  lump: LumpView | null;
 }
 
 export type LinkKind = "thickness" | "width" | "density" | "constant";
