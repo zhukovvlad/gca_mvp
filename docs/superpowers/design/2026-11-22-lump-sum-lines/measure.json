@@ -135,6 +135,7 @@
   "5/50": {
    "history_sums": 200,
    "history_families": 36,
+   "history_applicable": 200,
    "history_zones": {
     "territory": 17,
     "whole": 5,
@@ -159,6 +160,16 @@
     "no_variant": 68,
     "no_zone": 43
    },
+   "kp_lump_sum_expected": 1135,
+   "kp_lump_sum_expected_states_today": {
+    "unit_mismatch": 524,
+    "no_history": 389,
+    "comparable": 179,
+    "no_zone": 43
+   },
+   "kp_not_applicable": {
+    "no_variant_today": 68
+   },
    "kp_not_territory": 1031,
    "kp_find_family_sum": 333,
    "kp_find_variant_sum": 308,
@@ -172,6 +183,7 @@
   "10/50": {
    "history_sums": 198,
    "history_families": 36,
+   "history_applicable": 198,
    "history_zones": {
     "territory": 17,
     "whole": 5,
@@ -196,6 +208,16 @@
     "no_variant": 62,
     "no_zone": 43
    },
+   "kp_lump_sum_expected": 1124,
+   "kp_lump_sum_expected_states_today": {
+    "unit_mismatch": 522,
+    "no_history": 381,
+    "comparable": 178,
+    "no_zone": 43
+   },
+   "kp_not_applicable": {
+    "no_variant_today": 62
+   },
    "kp_not_territory": 1014,
    "kp_find_family_sum": 333,
    "kp_find_variant_sum": 306,
@@ -209,6 +231,7 @@
   "3/50": {
    "history_sums": 201,
    "history_families": 37,
+   "history_applicable": 201,
    "history_zones": {
     "territory": 17,
     "whole": 5,
@@ -233,6 +256,16 @@
     "no_variant": 71,
     "no_zone": 43
    },
+   "kp_lump_sum_expected": 1148,
+   "kp_lump_sum_expected_states_today": {
+    "unit_mismatch": 524,
+    "no_history": 401,
+    "comparable": 180,
+    "no_zone": 43
+   },
+   "kp_not_applicable": {
+    "no_variant_today": 71
+   },
    "kp_not_territory": 1047,
    "kp_find_family_sum": 342,
    "kp_find_variant_sum": 308,
@@ -246,6 +279,7 @@
   "5/20": {
    "history_sums": 225,
    "history_families": 41,
+   "history_applicable": 225,
    "history_zones": {
     "territory": 34,
     "whole": 7,
@@ -270,6 +304,16 @@
     "no_variant": 68,
     "no_zone": 43
    },
+   "kp_lump_sum_expected": 1295,
+   "kp_lump_sum_expected_states_today": {
+    "unit_mismatch": 595,
+    "no_history": 458,
+    "comparable": 199,
+    "no_zone": 43
+   },
+   "kp_not_applicable": {
+    "no_variant_today": 68
+   },
    "kp_not_territory": 1075,
    "kp_find_family_sum": 338,
    "kp_find_variant_sum": 312,
@@ -283,6 +327,7 @@
   "5/100": {
    "history_sums": 191,
    "history_families": 33,
+   "history_applicable": 191,
    "history_zones": {
     "territory": 11,
     "whole": 5,
@@ -306,6 +351,16 @@
     "comparable": 166,
     "no_variant": 68,
     "no_zone": 43
+   },
+   "kp_lump_sum_expected": 1067,
+   "kp_lump_sum_expected_states_today": {
+    "unit_mismatch": 498,
+    "no_history": 360,
+    "comparable": 166,
+    "no_zone": 43
+   },
+   "kp_not_applicable": {
+    "no_variant_today": 68
    },
    "kp_not_territory": 1010,
    "kp_find_family_sum": 327,

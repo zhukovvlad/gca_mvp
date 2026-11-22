@@ -133,6 +133,8 @@ for threshold in THRESHOLDS:
     entry = {
         "history_sums": len(hs),
         "history_families": len({r["fam"] for r in hs}),
+        # кандидаты аналогов — только строки с вариантом и каталожной единицей (спека §1 п. 4)
+        "history_applicable": sum(1 for r in hs if r["var"] is not None and r["unit"] is not None),
         "history_zones": dict(Counter(r["zone"] for r in hs)),
         "kp_sums_all_estimates": len(ks),
         # строки, у которых решение «по записанным ценам» (ред. 3) и «нетто» расходится
@@ -145,6 +147,24 @@ for threshold in THRESHOLDS:
         entry["kp_sums_in_snapshot"] = len(shown)
         entry["kp_zones_in_snapshot"] = dict(Counter(r["zone"] for r in shown))
         entry["kp_states_today"] = dict(Counter(state[r["id"]] for r in shown).most_common())
+        # применимость правила по спеке §1 п. 4: вариант и каталожная единица есть,
+        # и строка не получает состояние раньше lump_sum (in_progress, unknown_vat_base,
+        # no_price, no_variant); это и есть ожидаемое число lump_sum после фичи
+        early = {"in_progress", "unknown_vat_base", "no_price", "no_variant"}
+        applicable = [
+            r for r in shown if r["var"] is not None and r["unit"] is not None and state[r["id"]] not in early
+        ]
+        entry["kp_lump_sum_expected"] = len(applicable)
+        entry["kp_lump_sum_expected_states_today"] = dict(
+            Counter(state[r["id"]] for r in applicable).most_common()
+        )
+        entry["kp_not_applicable"] = dict(
+            Counter(
+                "no_variant_today" if state[r["id"]] in early else ("no_variant" if r["var"] is None else "no_unit")
+                for r in shown
+                if r not in applicable
+            ).most_common()
+        )
         # сравнение суммы с суммой: часть здания есть у всех, кроме территории;
         # зона не определена — на общую площадь объекта
         fam_contracts: dict = defaultdict(set)
