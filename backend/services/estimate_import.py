@@ -38,6 +38,7 @@ from models import (
     EstimateCategoryOverride,
     EstimateRawData,
     Lot,
+    LumpSumOverride,
     PositionItem,
     Proposal,
     ProposalAdditionalInfo,
@@ -813,6 +814,22 @@ def _replace_existing(
         warnings.append(
             "Заменена смета с ручной поправкой ставки НДС (" + ", ".join(parts) + "); "
             "поправка снята вместе со сметой и не перенесена на новую."
+        )
+
+    # Поправки «комплект или ставка» (спека строк-сумм §3 п. 4) уходят каскадом со строками и не
+    # переносятся: правило решит заново. Счёт — ДО `delete`, по тому же замку строки сметы.
+    lump_overrides = db.execute(
+        select(func.count())
+        .select_from(LumpSumOverride)
+        .join(PositionItem, PositionItem.id == LumpSumOverride.position_item_id)
+        .join(Proposal, Proposal.id == PositionItem.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .where(Lot.estimate_id == old_id)
+    ).scalar_one()
+    if lump_overrides:
+        warnings.append(
+            f"Поправки «комплект или ставка» по строкам прежней сметы ({lump_overrides}) "
+            "не перенесены — правило решит заново"
         )
 
     db.execute(delete(Estimate).where(Estimate.id == old_id))

@@ -2,6 +2,7 @@
 ключей `(семья, единица)` и поправки администратора. Правило — `services/lump_sum.py`."""
 from __future__ import annotations
 
+import datetime as dt
 from collections import defaultdict
 from collections.abc import Collection
 from decimal import Decimal
@@ -9,6 +10,7 @@ from decimal import Decimal
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
+from crud.common import DomainError
 from models import (
     CatalogContext,
     CatalogPosition,
@@ -24,9 +26,18 @@ from models import (
 from money.price import is_price, is_weight
 from money.vat import gross_to_net
 from services.analog_ladder import MIN_NOMINAL
-from services.lump_sum import TYPICAL_MIN_LINES, LumpOverride, TypicalRate, TypicalRates
+from services.lump_sum import (
+    TYPICAL_MIN_LINES,
+    LumpOverride,
+    LumpVerdict,
+    TypicalRate,
+    TypicalRates,
+)
 from services.price_basis import median
 from services.status_cache import typical_rates_cache
+
+CODE_POSITION_ITEM_NOT_FOUND = "position_item_not_found"
+CODE_LUMP_SUM_NOT_APPLICABLE = "lump_sum_not_applicable"
 
 _ONE = Decimal(1)
 
@@ -120,3 +131,89 @@ def load_lump_overrides(
             .where(LumpSumOverride.position_item_id.in_(ids))
         ).all()
     }
+
+
+def _lock_applicable_item(db: Session, position_item_id: int) -> None:
+    """Строка сметы под `FOR UPDATE` (по образцу `decide_zone`) и проверка состава (спека §3 п. 2):
+    правило применимо только к строке-работе (не глава) сметы договора или КП, чей контекст не в
+    архиве, не `SYSTEM`, с семьёй и вариантом. Цена, вес и база НДС поправку не запрещают."""
+    locked = db.execute(
+        sa.select(PositionItem.id, PositionItem.is_chapter)
+        .where(PositionItem.id == position_item_id)
+        .with_for_update()
+    ).one_or_none()
+    if locked is None:
+        raise DomainError(
+            404, f"Строка сметы {position_item_id} не найдена.", code=CODE_POSITION_ITEM_NOT_FOUND
+        )
+    is_chapter = locked[1]
+    row = db.execute(
+        sa.select(
+            Estimate.contract_id,
+            Estimate.offer_id,
+            CatalogContext.work_family_id,
+            CatalogContext.work_variant_id,
+            CatalogContext.archived_at,
+            CatalogContext.semantic_kind,
+        )
+        .select_from(PositionItem)
+        .join(Proposal, Proposal.id == PositionItem.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .join(Estimate, Estimate.id == Lot.estimate_id)
+        .outerjoin(ContextMember, ContextMember.position_item_id == PositionItem.id)
+        .outerjoin(CatalogContext, CatalogContext.id == ContextMember.context_id)
+        .where(PositionItem.id == position_item_id)
+    ).first()
+    applicable = (
+        not is_chapter
+        and row is not None
+        and (row.contract_id is not None or row.offer_id is not None)
+        and row.work_family_id is not None
+        and row.work_variant_id is not None
+        and row.archived_at is None
+        and row.semantic_kind != "SYSTEM"
+    )
+    if not applicable:
+        raise DomainError(
+            422,
+            "Правило «комплект или ставка» к этой строке неприменимо: нужна строка-работа "
+            "сметы договора или КП в активном контексте с семьёй и вариантом.",
+            code=CODE_LUMP_SUM_NOT_APPLICABLE,
+        )
+
+
+def set_lump_override(
+    db: Session, *, position_item_id: int, verdict: LumpVerdict, actor_id: int
+) -> LumpSumOverride:
+    """Поправка администратора к строке (спека §3 п. 2). То же значение — запись не трогается
+    (автор и время прежние); иное — значение, автор и `now()`. Не коммитит."""
+    _lock_applicable_item(db, position_item_id)
+    row = db.get(LumpSumOverride, position_item_id, populate_existing=True)
+    if row is None:
+        row = LumpSumOverride(
+            position_item_id=position_item_id,
+            verdict=verdict,
+            set_by=actor_id,
+            set_at=dt.datetime.now(dt.UTC),
+        )
+        db.add(row)
+    elif row.verdict != verdict:
+        row.verdict = verdict
+        row.set_by = actor_id
+        row.set_at = dt.datetime.now(dt.UTC)
+    db.flush()
+    db.refresh(row)  # время — как из базы (пояс сессии), одинаково для первой и повторной записи
+    return row
+
+
+def clear_lump_override(db: Session, *, position_item_id: int) -> None:
+    """«Как решило правило»: поправка снимается; без записи — ничего. Строки нет — 404. Не коммитит."""
+    locked = db.execute(
+        sa.select(PositionItem.id).where(PositionItem.id == position_item_id).with_for_update()
+    ).one_or_none()
+    if locked is None:
+        raise DomainError(
+            404, f"Строка сметы {position_item_id} не найдена.", code=CODE_POSITION_ITEM_NOT_FOUND
+        )
+    db.execute(sa.delete(LumpSumOverride).where(LumpSumOverride.position_item_id == position_item_id))
+    db.flush()

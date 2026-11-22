@@ -14,6 +14,7 @@ from models import (
     EstimateAdditionalWork,
     EstimateRawData,
     Lot,
+    LumpSumOverride,
     PositionItem,
     Proposal,
     ProposalAdditionalInfo,
@@ -2069,3 +2070,43 @@ def _items_by_key(db_session, estimate_id: int) -> dict[str, PositionItem]:
         .where(Lot.estimate_id == estimate_id)
     ).scalars().all()
     return {item.position_key_in_proposal: item for item in rows}
+
+
+def _item_ids(db_session, estimate_id, count):
+    return list(
+        db_session.execute(
+            sa.select(PositionItem.id)
+            .join(Proposal, Proposal.id == PositionItem.proposal_id)
+            .join(Lot, Lot.id == Proposal.lot_id)
+            .where(Lot.estimate_id == estimate_id, PositionItem.is_chapter.is_(False))
+            .order_by(PositionItem.id)
+            .limit(count)
+        ).scalars()
+    )
+
+
+def test_replace_warns_about_dropped_lump_sum_overrides(
+    db_session, imported_estimate, admin_user, replace_upload
+):
+    """Спека строк-сумм §3 п. 4: поправки «комплект или ставка» уходят каскадом, число — в
+    предупреждении."""
+    ids = _item_ids(db_session, imported_estimate.id, 2)
+    assert len(ids) == 2
+    for item_id, verdict in zip(ids, ("lump", "rate"), strict=False):
+        db_session.add(LumpSumOverride(position_item_id=item_id, verdict=verdict, set_by=admin_user.id))
+    db_session.commit()
+
+    job = replace_upload(imported_estimate.contract_id)
+    assert any(
+        "Поправки «комплект или ставка» по строкам прежней сметы (2) не перенесены — "
+        "правило решит заново" in w
+        for w in job.warnings
+    )
+    assert db_session.execute(sa.select(sa.func.count()).select_from(LumpSumOverride)).scalar_one() == 0
+
+
+def test_replace_says_nothing_about_lump_sum_overrides_when_there_were_none(
+    db_session, imported_estimate, replace_upload
+):
+    job = replace_upload(imported_estimate.contract_id)
+    assert not any("комплект или ставка" in w for w in job.warnings)
