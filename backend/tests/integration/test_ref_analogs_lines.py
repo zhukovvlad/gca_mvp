@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 import sqlalchemy as sa
 
+from crud.lump_sum import typical_rates
 from crud.our_price_load import load_history
 from crud.reference_lines import (
     ParamText,
@@ -320,7 +321,10 @@ class TestQueryShape:
         ids = {row.position_item_id for row in world.db.execute(query).all()}
         assert {good.id, cheap.id} <= ids
 
-    def test_each_loader_runs_one_query(self, world):
+    def test_each_loader_runs_one_query(self, world, monkeypatch):
+        from config import settings
+
+        monkeypatch.setattr(settings, "TYPICAL_RATES_CACHE_TTL_S", 300)
         contract = world.contract()
         _, proposal = world.estimate(contract)
         items = [world.line(proposal) for _ in range(3)]
@@ -328,11 +332,36 @@ class TestQueryShape:
         contracts = _history(world.db)
 
         ids = [i.id for i in items]
+        typical_rates(world.db)  # ставки — кэш: холодный набор читает их отдельно (пул и единицы)
         with count_statements(world.db) as box:
             found = load_reference_lines(world.db, contracts, ids, factors=None)
 
         assert len(found) == 3
-        assert box[0] == 1
+        assert box[0] == 1  # строки одним запросом; поправки — ещё один, только если есть строки с семьёй и вариантом
+
+    def test_the_lump_check_adds_a_fixed_number_of_queries_not_one_per_line(self, world):
+        from tests.integration.test_our_price_load import _simple_variant
+
+        family, schema = world.family()
+        _, variant = _simple_variant(world, family, schema)
+        contract = world.contract()
+        _, proposal = world.estimate(contract)
+        bare = [world.line(proposal) for _ in range(3)]
+        applicable = [world.line(proposal, family=family, variant=variant) for _ in range(3)]
+        world.db.flush()
+        contracts = _history(world.db)
+        bare_ids = [i.id for i in bare]
+        applicable_ids = [i.id for i in applicable]
+
+        with count_statements(world.db) as box:
+            load_reference_lines(world.db, contracts, bare_ids, factors=None)
+        with count_statements(world.db) as applicable_box:
+            found = load_reference_lines(world.db, contracts, applicable_ids, factors=None)
+
+        assert all(found[pid].lump is not None for pid in applicable_ids)
+        assert box[0] == 3  # строки + пул обычных ставок + единицы (холодный кэш); поправок не у кого читать
+        # поправки трёх строк с семьёй и вариантом — один запрос на набор, а не по запросу на строку
+        assert applicable_box[0] == 4
 
 
 # ---------------------------------------------------------------------------
@@ -465,3 +494,96 @@ class TestLinkValues:
 
         assert len(found) == 2
         assert box[0] == 1
+
+
+# ---------------------------------------------------------------------------
+#  Решение «комплект или ставка» справочной строки (спека строк-сумм §6 п. 1)
+# ---------------------------------------------------------------------------
+
+
+def _lump_scene(world):
+    """Ключ (семья, м²): три ставки по 100 при весе 10 — обычная ставка 100; договор-носитель пула отдельный."""
+    from tests.integration.test_our_price_load import _simple_variant
+
+    family, schema = world.family()
+    _, variant = _simple_variant(world, family, schema)
+    carrier = world.contract()
+    _, proposal = world.estimate(carrier, vat_rate=D("0"))
+    for _ in range(3):
+        world.line(proposal, family=family, variant=variant, unit_cost=D("100"), total=D("1000"))
+    contract = world.contract()
+    _, own = world.estimate(contract, vat_rate=D("0"))
+    world.db.flush()
+    return family, variant, own
+
+
+class TestLumpOfReferenceLines:
+    def test_a_weight_one_line_at_the_threshold_is_a_lump_and_one_step_below_is_a_rate(self, world):
+        family, variant, proposal = _lump_scene(world)
+        at = world.line(proposal, family=family, variant=variant, unit_cost=D("500"), total=D("500"), suggested=D("1"), quantity=D("1"))
+        below = world.line(proposal, family=family, variant=variant, unit_cost=D("499.99"), total=D("499.99"), suggested=D("1"), quantity=D("1"))
+        world.db.flush()
+
+        found = load_reference_lines(world.db, _history(world.db), [at.id, below.id], factors=None)
+
+        assert (found[at.id].weight, found[below.id].weight) == (D("1"), D("1"))
+        assert found[at.id].lump.is_lump is True and found[at.id].lump.rule is True
+        assert found[at.id].lump.net == D("500") and found[at.id].lump.typical.net == D("100")
+        assert found[below.id].lump.is_lump is False
+        assert found[at.id].family_title == family.title
+
+    def test_a_heavy_line_is_a_rate_at_any_price(self, world):
+        family, variant, proposal = _lump_scene(world)
+        heavy = world.line(proposal, family=family, variant=variant, unit_cost=D("900"), total=D("9000"))
+        world.db.flush()
+
+        found = load_reference_lines(world.db, _history(world.db), [heavy.id], factors=None)
+
+        assert found[heavy.id].weight == D("10")
+        assert found[heavy.id].lump.rule is False and found[heavy.id].lump.is_lump is False
+
+    def test_the_override_beats_the_rule_both_ways(self, world, admin_user):
+        from models import LumpSumOverride
+
+        family, variant, proposal = _lump_scene(world)
+        big = world.line(proposal, family=family, variant=variant, unit_cost=D("900"), total=D("900"), suggested=D("1"), quantity=D("1"))
+        small = world.line(proposal, family=family, variant=variant, unit_cost=D("100"), total=D("1000"))
+        world.db.add_all(
+            [
+                LumpSumOverride(position_item_id=big.id, verdict="rate", set_by=admin_user.id),
+                LumpSumOverride(position_item_id=small.id, verdict="lump", set_by=admin_user.id),
+            ]
+        )
+        world.db.flush()
+
+        found = load_reference_lines(world.db, _history(world.db), [big.id, small.id], factors=None)
+
+        assert found[big.id].lump.rule is True and found[big.id].lump.is_lump is False
+        assert found[big.id].lump.override.verdict == "rate"
+        assert found[small.id].lump.rule is False and found[small.id].lump.is_lump is True
+        assert found[small.id].lump.override.set_by_email == admin_user.email
+
+    def test_a_line_without_a_family_or_a_variant_has_no_lump_check(self, world):
+        family, variant, proposal = _lump_scene(world)
+        bare = world.line(proposal, unit_cost=D("900"), total=D("900"), suggested=D("1"), quantity=D("1"))
+        no_variant = world.line(
+            proposal, family=family, unit_cost=D("900"), total=D("900"), suggested=D("1"), quantity=D("1")
+        )
+        world.db.flush()
+
+        found = load_reference_lines(world.db, _history(world.db), [bare.id, no_variant.id], factors=None)
+
+        assert found[bare.id].lump is None and found[bare.id].family_title is None
+        assert found[no_variant.id].lump is None
+
+    def test_a_line_in_an_archived_context_has_no_lump_check(self, world):
+        family, variant, proposal = _lump_scene(world)
+        archived = world.line(
+            proposal, family=family, variant=variant, archived_context=True, unit_cost=D("900"), total=D("900"),
+            suggested=D("1"), quantity=D("1"),
+        )
+        world.db.flush()
+
+        found = load_reference_lines(world.db, _history(world.db), [archived.id], factors=None)
+
+        assert found[archived.id].lump is None

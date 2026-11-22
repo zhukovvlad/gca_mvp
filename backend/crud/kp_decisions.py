@@ -80,6 +80,7 @@ CODE_NO_FRESHEST = "no_freshest"
 CODE_NO_CONTRACTOR_ANALOG = "no_contractor_analog"
 #: Коды отказов справочной цели (спека справочных аналогов §2.13).
 CODE_REFERENCE_UNAVAILABLE = "reference_unavailable"
+CODE_REFERENCE_IS_LUMP_SUM = "reference_is_lump_sum"
 CODE_CONVERSION_NOT_NEEDED = "conversion_not_needed"
 CODE_CONVERSION_REQUIRED = "conversion_required"
 CODE_LINK_NOT_APPLICABLE = "link_not_applicable"
@@ -643,7 +644,8 @@ def put_reference_target(
 
     Строка проверяется той же сценой и с тем же рядом ИПЦ, что чтение. Отказы по таблице спеки
     справочных аналогов §2.13, по порядку: система (`target_not_applicable`); строка договора не
-    справочная (`reference_unavailable`); пересчёт при равных единицах (`conversion_not_needed`); различны
+    справочная (`reference_unavailable`); строка КП — комплект (`target_not_applicable`, сразу после системы),
+    строка договора — комплект (`reference_is_lump_sum`) — оба раньше проверок пересчёта; пересчёт при равных единицах (`conversion_not_needed`); различны
     единицы, а пересчёта нет (`conversion_required`); связь не годится (`link_not_applicable`); `N` или
     основание по связи сменились (`409 conversion_stale`); ручной пересчёт неверен
     (`manual_conversion_invalid`); пара помечена выбросом без подтверждения
@@ -659,11 +661,21 @@ def put_reference_target(
     )
     if row.line.is_system:
         raise DomainError(422, "Справочная цель есть только у строки-работы.", code=CODE_TARGET_NOT_APPLICABLE)
+    if result.state is LineState.lump_sum:
+        raise DomainError(
+            422, "Строка КП похожа на комплект: цели у неё нет.", code=CODE_TARGET_NOT_APPLICABLE
+        )
     factors = scene.plan.factor_by_estimate if scene.plan is not None else None
     line = load_reference_lines(db, scene.contracts, [body.analog_id], factors=factors).get(body.analog_id)
     if line is None:
         raise DomainError(
             422, "Эта строка договора не годится как справочная цель.", code=CODE_REFERENCE_UNAVAILABLE
+        )
+    if line.lump is not None and line.lump.is_lump:
+        raise DomainError(
+            422,
+            "Строка договора похожа на комплект: ставкой для сравнения она быть не может.",
+            code=CODE_REFERENCE_IS_LUMP_SUM,
         )
 
     same_unit = units_equal(line.unit_id, row.unit_id)

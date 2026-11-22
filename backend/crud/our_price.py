@@ -29,6 +29,7 @@ from crud.kp_decisions import (
     load_file_skeleton,
     load_unit_texts,
 )
+from crud.lump_sum import typical_rates
 from crud.our_price_inflation import plan_history_inflation, round_target_month
 from crud.our_price_load import (
     ArticleMeta,
@@ -76,6 +77,7 @@ from services.excel import iso_date_to_ru
 from services.family_links import LinkState, links_of_families
 from services.kp_comment import CommentInputs, InflationLabel, ReferenceSource, target_net, template_text
 from services.kp_file import FileContext, KpSourceLine, line_comment_inputs
+from services.lump_sum import LumpCheck
 from services.our_price import (
     _CONTEXT,
     RUNG_ORDER,
@@ -204,6 +206,8 @@ class _Scene:
     decisions: dict[int, EstimateDecisions]
     #: Число отправленных файлов по офферам этапа: у оффера без сметы они остаются.
     sent_files: dict[int, int]
+    #: Подписи каталожных единиц (`unit_id -> подпись`) — для признака «комплект» строки (спека строк-сумм §7).
+    unit_labels: Mapping[int, str] = field(default_factory=dict)
 
 
 def _load_head(db: Session, tender_id: int, round_id: int) -> _Head:
@@ -447,6 +451,7 @@ def _build_scene(
         total_fork=_fork(history.total, class_contracts),
         decisions=load_decisions(db, kp_ids),
         sent_files=_sent_files_counts(db, [raw[0] for raw in participants_raw]),
+        unit_labels=typical_rates(db).unit_labels,
     )
 
 
@@ -892,6 +897,39 @@ def _params_view(
     return rule.basis, params
 
 
+def lump_view(check: LumpCheck, *, rate: Decimal | None, family: str, unit_label: str) -> dict:
+    """Признак «похоже на комплект» (спека строк-сумм §7 п. 1): цены — `money_pair(..., unit=True)` в ставке
+    показа; `ratio` — нетто строки к обычной ставке строкой, без округления; без ставки — `typical: null`,
+    `typical_lines: 0`, `ratio: null`."""
+    typical = check.typical
+    ratio = None
+    if typical is not None:
+        with localcontext(_CONTEXT):
+            ratio = format(check.net / typical.net, "f")
+    override = check.override
+    return {
+        "rule": check.rule,
+        "is_lump": check.is_lump,
+        "measure": check.measure,
+        "unit_price": money_pair(check.net, rate, unit=True),
+        "typical": None if typical is None else money_pair(typical.net, rate, unit=True),
+        "typical_lines": 0 if typical is None else typical.lines,
+        "ratio": ratio,
+        "threshold": format(check.threshold, "f"),
+        "family": family,
+        "unit": unit_label,
+        "override": (
+            None
+            if override is None
+            else {
+                "verdict": override.verdict,
+                "set_by": _author(override.set_by_id, override.set_by_email),
+                "set_at": iso(override.set_at),
+            }
+        ),
+    }
+
+
 def _line_view(
     row: KpLineRow,
     result: LineResult,
@@ -899,6 +937,7 @@ def _line_view(
     history: HistoryIndex,
     families: Mapping[int, FamilyLadderInfo],
     steps: Mapping[int, tuple[ChapterStep, ...]],
+    unit_labels: Mapping[int, str],
 ) -> dict:
     """Строка КП: у работы — на лестнице аналогов, у системы — на ступени, которую выбрало ядро.
 
@@ -995,6 +1034,11 @@ def _line_view(
         "composite_parameter": _composite_parameter(line, families),
         "group": group,
         "unit_mismatch": _mismatch_view(result),
+        "lump": (
+            None
+            if line.lump is None
+            else lump_view(line.lump, rate=rate, family=row.family_title, unit_label=unit_labels[line.lump.unit_id])
+        ),
     }
 
 
@@ -1022,6 +1066,7 @@ def _comment_inputs(
 ) -> CommentInputs:
     """Вход комментария строки; собирает та же функция, что у файла. `references` — справочные цели
     сметы: без них справочная цель строки считается недоступной."""
+    saved = _saved_target(scene.decisions[participant.estimate_id], row.line.position_item_id)
     return line_comment_inputs(
         kp_source_line(row, unit_text),
         result,
@@ -1032,14 +1077,33 @@ def _comment_inputs(
         kp_vat_base=participant.base,
         inflation=_inflation_label(scene.plan),
         agreed_net=agreed_net,
-        saved_target=_saved_target(scene.decisions[participant.estimate_id], row.line.position_item_id),
+        saved_target=saved,
         reference=None if references is None else references.sources.get(row.line.position_item_id),
+        target_lump=_target_lump(scene, references, saved),
     )
 
 
 def _saved_target(decisions: EstimateDecisions, pid: int) -> SavedTarget | None:
     record = decisions.targets.get(pid)
     return None if record is None else (record[0], record[1])
+
+
+def _target_lump(scene: _Scene, references: _ReferenceTargets | None, saved: SavedTarget | None) -> bool:
+    """Сохранённая цель `analog`/`reference` указывает на строку договора-комплект (спека строк-сумм §5 п. 2,
+    решение плана 7): единственное место, где этот признак считается. Для `analog` — по истории сцены
+    (`WorkHistory.is_lump`), для `reference` — по `ReferenceLine.lump` справочных строк сцены чтения. Экран,
+    комментарий и файл подрядчику берут его отсюда; ядро (`services/`) признака не вычисляет."""
+    if saved is None:
+        return False
+    kind, analog_id = saved
+    if analog_id is None:
+        return False
+    if kind == "analog":
+        return scene.work_history.is_lump(analog_id)
+    if kind == "reference" and references is not None:
+        line = references.lines.get(analog_id)
+        return line is not None and line.lump is not None and line.lump.is_lump
+    return False
 
 
 def _template_text(
@@ -1263,6 +1327,7 @@ def _reference_targets(
             kp_unit_id=row.unit_id,
             details=details,
             steps=steps,
+            lump=reference_lump_view(line, participant.base, scene.unit_labels),
         )
         hints[pid] = _reference_hints(snapshot, row, result, line, states, values)
     return _ReferenceTargets(lines=lines, rows=rows, hints=hints, sources=sources)
@@ -1334,6 +1399,7 @@ def _decision_fields(
         result,
         is_system=row.line.is_system,
         reference_available=saved is not None and saved[1] in references.lines,
+        target_lump=_target_lump(scene, references, saved),
     )
     choice_view = None
     if choice is not None:
@@ -1383,7 +1449,7 @@ def _line_with_decisions(
     # единицу КП не читаем: вид от неё не зависит.
     template = _template_text(scene, participant, row, result, "", references)
     return {
-        **_line_view(row, result, participant.base, scene.index, scene.families, steps),
+        **_line_view(row, result, participant.base, scene.index, scene.families, steps, scene.unit_labels),
         **_decision_fields(scene, participant, row, result, template, references),
         **_other_zones_field(other_zones(_zone_groups_of(scene, participant, row, result))),
     }
@@ -1896,10 +1962,12 @@ def reference_row_view(
     kp_unit_id: int | None,
     details: _Details,
     steps: Mapping[int, tuple[ChapterStep, ...]],
+    lump: dict | None = None,
 ) -> dict:
     """Строка справочного блока или выдачи поиска (спека справочных аналогов §2.16): `ids` — свёрнутые
     строки, `kp_unit_net` — нетто цены строки КП за единицу для отклонения, `kp_unit_id` — единица
-    строки КП: по ней решается `needs_conversion` тем же предикатом, что у сервера."""
+    строки КП: по ней решается `needs_conversion` тем же предикатом, что у сервера. `lump` — готовый
+    `LumpView` строки договора (`reference_lump_view`); у строк блоков панели его нет (комплектов там нет)."""
     rate = participant.base
     title, unit, _titles, _category, _chapter = details[row.position_item_id]
     paths: list[list[dict]] = []
@@ -1946,7 +2014,16 @@ def reference_row_view(
         "with_this_contractor": contract.contractor_id == participant.contractor_id,
         "param_value": row.param_value,
         "family_id": row.family_id,
+        "lump": lump,
     }
+
+
+def reference_lump_view(line: ReferenceLine, rate: Decimal | None, unit_labels: Mapping[int, str]) -> dict | None:
+    """`LumpView` справочной строки договора в ставке показа строки КП (спека строк-сумм §7 п. 3);
+    `None` — правило к строке неприменимо или у семьи нет названия."""
+    if line.lump is None or line.family_title is None:
+        return None
+    return lump_view(line.lump, rate=rate, family=line.family_title, unit_label=unit_labels[line.lump.unit_id])
 
 
 def _reference_zones_view(
@@ -2087,7 +2164,7 @@ def build_line_view(
     template = _template_text(scene, participant, row, result, unit_texts[position_item_id], references)
     own_comment = scene.decisions[participant.estimate_id].comments.get(position_item_id)
     line = {
-        **_line_view(row, result, rate, scene.index, scene.families, steps),
+        **_line_view(row, result, rate, scene.index, scene.families, steps, scene.unit_labels),
         **_decision_fields(scene, participant, row, result, template, references),
         "file_ours": _file_ours(scene, participant, row, result, unit_texts[position_item_id], references),
         "article": _article_ref(tree, row.category_id),
@@ -2173,6 +2250,10 @@ def build_file_inputs(
         if plan is None
         else {contract.contract_id: plan.period_by_estimate[contract.estimate_id] for contract in scene.contracts}
     )
+    references = _reference_targets(db, scene, participant, evaluation)
+    lump_targets = frozenset(
+        pid for pid in decisions.targets if _target_lump(scene, references, _saved_target(decisions, pid))
+    )
     context = FileContext(
         kp_vat_base=participant.base,
         history=scene.index,
@@ -2188,6 +2269,7 @@ def build_file_inputs(
         stage_date=head.held_on,
         contractor_title=participant.contractor_title,
         exported_on=exported_on,
+        lump_targets=lump_targets,
     )
     return FileInputs(
         context=context,
@@ -2196,5 +2278,5 @@ def build_file_inputs(
         comments={pid: record[0] for pid, record in decisions.comments.items()},
         agreements={pid: (record[0], iso_date_to_ru(iso(record[1]))) for pid, record in decisions.agreements.items()},
         targets={pid: (record[0], record[1]) for pid, record in decisions.targets.items()},
-        references=dict(_reference_targets(db, scene, participant, evaluation).sources),
+        references=dict(references.sources),
     )

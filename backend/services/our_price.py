@@ -240,6 +240,7 @@ class ManualRung:
 TargetKind = Literal["freshest", "analog", "contractor", "reference"]
 TargetResetReason = Literal[
     "kind_changed",
+    "lump_sum",
     "not_comparable",
     "analog_unavailable",
     "no_freshest",
@@ -283,14 +284,22 @@ class TargetChoice:
 
 
 def resolve_target(
-    saved: SavedTarget | None, result: LineResult, *, is_system: bool, reference_available: bool = False
+    saved: SavedTarget | None,
+    result: LineResult,
+    *,
+    is_system: bool,
+    reference_available: bool = False,
+    target_lump: bool = False,
 ) -> TargetChoice | None:
     """Статус выбора по сохранённой записи `(вид, аналог)` и расчёту строки.
 
     Условия идут по таблице §2.14, первое невыполненное даёт причину. Запись остаётся и при сбросе:
     расчёт идёт на самой низкой. Справочная цель состояния строки не проверяет (спека справочных
     аналогов §2.14): её сбрасывает только система и строка договора, переставшая быть справочной
-    (`reference_available` — строка есть среди справочных строк сцены чтения).
+    (`reference_available` — строка есть среди справочных строк сцены чтения). Комплект (спека строк-сумм
+    §5 п. 2): строка КП `lump_sum` сбрасывает цель любого вида, в том числе справочную; цель `analog` и
+    `reference` на строку договора с `is_lump` (`target_lump` — признак считает вызывающий) — тоже, раньше
+    `analog_unavailable` и `reference_unavailable`.
     """
     if saved is None:
         return None
@@ -298,6 +307,8 @@ def resolve_target(
     reason: TargetResetReason | None = None
     if is_system:
         reason = "kind_changed"
+    elif result.state is LineState.lump_sum or (target_lump and kind in ("analog", "reference")):
+        reason = "lump_sum"
     elif kind == "reference":
         if not reference_available:
             reason = "reference_unavailable"

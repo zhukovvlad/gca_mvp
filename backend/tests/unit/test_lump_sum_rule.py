@@ -154,3 +154,31 @@ class TestVatBase:
         rates = _rates(measure_typical=D("100.01"))
         assert _check(price=D("600"), vat_base=D("20"), rates=rates).rule is False
         assert _check(price=D("500"), vat_base=D("0"), rates=rates).rule is False
+
+
+class TestLumpView:
+    """Форма `LumpView` (спека строк-сумм §7 п. 1): `ratio` без округления, порог строкой, цены — в ставке показа."""
+
+    def test_the_ratio_is_not_rounded_and_prices_are_in_the_display_rate(self):
+        from crud.our_price import lump_view
+
+        check = _check(price=D("700"), rates=_rates(measure_typical=D("300")))
+        view = lump_view(check, rate=D("20"), family="Fam", unit_label="m2")
+
+        assert view["ratio"].startswith("2.3333333333")  # 700 / 300, не «2.33»
+        assert (view["unit_price"], view["typical"]) == (
+            {"net": D("700"), "shown": D("840")},
+            {"net": D("300"), "shown": D("360")},
+        )
+        assert (view["typical_lines"], view["threshold"], view["family"], view["unit"]) == (
+            TYPICAL_MIN_LINES, "5", "Fam", "m2",
+        )
+
+    def test_a_piece_unit_has_the_threshold_fifty_and_no_rate_gives_typical_null(self):
+        from crud.our_price import lump_view
+
+        piece = lump_view(_check(unit_id=PIECE_UNIT, price=D("100")), rate=None, family="Fam", unit_label="pcs")
+        bare = lump_view(_check(rates=_rates(measure_typical=None)), rate=D("20"), family="Fam", unit_label="m2")
+
+        assert (piece["threshold"], piece["measure"], piece["unit_price"]) == ("50", False, {"net": D("100"), "shown": None})
+        assert (bare["typical"], bare["typical_lines"], bare["ratio"]) == (None, 0, None)

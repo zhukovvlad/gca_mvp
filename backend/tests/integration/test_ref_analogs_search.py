@@ -82,7 +82,9 @@ def _kp_scene(stage, price=D("144")):
 
 
 def _without_kind(row: dict) -> dict:
-    return {key: value for key, value in row.items() if key != "conversion_kind"}
+    """Строка выдачи без полей, которых нет у строки блока панели: вид пересчёта поиска и признак «комплект»
+    (у строк блоков панели он `null`: комплектов среди кандидатов нет, спека строк-сумм §6 п. 2, §7 п. 3)."""
+    return {key: value for key, value in row.items() if key not in ("conversion_kind", "lump")}
 
 
 @pytest.fixture
@@ -391,7 +393,7 @@ def test_ref_analogs_search_rows_of_a_link_group_equal_the_panel_rows(member_cli
     panel_rows = {row["analog_id"]: row for row in group["rows"]}
     assert set(panel_rows) == set(found)
     for pid, row in panel_rows.items():
-        assert _without_kind(found[pid]) == row
+        assert _without_kind(found[pid]) == _without_kind(row)
     assert panel_rows[items[3].id]["outlier_ratio"] == "10"
     assert all(panel_rows[item.id]["outlier_ratio"] is None for item in items[:3])
 
@@ -407,7 +409,7 @@ def test_ref_analogs_search_rows_of_a_zone_group_equal_the_panel_rows(member_cli
     assert set(panel_rows) == {row.id for row in rows}
     assert set(_ids(body)) == set(panel_rows)
     for found in body["rows"]:
-        assert _without_kind(found) == panel_rows[found["analog_id"]]
+        assert _without_kind(found) == _without_kind(panel_rows[found["analog_id"]])
     assert panel_rows[rows[3].id]["outlier_ratio"] == "10"
 
 

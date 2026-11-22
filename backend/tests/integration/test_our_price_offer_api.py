@@ -87,6 +87,7 @@ LINE_KEYS = {
     "no_history_reason",
     "group",
     "unit_mismatch",
+    "lump",
     "target_kind",
     "choice",
     "agreed",

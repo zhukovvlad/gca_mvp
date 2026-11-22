@@ -121,7 +121,9 @@ class TestResolveTarget:
 
         assert (choice.kind, choice.analog_id, choice.active) == ("analog", 999, False)
 
-    @pytest.mark.parametrize("state", [s for s in LineState if s is not LineState.comparable])
+    @pytest.mark.parametrize(
+        "state", [s for s in LineState if s not in (LineState.comparable, LineState.lump_sum)]
+    )
     def test_a_work_that_is_not_comparable_does_not_act(self, state):
         res = result(state=state, mismatch=None, ladder=None)
 
@@ -392,3 +394,67 @@ class TestFileRows:
 
 def build_rows_with(res, ctx, targets):
     return _rows_with_targets([source_line(res.kp_unit_net)], [res], targets, ctx)
+
+
+# ---------------------------------------------------------------------------
+#  «Комплект вместо ставки» (спека строк-сумм §5 п. 2)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveTargetLump:
+    LUMP_ROW = staticmethod(lambda: result(state=LineState.lump_sum, mismatch=None, ladder=None))
+
+    @pytest.mark.parametrize(
+        "saved",
+        [
+            pytest.param(("freshest", None), id="freshest"),
+            pytest.param(("analog", 102), id="analog"),
+            pytest.param(("contractor", None), id="contractor"),
+            pytest.param(("reference", 555), id="reference"),
+        ],
+    )
+    def test_a_lump_sum_row_resets_every_kind_of_target_even_the_reference_one(self, saved):
+        choice = resolve_target(saved, self.LUMP_ROW(), is_system=False, reference_available=True)
+
+        assert choice == TargetChoice(saved[0], saved[1], False, "lump_sum")
+
+    def test_a_system_is_kind_changed_before_a_lump_sum_row(self):
+        res = self.LUMP_ROW()
+
+        assert resolve_target(("analog", 102), res, is_system=True, target_lump=True).reset_reason == "kind_changed"
+
+    def test_a_lump_sum_row_beats_reference_unavailable(self):
+        choice = resolve_target(("reference", 555), self.LUMP_ROW(), is_system=False, reference_available=False)
+
+        assert choice.reset_reason == "lump_sum"
+
+    @pytest.mark.parametrize(
+        ("saved", "available"),
+        [
+            pytest.param(("analog", 102), False, id="analog-in-the-remainder"),
+            pytest.param(("analog", 999), False, id="analog-gone-from-the-remainder"),
+            pytest.param(("reference", 555), True, id="reference-available"),
+            pytest.param(("reference", 555), False, id="reference-unavailable"),
+        ],
+    )
+    def test_a_target_on_a_lump_contract_row_is_lump_sum_before_the_unavailable_reasons(self, saved, available):
+        choice = resolve_target(saved, comparable(), is_system=False, reference_available=available, target_lump=True)
+
+        assert choice == TargetChoice(saved[0], saved[1], False, "lump_sum")
+
+    @pytest.mark.parametrize(
+        ("saved", "reason"), [(("freshest", None), None), (("contractor", None), "no_contractor")]
+    )
+    def test_the_lump_flag_of_a_target_row_does_not_touch_targets_without_a_contract_row(self, saved, reason):
+        choice = resolve_target(saved, comparable(), is_system=False, target_lump=True)
+
+        assert choice.reset_reason == reason
+
+    def test_without_the_flag_a_comparable_row_and_its_analog_act_as_before(self):
+        assert resolve_target(("analog", 102), comparable(), is_system=False, target_lump=False).active is True
+        assert resolve_target(("analog", 999), comparable(), is_system=False).reset_reason == "analog_unavailable"
+        assert (
+            resolve_target(("reference", 555), comparable(), is_system=False, reference_available=False).reset_reason
+            == "reference_unavailable"
+        )
+
