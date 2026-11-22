@@ -199,6 +199,7 @@ def test_line_state_declaration_order_is_the_check_order():
         "no_price",
         "no_area",
         "no_variant",
+        "lump_sum",
         "no_zone",
         "no_history",
         "unit_mismatch",

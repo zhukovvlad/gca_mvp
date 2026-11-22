@@ -178,6 +178,7 @@ def test_line_state_declaration_order_puts_no_zone_between_no_variant_and_no_his
         "no_price",
         "no_area",
         "no_variant",
+        "lump_sum",
         "no_zone",
         "no_history",
         "unit_mismatch",
@@ -599,3 +600,138 @@ def test_system_unit_diff_is_the_rate_per_sqm_of_the_group_for_every_member():
     nofresh_contracts, nofresh_lines = _system_history({1: None, 2: None}, {1: "10000", 2: "15000"})
     one = _system_one(nofresh_contracts, nofresh_lines)
     assert one.to_ours_unit == D(100) and one.to_freshest_unit is None
+
+
+# --- строки-суммы: состояние `lump_sum` (спека строк-сумм §4) --------------------------------
+
+
+def lumpy(line: KpLine, *, is_lump: bool = True) -> KpLine:
+    """Строка КП с готовым решением «комплект или ставка» (загрузчик проставляет его сам)."""
+    from services.lump_sum import LumpCheck
+
+    check = LumpCheck(
+        rule=is_lump,
+        override=None,
+        is_lump=is_lump,
+        measure=True,
+        unit_id=1,
+        typical=None,
+        net=line.unit_price or D(0),
+        threshold=D(5),
+    )
+    return dataclasses.replace(line, lump=check)
+
+
+def lump_line(pid: int, cid: int, price: str, **kwargs) -> WorkHistoryLine:
+    return dataclasses.replace(wline(pid, cid, price, **kwargs), lump=True)
+
+
+def test_a_lump_line_is_lump_sum_without_ladder_figures_and_with_its_sums():
+    contracts, lines = two_contract_history()
+    result = evaluate([lumpy(work(1, "150"))], contracts=contracts, work_lines=lines).lines[1]
+
+    assert result.state is LineState.lump_sum
+    assert result.ladder is None and result.range is None and result.ours is None
+    assert result.freshest is None and result.to_ours is None and result.to_freshest is None
+    assert result.to_contractor is None and result.to_contractor_unit is None
+    assert result.bargain is None and result.below is None and result.position is None
+    assert result.mismatch is None
+    assert (result.kp_unit_net, result.kp_total_net) == (D(150), D(1500))
+
+
+def test_a_line_that_is_not_lump_is_compared_as_before():
+    contracts, lines = two_contract_history()
+    result = evaluate([lumpy(work(1, "150"), is_lump=False)], contracts=contracts, work_lines=lines).lines[1]
+    assert result.state is LineState.comparable
+
+
+@pytest.mark.parametrize(
+    ("line", "base", "expected"),
+    [
+        (work(zone=None, in_progress=True), D(0), LineState.in_progress),
+        (work(zone=None), None, LineState.unknown_vat_base),
+        (work(price=None), D(0), LineState.no_price),
+        (work(weight=None), D(0), LineState.no_price),
+        (work(key=None), D(0), LineState.no_variant),
+    ],
+)
+def test_lump_sum_comes_after_progress_base_price_and_variant(line, base, expected):
+    """Проверка `lump_sum` идёт после этих состояний: «комплект» их не перекрывает."""
+    assert evaluate([lumpy(line)], base=base).lines[line.position_item_id].state is expected
+
+
+def test_a_lump_line_of_a_zone_required_family_without_a_zone_is_lump_sum_not_no_zone():
+    line = work(zone=None, zone_required=True)
+    assert evaluate([line]).lines[1].state is LineState.no_zone
+    assert evaluate([lumpy(line)]).lines[1].state is LineState.lump_sum
+    assert evaluate([lumpy(line, is_lump=False)]).lines[1].state is LineState.no_zone
+
+
+def test_waiting_admin_does_not_count_a_lump_sum_line_even_with_a_disputed_zone():
+    from crud.our_price import _waiting_admin
+
+    waiting = dataclasses.replace(work(zone=None, zone_required=True), zone_waiting=True)
+    plain = evaluate([waiting]).lines[1]
+    lump = evaluate([lumpy(waiting)]).lines[1]
+    assert (plain.state, _waiting_admin(waiting, plain)) == (LineState.no_zone, True)
+    assert (lump.state, _waiting_admin(lumpy(waiting), lump)) == (LineState.lump_sum, False)
+
+
+def test_work_ladder_of_a_lump_line_is_none_and_the_net_is_kept():
+    from services.analog_ladder import WorkHistory
+
+    contracts, lines = two_contract_history()
+    kwargs = {
+        "kp_vat_base": D(0),
+        "work_history": WorkHistory(
+            lines, {FAMILY: info()}, {c.contract_id: c for c in contracts}, factors=None
+        ),
+        "tender_class_id": CLASS_A,
+        "tender_contractor_id": 99,
+        "target_month": TARGET,
+    }
+    net, ladder = core.work_ladder_of(lumpy(work(1, "150")), **kwargs)
+    assert (net, ladder) == (D(150), None)
+    net, ladder = core.work_ladder_of(lumpy(work(1, "150"), is_lump=False), **kwargs)
+    assert net == D(150) and ladder is not None and ladder.rung_no == 1
+
+
+def test_a_lump_sum_line_lands_in_not_comparable_with_its_amount_and_by_state_key():
+    from crud.our_price import _totals_view
+
+    contracts, lines = two_contract_history()
+    totals = _totals([lumpy(work(1, "150")), work(2, "150")], contracts, lines)
+
+    assert totals.comparable_lines == 1
+    assert totals.not_comparable[LineState.lump_sum].lines == 1
+    assert totals.not_comparable[LineState.lump_sum].amount == D(1500)
+    assert totals.not_comparable_total == D(1500)
+    assert totals.bargain == D(500)  # строка-комплект в суммы сравнения не идёт
+    view = _totals_view(totals, None)["not_comparable"]["by_state"]
+    assert view["lump_sum"]["lines"] == 1
+    assert view["lump_sum"]["amount"]["net"] == D("1500.00")
+
+
+def test_a_lump_contract_line_is_not_a_candidate_and_the_neighbour_stays_in_the_fork():
+    contracts = [contract(1), contract(2), contract(3)]
+    lines = [wline(1001, 1, "100"), lump_line(1002, 2, "100"), wline(1003, 3, "120")]
+    result = evaluate([work(1, "150")], contracts=contracts, work_lines=lines).lines[1]
+
+    assert result.state is LineState.comparable
+    assert [a.position_item_id for a in result.ladder.analogs] == [1001, 1003]
+    assert (result.range.min, result.range.max) == (D(100), D(120))
+
+
+def test_a_rung_whose_only_candidate_is_a_lump_gives_no_history_not_an_empty_fork():
+    contracts = [contract(1)]
+    result = evaluate([work(1, "150")], contracts=contracts, work_lines=[lump_line(1001, 1, "100")]).lines[1]
+    assert result.state is LineState.no_history
+    assert result.range is None and result.ours is None
+
+
+def test_a_lump_contract_line_does_not_distort_the_totals_of_other_lines():
+    contracts, lines = two_contract_history()
+    base = _totals([work(1, "150")], contracts, lines)
+    contracts = contracts + [contract(3, period=YearMonth(2026, 7))]
+    with_lump = _totals([work(1, "150")], contracts, lines + [lump_line(1003, 3, "9")])
+    assert (with_lump.bargain, with_lump.over_freshest) == (base.bargain, base.over_freshest)

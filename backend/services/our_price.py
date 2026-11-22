@@ -36,6 +36,7 @@ from services.analog_ladder import (
     date_rank,
     ladder_for,
 )
+from services.lump_sum import LumpCheck
 from services.price_basis import (  # noqa: F401  (потребители ядра 4а импортируют эти имена отсюда)
     _CONTEXT,
     MISMATCH_HIGH,
@@ -72,6 +73,7 @@ class LineState(str, Enum):
     no_price = "no_price"
     no_area = "no_area"
     no_variant = "no_variant"
+    lump_sum = "lump_sum"
     no_zone = "no_zone"
     no_history = "no_history"
     unit_mismatch = "unit_mismatch"
@@ -168,6 +170,17 @@ class KpLine:
     conflicted: frozenset[int] = frozenset()
     #: parameter_id -> форма значения (id составного либо `"simple"`); только у варианта на действующей версии.
     forms: Mapping[int, Form] = field(default_factory=dict)
+    #: Решение «комплект или ставка» (спека строк-сумм §1); `None` — правило неприменимо (система, нет варианта,
+    #: нет цены, веса, базы НДС или единицы). Проставляет загрузчик.
+    lump: LumpCheck | None = None
+    #: Единица каталожной позиции строки (`position_items.catalog_position_id -> catalog_positions.unit_id`);
+    #: единица обычной ставки. Не путать со старым `KpLineRow.unit_id` (через корзину контекста).
+    catalog_unit_id: int | None = None
+
+    @property
+    def is_lump(self) -> bool:
+        """Строка похожа на комплект (с учётом поправки администратора)."""
+        return self.lump is not None and self.lump.is_lump
 
 
 @dataclass(frozen=True)
@@ -751,7 +764,7 @@ def work_ladder_of(
 ) -> tuple[Decimal | None, WorkLadder | None]:
     """Нетто цены за единицу строки КП и её лестница — те, что считает `evaluate_offer`; лестницы
     нет (`None`), если строка до неё не доходит: в работе, без базы НДС, система, без цены или веса,
-    без варианта или (у семьи с флажком) зоны."""
+    без варианта, комплект (`lump_sum`) или (у семьи с флажком) без зоны."""
     kp_unit_net = _net(line.unit_price, kp_vat_base)
     if (
         line.in_progress
@@ -759,6 +772,7 @@ def work_ladder_of(
         or line.is_system
         or not (is_price(line.unit_price) and is_weight(line.weight))
         or line.key is None
+        or line.is_lump
         or (line.zone is None and line.zone_required)
     ):
         return kp_unit_net, None
@@ -1085,6 +1099,8 @@ def evaluate_offer(
             state = LineState.no_price
         elif line.key is None:
             state = LineState.no_variant
+        elif line.is_lump:
+            state = LineState.lump_sum
         elif line.zone is None and line.zone_required:
             state = LineState.no_zone
 

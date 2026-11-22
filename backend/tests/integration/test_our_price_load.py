@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import threading
 from contextlib import contextmanager
@@ -28,10 +29,12 @@ from crud.our_price_load import (
 from crud.stage_summary import _rates_by_estimate
 from models import (
     CatalogContext,
+    CatalogPosition,
     ContextMember,
     ContextParameterValue,
     FamilyParameter,
     FamilyParameterSchema,
+    LumpSumOverride,
     PositionItem,
     SectionChain,
     UnitOfMeasure,
@@ -41,7 +44,7 @@ from models import (
 from money.inflation import YearMonth
 from money.price import is_price, is_weight
 from services.context_routing import route_position
-from services.our_price import HistoryContract, LineKey
+from services.our_price import HistoryContract, HistoryIndex, LineKey, evaluate_offer
 from services.our_price_money import CategoryRow
 from services.work_families import assign_family
 from services.work_variants import get_or_create_value, get_or_create_variant
@@ -1621,3 +1624,335 @@ class TestStatementCountDoesNotGrowWithRows:
             category_roots(db_session)
 
         assert once[0] == 1
+
+
+# ---------------------------------------------------------------------------
+#  «Комплект или ставка»: признак проставляют загрузчики (спека строк-сумм §1 п. 4, §4 п. 4)
+# ---------------------------------------------------------------------------
+
+
+def _set_unit(db, item, code):
+    """Единица каталожной позиции строки (для строки уже назначена семья: правило видит позицию)."""
+    unit_id = None if code is None else _unit_id(db, code)
+    db.execute(
+        sa.update(CatalogPosition).where(CatalogPosition.id == item.catalog_position_id).values(unit_id=unit_id)
+    )
+    db.flush()
+
+
+def _lump_world(world, db_session):
+    """Договор-носитель пула: три ставки по 100 при весе 10 дают обычную ставку 100 ключа (семья, м²)."""
+    contract = world.contract()
+    estimate, proposal = world.estimate(contract, vat_rate=D("0"))
+    family, schema = world.family()
+    _, variant = _simple_variant(world, family, schema)
+    for _ in range(3):
+        world.line(proposal, family=family, variant=variant, unit_cost=D("100"), total=D("1000"))
+    db_session.flush()
+    return contract, estimate, family, variant
+
+
+def _history_lines(db, contract, estimate):
+    lines, _ = load.load_work_history(db, estimate_of={contract.id: estimate.id})
+    return {ln.position_item_id: ln for ln in lines}
+
+
+class TestLumpFlagInLoaders:
+    def test_work_history_marks_a_weight_one_line_at_the_threshold_and_not_one_step_below(self, world, db_session):
+        contract, estimate, family, variant = _lump_world(world, db_session)
+        contract2 = world.contract()
+        estimate2, proposal = world.estimate(contract2, vat_rate=D("0"))
+        at = world.line(proposal, family=family, variant=variant, unit_cost=D("500"), suggested=D("1"), quantity=D("1"))
+        below = world.line(
+            proposal, family=family, variant=variant, unit_cost=D("499.99"), suggested=D("1"), quantity=D("1")
+        )
+        heavy = world.line(proposal, family=family, variant=variant, unit_cost=D("5000"), suggested=D("2"))
+        db_session.flush()
+        lines = _history_lines(db_session, contract2, estimate2)
+
+        assert lines[at.id].lump is True
+        assert lines[below.id].lump is False
+        assert lines[heavy.id].lump is False  # вес не 1 — ставка при любой цене
+
+    def test_work_history_uses_the_base_of_the_contract_estimate(self, world, db_session):
+        _, _, family, variant = _lump_world(world, db_session)
+        contract = world.contract()
+        estimate, proposal = world.estimate(contract, vat_rate=D("20"))
+        gross_at = world.line(
+            proposal, family=family, variant=variant, unit_cost=D("600"), suggested=D("1"), quantity=D("1")
+        )
+        gross_below = world.line(
+            proposal, family=family, variant=variant, unit_cost=D("599.99"), suggested=D("1"), quantity=D("1")
+        )
+        db_session.flush()
+
+        lines = _history_lines(db_session, contract, estimate)
+
+        assert lines[gross_at.id].lump is True  # 600 / 1,2 = 500 нетто — ровно порог
+        assert lines[gross_below.id].lump is False
+
+    def test_work_history_unknown_base_or_no_unit_is_never_lump(self, world, db_session):
+        _, _, family, variant = _lump_world(world, db_session)
+        contract = world.contract()
+        estimate, proposal = world.estimate(contract, vat_rate=None)
+        unknown_base = world.line(
+            proposal, family=family, variant=variant, unit_cost=D("5000"), suggested=D("1"), quantity=D("1")
+        )
+        contract2 = world.contract()
+        estimate2, proposal2 = world.estimate(contract2, vat_rate=D("0"))
+        no_unit = world.line(
+            proposal2, family=family, variant=variant, unit_cost=D("5000"), suggested=D("1"), quantity=D("1")
+        )
+        _set_unit(db_session, no_unit, None)
+
+        assert _history_lines(db_session, contract, estimate)[unknown_base.id].lump is False
+        assert _history_lines(db_session, contract2, estimate2)[no_unit.id].lump is False
+
+    def test_the_correction_beats_the_rule_in_the_history_both_ways(self, world, db_session, admin_user):
+        _, _, family, variant = _lump_world(world, db_session)
+        contract = world.contract()
+        estimate, proposal = world.estimate(contract, vat_rate=D("0"))
+        priced_x100 = world.line(
+            proposal, family=family, variant=variant, unit_cost=D("10000"), suggested=D("1"), quantity=D("1")
+        )
+        plain_rate = world.line(proposal, family=family, variant=variant, unit_cost=D("100"), suggested=D("10"))
+        db_session.flush()
+
+        assert _history_lines(db_session, contract, estimate)[priced_x100.id].lump is True
+
+        db_session.add_all(
+            [
+                LumpSumOverride(position_item_id=priced_x100.id, verdict="rate", set_by=admin_user.id),
+                LumpSumOverride(position_item_id=plain_rate.id, verdict="lump", set_by=admin_user.id),
+            ]
+        )
+        db_session.flush()
+        lines = _history_lines(db_session, contract, estimate)
+
+        assert lines[priced_x100.id].lump is False  # «это ставка» у строки весом 1 и ценой ×100
+        assert lines[plain_rate.id].lump is True  # «это комплект» у обычной ставки
+
+    def test_kp_lines_carry_the_check_by_the_base_of_their_own_estimate_and_the_catalog_unit(
+        self, world, db_session
+    ):
+        _, _, family, variant = _lump_world(world, db_session)  # пул — смета с базой 0 %
+        estimate, proposal = world.offer_estimate(vat_rate=D("20"))  # у КП база 20 %
+        at = world.line(
+            proposal, family=family, variant=variant, unit_cost=D("600"), suggested=D("1"), quantity=D("1")
+        )
+        below = world.line(
+            proposal, family=family, variant=variant, unit_cost=D("599.99"), suggested=D("1"), quantity=D("1")
+        )
+        db_session.flush()
+
+        rows = {r.line.position_item_id: r.line for r in _kp(db_session, estimate)}
+
+        assert rows[at.id].lump is not None and rows[at.id].lump.is_lump is True
+        assert rows[at.id].lump.net == D("500")
+        assert rows[below.id].lump is not None and rows[below.id].lump.is_lump is False
+        assert rows[at.id].catalog_unit_id == world.unit_id
+
+    def test_kp_line_outside_the_rule_has_no_check(self, world, db_session):
+        _, _, family, variant = _lump_world(world, db_session)
+        estimate, proposal = world.offer_estimate(vat_rate=D("0"))
+        no_variant = world.line(proposal, family=family, unit_cost=D("5000"), suggested=D("1"), quantity=D("1"))
+        system = world.line(
+            proposal, family=family, variant=variant, kind="SYSTEM", unit_cost=D("5000"), suggested=D("1"),
+            quantity=D("1"),
+        )
+        no_unit = world.line(
+            proposal, family=family, variant=variant, unit_cost=D("5000"), suggested=D("1"), quantity=D("1")
+        )
+        _set_unit(db_session, no_unit, None)
+        no_price = world.line(
+            proposal, family=family, variant=variant, unit_cost=None, total=None, suggested=D("1"), quantity=D("1")
+        )
+        no_weight = world.line(proposal, family=family, variant=variant, unit_cost=D("5000"), suggested=None,
+                               quantity=None)
+        db_session.flush()
+
+        rows = {r.line.position_item_id: r.line for r in _kp(db_session, estimate)}
+
+        for item in (no_variant, system, no_unit, no_price, no_weight):
+            assert rows[item.id].lump is None, item.job_title_in_proposal
+        assert rows[no_unit.id].catalog_unit_id is None
+
+    def test_kp_line_with_an_unknown_base_has_no_check(self, world, db_session):
+        _, _, family, variant = _lump_world(world, db_session)
+        estimate, proposal = world.offer_estimate(vat_rate=None)
+        item = world.line(
+            proposal, family=family, variant=variant, unit_cost=D("5000"), suggested=D("1"), quantity=D("1")
+        )
+        db_session.flush()
+
+        assert _kp(db_session, estimate)[0].line.lump is None and item.id
+
+    def test_kp_line_without_a_family_ratio_is_lump_by_measure_unit_only(self, world, db_session):
+        """Ставки ключа нет: мерная (м²) строка весом 1 — комплект, штучная — ставка."""
+        contract = world.contract()
+        _, proposal = world.estimate(contract, vat_rate=D("0"))
+        family, schema = world.family()
+        _, variant = _simple_variant(world, family, schema)
+        estimate, kp_proposal = world.offer_estimate(vat_rate=D("0"))
+        measure = world.line(
+            kp_proposal, family=family, variant=variant, unit_cost=D("5"), suggested=D("1"), quantity=D("1")
+        )
+        piece = world.line(
+            kp_proposal, family=family, variant=variant, unit_cost=D("5000"), suggested=D("1"), quantity=D("1")
+        )
+        _set_unit(db_session, piece, "PCS")
+        assert proposal is not None
+
+        rows = {r.line.position_item_id: r.line for r in _kp(db_session, estimate)}
+
+        assert rows[measure.id].lump is not None and rows[measure.id].lump.is_lump is True
+        assert rows[piece.id].lump is not None and rows[piece.id].lump.is_lump is False
+
+    def test_the_correction_is_seen_by_kp_lines(self, world, db_session, admin_user):
+        _, _, family, variant = _lump_world(world, db_session)
+        estimate, proposal = world.offer_estimate(vat_rate=D("0"))
+        big = world.line(
+            proposal, family=family, variant=variant, unit_cost=D("5000"), suggested=D("1"), quantity=D("1")
+        )
+        small = world.line(proposal, family=family, variant=variant, unit_cost=D("100"), suggested=D("10"))
+        db_session.add_all(
+            [
+                LumpSumOverride(position_item_id=big.id, verdict="rate", set_by=admin_user.id),
+                LumpSumOverride(position_item_id=small.id, verdict="lump", set_by=admin_user.id),
+            ]
+        )
+        db_session.flush()
+
+        rows = {r.line.position_item_id: r.line for r in _kp(db_session, estimate)}
+
+        assert rows[big.id].lump.rule is True and rows[big.id].lump.is_lump is False
+        assert rows[big.id].lump.override is not None and rows[big.id].lump.override.verdict == "rate"
+        assert rows[small.id].lump.rule is False and rows[small.id].lump.is_lump is True
+        assert rows[small.id].lump.override.set_by_email == admin_user.email
+
+    def test_a_lump_contract_line_is_not_an_analog_until_it_is_corrected_to_a_rate(
+        self, world, db_session, admin_user
+    ):
+        """Сквозной вход: загрузчик строк договора → пул → ступень строки КП (Review Focus 4)."""
+        pool_contract, _, family, variant = _lump_world(world, db_session)
+        contract = world.contract(rate_class=pool_contract.rate_class)
+        _, proposal = world.estimate(contract, vat_rate=D("0"))
+        kit = world.line(
+            proposal, family=family, variant=variant, unit_cost=D("500"), suggested=D("1"), quantity=D("1")
+        )
+        estimate, kp_proposal = world.offer_estimate(vat_rate=D("0"))
+        world.line(kp_proposal, family=family, variant=variant, unit_cost=D("120"), suggested=D("10"))
+        db_session.flush()
+
+        def analog_ids():
+            contracts, _ = load_history(db_session, exclude_object_id=-1)
+            estimate_of = {c.contract_id: c.estimate_id for c in contracts}
+            lines, families = load.load_work_history(db_session, estimate_of=estimate_of)
+            (row,) = _kp(db_session, estimate)
+            evaluation = evaluate_offer(
+                [dataclasses.replace(row.line, in_progress=False)],  # сигнал очереди каталога тут не предмет
+                HistoryIndex(contracts, [], factor_by_estimate=None),
+                work_history=lines,
+                families=families,
+                kp_vat_base=D("0"),
+                tender_area=None,
+                tender_class_id=pool_contract.rate_class_id,
+                tender_contractor_id=-1,
+                target_month=None,
+                factors=None,
+            )
+            result = evaluation.lines[row.line.position_item_id]
+            return {a.position_item_id for a in result.ladder.analogs}
+
+        assert kit.id not in analog_ids()
+
+        db_session.add(LumpSumOverride(position_item_id=kit.id, verdict="rate", set_by=admin_user.id))
+        db_session.flush()
+
+        assert kit.id in analog_ids()
+
+    def test_the_new_reads_do_not_depend_on_the_number_of_lines(self, world, db_session):
+        _, _, family, variant = _lump_world(world, db_session)
+        estimate, proposal = world.offer_estimate(vat_rate=D("0"))
+        world.line(proposal, family=family, variant=variant, unit_cost=D("100"), suggested=D("10"))
+        db_session.flush()
+        with count_statements(db_session) as few:
+            _kp(db_session, estimate)
+        for _ in range(5):
+            world.line(proposal, family=family, variant=variant, unit_cost=D("5000"), suggested=D("1"))
+        db_session.flush()
+        with count_statements(db_session) as many:
+            _kp(db_session, estimate)
+
+        assert many[0] == few[0]
+
+    def test_kp_line_rule_takes_the_unit_of_its_catalog_position_not_of_the_context_bucket(self, world, db_session):
+        """Единица правила у строки КП — `position_items.catalog_position_id -> catalog_positions.unit_id`
+        (решение плана 3), а не единица корзины контекста (`KpLineRow.unit_id`). Ставки ключа нет: мерная
+        строка весом 1 — комплект, штучная — ставка, поэтому ответ меняется, если взять не ту единицу."""
+        family, schema = world.family()
+        _, variant = _simple_variant(world, family, schema)
+        estimate, proposal = world.offer_estimate(vat_rate=D("0"))
+        piece_item = world.line(
+            proposal, family=family, variant=variant, unit_cost=D("5000"), suggested=D("1"), quantity=D("1")
+        )
+        measure_item = world.line(
+            proposal, family=family, variant=variant, unit_cost=D("5000"), suggested=D("1"), quantity=D("1")
+        )
+        pcs = _unit_id(db_session, "PCS")
+        # строка штучная, корзина мерная: строка уходит на свою позицию в штуках, корзина остаётся на м²
+        _repoint_item_position(world, piece_item, pcs)
+        # строка мерная, корзина штучная: строка уходит на свою позицию в м², прежняя позиция корзины — в штуки
+        bucket_position_id = measure_item.catalog_position_id
+        _repoint_item_position(world, measure_item, world.unit_id)
+        db_session.execute(
+            sa.update(CatalogPosition).where(CatalogPosition.id == bucket_position_id).values(unit_id=pcs)
+        )
+        db_session.flush()
+
+        rows = {r.line.position_item_id: r for r in _kp(db_session, estimate)}
+
+        piece, measure = rows[piece_item.id], rows[measure_item.id]
+        # предпосылка: единицы строки и корзины действительно разные
+        assert (piece.line.catalog_unit_id, piece.unit_id) == (pcs, world.unit_id)
+        assert (measure.line.catalog_unit_id, measure.unit_id) == (world.unit_id, pcs)
+        assert piece.line.lump is not None and piece.line.lump.is_lump is False
+        assert piece.line.lump.unit_id == pcs and piece.line.lump.measure is False
+        assert measure.line.lump is not None and measure.line.lump.is_lump is True
+        assert measure.line.lump.unit_id == world.unit_id and measure.line.lump.measure is True
+
+    def test_work_history_reads_do_not_depend_on_the_number_of_lines(self, world, db_session, admin_user):
+        """Ставки и поправки строк договоров — одним чтением на набор, не на строку (спека строк-сумм §2 п. 3)."""
+        contract = world.contract()
+        estimate, proposal = world.estimate(contract, vat_rate=D("0"))
+        family, schema = world.family()
+        _, variant = _simple_variant(world, family, schema)
+
+        def corrected_line():
+            item = world.line(
+                proposal, family=family, variant=variant, unit_cost=D("5000"), suggested=D("1"), quantity=D("1")
+            )
+            db_session.add(LumpSumOverride(position_item_id=item.id, verdict="rate", set_by=admin_user.id))
+            db_session.flush()
+
+        corrected_line()
+        with count_statements(db_session) as few:
+            assert len(_history_lines(db_session, contract, estimate)) == 1
+        for _ in range(5):
+            corrected_line()
+        with count_statements(db_session) as many:
+            lines = _history_lines(db_session, contract, estimate)
+
+        # без поправки каждая из шести — комплект по правилу (м², ставки нет); поправка прочитана у всех
+        assert len(lines) == 6 and not any(line.lump for line in lines.values())
+        assert many[0] == few[0]
+
+
+def _repoint_item_position(world, item, unit_id):
+    """Строка сметы получает свою новую каталожную позицию с единицей `unit_id`; корзина её контекста
+    остаётся на прежней позиции."""
+    position = world.f.CatalogPositionFactory.create(unit_id=unit_id, standard_job_title=f"Позиция {item.id}")
+    world.db.execute(
+        sa.update(PositionItem).where(PositionItem.id == item.id).values(catalog_position_id=position.id)
+    )
+    world.db.flush()

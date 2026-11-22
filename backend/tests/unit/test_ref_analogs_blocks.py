@@ -582,3 +582,47 @@ def test_ref_analogs_marks_of_the_own_rung_are_the_ladder_ratios_not_a_recomputa
     marks = rb.reference_marks(ladder, (), ())
     assert marks == {a.position_item_id: a.outlier_ratio for a in ladder.analogs}
     assert marks[4] == D("10")
+
+
+# ---------------------------------------------------------------------------
+#  Комплект договора в блоках А и Г не кандидат (спека строк-сумм §4 п. 4)
+# ---------------------------------------------------------------------------
+
+
+def _lumped(line: WorkHistoryLine) -> WorkHistoryLine:
+    return dataclasses.replace(line, lump=True)
+
+
+def test_ref_analogs_a_lump_line_is_not_in_a_zone_group_of_block_a() -> None:
+    lines = [_line(1, 1, "100", zone="underground"), _lumped(_line(2, 2, "100", zone="territory"))]
+    history = _history(lines, [_contract(1), _contract(2)])
+    groups = _zones(_kp(zone="aboveground"), history)
+    assert [g.zone for g in groups] == ["underground"]  # соседняя ставка — на месте
+    plain = _history(
+        [_line(1, 1, "100", zone="underground"), _line(2, 2, "100", zone="territory")],
+        [_contract(1), _contract(2)],
+    )
+    assert [g.zone for g in _zones(_kp(zone="aboveground"), plain)] == ["underground", "territory"]
+
+
+def test_ref_analogs_a_zone_with_only_a_lump_line_has_no_block_a_at_all() -> None:
+    history = _history([_lumped(_line(1, 1, "100", zone="underground"))], [_contract(1)])
+    assert _zones(_kp(zone="aboveground"), history) == ()
+
+
+def test_ref_analogs_a_lump_line_of_the_linked_family_is_not_a_row_of_block_g() -> None:
+    lines = [
+        _line(1, 1, "1107.24", family=REF_FAMILY, unit=M2),
+        _lumped(_line(2, 2, "1107.24", family=REF_FAMILY, unit=M2)),
+    ]
+    values = dict([_thick(1, "100 мм"), _thick(2, "100 мм")])
+    (group,) = _groups_g(lines, [_contract(1), _contract(2)], values)
+    assert [r.position_item_id for r in group.rows] == [1]
+    plain = [_line(1, 1, "1107.24", family=REF_FAMILY, unit=M2), _line(2, 2, "1107.24", family=REF_FAMILY, unit=M2)]
+    (both,) = _groups_g(plain, [_contract(1), _contract(2)], values)
+    assert sorted(r.position_item_id for r in both.rows) == [1, 2]
+
+
+def test_ref_analogs_a_linked_family_with_only_lump_lines_has_no_group_g() -> None:
+    lines = [_lumped(_line(1, 1, "1107.24", family=REF_FAMILY, unit=M2))]
+    assert _groups_g(lines, [_contract(1)], dict([_thick(1, "100 мм")])) == ()
