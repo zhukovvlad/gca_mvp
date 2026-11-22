@@ -8,10 +8,13 @@ tasks/zone-pref-run/after.json: {"offers": {offer_id: {position_item_id: {"state
 Без него считаются только численности, без «что строка показывает сегодня».
 
 Определения:
+- цены — нетто, по базе НДС сметы (перекрытие базы у сметы, иначе ставка НДС из файла,
+  как у сравнения): и у строки, и у обычной ставки; строки с неизвестной базой в
+  обычную ставку не входят и не распознаются (их и сегодня нет в сравнении);
 - вес строки — предложенный объём, при его отсутствии объём заказчика (как у подбора);
 - обычная ставка семьи в единице — медиана цены за единицу строк-работ семьи с этой
   каталожной единицей и весом не 1, по всем сметам (договоры и КП), не меньше 3 строк;
-  цены меньше 1 ₽ (заглушки) в неё не входят;
+  цены меньше 1 ₽ нетто (заглушки) в неё не входят;
 - строка-сумма при пороге M/P — вес ровно 1 и цена >= M обычных ставок в мерной единице
   (м, м2, м3, т, кг) или >= P в штучной (шт, компл, мес); обычной ставки нет — сумма,
   если единица мерная, иначе ставка.
@@ -38,7 +41,8 @@ rows = db.execute(
     sa.text(
         """
 select pi.id, cc.work_family_id fam, cc.work_variant_id var, u.code unit,
-       coalesce(pi.suggested_quantity, pi.quantity)::float w, pi.unit_cost_total::float p,
+       coalesce(pi.suggested_quantity, pi.quantity)::float w, pi.unit_cost_total::float g,
+       coalesce(e.vat_rate_base_override, pr.vat_rate)::float base,
        e.contract_id, sc.zone::text zone
 from position_items pi
 join context_members cm on cm.position_item_id = pi.id
@@ -55,6 +59,10 @@ where pi.is_chapter = false and cc.archived_at is null and cc.semantic_kind <> '
 """
     )
 ).mappings().all()
+rows = [dict(r) for r in rows]
+for r in rows:
+    r["p"] = None if r["base"] is None else r["g"] * 100 / (100 + r["base"])
+known = [r for r in rows if r["p"] is not None]
 
 
 def one(r) -> bool:
@@ -62,22 +70,28 @@ def one(r) -> bool:
 
 
 pool: dict = defaultdict(list)
-for r in rows:
+for r in known:
     # цены-заглушки (0,01 ₽, 1 ₽) в обычную ставку не входят
     if not one(r) and r["p"] >= 1:
         pool[(r["fam"], r["unit"])].append(r["p"])
 typical = {k: statistics.median(v) for k, v in pool.items() if len(v) >= 3}
+# для сравнения с ред. 3: всё по ценам, как записаны в сметах
+pool_g: dict = defaultdict(list)
+for r in known:
+    if not one(r) and r["g"] >= 1:
+        pool_g[(r["fam"], r["unit"])].append(r["g"])
+typical_g = {k: statistics.median(v) for k, v in pool_g.items() if len(v) >= 3}
 
 
-def ratio(r):
-    t = typical.get((r["fam"], r["unit"]))
-    return None if t is None else r["p"] / t
+def ratio(r, price="p"):
+    t = (typical if price == "p" else typical_g).get((r["fam"], r["unit"]))
+    return None if t is None else r[price] / t
 
 
-def is_sum(r, threshold) -> bool:
-    if not one(r):
+def is_sum(r, threshold, price="p") -> bool:
+    if not one(r) or r["p"] is None:
         return False
-    q = ratio(r)
+    q = ratio(r, price)
     measure = r["unit"] in MEASURE_UNITS
     if q is None:
         return measure
@@ -93,13 +107,17 @@ def bucket(q) -> str:
     return f">={BUCKETS[-1]}"
 
 
-out: dict = {"lines_total": {"history": 0, "kp": 0}, "volume_one": {}}
+out: dict = {"lines_total": {"history": 0, "kp": 0}, "unknown_base": {}, "volume_one": {}}
 for side, hist in (("history", True), ("kp", False)):
     mine = [r for r in rows if (r["contract_id"] is not None) == hist]
     out["lines_total"][side] = len(mine)
+    out["unknown_base"][side] = {
+        "lines": sum(1 for r in mine if r["p"] is None),
+        "volume_one": sum(1 for r in mine if r["p"] is None and one(r)),
+    }
     by_unit: dict = defaultdict(Counter)
     for r in mine:
-        if one(r):
+        if one(r) and r["p"] is not None:
             by_unit[bucket(ratio(r))][r["unit"]] += 1
     out["volume_one"][side] = {b: dict(c) | {"_all": sum(c.values())} for b, c in by_unit.items()}
 
@@ -117,6 +135,10 @@ for threshold in THRESHOLDS:
         "history_families": len({r["fam"] for r in hs}),
         "history_zones": dict(Counter(r["zone"] for r in hs)),
         "kp_sums_all_estimates": len(ks),
+        # строки, у которых решение «по записанным ценам» (ред. 3) и «нетто» расходится
+        "differs_from_recorded_prices": sum(
+            1 for r in known if is_sum(r, threshold) != is_sum(r, threshold, price="g")
+        ),
     }
     if state:
         shown = [r for r in ks if r["id"] in state]
