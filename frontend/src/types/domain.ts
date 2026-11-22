@@ -3384,6 +3384,7 @@ export type OurPriceLineState =
   | "no_zone"
   | "no_history"
   | "unit_mismatch"
+  | "lump_sum"
   | "comparable";
 
 export type RungLevel = "v" | "p" | "f";
@@ -3704,6 +3705,30 @@ export interface OurPriceNodeTotalsMap {
   chapters: Record<string, Record<string, OurPriceNodeTotals>>;
 }
 
+/** Поправка администратора к правилу «похоже на комплект» (спека комплектов §3). */
+export type LumpVerdict = "lump" | "rate";
+
+/** Правило «похоже на комплект» у строки: ответ правила, обычная ставка семьи и поправка (спека комплектов §7 п. 1). */
+export interface LumpView {
+  /** Ответ правила без учёта поправки. */
+  rule: boolean;
+  /** Итог с учётом поправки: `true` — строка комплект. */
+  is_lump: boolean;
+  /** Единица семьи мерная (м, м², м³, т, кг). */
+  measure: boolean;
+  unit_price: MoneyPair;
+  /** Обычная ставка семьи в ставке показа участника; `null` — ставки нет. */
+  typical: MoneyPair | null;
+  /** Строк в пуле обычной ставки; 0 — ставки нет. */
+  typical_lines: number;
+  /** `unit_price.net / typical.net` без округления; `null` — ставки нет. */
+  ratio: Decimal | null;
+  threshold: string;
+  family: string;
+  unit: string;
+  override: { verdict: LumpVerdict; set_by: UserRef; set_at: string } | null;
+}
+
 export interface OurPriceLine {
   position_item_id: number;
   /** Контекст членства строки; `null` у строки без членства. */
@@ -3789,6 +3814,8 @@ export interface OurPriceLine {
   article?: OurPriceArticleRef | null;
   /** Блок А: зоны, где аналоги есть (спека справочных аналогов §2.5); поля нет, когда групп нет. */
   other_zones?: OtherZone[];
+  /** Правило «похоже на комплект»; `null` — к строке неприменимо (спека комплектов §7 п. 1). */
+  lump: LumpView | null;
 }
 
 // ---------------------------------------------------------------------------

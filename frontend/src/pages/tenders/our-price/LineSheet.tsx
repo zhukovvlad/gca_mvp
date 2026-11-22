@@ -32,6 +32,9 @@ import {
   groupLinesCaption,
   groupMembership,
   lineStateLabel,
+  LINE_STATE_LABEL,
+  LUMP_COMPARISON_NOTE,
+  lumpWhy,
   manualRungTag,
   NO_ZONE_COMPARE,
   NO_ZONE_COMPARE_ADMIN_TAIL,
@@ -66,6 +69,7 @@ import {
 } from "./ourPriceCopy";
 import { ExportBlock } from "./ExportBlock";
 import { LineStateText } from "./LineStateText";
+import { LumpBlock } from "./LumpBlock";
 import { LineZoneBlock, type PanelAnswer } from "./LineZoneBlock";
 import { RecalcOverlay } from "./RecalcOverlay";
 import { RungSaveBar } from "./RungSaveBar";
@@ -237,7 +241,7 @@ function PanelContent({
   const stateText = lineStateLabel(line);
   return (
     <div className="space-y-5 px-4 pb-6">
-      {stateText !== null && (
+      {stateText !== null && line.state !== "lump_sum" && (
         <p data-testid="sheet-state" className="text-sm text-fg-secondary">
           <LineStateText line={line} label={stateText} canResolve={canResolve} />
         </p>
@@ -280,6 +284,21 @@ function PanelContent({
           </p>
         </Section>
       )}
+      {line.state === "lump_sum" && line.lump !== null && (
+        <Section title={SHEET_SECTION.comparison} testId="sheet-comparison">
+          <div className="flex flex-wrap items-center gap-1.5 text-sm">
+            <Badge variant="secondary">{LINE_STATE_LABEL.lump_sum}</Badge>
+            <span className="text-fg-secondary">{LUMP_COMPARISON_NOTE}</span>
+          </div>
+          <p
+            data-testid="lump-why"
+            className="rounded-md border border-border bg-surface-sunken px-2.5 py-1.5 text-[12.5px] text-fg"
+          >
+            {lumpWhy(line.lump, vat, vatRate)}
+          </p>
+          <LumpBlock line={line} canEdit={canEdit} vat={vat} />
+        </Section>
+      )}
       {line.kind === "work" && line.choice?.kind === "reference" && (
         <ReferenceTarget
           tenderId={tenderId}
@@ -302,6 +321,7 @@ function PanelContent({
           canEdit={canEdit}
         />
       )}
+      {line.state !== "lump_sum" && line.lump !== null && <LumpBlock line={line} canEdit={canEdit} vat={vat} />}
       {line.rungs.length > 0 && (
         <Ladder
           line={line}

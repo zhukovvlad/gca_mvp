@@ -1,7 +1,7 @@
 import { fireEvent, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import { ourPriceLineFixture, ourPriceOfferFixture, workLineFixture } from "@/test/fixtures";
+import { lumpLineFixture, ourPriceLineFixture, ourPriceOfferFixture, workLineFixture } from "@/test/fixtures";
 import { renderWithProviders } from "@/test/utils";
 import type { MoneyPair, OurPriceOffer, OurPriceTotals } from "@/types/domain";
 
@@ -133,6 +133,21 @@ describe("фильтры строк по свежим расценкам", () =>
 
   it("новая причина no_zone — в «не с чем сравнить»", () => {
     expect(matchesFilter(workLineFixture({ state: "no_zone" }), "not_comparable")).toBe(true);
+  });
+
+  it("строка-комплект — в «не с чем сравнить» и ни в «разных единицах», ни в «выше» и «ниже»", () => {
+    const lump = lumpLineFixture({ over_lowest: pair("5.00"), below: pair("-1.00") });
+    expect(matchesFilter(lump, "not_comparable")).toBe(true);
+    expect(matchesFilter(lump, "unit_mismatch")).toBe(false);
+    expect(matchesFilter(lump, "above_lowest")).toBe(false);
+    expect(matchesFilter(lump, "below_lowest")).toBe(false);
+  });
+});
+
+describe("подсказка плитки «не разобраны»", () => {
+  it("называет строки, похожие на комплект", () => {
+    renderTiles(ourPriceOfferFixture());
+    expect(screen.getByTestId("tile-not_comparable")).toHaveTextContent("похожие на комплект");
   });
 });
 

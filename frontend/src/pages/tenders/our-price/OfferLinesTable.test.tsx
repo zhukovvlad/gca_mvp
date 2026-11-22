@@ -2,7 +2,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 
-import { agreedFixture, ourPriceLineFixture, ourPriceParamFixture, workLineFixture } from "@/test/fixtures";
+import { agreedFixture, lumpLineFixture, ourPriceLineFixture, ourPriceParamFixture, workLineFixture } from "@/test/fixtures";
 import type { MoneyPair, OurPriceLine } from "@/types/domain";
 
 import { OfferLinesTable } from "./OfferLinesTable";
@@ -735,4 +735,41 @@ describe("лестница аналогов: колонки и подписи с
     expect(screen.getByTestId("target-mark-1")).toHaveTextContent("цель: справочная");
   });
 
+});
+
+describe("строка, похожая на комплект", () => {
+  // toHaveTextContent сворачивает пробельные символы в тексте элемента, но не в ожидаемой строке: здесь — обычные пробелы.
+  const NB = " ";
+
+  it("метка «Похоже на комплект» нейтральной плашкой и под ней кратность целыми с разрядами", () => {
+    renderTable([lumpLineFixture({ position_item_id: 1, title: "Воздуховоды" })]);
+    const cell = screen.getByTestId("to-ours-1");
+    expect(cell).toHaveTextContent("Похоже на комплект");
+    expect(screen.getByTestId("lump-caption-1")).toHaveTextContent(`цена в 16${NB}989 раз выше обычной ставки семьи`);
+    // Разницы и цели нет: прочерк, а не «0,00».
+    expect(cell).toHaveTextContent("—");
+    expect(cell).not.toHaveTextContent(WAITING_ADMIN_LABEL);
+  });
+
+  it("ставки нет — под меткой «обычной ставки нет»", () => {
+    renderTable([lumpLineFixture({ position_item_id: 2 }, { typical: null, typical_lines: 0, ratio: null })]);
+    expect(screen.getByTestId("lump-caption-2")).toHaveTextContent("обычной ставки нет");
+    expect(screen.getByTestId("lump-caption-2")).not.toHaveTextContent("раз");
+  });
+
+  it("подпись состояния берётся из LINE_STATE_LABEL, число на ней приглушено как у «разных единиц»", () => {
+    renderTable([lumpLineFixture({ position_item_id: 3 })]);
+    expect(screen.getByTestId("to-ours-3")).toHaveTextContent(LINE_STATE_LABEL.lump_sum);
+    expect(screen.getByTestId("to-ours-3").querySelector("span.font-mono")).toHaveClass("text-fg-muted");
+  });
+
+  it("у сравнимой строки с lump метки и подписи комплекта нет; у lump: null тоже", () => {
+    renderTable([
+      line(4, { lump: lumpLineFixture().lump }),
+      line(5, { lump: null }),
+    ]);
+    expect(screen.queryByTestId("lump-caption-4")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("lump-caption-5")).not.toBeInTheDocument();
+    expect(screen.getByTestId("to-ours-4")).not.toHaveTextContent("Похоже на комплект");
+  });
 });

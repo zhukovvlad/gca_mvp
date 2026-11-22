@@ -11,6 +11,8 @@ import {
   compositeLineViewFixture,
   contractorFigureFixture,
   KP_FILE_AUTHOR,
+  lumpFixture,
+  lumpLineFixture,
   OUR_PRICE_LINE_ID,
   OUR_PRICE_OFFER_ID,
   OUR_PRICE_ROUND_ID,
@@ -25,7 +27,7 @@ import {
 import { server } from "@/test/server";
 import { renderWithProviders } from "@/test/utils";
 import { ANALOG_UNAVAILABLE_TOAST } from "@/services/queries";
-import type { MoneyPair, OurPriceLine, OurPriceLineView, TargetChoice } from "@/types/domain";
+import type { LumpView, MoneyPair, OurPriceLine, OurPriceLineView, TargetChoice } from "@/types/domain";
 
 import { LineSheet, type LineSheetProps } from "./LineSheet";
 import { PARAMS_COPY } from "./paramsCopy";
@@ -857,5 +859,129 @@ describe("панель строки: параметры варианта", () =>
     renderSheet();
     await screen.findByTestId("analog-8001");
     expect(screen.queryByTestId("analog-released-8001")).not.toBeInTheDocument();
+  });
+});
+
+describe("панель строки, похожей на комплект", () => {
+  // toHaveTextContent сворачивает пробельные символы в тексте элемента, но не в ожидаемой строке: здесь — обычные пробелы.
+  const NB = " ";
+  const boss = { id: 7, email: "boss@example.test" };
+
+  const lumpView = (lump: Partial<LumpView> = {}, line: Partial<OurPriceLine> = {}): OurPriceLineView => ({
+    ...workLineViewFixture(),
+    line: lumpLineFixture(
+      { position_item_id: OUR_PRICE_LINE_ID, kind: "work", article: articleRefFixture(), ...line },
+      lump
+    ),
+    analogs: [],
+    contracts: [],
+  });
+
+  it("блок «Сравнение»: метка, «не сравнивается» и пояснение с цифрами правила дословно", async () => {
+    serve(() => lumpView());
+    renderSheet();
+    const comparison = await screen.findByTestId("sheet-comparison");
+    expect(within(comparison).getByText("Похоже на комплект")).toBeInTheDocument();
+    expect(comparison).toHaveTextContent("не сравнивается");
+    expect(screen.getByTestId("lump-why")).toHaveTextContent(
+      `В смете: 1 м2 × 69${NB}259${NB}002,83${NB}₽ без НДС. Обычная ставка семьи «Монтаж воздуховодов вентиляции» — 4${NB}077,00${NB}₽ за м2 ` +
+        `(медиана 5 строк с настоящим объёмом). Цена строки выше в 16${NB}989 раз: похоже на цену комплекта, а не квадратного метра. ` +
+        "Со ставками договоров её не сравнить."
+    );
+  });
+
+  it("метка состояния не дублируется строкой под заголовком, сравнения целей и аналогов нет", async () => {
+    serve(() => lumpView());
+    renderSheet();
+    await screen.findByTestId("sheet-comparison");
+    expect(screen.queryByTestId("sheet-state")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Похоже на комплект")).toHaveLength(1);
+    expect(screen.queryByTestId("analog-8001")).not.toBeInTheDocument();
+  });
+
+  it("ставки нет — пояснение без ставки", async () => {
+    serve(() => lumpView({ typical: null, typical_lines: 0, ratio: null, unit: "шт", family: "Выключатель" }));
+    renderSheet();
+    expect(await screen.findByTestId("lump-why")).toHaveTextContent(
+      `В смете: 1 шт × 69${NB}259${NB}002,83${NB}₽. Обычной ставки у семьи «Выключатель» в этой единице нет ` +
+        "(строк с настоящим объёмом меньше трёх), а одна шт за такую цену — похоже на комплект."
+    );
+  });
+
+  it("поправка «это комплект» при rule = false — пояснение о поправке", async () => {
+    serve(() =>
+      lumpView({
+        rule: false,
+        override: { verdict: "lump", set_by: boss, set_at: "2026-11-22T09:30:00+00:00" },
+      })
+    );
+    renderSheet();
+    expect(await screen.findByTestId("lump-why")).toHaveTextContent(
+      "Поправлено вручную: boss@example.test, 22.11.2026. Правило считает строку ставкой."
+    );
+  });
+
+  it("в виде «с НДС» цены показанные и подписаны ставкой КП", async () => {
+    serve(() => lumpView());
+    renderSheet({ vat: "shown", vatRate: "22.00" });
+    expect(await screen.findByTestId("lump-why")).toHaveTextContent(`× 84${NB}495${NB}983,45${NB}₽ с НДС 22 %.`);
+  });
+
+  it("admin видит под пояснением переключатель из трёх положений; member — нет", async () => {
+    serve(() => lumpView());
+    const { unmount } = renderSheet();
+    const block = await screen.findByTestId("lump-block");
+    expect(within(block).getByRole("button", { name: "Как решило правило (комплект)" })).toBeInTheDocument();
+    expect(within(block).getByRole("button", { name: "Это комплект" })).toBeInTheDocument();
+    expect(within(block).getByRole("button", { name: "Это ставка" })).toBeInTheDocument();
+    unmount();
+    renderSheet({}, MEMBER);
+    await screen.findByTestId("lump-why");
+    expect(screen.queryByTestId("lump-block")).not.toBeInTheDocument();
+  });
+
+  it("member при поправке видит подпись «поправлено вручную», но не кнопки", async () => {
+    serve(() =>
+      lumpView({ override: { verdict: "lump", set_by: boss, set_at: "2026-11-22T09:30:00+00:00" } })
+    );
+    renderSheet({}, MEMBER);
+    expect(await screen.findByTestId("lump-override-note")).toHaveTextContent(
+      "поправлено вручную: boss@example.test, 22.11.2026"
+    );
+    expect(screen.queryByRole("button", { name: "Это ставка" })).not.toBeInTheDocument();
+  });
+
+  it("выбор «Это ставка» уходит PUT-ом и панель перечитывается", async () => {
+    const user = userEvent.setup();
+    const asked = serve(() => lumpView());
+    const puts: unknown[] = [];
+    server.use(
+      http.put("/api/v1/position-items/:id/lump-sum", async ({ request, params }) => {
+        puts.push({ id: params.id, body: await request.json() });
+        return HttpResponse.json({});
+      })
+    );
+    renderSheet();
+    await user.click(await screen.findByRole("button", { name: "Это ставка" }));
+    await waitFor(() => expect(puts).toEqual([{ id: String(OUR_PRICE_LINE_ID), body: { verdict: "rate" } }]));
+    // Первый GET — открытие панели, второй — перечитывание после поправки.
+    await waitFor(() => expect(asked.length).toBeGreaterThanOrEqual(2));
+  });
+
+  it("сравнимая строка с lump: блок поправки есть под «Сравнением»", async () => {
+    serve(() => workLineViewFixture({ line: { lump: lumpFixture({ rule: false, is_lump: false }) } }));
+    renderSheet();
+    const block = await screen.findByTestId("lump-block");
+    const comparison = screen.getByTestId("sheet-comparison");
+    expect(comparison.compareDocumentPosition(block) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(block).getByRole("button", { name: "Как решило правило (ставка)" })).toBeInTheDocument();
+    expect(screen.queryByTestId("lump-why")).not.toBeInTheDocument();
+  });
+
+  it("строка с lump: null — блока поправки нет", async () => {
+    serve(() => workLineViewFixture());
+    renderSheet();
+    await screen.findByTestId("sheet-comparison");
+    expect(screen.queryByTestId("lump-block")).not.toBeInTheDocument();
   });
 });

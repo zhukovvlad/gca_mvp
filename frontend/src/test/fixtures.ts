@@ -51,6 +51,7 @@ import type {
   OurPriceInflation,
   LineParam,
   OurPriceLine,
+  LumpView,
   OurPriceLineState,
   OurPriceLineView,
   OurPriceNodeTotals,
@@ -2925,6 +2926,42 @@ export function ourPriceParamFixture(overrides: Partial<LineParam> = {}): LinePa
   };
 }
 
+/** Правило «похоже на комплект» (контракт спеки комплектов §7 п. 1): по умолчанию комплект, ставка есть. */
+export function lumpFixture(overrides: Partial<LumpView> = {}): LumpView {
+  return {
+    rule: true,
+    is_lump: true,
+    measure: true,
+    unit_price: pair("69259002.83", "84495983.45"),
+    typical: pair("4077.00", "4974.00"),
+    typical_lines: 5,
+    ratio: "16989.1234",
+    threshold: "50",
+    family: "Монтаж воздуховодов вентиляции",
+    unit: "м2",
+    override: null,
+    ...overrides,
+  };
+}
+
+/** Строка-комплект: состояние `lump_sum`, без цели и разницы. */
+export function lumpLineFixture(overrides: Partial<OurPriceLine> = {}, lump: Partial<LumpView> = {}): OurPriceLine {
+  return ourPriceLineFixture({
+    state: "lump_sum",
+    rung: null,
+    rungs: [],
+    lowest: null,
+    range: null,
+    to_lowest: null,
+    over_lowest: null,
+    position: null,
+    target_kind: null,
+    file_ours: null,
+    lump: lumpFixture(lump),
+    ...overrides,
+  });
+}
+
 /** Строка разбора: по умолчанию сопоставимая работа на автоматической ступени. */
 export function ourPriceLineFixture(overrides: Partial<OurPriceLine> = {}): OurPriceLine {
   return {
@@ -2990,6 +3027,7 @@ export function ourPriceLineFixture(overrides: Partial<OurPriceLine> = {}): OurP
     comment_kind: null,
     manual_rung: null,
     file_ours: pair("1000", "1220"),
+    lump: null,
     ...overrides,
   };
 }
