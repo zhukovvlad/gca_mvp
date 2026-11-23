@@ -144,6 +144,7 @@ def evaluate(
         tender_contractor_id=99,
         target_month=None,
         factors=None,
+        not_analog={},
         choice=choice,
     )
 

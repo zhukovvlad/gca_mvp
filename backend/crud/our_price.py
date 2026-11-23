@@ -30,6 +30,7 @@ from crud.kp_decisions import (
     load_unit_texts,
 )
 from crud.lump_sum import typical_rates
+from crud.not_analog import FormKey, Mark, load_not_analog_marks, load_price_error_marks, mark_view
 from crud.our_price_inflation import plan_history_inflation, round_target_month
 from crud.our_price_load import (
     ArticleMeta,
@@ -65,10 +66,13 @@ from models import (
 from money.inflation import YearMonth, adjust_amount
 from money.price import is_price
 from services.analog_ladder import (
+    ExcludedTrace,
     FamilyLadderInfo,
     Figure,
+    KpWork,
     WorkHistory,
     _releasable_ids,
+    excluded_trace,
     params_rule,
     parts_reference,
 )
@@ -124,6 +128,7 @@ from services.reference_blocks import (
     link_param_id,
     link_units,
     link_value_pairs,
+    opens_zone_block,
     other_zones,
     reference_marks,
     zone_groups,
@@ -206,6 +211,8 @@ class _Scene:
     decisions: dict[int, EstimateDecisions]
     #: Число отправленных файлов по офферам этапа: у оффера без сметы они остаются.
     sent_files: dict[int, int]
+    #: Тендерные отметки «не аналог» сцены: ключ формы -> строка договора -> отметка (один запрос на сцену).
+    not_analog: Mapping[FormKey, Mapping[int, Mark]] = field(default_factory=dict)
     #: Подписи каталожных единиц (`unit_id -> подпись`) — для признака «комплект» строки (спека строк-сумм §7).
     unit_labels: Mapping[int, str] = field(default_factory=dict)
 
@@ -451,8 +458,18 @@ def _build_scene(
         total_fork=_fork(history.total, class_contracts),
         decisions=load_decisions(db, kp_ids),
         sent_files=_sent_files_counts(db, [raw[0] for raw in participants_raw]),
+        not_analog=load_not_analog_marks(db, head.tender_id),
         unit_labels=typical_rates(db).unit_labels,
     )
+
+
+def _excluded_of(scene: _Scene, line: KpLine) -> frozenset[int]:
+    """Строки договоров с тендерной отметкой у формы строки КП (спека «Не аналог» §3 п. 2)."""
+    return frozenset(scene.not_analog.get(line.form_key, {}))
+
+
+def _kp_work(scene: _Scene, row: KpLineRow, net: Decimal) -> KpWork:
+    return kp_work_of(row.line, net, excluded=_excluded_of(scene, row.line))
 
 
 def _evaluate(scene: _Scene, participant: _Participant, choice: RungChoice | None = None) -> OfferEvaluation:
@@ -469,6 +486,7 @@ def _evaluate(scene: _Scene, participant: _Participant, choice: RungChoice | Non
         factors=scene.plan.factor_by_estimate if scene.plan is not None else None,
         choice=choice,
         saved=scene.decisions[participant.estimate_id].saved,
+        not_analog={key: frozenset(marks) for key, marks in scene.not_analog.items()},
     )
 
 
@@ -1268,7 +1286,7 @@ def _reference_targets(
             pairs.add((analog, param_id))
     for pid in needs_blocks:
         result = evaluation.lines[pid]
-        kp = kp_work_of(kp_rows[pid].line, result.kp_unit_net)
+        kp = _kp_work(scene, kp_rows[pid], result.kp_unit_net)
         mine = [s for s in states if kp.family_id in (s.link.family_lo_id, s.link.family_hi_id)]
         if any(s.active for s in mine):
             pairs |= link_value_pairs(kp, scene.work_history, mine)
@@ -1593,12 +1611,12 @@ def _zone_groups_of(
     scene: _Scene, participant: _Participant, row: KpLineRow, result: LineResult
 ) -> tuple[ZoneGroup, ...]:
     """Блок А строки на `WorkHistory` сцены, без запросов (спека справочных аналогов §2.20); у строки не
-    в состоянии `no_history` с причиной `no_zone_match` — пусто."""
+    в состоянии `no_history` с причиной `no_zone_match` (или `excluded` над ней) — пусто."""
     ladder = result.ladder
-    if ladder is None or ladder.no_history_reason != "no_zone_match" or result.kp_unit_net is None:
+    if ladder is None or not opens_zone_block(ladder) or result.kp_unit_net is None:
         return ()
     return zone_groups(
-        kp_work_of(row.line, result.kp_unit_net),
+        _kp_work(scene, row, result.kp_unit_net),
         scene.work_history,
         tender_class_id=scene.head.rate_class_id,
         tender_contractor_id=participant.contractor_id,
@@ -1789,6 +1807,68 @@ def _analogs_view(
     return view
 
 
+def _excluded_trace_of(
+    scene: _Scene, participant: _Participant, row: KpLineRow, result: LineResult
+) -> ExcludedTrace:
+    """След исключённого строки (спека «Не аналог» §3 п. 5); у системы и у работы, не дошедшей до лестницы,
+    следа нет."""
+    if result.ladder is None or result.kp_unit_net is None:
+        return ()
+    return excluded_trace(
+        _kp_work(scene, row, result.kp_unit_net), scene.work_history, tender_class_id=scene.head.rate_class_id
+    )
+
+
+def _excluded_view(
+    scene: _Scene,
+    participant: _Participant,
+    row: KpLineRow,
+    trace: ExcludedTrace,
+    details: Mapping[int, tuple[str, str | None, list[str], int | None, int | None]],
+    tree: Mapping[int, CategoryMeta],
+    steps: Mapping[int, tuple[ChapterStep, ...]],
+    price_errors: Mapping[int, Mark],
+) -> list[dict]:
+    """Исключённые из аналогов строки договоров панели (спека «Не аналог» §7 п. 2): поля аналога, пара
+    «ступень, область», где строка стояла бы, и отметки («ошибка в цене» первой). Цены в ставке показа
+    участника, как у аналогов; порядок — порядок следа."""
+    rate = participant.base
+    tender_marks = scene.not_analog.get(row.line.form_key, {})
+    view = []
+    for cand, (zone_scope, rung_no) in trace:
+        pid = cand.line.position_item_id
+        contract = cand.contract
+        title, unit, section_titles, category_id, chapter_item_id = details[pid]
+        marks = [mark for mark in (price_errors.get(pid), tender_marks.get(pid)) if mark is not None]
+        view.append(
+            {
+                "analog_id": pid,
+                "contract_id": contract.contract_id,
+                "object_title": contract.object_title,
+                "number": contract.number,
+                "year": contract.year,
+                "period": _period_text(contract.period),
+                "rate_class": {"id": contract.rate_class_id, "title": contract.rate_class_title},
+                "contractor_id": contract.contractor_id,
+                "contractor_title": contract.contractor_title,
+                "section_titles": section_titles,
+                "article": _article_ref(tree, category_id),
+                "chapter_path": _path_view(steps.get(chapter_item_id, ())),
+                "title": title,
+                "unit": unit,
+                "price": money_pair(cand.net, rate, unit=True),
+                "nominal": money_pair(cand.nominal, rate, unit=True),
+                "with_this_contractor": contract.contractor_id == participant.contractor_id,
+                "place_match": len(row.line.chain_titles & cand.line.chain_titles),
+                "zone": cand.line.zone,
+                "released_values": [],
+                "step": {"rung": rung_no, "zone_scope": zone_scope},
+                "marks": [mark_view(mark) for mark in marks],
+            }
+        )
+    return view
+
+
 def _parts_reference_view(
     db: Session, scene: _Scene, participant: _Participant, row: KpLineRow, result: LineResult
 ) -> list[dict]:
@@ -1797,7 +1877,7 @@ def _parts_reference_view(
     if result.ladder is None:
         return []
     groups = parts_reference(
-        kp_work_of(row.line, result.kp_unit_net),
+        _kp_work(scene, row, result.kp_unit_net),
         scene.work_history,
         tender_class_id=scene.head.rate_class_id,
         composites=load_composites(db, row.line),
@@ -1859,7 +1939,7 @@ def _reference_blocks(
     `WorkHistory` сцены."""
     if not _blocks_open(result):
         return _ReferenceBlocks()
-    kp = kp_work_of(row.line, result.kp_unit_net)
+    kp = _kp_work(scene, row, result.kp_unit_net)
     states = tuple(links_of_families(db, [kp.family_id]))
     values = {}
     if any(state.active for state in states):
@@ -1890,7 +1970,7 @@ def _reference_blocks_from(
     быть связи других семей — берутся только связи семьи строки КП)."""
     if not _blocks_open(result):
         return _ReferenceBlocks()
-    kp = kp_work_of(row.line, result.kp_unit_net)
+    kp = _kp_work(scene, row, result.kp_unit_net)
     states = tuple(s for s in all_states if kp.family_id in (s.link.family_lo_id, s.link.family_hi_id))
     zones = _zone_groups_of(scene, participant, row, result)
     if not any(state.active for state in states):
@@ -2117,8 +2197,11 @@ def build_line_view(
         members = {pid for g in evaluation.groups if g.family_id == family_id for pid in g.lines}
         group_rows = [r for r in rows if r.line.position_item_id in members]
     reference = _reference_blocks(db, scene, participant, row, result)
-    # пути разделов строки КП, её группы и аналогов — одним запросом на ответ
-    analog_details = load_analog_details(db, [*_analog_ids(result), *reference.ids()])
+    # след исключённого считается до загрузки деталей: его строки идут в тот же запрос (спека «Не аналог» §3 п. 5)
+    trace = _excluded_trace_of(scene, participant, row, result)
+    trace_ids = [cand.line.position_item_id for cand, _step in trace]
+    # пути разделов строки КП, её группы, аналогов и исключённых — одним запросом на ответ
+    analog_details = load_analog_details(db, [*_analog_ids(result), *reference.ids(), *trace_ids])
     chapter_ids = {r.chapter_item_id for r in [row, *group_rows]} | {d[4] for d in analog_details.values()}
     steps = chapter_steps(db, chapter_ids - {None})
     _, tree = category_tree(db)
@@ -2158,6 +2241,9 @@ def build_line_view(
     vat_dropped = _vat_dropped_view(scene, row, result)
     analog_columns, released_values = _released_view(db, scene, row, result)
     analogs = _analogs_view(scene, participant, result, analog_details, released_values, tree, steps)
+    excluded = _excluded_view(
+        scene, participant, row, trace, analog_details, tree, steps, load_price_error_marks(db, trace_ids)
+    )
     reference_zones = _reference_zones_view(scene, participant, result, row.unit_id, reference, analog_details, steps)
     reference_links = _reference_links_view(scene, participant, result, row.unit_id, reference, analog_details, steps)
 
@@ -2175,6 +2261,7 @@ def build_line_view(
         "group_lines": group_lines,
         "contracts": contracts,
         "analogs": analogs,
+        "excluded": excluded,
         "analog_columns": analog_columns,
         "reference_zones": reference_zones,
         "reference_links": reference_links,

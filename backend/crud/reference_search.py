@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from crud.common import DomainError
 from crud.lump_sum import typical_rates
+from crud.not_analog import load_not_analog_marks
 from crud.our_price import reference_lump_view, reference_row_view, search_context
 from crud.our_price_inflation import plan_history_inflation, round_target_month
 from crud.our_price_load import (
@@ -42,6 +43,7 @@ from services.reference_blocks import (
     link_param_id,
     link_units,
     link_value_pairs,
+    opens_zone_block,
     reference_marks,
     zone_groups,
 )
@@ -193,6 +195,8 @@ def search_reference(
 
     lines = _find_lines(db, contracts, words, row, units, factors)
 
+    not_analog = {key: frozenset(marks) for key, marks in load_not_analog_marks(db, head.tender_id).items()}
+    excluded = not_analog.get(row.line.form_key, frozenset())
     kp_net, ladder = work_ladder_of(
         row.line,
         kp_vat_base=participant.base,
@@ -200,8 +204,9 @@ def search_reference(
         tender_class_id=head.rate_class_id,
         tender_contractor_id=participant.contractor_id,
         target_month=target_month,
+        not_analog=not_analog,
     )
-    kp = None if ladder is None or kp_net is None else kp_work_of(row.line, kp_net)
+    kp = None if ladder is None or kp_net is None else kp_work_of(row.line, kp_net, excluded=excluded)
     blocks_open = kp is not None and ladder is not None and ladder.rung_no is None
 
     pairs: set[tuple[int, int]] = set()
@@ -218,7 +223,7 @@ def search_reference(
     zones = ()
     links = ()
     if kp is not None and ladder is not None:
-        if ladder.no_history_reason == "no_zone_match":
+        if opens_zone_block(ladder):
             zones = zone_groups(
                 kp,
                 history,

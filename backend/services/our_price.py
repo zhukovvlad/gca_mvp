@@ -749,8 +749,9 @@ def _compare(
     )
 
 
-def kp_work_of(line: KpLine, net: Decimal) -> KpWork:
-    """Строка КП-работа для лестницы: `net` — нетто цены за единицу."""
+def kp_work_of(line: KpLine, net: Decimal, *, excluded: frozenset[int]) -> KpWork:
+    """Строка КП-работа для лестницы: `net` — нетто цены за единицу, `excluded` — строки договоров с
+    тендерной отметкой «не аналог» у этой формы (спека «Не аналог» §3 п. 2)."""
     key = line.key
     assert key is not None
     return KpWork(
@@ -765,6 +766,7 @@ def kp_work_of(line: KpLine, net: Decimal) -> KpWork:
         net=net,
         conflicted=line.conflicted,
         forms=line.forms,
+        excluded=excluded,
     )
 
 
@@ -776,6 +778,7 @@ def work_ladder_of(
     tender_class_id: int,
     tender_contractor_id: int,
     target_month: YearMonth | None,
+    not_analog: Mapping[FormKey, frozenset[int]],
 ) -> tuple[Decimal | None, WorkLadder | None]:
     """Нетто цены за единицу строки КП и её лестница — те, что считает `evaluate_offer`; лестницы
     нет (`None`), если строка до неё не доходит: в работе, без базы НДС, система, без цены или веса,
@@ -793,7 +796,7 @@ def work_ladder_of(
         return kp_unit_net, None
     assert kp_unit_net is not None
     ladder = ladder_for(
-        kp_work_of(line, kp_unit_net),
+        kp_work_of(line, kp_unit_net, excluded=not_analog.get(line.form_key, frozenset())),
         work_history,
         tender_class_id=tender_class_id,
         tender_contractor_id=tender_contractor_id,
@@ -811,12 +814,13 @@ def _evaluate_work(
     tender_class_id: int,
     tender_contractor_id: int,
     target_month: YearMonth | None,
+    not_analog: Mapping[FormKey, frozenset[int]],
 ) -> LineResult:
     """Работа через лестницу аналогов (спека §2.8, §2.9). Ступеней 4а у неё нет."""
     key = line.key
     assert key is not None and line.weight is not None
     ladder = ladder_for(
-        kp_work_of(line, kp_unit_net),
+        kp_work_of(line, kp_unit_net, excluded=not_analog.get(line.form_key, frozenset())),
         work_history,
         tender_class_id=tender_class_id,
         tender_contractor_id=tender_contractor_id,
@@ -1070,6 +1074,7 @@ def evaluate_offer(
     tender_contractor_id: int,
     target_month: YearMonth | None,
     factors: Mapping[int, Decimal] | None,
+    not_analog: Mapping[FormKey, frozenset[int]],
     choice: RungChoice | None = None,
     saved: SavedRungs | None = None,
 ) -> OfferEvaluation:
@@ -1078,7 +1083,8 @@ def evaluate_offer(
     Работы идут через лестницу аналогов (`work_history`, `families`), системы — через ступени 4а
     (`history`). `target_month` — месяц этапа: к нему ближе всего самая свежая расценка. `factors`
     — множитель ИПЦ по смете аналога; `None` — без приведения. `choice` — ступень системы из
-    предпросмотра, она побеждает сохранённую `saved` на своей семье; у работы ступеней нет.
+    предпросмотра, она побеждает сохранённую `saved` на своей семье; у работы ступеней нет. `not_analog` —
+    тендерные отметки: ключ формы -> строки договоров, которые строка с этим ключом не берёт.
     `work_history` — строки истории либо уже разложенная по семьям `WorkHistory` сцены (тогда она
     обязана быть собрана из тех же `families`, договоров `history` и `factors`).
     """
@@ -1136,6 +1142,7 @@ def evaluate_offer(
                 tender_class_id=tender_class_id,
                 tender_contractor_id=tender_contractor_id,
                 target_month=target_month,
+                not_analog=not_analog,
             )
 
     groups: list[GroupResult] = []

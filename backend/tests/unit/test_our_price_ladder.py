@@ -174,6 +174,7 @@ def evaluate(
         tender_contractor_id=99,
         target_month=None,
         factors=None,
+        not_analog={},
         choice=choice,
     )
 
@@ -935,8 +936,8 @@ def _zoneless(*, zone_required: bool) -> KpLine:
 
 
 def test_kp_work_carries_the_flag_of_the_line():
-    assert kp_work_of(_zoneless(zone_required=True), D(100)).zone_required is True
-    assert kp_work_of(_zoneless(zone_required=False), D(100)).zone_required is False
+    assert kp_work_of(_zoneless(zone_required=True), D(100), excluded=frozenset()).zone_required is True
+    assert kp_work_of(_zoneless(zone_required=False), D(100), excluded=frozenset()).zone_required is False
 
 
 @pytest.mark.parametrize(("zone_required", "has_ladder"), [(False, True), (True, False)])
@@ -949,6 +950,7 @@ def test_a_zoneless_line_reaches_the_ladder_only_without_the_flag(zone_required,
         tender_class_id=TENDER_CLASS,
         tender_contractor_id=99,
         target_month=None,
+        not_analog={},
     )
     assert net == D(150)
     assert (ladder is not None) is has_ladder

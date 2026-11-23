@@ -95,7 +95,7 @@ LINE_KEYS = {
     "manual_rung",
 }
 PANEL_KEYS = {
-    "line", "group_lines", "contracts", "analogs", "reference_zones", "reference_links", "parts_reference",
+    "line", "group_lines", "contracts", "analogs", "excluded", "reference_zones", "reference_links", "parts_reference",
     "vat_dropped", "comment", "analog_columns", "zone_chain",
 }
 TOLERANCE = D("1e-20")

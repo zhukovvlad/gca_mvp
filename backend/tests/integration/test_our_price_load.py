@@ -1861,6 +1861,7 @@ class TestLumpFlagInLoaders:
                 tender_contractor_id=-1,
                 target_month=None,
                 factors=None,
+                not_analog={},
             )
             result = evaluation.lines[row.line.position_item_id]
             return {a.position_item_id for a in result.ladder.analogs}
