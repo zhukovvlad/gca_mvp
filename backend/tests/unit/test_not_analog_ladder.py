@@ -148,6 +148,31 @@ class TestPriceErrorIsOutOfThePool:
         assert [c.line.position_item_id for c in history.pool(FAMILY).candidates] == [2]
         assert [c.line.position_item_id for c in history.pool_unmarked(FAMILY).candidates] == [1, 2]
 
+    def test_the_marked_line_is_not_a_row_of_the_zone_block(self):
+        # семья с флажком: своей зоны нет — блок А открыт; в другой зоне отмеченная строка и соседняя
+        lines = [marked(line(1, 1, "100", zone=ABOVE)), line(2, 2, "110", zone=ABOVE)]
+        history = history_of(lines, [contract(1), contract(2)], zone_required=frozenset({FAMILY}))
+        work = dataclasses.replace(kp(), zone_required=True)
+
+        groups = rb.zone_groups(work, history, tender_class_id=CLASS_A, tender_contractor_id=99, target_month=MONTH)
+
+        assert [(g.zone, [r.position_item_id for r in g.rows]) for g in groups] == [(ABOVE, [2])]
+
+    def test_the_marked_line_is_not_a_row_of_the_link_block(self):
+        from tests.unit.test_ref_analogs_blocks import _link
+
+        link_line = marked(dataclasses.replace(line(1, 1, "100", family=2, zone=UNDER), unit_id=2))
+        other_line = dataclasses.replace(line(2, 2, "120", family=2, zone=UNDER), unit_id=2)
+        history = WorkHistory(
+            [link_line, other_line], {FAMILY: info(), 2: info()}, {1: contract(1), 2: contract(2)}, factors=None
+        )
+
+        groups = rb.link_groups(
+            kp(), 3, history, [_link()], {2: "м²", 3: "м³"}, {}, tender_class_id=CLASS_A, target_month=MONTH
+        )
+
+        assert [row.position_item_id for group in groups for row in group.rows] == [2]
+
 
 # ---------------------------------------------------------------------------
 #  Тендерная отметка — только для этой строки КП
@@ -196,6 +221,24 @@ class TestTenderMarkIsPerKpLine:
         assert sorted(rows_of(kp())) == [1, 2]
         assert rows_of(excl(kp(), 1)) == [2]
 
+    def test_the_excluded_line_of_another_zone_is_not_a_row_of_the_zone_block(self):
+        # блок А берёт строки других зон через ladder_for с той же KpWork (спека §5 п. 2)
+        lines = [line(1, 1, "100", zone=UNDER), line(2, 2, "110", zone=ABOVE), line(3, 3, "120", zone=ABOVE)]
+        history = history_of(lines, [contract(1), contract(2), contract(3)], zone_required=frozenset({FAMILY}))
+
+        def rows_of(work):
+            groups = rb.zone_groups(
+                dataclasses.replace(work, zone_required=True),
+                history,
+                tender_class_id=CLASS_A,
+                tender_contractor_id=99,
+                target_month=MONTH,
+            )
+            return [(g.zone, sorted(r.position_item_id for r in g.rows)) for g in groups]
+
+        assert rows_of(excl(kp(), 1, 3)) == [(ABOVE, [2])]
+        assert rows_of(excl(kp(), 1)) == [(ABOVE, [2, 3])]
+
 
 # ---------------------------------------------------------------------------
 #  Лестница идёт дальше
@@ -235,6 +278,25 @@ class TestLadderMovesOn:
         assert result.rung_no == 2
         assert ids(result) == [2]
 
+    def test_the_only_candidate_of_own_zone_rung_four_is_excluded_and_rung_four_of_another_zone_is_a_fork_of_two(self):
+        # бриф задачи 3, «лестница идёт дальше»: пара (own, 4) пуста после исключения — (other, 4)
+        rung_four = {"variant": W8, "values": {RELEASED: 2, REQUIRED: 5}}
+        lines = [
+            line(1, 1, "100", zone=UNDER, **rung_four),
+            line(2, 2, "110", zone=ABOVE, **rung_four),
+            line(3, 3, "130", zone=ABOVE, **rung_four),
+        ]
+        contracts = [contract(1, cls=CLASS_B), contract(2, cls=CLASS_B), contract(3, cls=CLASS_B)]
+
+        full = run(kp(), lines, contracts)
+        result = run(excl(kp(), 1), lines, contracts)
+
+        assert (full.rung_no, full.zone_scope, ids(full)) == (4, "own", [1])
+        assert (result.rung_no, result.zone_scope) == (4, "other")
+        assert sorted(ids(result)) == [2, 3]
+        assert result.remainder_ids == {2, 3}
+        assert (result.lowest.value, result.lowest.analog_id) == (D("110"), 2)
+
 
 # ---------------------------------------------------------------------------
 #  Причина и base_reason
@@ -257,6 +319,19 @@ class TestExcludedReason:
         result = run(kp(), lines, [contract(1), contract(2)])
 
         assert result.no_history_reason == "excluded"
+        # base_reason — прежняя цепочка по ОБЫЧНОМУ пулу, где отмеченных нет (спека §3 п. 6)
+        assert result.base_reason == "no_family"
+
+    def test_excluded_comes_before_composite(self):
+        # сборная строка: прежняя цепочка дала бы composite, но без отметки ступень 1 нашлась бы
+        result = run(excl(composite_kp(), 1), [line(1, 1, "100")], [contract(1)])
+
+        assert (result.rung_no, result.no_history_reason, result.base_reason) == (None, "excluded", "composite")
+
+    def test_excluded_comes_before_no_params(self):
+        result = run(excl(kp(), 1), [line(1, 1, "100")], [contract(1)])
+
+        assert (result.no_history_reason, result.base_reason) == ("excluded", "no_params")
 
     def test_without_candidates_and_marks_the_old_reason_stays(self):
         assert run(kp(), [], []).no_history_reason == "no_family"
