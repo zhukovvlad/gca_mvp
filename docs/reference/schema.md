@@ -855,3 +855,26 @@ lump_sum_overrides                   -- решение администрато�
 ```
 
 Каскад по строке уносит поправку при замене и удалении сметы, договора, участника, раунда и тендера; замена сметы договора (`_replace_existing`) предупреждает о потерянных поправках. Автор — `RESTRICT`: пользователь с поправками не удаляется. Литерал CHECK продублирован константой `CK_LUMP_SUM_VERDICT` в `models.py` и в миграции, паритет — `test_lump_sum_load.py::TestParityWithMigration`. `downgrade` удаляет таблицу вместе с поправками.
+
+## 15. Отметки «не аналог»
+
+Миграция `0030` ([спека «Не аналог»](../superpowers/specs/2026-11-23-not-analog-design.md), раздел 1): две новые таблицы, существующие не меняются. Нет отметки — нет строки. Обе — в `_DOMAIN_TABLES` тестов.
+
+```
+price_error_marks                    -- «ошибка в цене»: строка договора выпадает из подбора и обычной ставки
+  position_item_id PK → position_items ON DELETE CASCADE
+  reason text NOT NULL, set_by NOT NULL → users ON DELETE RESTRICT, set_at timestamptz NOT NULL default now()
+  # CHECK ck_price_error_marks_reason: char_length(reason) BETWEEN 1 AND 300
+
+not_analog_marks                     -- «не аналог в этом тендере»: строка договора не аналог строкам КП с данным ключом формы
+  id bigint PK (identity), tender_id NOT NULL → tenders ON DELETE CASCADE
+  form_title text NOT NULL, form_unit_id NULL → units_of_measure ON DELETE RESTRICT   -- ключ формы
+  position_item_id NOT NULL → position_items ON DELETE CASCADE                        -- строка договора
+  reason text NOT NULL, set_by NOT NULL → users ON DELETE RESTRICT, set_at timestamptz NOT NULL default now()
+  # CHECK ck_not_analog_marks_reason: char_length(reason) BETWEEN 1 AND 300
+  # CHECK ck_not_analog_marks_form_title: form_title <> ''
+  # UNIQUE NULLS NOT DISTINCT uq_not_analog_marks_key (tender_id, form_title, form_unit_id, position_item_id)
+  # INDEX ix_not_analog_marks_tender_id (tender_id)
+```
+
+Ключ формы — `(normalize_title(job_title_in_proposal), position_items.unit_id)` строки КП (`KpLine.form_key`, `load_kp_lines`); `form_title` хранит уже нормализованный текст. `UNIQUE NULLS NOT DISTINCT` нужен, потому что единица формы бывает `NULL`: без него вторая такая же отметка прошла бы. Каскад по строке сметы уносит отметки при замене и удалении сметы и договора; каскад по тендеру — тендерные отметки. Автор и единица формы — `RESTRICT`. Загрузчики — `crud/not_analog.py` (`load_not_analog_marks` по тендеру, `load_price_error_marks` по идентификаторам); `WorkHistoryLine.price_error` читается в `load_work_history` тем же запросом; обычная ставка (`load_typical_rates`) строки с «ошибкой в цене» не берёт, тендерные отметки её не трогают. Литерал CHECK причины продублирован константой `CK_MARK_REASON` в `models.py` и в миграции, паритет — `test_not_analog_schema.py::TestParityWithMigration`. `downgrade` удаляет обе таблицы вместе с отметками.

@@ -53,6 +53,7 @@ from services.reference_math import price_in_kp_unit
 from services.zone_rules import Zone
 
 if TYPE_CHECKING:  # crud.reference_lines читает модели и импортирует этот модуль цепочкой загрузчиков
+    from crud.not_analog import FormKey
     from crud.reference_lines import ReferenceLine
     from services.kp_comment import ReferenceSource
 
@@ -176,6 +177,9 @@ class KpLine:
     #: Единица каталожной позиции строки (`position_items.catalog_position_id -> catalog_positions.unit_id`);
     #: единица обычной ставки. Не путать со старым `KpLineRow.unit_id` (через корзину контекста).
     catalog_unit_id: int | None = None
+    #: Ключ строки формы (спека «Не аналог» §1 п. 2): нормализованное наименование строки КП и её единица;
+    #: `None` — не проставлен. Проставляет загрузчик.
+    form_key: FormKey | None = None
 
     @property
     def is_lump(self) -> bool:

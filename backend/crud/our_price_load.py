@@ -42,6 +42,7 @@ from models import (
     ObjectModel,
     ParameterRole,
     PositionItem,
+    PriceErrorMark,
     Proposal,
     RateClass,
     ReconcileBatchStatus,
@@ -721,6 +722,7 @@ def load_work_history(
             _WEIGHT,
             sa.func.coalesce(Estimate.vat_rate_base_override, Proposal.vat_rate),
             CatalogPosition.unit_id,
+            sa.exists().where(PriceErrorMark.position_item_id == PositionItem.id).label("price_error"),
         )
         .select_from(PositionItem)
         .join(Proposal, Proposal.id == PositionItem.proposal_id)
@@ -751,7 +753,8 @@ def load_work_history(
     titles_of: dict[int, frozenset[str]] = {}
     lines: list[WorkHistoryLine] = []
     for (
-        item_id, estimate_id, chain_id, zone, titles, variant_id, context_id, unit_price, weight, vat_base, unit_id
+        item_id, estimate_id, chain_id, zone, titles, variant_id, context_id, unit_price, weight, vat_base, unit_id,
+        price_error,
     ) in rows:
         if chain_id not in titles_of:
             titles_of[chain_id] = frozenset(normalize_title(title) for title in titles)
@@ -783,6 +786,7 @@ def load_work_history(
                 forms=info.forms,
                 unit_id=unit_id,
                 lump=check is not None and check.is_lump,
+                price_error=price_error,
             )
         )
     return lines, _family_ladder_infos(db)
@@ -962,6 +966,7 @@ def load_kp_lines(
             PositionItem.section_chain_id,
             PositionItem.chapter_item_id,
             item_position.unit_id,
+            PositionItem.unit_id,
         )
         .select_from(PositionItem)
         .join(Proposal, Proposal.id == PositionItem.proposal_id)
@@ -1021,6 +1026,7 @@ def load_kp_lines(
             chain_id,
             chapter_item_id,
             catalog_unit_id,
+            form_unit_id,
         ) = row
         info = infos.get(variant_id) if variant_id is not None else None
         signal = signals.get(item_id, CatalogSignal(False, False))
@@ -1075,6 +1081,7 @@ def load_kp_lines(
                     and (chain.disputed or chain.stuck or waiting_chain),
                     lump=lump,
                     catalog_unit_id=catalog_unit_id,
+                    form_key=(normalize_title(title), form_unit_id),
                 ),
                 title=title,
                 unit=unit,

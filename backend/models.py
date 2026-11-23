@@ -3832,3 +3832,68 @@ class LumpSumOverride(Base):
         ),
         CheckConstraint(CK_LUMP_SUM_VERDICT, name="ck_lump_sum_overrides_verdict"),
     )
+
+
+CK_MARK_REASON = "char_length(reason) BETWEEN 1 AND 300"
+
+
+class PriceErrorMark(Base):
+    """«Ошибка в цене»: отметка администратора на строке договора (спека «Не аналог» §1).
+    Нет отметки — нет строки."""
+    __tablename__ = "price_error_marks"
+
+    position_item_id = Column(BigInteger, nullable=False)
+    reason = Column(Text, nullable=False)
+    set_by = Column(Integer, nullable=False)
+    set_at = Column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
+
+    __table_args__ = (
+        PrimaryKeyConstraint("position_item_id", name="pk_price_error_marks"),
+        ForeignKeyConstraint(
+            ["position_item_id"], ["position_items.id"], ondelete="CASCADE",
+            name="fk_price_error_marks_position_item",
+        ),
+        ForeignKeyConstraint(
+            ["set_by"], ["users.id"], ondelete="RESTRICT", name="fk_price_error_marks_set_by"
+        ),
+        CheckConstraint(CK_MARK_REASON, name="ck_price_error_marks_reason"),
+    )
+
+
+class NotAnalogMark(Base):
+    """«Не аналог в этом тендере»: строка договора не аналог для строк КП тендера с данным ключом
+    формы (наименование через `normalize_title` и единица; спека «Не аналог» §1)."""
+    __tablename__ = "not_analog_marks"
+
+    id = Column(BigInteger, primary_key=True)
+    tender_id = Column(BigInteger, nullable=False)
+    form_title = Column(Text, nullable=False)
+    form_unit_id = Column(Integer, nullable=True)
+    position_item_id = Column(BigInteger, nullable=False)
+    reason = Column(Text, nullable=False)
+    set_by = Column(Integer, nullable=False)
+    set_at = Column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tender_id"], ["tenders.id"], ondelete="CASCADE", name="fk_not_analog_marks_tender"
+        ),
+        ForeignKeyConstraint(
+            ["form_unit_id"], ["units_of_measure.id"], ondelete="RESTRICT",
+            name="fk_not_analog_marks_form_unit",
+        ),
+        ForeignKeyConstraint(
+            ["position_item_id"], ["position_items.id"], ondelete="CASCADE",
+            name="fk_not_analog_marks_position_item",
+        ),
+        ForeignKeyConstraint(
+            ["set_by"], ["users.id"], ondelete="RESTRICT", name="fk_not_analog_marks_set_by"
+        ),
+        CheckConstraint(CK_MARK_REASON, name="ck_not_analog_marks_reason"),
+        CheckConstraint("form_title <> ''", name="ck_not_analog_marks_form_title"),
+        UniqueConstraint(
+            "tender_id", "form_title", "form_unit_id", "position_item_id",
+            name="uq_not_analog_marks_key", postgresql_nulls_not_distinct=True,
+        ),
+        Index("ix_not_analog_marks_tender_id", "tender_id"),
+    )

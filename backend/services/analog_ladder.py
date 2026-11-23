@@ -88,6 +88,8 @@ class WorkHistoryLine:
     unit_id: int | None = None
     #: Строка похожа на комплект (спека строк-сумм §1, с учётом поправки): не кандидат пула нигде.
     lump: bool = False
+    #: На строке отметка «ошибка в цене» (спека «Не аналог» §3 п. 1): не кандидат пула.
+    price_error: bool = False
 
 
 @dataclass(frozen=True)
