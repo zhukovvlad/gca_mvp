@@ -1764,6 +1764,45 @@ def test_lump_search_a_lump_contract_row_stays_in_the_results_with_the_flag_and_
     )
 
 
+def test_lump_search_a_marked_twin_is_not_folded_into_its_ordinary_twin_and_unmarking_folds_them_again(
+    admin_client, stage
+) -> None:
+    """Две одинаковые строки одного договора: поправка у второй выводит её из свёртки — метка и меню
+    поправки её собственные (ревью Codex PR #94, P2); снятая поправка сворачивает их снова."""
+    chain = _underground(stage)
+    others = [_contract_row(stage, D(price), chain=chain, title="Подготовка")[1] for price in ("110", "120", "1000")]
+    contract = stage.world.contract(rate_class=stage.rate_class)
+    _, proposal = stage.world.estimate(contract, vat_rate=D("0"))
+    first, second = (_row(stage, proposal, D("100"), chain=chain, title="Подготовка") for _ in range(2))
+    rnd, part = _kp_part(stage)
+    ctx = Ctx(stage, rnd, part, stage.kp(part, D("144")), [first, second, *others])
+
+    def twins() -> list[dict]:
+        rows = ctx.search(admin_client, "Подготовка")["rows"]
+        return [row for row in rows if {first.id, second.id} & set(row["ids"])]
+
+    (folded,) = twins()
+    assert folded["ids"] == sorted([first.id, second.id]) and folded["lump"]["is_lump"] is False
+
+    _mark(admin_client, second)
+    shown = {row["analog_id"]: row for row in twins()}
+    assert set(shown) == {first.id, second.id}
+    assert shown[second.id]["ids"] == [second.id] and shown[first.id]["ids"] == [first.id]
+    assert shown[second.id]["lump"]["is_lump"] is True and shown[second.id]["lump"]["override"]["verdict"] == "lump"
+    assert shown[first.id]["lump"]["is_lump"] is False and shown[first.id]["lump"]["override"] is None
+    # обычная строка-близнец по-прежнему годится в цель
+    _save_ctx(admin_client, ctx, _body(first.id))
+
+    _mark(admin_client, second, "rate")
+    corrected = {row["analog_id"]: row for row in twins()}
+    assert set(corrected) == {first.id, second.id}  # поправка «это ставка» тоже видна у своей строки
+    assert corrected[second.id]["lump"]["override"]["verdict"] == "rate"
+
+    _unmark(admin_client, second)
+    (again,) = twins()
+    assert again["ids"] == sorted([first.id, second.id]) and again["lump"]["override"] is None
+
+
 def test_lump_search_a_row_without_a_family_has_lump_null(admin_client, stage) -> None:
     ctx = _zone_scene(stage)
     contract = stage.world.contract(rate_class=stage.rate_class)

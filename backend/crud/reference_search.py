@@ -133,6 +133,14 @@ def _find_row(
     return row
 
 
+def _lump_key(line: ReferenceLine) -> tuple[bool, int | None] | None:
+    """Составляющая ключа свёртки поиска: итог правила и, у строки с поправкой, её id — такая
+    строка остаётся отдельной, чтобы снять поправку можно было с неё самой."""
+    if line.lump is None:
+        return None
+    return line.lump.is_lump, None if line.lump.override is None else line.position_item_id
+
+
 def search_reference(
     db: Session,
     tender_id: int,
@@ -282,7 +290,9 @@ def search_reference(
     built.sort(key=order)
     kind_of = {ref.position_item_id: kind for _line, ref, kind in built}
     titles = {line.position_item_id: line.title for line, _ref, _kind in built}
-    folded = fold_group_rows([ref for _line, ref, _kind in built], titles)
+    # строка с поправкой не сворачивается ни с кем: меню поправки работает с представителем
+    decision = {line.position_item_id: _lump_key(line) for line, _ref, _kind in built}
+    folded = fold_group_rows([ref for _line, ref, _kind in built], titles, decision)
     shown = folded[:SEARCH_LIMIT]
 
     line_of = {line.position_item_id: line for line, _ref, _kind in built}

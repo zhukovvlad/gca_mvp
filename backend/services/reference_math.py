@@ -193,6 +193,7 @@ class FoldKey:
     basis: str
     zone: str | None
     mark: Decimal | None  # отношение выброса; `None` — пометки нет
+    lump: Hashable = None  # решение «комплект или ставка» (поиск, спека строк-сумм §7 п. 3); `None` — не различаем
 
 
 RowT = TypeVar("RowT")
