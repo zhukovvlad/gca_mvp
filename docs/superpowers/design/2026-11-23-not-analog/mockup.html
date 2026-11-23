@@ -122,6 +122,7 @@
   .legend { font-size: 12.5px; color: var(--fg2); max-width: 1000px; }
   .legend li { margin: 3px 0; }
   @media (max-width: 680px) { .pair { grid-template-columns: 1fr; } }
+  .pair > * { min-width: 0; } .wrap { overflow-wrap: anywhere; }
 </style>
 </head>
 <body>
@@ -132,7 +133,8 @@
   панель строки (<span class="mono">LineSheet</span>, список аналогов <span class="mono">AnalogsTable</span>), поиск
   «Найти в договорах» (<span class="mono">ReferenceSearch</span>, <span class="mono">ReferenceRows</span>), таблица строк
   (<span class="mono">OfferLinesTable</span>). Новое выделено синим. Строка плинтуса — живая строка стенда (тендер 3, оффер 35;
-  цифры без НДС, с ИПЦ, округлены); строка металла — условная.
+  цифры без НДС, с ИПЦ, округлены); строка металла — тоже стенда (тендер 6, оффер 64), её состояние после отметки —
+  прогон подбора на стенде с имитацией отметки. Условны только вторая отметка на VEER в разделе 4 и причины отметок.
 </div>
 <div class="bar"><button onclick="document.documentElement.dataset.theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'">Светлая / тёмная тема</button></div>
 
@@ -141,8 +143,8 @@
   <h2>1. Панель строки: аналог с ошибкой в цене</h2>
   <div class="sub">Слева — сегодня: у плинтуса 150 мм два аналога, строка VEER стоит по цене м² плитки, медиана 3 401 делает КП
     «дешевле медианы». Посередине — администратор открыл меню у аналога и окно отметки. Справа — после отметки «ошибка в цене»:
-    аналог один, исключённая строка видна в свёрнутом списке с причиной, автором и кнопкой «Вернуть».</div>
-  <div class="pair" style="grid-template-columns:repeat(auto-fit,minmax(420px,1fr))">
+    аналог один, исключённая строка видна в свёрнутом списке с причиной, автором и «Снять во всех тендерах…» (через подтверждение, как в разделе 4).</div>
+  <div class="pair" style="grid-template-columns:repeat(auto-fit,minmax(min(420px,100%),1fr))">
     <div>
       <span class="tag before">сегодня</span>
       <div class="sheet">
@@ -203,7 +205,7 @@
                 <div class="fg2">Плинтус из керамогранита</div><div class="where"><span class="lbl">статья классификатора</span><span>8 Отделочные работы (паркинг, надземная часть МОП) › 8.2 Отделка надземной части (в т.ч. меблировка) › <span class="art">8.2.2 Отделка эвакуационные лестничные клетки и коридоры надземная часть</span></span><span class="lbl">в смете договора</span><span class="p" style="padding-left:0px"><span class="n">п. 526</span> — Отделка паркинга, технических помещений, МОП, двери, ворота и шлагбаумы в соответствии с дизайн-проектом</span><span class="p" style="padding-left:14px"><span class="n">п. 581</span> — Отделка надземной части</span><span class="p" style="padding-left:28px"><span class="n">п. 668</span> — Эвакуационные лестничные клетки и коридоры</span><span class="p" style="padding-left:42px"><span class="n">п. 669</span> — Пол</span></div>
                 <div class="row" style="justify-content:flex-start;gap:6px"><span class="b sec">ошибка в цене · во всех тендерах</span></div>
                 <span class="xs fg2">«цена м² плитки на погонном метре плинтуса» · admin@… · 23.11.2026</span>
-                <span class="link">Вернуть в аналоги</span></div>
+                <span class="link">Снять во всех тендерах…</span></div>
             </div>
           </div>
         </div>
@@ -214,37 +216,57 @@
 
 <!-- 2 -->
 <div class="state">
-  <h2>2. Тендерная отметка и новая причина «нет аналога»</h2>
-  <div class="sub">Слева — окно отметки «не аналог в этом тендере»: в нём сказано, на что она распространяется. Справа — у строки все
-    найденные аналоги исключены: лестница прошла все ступени и зоны, вместо «нет аналога с этими параметрами» — новая причина,
-    исключённые видны в том же свёрнутом списке. Цифры условные.</div>
-  <div class="pair">
+  <h2>2. Тендерная отметка: подбор переходит дальше</h2>
+  <div class="sub">Стенд: тендер 6, оффер 64, строка «Двутавр 20Б1 (ГОСТ Р 57837-2017) сталь С245», КП 123 770 ₽/т без НДС. Сегодня у неё один аналог на ступени 4 своей зоны —
+    TOP TOWER 460 108 ₽/т, раздел договора «с учетом антикоррозионного и противопожарного покрытия». Слева — окно тендерной отметки.
+    Посередине — после неё: на ступени 4 своей зоны аналогов не осталось, подбор перешёл к той же ступени в других зонах и нашёл МИРА
+    и Jois 1 (прогон подбора на стенде с имитацией отметки). TOP TOWER виден в «Исключены» с пометкой, где он стоял бы, а над
+    вилкой сказано, почему подбор ушёл дальше. Справа — если исключить и эти две строки: аналогов нет нигде, вместо «нет аналога с
+    этими параметрами» новая причина, все три исключённые видны по ступеням.</div>
+  <div class="pair" style="grid-template-columns:repeat(auto-fit,minmax(min(420px,100%),1fr))">
     <div>
       <span class="tag after">станет · окно «Не аналог в этом тендере»</span>
       <div class="surface" style="outline:2px solid var(--new);outline-offset:4px">
         <h3>Не аналог в этом тендере</h3>
         <span class="small fg2">Строка «Монтаж металлоконструкций кровли» договора TOP TOWER не будет аналогом для строки формы
-          <b>«Профиль 50х50х4мм (ГОСТ 32931-2015) сталь С245», т</b> у всех участников и во всех этапах тендера «Генеральный подряд»
-          (тендер 6). В других тендерах она остаётся аналогом.</span>
-        <div class="fld"><label>Причина</label><span class="inp">в цене огнезащита и финишная отделка, в форме — только окраска</span></div>
+          <b>«Двутавр 20Б1 (ГОСТ Р 57837-2017) сталь С245», т</b> у всех участников и во всех этапах тендера 6. В других тендерах она остаётся аналогом.</span>
+        <div class="fld"><label>Причина</label><span class="inp">в цене огнезащита и финишная отделка, в форме — только монтаж</span></div>
         <div class="row" style="justify-content:flex-end"><span class="btn">Отмена</span><span class="btn" style="background:var(--action);color:var(--action-text)">Исключить</span></div>
       </div>
     </div>
     <div>
-      <span class="tag after">станет · все аналоги исключены</span>
+      <span class="tag after">станет · исключён последний аналог ступени</span>
       <div class="sheet">
-        <div class="sh-head"><div class="sh-title">Профиль 50х50х4мм (ГОСТ 32931-2015) сталь С245</div><div class="sh-desc">Монтаж металлоконструкций · т</div></div>
+        <div class="sh-head"><div class="sh-title">Двутавр 20Б1 (ГОСТ Р 57837-2017) сталь С245</div><div class="sh-desc">Монтаж металлоконструкций · т · тендер 6, оффер 64</div></div>
         <div class="sh-body">
           <div class="sec"><h4>Сравнение</h4>
-            <div class="why new">Аналоги исключены вручную: найденные строки договоров отмечены «не аналог». Сравнить не с чем.</div>
+            <dl class="prices"><dt>КП</dt><dd class="mono">123 770</dd><dt>Вилка</dt><dd class="mono">322 386 – 375 362 · медиана 348 874</dd></dl>
+            <div class="why new">Ступень 4, другие зоны: на ступени 4 своей зоны аналоги исключены вручную (1).</div>
+          </div>
+          <div class="sec"><h4>Аналоги · 2</h4><div class="analog"><div class="top"><div><b>МИРА</b> <span class="xs fg2">· СДП-1-МР · 2025</span></div><div><b class="mono">375 362</b> <span class="xs fg2">₽/т</span></div></div><div class="fg2">Монтаж металлоконструкций кровли</div><div class="row" style="justify-content:flex-start;gap:6px"><span class="b sec">другая зона · подземная часть</span></div></div><div class="analog"><div class="top"><div><b>Jois 1</b> <span class="xs fg2">· ДГП-3С10 · 2025</span></div><div><b class="mono">322 386</b> <span class="xs fg2">₽/т</span></div></div><div class="fg2">Металлические конструкции покрытия наклонной части</div><div class="row" style="justify-content:flex-start;gap:6px"><span class="b sec">зона не указана</span></div></div>
+            <div class="refgroup" style="margin-top:10px;outline:2px solid var(--new);outline-offset:2px">
+              <div class="row"><b class="small">▾ Исключены · 1</b><span class="xs fg2">без отметки стоял бы в аналогах</span></div>
+              <div class="analog" style="opacity:.75"><div class="top"><div><b>TOP TOWER</b> <span class="xs fg2">· Д-2026-27002 · 2026</span></div><div><b class="mono">460 108</b> <span class="xs fg2">₽/т</span></div></div><div class="fg2">Монтаж металлоконструкций кровли</div><div class="where"><span class="lbl">статья классификатора</span><span>4 Конструктивные решения › <span class="art">4.3 Металлоконструкции</span></span><span class="lbl">в смете договора</span><span class="p" style="padding-left:0px"><span class="n">п. 138</span> — Возведение несущих конструкций здания, включая все необходимые затраты на зимний период работ</span><span class="p" style="padding-left:14px"><span class="n">п. 196</span> — Металлические конструкции, с учетом антикоррозионного и противопожарного покрытия, финишной отделки для видимых элементов МК</span></div><div class="row" style="justify-content:flex-start;gap:6px"><span class="b sec">не аналог в этом тендере</span><span class="b out">был бы на ступени 4 · своя зона</span></div><span class="xs fg2">«в цене огнезащита и финишная отделка, в форме — только монтаж» · admin@… · 23.11.2026</span><span class="link">Снять в этом тендере</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div>
+      <span class="tag after">станет · исключены все аналоги</span>
+      <div class="sheet">
+        <div class="sh-head"><div class="sh-title">Двутавр 20Б1 (ГОСТ Р 57837-2017) сталь С245</div><div class="sh-desc">Монтаж металлоконструкций · т · тендер 6, оффер 64</div></div>
+        <div class="sh-body">
+          <div class="sec"><h4>Сравнение</h4>
+            <div class="why new">Аналоги исключены вручную: на всех ступенях и в зонах, где нашлись бы аналоги, строки договоров отмечены «не аналог». Сравнить не с чем.</div>
           </div>
           <div class="refgroup" style="outline:2px solid var(--new);outline-offset:2px">
-            <div class="row"><b class="small">▾ Исключены · 1</b></div>
-            <div class="analog" style="opacity:.75"><div class="top"><div><b>TOP TOWER</b> <span class="xs fg2">· Д-2026-27002 · 2026</span></div><div><b class="mono">460 108</b> <span class="xs fg2">₽/т</span></div></div>
-              <div class="fg2">Монтаж металлоконструкций кровли</div><div class="where"><span class="lbl">статья классификатора</span><span>4 Конструктивные решения › <span class="art">4.3 Металлоконструкции</span></span><span class="lbl">в смете договора</span><span class="p" style="padding-left:0px"><span class="n">п. 138</span> — Возведение несущих конструкций здания, включая все необходимые затраты на зимний период работ</span><span class="p" style="padding-left:14px"><span class="n">п. 196</span> — Металлические конструкции, с учетом антикоррозионного и противопожарного покрытия, финишной отделки для видимых элементов МК</span></div>
-              <div class="row" style="justify-content:flex-start;gap:6px"><span class="b sec">не аналог в этом тендере</span></div>
-              <span class="xs fg2">«в цене огнезащита и финишная отделка, в форме — только окраска» · admin@… · 23.11.2026</span>
-              <span class="link">Вернуть в аналоги</span></div>
+            <div class="row"><b class="small">▾ Исключены · 3</b></div>
+            <span class="xs fg3">ступень 4 · своя зона</span>
+            <div class="analog" style="opacity:.75"><div class="top"><div><b>TOP TOWER</b> <span class="xs fg2">· Д-2026-27002 · 2026</span></div><div><b class="mono">460 108</b> <span class="xs fg2">₽/т</span></div></div><div class="fg2">Монтаж металлоконструкций кровли</div><div class="row" style="justify-content:flex-start;gap:6px"><span class="b sec">не аналог в этом тендере</span></div><span class="link">Снять в этом тендере</span></div>
+            <span class="xs fg3">ступень 4 · другие зоны</span>
+            <div class="analog" style="opacity:.75"><div class="top"><div><b>МИРА</b> <span class="xs fg2">· СДП-1-МР · 2025</span></div><div><b class="mono">375 362</b> <span class="xs fg2">₽/т</span></div></div><div class="fg2">Монтаж металлоконструкций кровли</div><div class="row" style="justify-content:flex-start;gap:6px"><span class="b sec">не аналог в этом тендере</span></div><span class="link">Снять в этом тендере</span></div>
+            <div class="analog" style="opacity:.75"><div class="top"><div><b>Jois 1</b> <span class="xs fg2">· ДГП-3С10 · 2025</span></div><div><b class="mono">322 386</b> <span class="xs fg2">₽/т</span></div></div><div class="fg2">Металлические конструкции покрытия наклонной части</div><div class="row" style="justify-content:flex-start;gap:6px"><span class="b sec">не аналог в этом тендере</span></div><span class="link">Снять в этом тендере</span></div>
           </div>
         </div>
       </div>
@@ -270,9 +292,9 @@
               <span class="xs" style="text-decoration:underline">сделать целью</span></div>
             <div class="analog"><div class="top"><div><b>VEER 1 оч UB2</b> <span class="xs fg2">· 2024</span></div><div><b class="mono">5 622</b> <span class="xs fg2">₽/м</span></div></div>
               <div class="fg2">Плинтус из керамогранита</div>
-              <div class="row" style="justify-content:flex-start;gap:6px"><span class="b sec new">ошибка в цене</span></div>
+              <div class="row" style="justify-content:flex-start;gap:6px"><span class="b sec new">ошибка в цене · во всех тендерах</span></div>
               <span class="xs fg3">целью не выбирается: «цена м² плитки на погонном метре плинтуса»</span>
-              <span class="link new">вернуть в аналоги</span></div>
+              <span class="link new">снять во всех тендерах…</span></div>
           </div>
         </div>
       </div>
@@ -295,6 +317,43 @@
             <td class="mono">1 180 · <span class="up">+64 %</span></td></tr>
         </table>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- 4 -->
+<div class="state">
+  <h2>4. Две отметки на одной строке</h2>
+  <div class="sub">Плинтус VEER: на строке и «ошибка в цене», и тендерная отметка тендера 3 (вторая — условная, для иллюстрации). Каждая
+    отметка показана отдельно, со своей областью действия и своим «Снять»; строка возвращается в аналоги, только когда на ней не
+    осталось отметок, действующих здесь. Снятие «ошибки в цене» — через подтверждение: оно действует во всех тендерах. Справа внизу —
+    после снятия «ошибки в цене» строка в тендере 3 остаётся исключённой по тендерной отметке.</div>
+  <div class="pair" style="grid-template-columns:repeat(auto-fit,minmax(min(420px,100%),1fr))">
+    <div>
+      <span class="tag after">станет · две отметки</span>
+      <div class="sheet"><div class="sh-body" style="padding-top:16px">
+        <div class="refgroup" style="outline:2px solid var(--new);outline-offset:2px">
+          <div class="row"><b class="small">▾ Исключены · 1</b></div>
+          <div class="analog" style="opacity:.75"><div class="top"><div><b>VEER 1 оч UB2</b> <span class="xs fg2">· UB2-CIW · 2024</span></div><div><b class="mono">5 622</b> <span class="xs fg2">₽/м</span></div></div><div class="fg2">Плинтус из керамогранита</div><div class="where"><span class="lbl">статья классификатора</span><span>8 Отделочные работы (паркинг, надземная часть МОП) › 8.2 Отделка надземной части (в т.ч. меблировка) › <span class="art">8.2.2 Отделка эвакуационные лестничные клетки и коридоры надземная часть</span></span><span class="lbl">в смете договора</span><span class="p" style="padding-left:0px"><span class="n">п. 526</span> — Отделка паркинга, технических помещений, МОП, двери, ворота и шлагбаумы в соответствии с дизайн-проектом</span><span class="p" style="padding-left:14px"><span class="n">п. 581</span> — Отделка надземной части</span><span class="p" style="padding-left:28px"><span class="n">п. 668</span> — Эвакуационные лестничные клетки и коридоры</span><span class="p" style="padding-left:42px"><span class="n">п. 669</span> — Пол</span></div><div class="row" style="justify-content:flex-start;gap:6px"><span class="b sec">ошибка в цене · во всех тендерах</span></div><span class="xs fg2">«цена м² плитки на погонном метре плинтуса» · admin@… · 23.11.2026</span><span class="link">Снять во всех тендерах…</span><div style="height:4px"></div><div class="row" style="justify-content:flex-start;gap:6px"><span class="b sec">не аналог в этом тендере</span></div><span class="xs fg2">«плинтус другой высоты, чем в форме» · admin@… · 20.11.2026</span><span class="link">Снять в этом тендере</span></div>
+        </div>
+      </div></div>
+    </div>
+    <div>
+      <span class="tag after">станет · подтверждение снятия «ошибки в цене»</span>
+      <div class="surface" style="outline:2px solid var(--new);outline-offset:4px">
+        <h3>Снять «ошибку в цене»?</h3>
+        <span class="small fg2">Строка «Плинтус из керамогранита» договора VEER 1 оч UB2 вернётся в аналоги <b>во всех тендерах</b>, кроме тех,
+          где на ней стоит отметка «не аналог в этом тендере» (здесь — тендер 3), и снова войдёт в обычную ставку семьи «Устройство плинтуса».</span>
+        <div class="row" style="justify-content:flex-end"><span class="btn">Отмена</span><span class="btn" style="background:var(--action);color:var(--action-text)">Снять везде</span></div>
+      </div>
+      <div style="height:14px"></div>
+      <span class="tag after">станет · после снятия</span>
+      <div class="sheet"><div class="sh-body" style="padding-top:16px">
+        <div class="refgroup">
+          <div class="row"><b class="small">▾ Исключены · 1</b></div>
+          <div class="analog" style="opacity:.75"><div class="top"><div><b>VEER 1 оч UB2</b> <span class="xs fg2">· UB2-CIW · 2024</span></div><div><b class="mono">5 622</b> <span class="xs fg2">₽/м</span></div></div><div class="fg2">Плинтус из керамогранита</div><div class="row" style="justify-content:flex-start;gap:6px"><span class="b sec">не аналог в этом тендере</span></div><span class="xs fg2">«плинтус другой высоты, чем в форме» · admin@… · 20.11.2026</span><span class="link">Снять в этом тендере</span></div>
+        </div>
+      </div></div>
     </div>
   </div>
 </div>
