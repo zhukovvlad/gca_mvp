@@ -1144,12 +1144,19 @@ class TestZoneScopeInTheAnswer:
         distracted = _line_of(_ok(member_client, stage.tender, rnd, part), item)
         panel_distracted = _panel(member_client, stage.tender, rnd, part, item)
 
+        # Новые строки истории входят в пул обычной ставки семьи (спека строк-сумм §1 п. 2), поэтому
+        # `lump.typical` и `ratio` меняются честно; зону и сравнение это не трогает — сверяется без `lump`.
+        def no_lump(line: dict) -> dict:
+            return {k: v for k, v in line.items() if k != "lump"}
+
         assert unflagged["state"] == "comparable"
         assert unflagged["work_rung"]["zone_scope"] == "own"
-        assert unflagged == flagged == distracted
+        assert no_lump(unflagged) == no_lump(flagged) == no_lump(distracted)
+        assert unflagged["lump"] == flagged["lump"]
+        assert [x["lump"]["is_lump"] for x in (unflagged, flagged, distracted)] == [False, False, False]
         assert panel_distracted["analogs"] == panel_unflagged["analogs"]
         assert {a["zone"] for a in panel_distracted["analogs"]} == {"whole"}
-        assert panel_distracted["line"] == panel_unflagged["line"]
+        assert no_lump(panel_distracted["line"]) == no_lump(panel_unflagged["line"])
 
     def test_the_other_zone_scope_and_the_zone_of_the_analog_in_the_panel(self, member_client, stage, world):
         """Утверждение 5: семья без флажка берёт чужую зону и называет область и зону аналога; блока А нет."""

@@ -93,7 +93,13 @@
 - **Задача 5:** vitest файлов задачи 188 → 254; `src/pages/tenders`, `src/services`,
   `src/pages/families` — 2 805; `tsc -b`, `eslint` — чисто.
 - **Задача 6:** `src/pages/tenders` — 1 245; `tsc -b`, `eslint` — чисто.
-- **Полный прогон** — GitHub Actions на пуше.
+- **Полный прогон** — GitHub Actions. На `bfa2a46` бэкенд упал: 1 из 14 086 —
+  `test_analog_scene.py::TestZoneScopeInTheAnswer::test_a_line_comparable_in_its_own_zone_answers_as_before_with_the_own_scope`.
+  Тест между чтениями добавляет строки истории, они честно входят в пул обычной ставки, и
+  у строки КП меняются `lump.typical` и `ratio`, а тест сравнивал ответ целиком. Теперь
+  ответы сверяются без `lump`, а признак проверяется отдельно: строка — ставка во всех трёх
+  чтениях. Файл — 95 зелёных. Задачи гоняли только свои наборы, поэтому этот файл в прогон
+  не попал. Фронт и медленный бэкенд — зелёные.
 
 ## Приёмка
 
