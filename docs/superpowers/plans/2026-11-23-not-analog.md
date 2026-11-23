@@ -5,6 +5,12 @@
 **Спека:** [`docs/superpowers/specs/2026-11-23-not-analog-design.md`](../specs/2026-11-23-not-analog-design.md) (редакция 2)
 **Дизайн и макет:** [`docs/superpowers/design/2026-11-23-not-analog.md`](../design/2026-11-23-not-analog.md)
 **Ветка:** `feat/not-analog`, черновой PR #101
+**Редакция 2** — по ревью Codex к `aa31560` (четыре P2): пул без отметок
+строится для следа и у строки со ступенью (решение плана 4, задача 3);
+прогон «до/после» — новый `compare` по всем состояниям с `selftest` на
+контрольных входах (решение плана 6, подготовка); детали карточек
+исключённых строк грузятся в панели вместе с аналогами (задача 4);
+проверки фронта — конкретные файлы, команды и числа (задачи 6, 7).
 
 **Goal:** администратор исключает строку договора из аналогов — в одном
 тендере для строки формы КП или во всех тендерах («ошибка в цене»); подбор
@@ -111,24 +117,60 @@ v5, shadcn/ui (`dropdown-menu`, `alert-dialog`, `collapsible`, `textarea`,
 4. Пул без отметок — `WorkHistory.pool_unmarked(family_id)`: тот же
    `_build_pool` с параметром `skip_price_errors: bool`; кэш отдельный.
    `WorkHistory.has_marks(family_id) -> bool` — есть ли в семье строка с
-   `price_error`; вместе с непустым `kp.excluded` решает, строить ли его
-   (спека §3 п. 6: только для строк без ступени).
+   `price_error`. Строится в двух разных случаях (ред. 2, по ревью Codex):
+   - **причина** (`ladder_for`, все поверхности) — только у строки без
+     ступени и только при `has_marks` или непустом `kp.excluded` (спека §3
+     п. 6);
+   - **след** (`excluded_trace`, только панель одной строки) — при
+     `has_marks` или непустом `kp.excluded`, **в том числе у строки со
+     ступенью**: после исключения подбор мог найти следующую пару, и `S0`
+     восстанавливается только по пулу без отметок.
+
+   Разбор КП и этап след не строят, поэтому у строки со ступенью пул без
+   отметок там не строится никогда.
 5. Маршрут тендерной отметки — в `routers/not_analog.py` с полным путём
    строки КП спеки §2 п. 2; проверку строки КП берёт существующая функция
    сцены строки (та же, что у `reference-search`), без нового SQL на это.
-6. Снимок «до» для спеки §9 п. 16 — существующим
-   `docs/superpowers/design/2026-11-22-lump-sum-lines/snapshot_lines.py`
-   (проекция и `candidate_ids` уже есть); список `LUMPS` в режиме `compare`
-   заменяет список отмеченных строк договоров. Снимает оркестратор до
-   задачи 3, вывод — в `tasks/not-analog-run/` (не под гитом).
+6. Прогон «до/после» спеки §9 п. 16 (ред. 2, по ревью Codex: прежний
+   `compare` строк-сумм сравнивает проекцию только у сравнимых «до» и
+   пропускает прочие состояния) — новый скрипт
+   `docs/superpowers/design/2026-11-23-not-analog/snapshot_lines.py`
+   на основе скрипта строк-сумм (снимок и выгрузка — те же; READ ONLY,
+   импорт приложения):
+   - снимок: у **каждой** строки-работы КП проекция `state`,
+     `no_history_reason`, `work_rung`, `range`, `lowest`, `freshest`,
+     `contractor`, `analogs_count`, `to_lowest`, `family_id`, `lump` (итог
+     «комплект или ставка») и `candidate_ids` (аналоги панели; у строк без
+     ступени — пусто);
+   - `compare BEFORE AFTER MARKED [OUT.json]`, `MARKED` — JSON со строками
+     договоров с отметками и их семьями. Сравнивается проекция **всех**
+     строк, любого состояния. Изменение объяснено, только если (а)
+     `candidate_ids` «до» пересекаются с `MARKED` — «отмеченный кандидат»,
+     или (б) `family_id` строки — семья отмеченной строки — «обычная ставка
+     семьи» (смена `lump` строки КП или кандидатов из-за пересчёта ставки).
+     Остальное — `unexplained` со списком; код выхода не 0, если он не
+     пуст или строка пропала;
+   - `selftest` — контрольные входы в памяти, каждый обязан дать
+     `unexplained = 1`: `no_history` со сменой `no_history_reason`;
+     `unit_mismatch` со сменой `analogs_count`; смена `lump` в семье вне
+     `MARKED`; пропавшая строка. И один обязан дать `unexplained = 0`:
+     сравнимая строка с отмеченным кандидатом. `selftest` гоняется до
+     снимка «после».
+
+   Снимок «до» снимает оркестратор до задачи 3, вывод — в
+   `tasks/not-analog-run/` (не под гитом). Скрипт — проверочный
+   инструментарий (AGENTS.md §9.1): в runtime не участвует, данных не
+   меняет.
 7. Подписи пар следа и строки «почему ушёл дальше» строятся на фронте из
    `excluded[].step` и `work_rung` — отдельного поля ответа нет (спека §7
    п. 2 даёт пару у каждой строки).
 
 ## Подготовка (оркестратор, до задачи 3)
 
-- [ ] Снимок «до» на `gca_dev`: `snapshot_lines.py` кодом базового коммита
-  ветки → `tasks/not-analog-run/before.json`.
+- [ ] `snapshot_lines.py` по решению плана 6; `selftest` — зелёный
+  (четыре контрольных входа дают `unexplained = 1`, один — `0`).
+- [ ] Снимок «до» на `gca_dev` кодом базового коммита ветки →
+  `tasks/not-analog-run/before.json`.
 
 ## Задачи
 
@@ -311,9 +353,12 @@ def opens_zone_block(ladder: WorkLadder) -> bool
   `("own", 4)`; все исключены — след по всем парам до конца; отметка,
   не задевшая подбор (кандидат пары после `S1`), — не в следе; `S0` нет —
   пусто.
-- Пул без отметок строится, только если ступени нет и (`has_marks` или
-  `kp.excluded` непуст): у строки со ступенью — не строится (счётчик
-  построений).
+- Пул без отметок (счётчик построений, решение плана 4): в `ladder_for` —
+  только у строки без ступени и при `has_marks` или непустом
+  `kp.excluded`; у строки со ступенью и у строки без ступени в семье без
+  отметок — 0 построений. В `excluded_trace` — строится и у строки со
+  ступенью при отметках (сценарий двутавра: ступень найдена в другой зоне,
+  след из строки своей зоны); без отметок — 0 построений, след пуст.
 - `opens_zone_block`: `no_zone_match` — да; `excluded` при `base_reason ==
   "no_zone_match"` — да; `excluded` при другом `base_reason` — нет;
   `zone_groups` у семьи с флажком при `excluded` над `no_zone_match` отдаёт
@@ -351,7 +396,20 @@ def work_ladder_of(line: KpLine, *, ..., not_analog: Mapping[FormKey, frozenset[
 # evaluate_offer(..., not_analog: Mapping[FormKey, frozenset[int]])
 # crud/our_price.py
 # _Scene: not_analog: Mapping[FormKey, Mapping[int, Mark]]
-def _excluded_view(scene: _Scene, participant: _Participant, row: KpLineRow, trace: ExcludedTrace) -> list[dict]
+def _excluded_view(
+    scene: _Scene,
+    participant: _Participant,
+    row: KpLineRow,
+    trace: ExcludedTrace,
+    details: Mapping[int, tuple[str, str | None, list[str], int | None, int | None]],  # как у _analogs_view
+    tree: Mapping[int, CategoryMeta],
+    steps: Mapping[int, tuple[ChapterStep, ...]],
+    price_errors: Mapping[int, Mark],
+) -> list[dict]
+# build_line_view (ред. 2, по ревью Codex): след строки считается до загрузки деталей;
+#   load_analog_details получает [*_analog_ids(result), *reference.ids(), *trace_ids] — один запрос;
+#   chapter_ids и дерево статей — по тому же объединённому набору (пути и статьи исключённых строк);
+#   price_errors = load_price_error_marks(db, trace_ids) — один запрос; тендерные отметки — из scene.not_analog.
 # ответ панели: excluded: ExcludedAnalogView[] (спека §7 п. 2); line.no_history_reason: "excluded"
 ```
 
@@ -360,9 +418,15 @@ def _excluded_view(scene: _Scene, participant: _Participant, row: KpLineRow, tra
   тем же ключом, у строки того же текста в другом разделе; не действует в
   другом тендере и при другой единице (Review Focus 4) — через ответ
   разбора и панели.
-- Панель: `excluded` — поля аналога, `step`, `marks` («ошибка в цене»
-  первой, с автором и причиной), порядок следа; у строки без отметок —
-  `[]`; у строки без ступени по причине без отметок — `[]`.
+- Панель: `excluded` — поля аналога (договор, объект, подрядчик,
+  наименование, цена `{net, shown}`, период, зона, `article` и
+  `chapter_path` строки договора — статья и путь её раздела, не строки КП),
+  `step`, `marks` («ошибка в цене» первой, с автором и причиной), порядок
+  следа; у строки без отметок — `[]`; у строки без ступени по причине без
+  отметок — `[]`. Сценарий двутавра (ступень найдена в другой зоне) —
+  `excluded` из одной карточки с путём её сметы, `analogs` — две.
+- Панель грузит детали один раз: число запросов `load_analog_details` и
+  `load_price_error_marks` на запрос панели — по одному.
 - Строка с обеими отметками: после снятия «ошибки в цене» — в `excluded`
   этого тендера с одной тендерной отметкой; в другом тендере — снова в
   `analogs` (Review Focus 5).
@@ -463,8 +527,10 @@ CODE_REFERENCE_IS_EXCLUDED = "reference_is_excluded"
 `MarkDialog.tsx` (новый), `ExcludedAnalogs.tsx` (новый), `AnalogsTable.tsx`
 (меню из трёх пунктов), `LineSheet.tsx` (список, строка «почему ушёл
 дальше», пояснение причины), `OfferLinesTable.tsx` (подпись причины);
-тесты рядом; `test/fixtures.ts` (`excluded: []` по умолчанию);
-`docs/reference/screens.md`.
+тесты: `ExcludedAnalogs.test.tsx`, `MarkDialog.test.tsx` (новые),
+`AnalogsTable.test.tsx`, `LineSheet.test.tsx`, `LineSheet.work.test.tsx`,
+`OfferLinesTable.test.tsx`, `ourPriceCopy.test.ts`; `test/fixtures.ts`
+(`excluded: []` по умолчанию); `docs/reference/screens.md`.
 
 **Interfaces**
 - Потребляет: ответ задач 4–5, маршруты задачи 2.
@@ -511,9 +577,14 @@ export function movedOnText(items: ExcludedAnalog[], workRung: WorkRung | null):
   финал).
 
 **Проверка**
-- из `frontend/` (диск `C:\`): `npx vitest run` по файлам задачи — ДО:
-  число тестов этих файлов на базовом коммите, ПОСЛЕ: больше;
-  `npx tsc -b`; `npx eslint .`.
+- из `C:\Users\zhukov_v\Projects\GCA_MVP\frontend` (PowerShell, `Set-Location` с заглавной `C:` — иначе
+  vitest не находит раннер):
+  `npx vitest run src/pages/tenders/our-price/ExcludedAnalogs.test.tsx src/pages/tenders/our-price/MarkDialog.test.tsx
+  src/pages/tenders/our-price/AnalogsTable.test.tsx src/pages/tenders/our-price/LineSheet.test.tsx src/pages/tenders/our-price/LineSheet.work.test.tsx
+  src/pages/tenders/our-price/OfferLinesTable.test.tsx src/pages/tenders/our-price/ourPriceCopy.test.ts` — ДО (замер
+  `npx vitest list` на `aa31560`): 28 + 76 + 70 + 69 + 82 = 325, двух новых
+  файлов нет; ПОСЛЕ: больше 325, и в выводе есть оба новых файла (без них
+  команда выбирает только старые наборы); `npx tsc -b`; `npx eslint .`.
 
 - [ ] Тесты по утверждениям (красные) → реализация → зелёные → документация → коммит.
 
@@ -551,8 +622,13 @@ export const EXCLUDED_NOT_TARGET = "Исключена из аналогов";
   нет (тест блока с фикстурой без отметок не меняется).
 
 **Проверка**
-- из `frontend/`: `npx vitest run` по файлам задачи — ДО/ПОСЛЕ как в
-  задаче 6; `npx tsc -b`; `npx eslint .`.
+- оттуда же: `npx vitest run src/pages/tenders/our-price/ReferenceSearch.test.tsx
+  src/pages/tenders/our-price/ReferenceBlocks.test.tsx src/pages/tenders/our-price/TargetCards.test.tsx` — ДО (замер на
+  `aa31560`): 27 + 27 + 36 = 90; ПОСЛЕ: больше 90 — новые утверждения
+  задачи ложатся в `ReferenceSearch.test.tsx` (метки, закрытая цель, меню,
+  отказ `reference_is_excluded`) и `TargetCards.test.tsx` (причина);
+  `ReferenceBlocks.test.tsx` — без новых тестов, 27 зелёных без правки
+  ожиданий; `npx tsc -b`; `npx eslint .`.
 
 - [ ] Тесты по утверждениям (красные) → реализация → зелёные → документация → коммит.
 
@@ -563,10 +639,11 @@ export const EXCLUDED_NOT_TARGET = "Исключена из аналогов";
 - [ ] `gca_dev` до 0030 (стенд остановлен на время миграции); «ошибка в
   цене» на строках VEER (плинтус) и Тушино (м/к технического балкона) —
   записью в учётки стенда только по слову пользователя (временный админ —
-  `cli.py create-user`, предупредив); снимок «после» и `compare` со
-  списком двух строк: меняются только строки с ними среди кандидатов и
-  строки их семей, сменившие решение «комплект или ставка»; плинтус тендера
-  3 — один аналог МИРА (спека §9 п. 16).
+  `cli.py create-user`, предупредив); снимок «после» и `compare BEFORE
+  AFTER MARKED` (решение плана 6) с двумя строками и их семьями:
+  `unexplained = 0` по проекции всех строк любого состояния, объяснённые —
+  списками «отмеченный кандидат» и «обычная ставка семьи» с причиной;
+  плинтус тендера 3 — один аналог МИРА (спека §9 п. 16).
 - [ ] Скорость (спека §9 п. 15): разбор КП, этап, панель — до/после, без
   отметок и с двумя; числа в devlog.
 - [ ] Снимки стенда по спеке §9 п. 17 в обеих темах, сверка с макетом.
