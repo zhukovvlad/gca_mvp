@@ -98,6 +98,13 @@ class LinkGroup:
 # ---------------------------------------------------------------------------
 
 
+def opens_zone_block(ladder: WorkLadder) -> bool:
+    """Блок А открыт (спека «Не аналог» §5 п. 2): причина `no_zone_match`, либо `excluded` над ней —
+    исключённая строка своей зоны не должна прятать строки других зон."""
+    reason = ladder.no_history_reason
+    return reason == "no_zone_match" or (reason == "excluded" and ladder.base_reason == "no_zone_match")
+
+
 def zone_groups(
     kp: KpWork,
     history: WorkHistory,
@@ -120,7 +127,7 @@ def zone_groups(
             target_month=target_month,
         )
 
-    if ladder_in(kp.zone).no_history_reason != "no_zone_match":
+    if not opens_zone_block(ladder_in(kp.zone)):
         return ()
     units = {c.line.position_item_id: c.line.unit_id for c in history.pool(kp.family_id).candidates}
     groups: list[ZoneGroup] = []
@@ -345,7 +352,11 @@ def link_groups(
         other = _other_side(state, kp.family_id)
         if other is None or not state.active:
             continue
-        candidates = [c for c in history.pool(other).candidates if c.line.zone == kp.zone]
+        candidates = [
+            c
+            for c in history.pool(other).candidates
+            if c.line.zone == kp.zone and c.line.position_item_id not in kp.excluded
+        ]
         in_class = [c for c in candidates if c.contract.rate_class_id == tender_class_id]
         picked = in_class or candidates
         if not picked:

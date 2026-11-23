@@ -27,7 +27,7 @@ from services.zone_rules import Zone
 MIN_NOMINAL: Decimal = Decimal(1)
 
 RungNo = Literal[1, 2, 3, 4]
-NoHistoryReason = Literal["no_family", "path_conflict", "composite", "no_params", "no_zone_match"]
+NoHistoryReason = Literal["excluded", "no_family", "path_conflict", "composite", "no_params", "no_zone_match"]
 #: Область подбора (спека «зона как предпочтение» §1 п. 1): `own` — зона строки КП; `other` — все остальные
 #: зоны и строки договоров без зоны; `any` — вся история семьи (у строки КП без зоны).
 ZoneScope = Literal["own", "other", "any"]
@@ -61,6 +61,10 @@ class KpWork:
     forms: Mapping[int, Form] = field(default_factory=dict)
     #: Семья с флажком «зона обязательна»: подбор только в зоне строки КП (спека «зона как предпочтение» §1 п. 2).
     zone_required: bool = False
+    #: Строки договоров с тендерной отметкой «не аналог» на ключ формы строки (спека «Не аналог» §3 п. 2):
+    #: не кандидаты для этой строки КП у читателей пула из закрытого списка (`ladder_for`, `parts_reference`,
+    #: блоки зон и связей). Для другой строки КП та же строка — кандидат.
+    excluded: frozenset[int] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -146,6 +150,14 @@ class WorkLadder:
     contractor: Figure | None = None
     #: Область, в которой найдена ступень; `None` ровно тогда, когда `rung_no is None`.
     zone_scope: ZoneScope | None = None
+    #: Причина прежней цепочки `_no_history_reason` по обычному пулу (внутреннее поле, в ответ API не
+    #: выходит; спека «Не аналог» §3 п. 6): у строки без ступени равна `no_history_reason`, а у причины
+    #: `excluded` показывает, что было бы без следа; у строки со ступенью — `None`.
+    base_reason: NoHistoryReason | None = None
+
+
+#: Пара «область, ступень» подбора.
+ExcludedStep = tuple[ZoneScope, RungNo]
 
 
 @dataclass(frozen=True)
@@ -182,6 +194,10 @@ class _Candidate:
     contract: HistoryContract
     nominal: Decimal
     net: Decimal
+
+
+#: След исключённого: отмеченные кандидаты и первая пара подбора, где каждый стоял бы.
+ExcludedTrace = tuple[tuple[_Candidate, ExcludedStep], ...]
 
 
 def _months(period: YearMonth) -> int:
@@ -369,11 +385,15 @@ class WorkHistory:
         self.zone_required = zone_required
         self._lines_by_family: dict[int, list[WorkHistoryLine]] = {}
         self._lump_ids: set[int] = set()
+        self._marked_families: set[int] = set()
         for line in lines:
             self._lines_by_family.setdefault(line.family_id, []).append(line)
             if line.lump:
                 self._lump_ids.add(line.position_item_id)
+            if line.price_error:
+                self._marked_families.add(line.family_id)
         self._pools: dict[int, _FamilyPool] = {}
+        self._unmarked_pools: dict[int, _FamilyPool] = {}
 
     def lines_of(self, family_id: int) -> Sequence[WorkHistoryLine]:
         """Строки истории семьи, как загружены; без запросов."""
@@ -389,7 +409,19 @@ class WorkHistory:
             found = self._pools[family_id] = self._build_pool(family_id)
         return found
 
-    def _build_pool(self, family_id: int) -> _FamilyPool:
+    def has_marks(self, family_id: int) -> bool:
+        """В семье есть строка истории с отметкой «ошибка в цене» (без построения пула)."""
+        return family_id in self._marked_families
+
+    def pool_unmarked(self, family_id: int) -> _FamilyPool:
+        """Пул семьи без пропуска «ошибки в цене» (спека «Не аналог» §3 п. 4): строится лениво и держится
+        отдельно от `pool`; `lump` в нём пропущен так же."""
+        found = self._unmarked_pools.get(family_id)
+        if found is None:
+            found = self._unmarked_pools[family_id] = self._build_pool(family_id, skip_price_errors=False)
+        return found
+
+    def _build_pool(self, family_id: int, *, skip_price_errors: bool = True) -> _FamilyPool:
         candidates: list[_Candidate] = []
         unknown_base: list[tuple[WorkHistoryLine, HistoryContract]] = []
         for line in self._lines_by_family.get(family_id, ()):
@@ -397,6 +429,8 @@ class WorkHistory:
             if contract is None:
                 continue
             if line.lump:  # комплект договора не кандидат нигде: единственное место отбора (спека строк-сумм §4 п. 4)
+                continue
+            if skip_price_errors and line.price_error:  # «ошибка в цене» не кандидат нигде: единственное место отбора (спека «Не аналог» §3 п. 1)
                 continue
             if not is_price(line.unit_price) or not is_weight(line.weight):
                 continue
@@ -501,56 +535,10 @@ def ladder_for(
 ) -> WorkLadder:
     """`evaluate_work_ladder` на разложенной истории: тот же расчёт, кандидаты — из пула семьи."""
     info = history.families.get(kp.family_id)
-    releasable_ladder = (
-        info is not None
-        and kp.schema_id == info.schema_id
-        and any(p in info.releasable_ids for p in info.main_parameter_ids)
-    )
-    required = _required_ids(info)
-    kp_values = _values_key(kp.main_values, kp.forms, kp.conflicted, required, _releasable_ids(info))
-    # Конфликт строки КП: ступени 1 и 3 не берут её вовсе; 2 и 4 — только если конфликт по
-    # неотпускаемому параметру (отпускаемый и так отпущен).
-    by_variant_blocked = bool(kp.conflicted)
-    by_values_blocked = bool(kp.conflicted & set(required))
     pool = history.pool(kp.family_id)
-
-    # Область (спека «зона как предпочтение» §1 п. 2): семья с флажком — только своя зона; строка КП без
-    # зоны — вся история; иначе своя зона, а если в ней ни одна ступень ничего не нашла — все остальные.
-    strict = kp.zone_required or kp.family_id in history.zone_required
-    scopes = _scopes(kp.zone, strict=strict)
-
-    # Ступень берёт строки области: ступени 1 и 3 — с вариантом строки КП, ступени 2 и 4 — с её значениями
-    # неотпускаемых параметров на действующей версии схемы, и только если у строки КП доступна лестница
-    # отпускаемых. Класс: 1 и 2 — класс тендера.
-    def rung_slice(scope: ZoneScope, rung_no: RungNo, zoned: Mapping, anywhere: Mapping) -> tuple:
-        if rung_no in (1, 3):
-            if by_variant_blocked:
-                return ()
-            tail: int | _ValuesKey = kp.variant_id
-        else:
-            if not releasable_ladder or by_values_blocked:
-                return ()
-            tail = kp_values
-        if scope == "own":
-            return () if kp.zone is None else zoned.get((kp.zone, tail), ())
-        everywhere = anywhere.get(tail, ())
-        if scope == "any":
-            return everywhere
-        return tuple(item for item in everywhere if _zone_of(item) != kp.zone)
-
-    def known(scope: ZoneScope, rung_no: RungNo) -> tuple:
-        return rung_slice(scope, rung_no, *_known_maps(rung_no, pool))
-
-    def class_fits(rung_no: RungNo, contract: HistoryContract) -> bool:
-        return (contract.rate_class_id == tender_class_id) == (rung_no in (1, 2))
-
-    def dropped_on(scope: ZoneScope, rung_no: RungNo, picked_ids: set[int]) -> set[int]:
-        unknown = rung_slice(scope, rung_no, *_unknown_maps(rung_no, pool))
-        return {
-            contract.contract_id
-            for _line, contract in unknown
-            if class_fits(rung_no, contract) and contract.contract_id not in picked_ids
-        }
+    search = _Search(kp, history, pool, kp.excluded, tender_class_id)
+    scopes = search.scopes
+    dropped_on = search.dropped_on
 
     def _dropped_on_first_rung() -> tuple[int, ...]:
         """Без ступени — выпавшие в первой паре «область, ступень», где они нашлись бы (порядок подбора)."""
@@ -562,20 +550,28 @@ def ladder_for(
         return ()
 
     # «Ступень найдена» решает переход в следующую область, а не «цена посчитана»: выбросы области не отменяют.
+    first = search.first_pair()
     chosen: RungNo | None = None
     chosen_scope: ZoneScope | None = None
     picked: list[_Candidate] = []
-    for scope in scopes:
-        for rung_no in _RUNGS:
-            picked = [c for c in known(scope, rung_no) if class_fits(rung_no, c.contract)]
-            if picked:
-                chosen = rung_no
-                chosen_scope = scope
-                break
-        if chosen is not None:
-            break
+    if first is not None:
+        chosen_scope, chosen, picked = first
 
     if chosen is None:
+        base_reason = _no_history_reason(
+            pool,
+            kp.variant_id,
+            search.kp_values if search.releasable_ladder and not search.by_values_blocked else None,
+            conflicted=search.by_variant_blocked and (search.by_values_blocked or not search.releasable_ladder),
+            composite=any(form != "simple" and p not in kp.conflicted for p, form in kp.forms.items()),
+            zone_strict=search.strict,
+        )
+        reason: NoHistoryReason = base_reason
+        # Пул без отметок — только у строки без ступени и только при отметках (спека «Не аналог» §3 п. 6).
+        if history.has_marks(kp.family_id) or kp.excluded:
+            unmarked = _Search(kp, history, history.pool_unmarked(kp.family_id), frozenset(), tender_class_id)
+            if unmarked.first_pair() is not None:
+                reason = "excluded"
         return WorkLadder(
             rung_no=None,
             released=(),
@@ -587,15 +583,9 @@ def ladder_for(
             freshest=None,
             all_outliers=False,
             kp_ratio=None,
-            no_history_reason=_no_history_reason(
-                pool,
-                kp.variant_id,
-                kp_values if releasable_ladder and not by_values_blocked else None,
-                conflicted=by_variant_blocked and (by_values_blocked or not releasable_ladder),
-                composite=any(form != "simple" and p not in kp.conflicted for p, form in kp.forms.items()),
-                zone_strict=strict,
-            ),
+            no_history_reason=reason,
             vat_dropped=_dropped_on_first_rung(),
+            base_reason=base_reason,
         )
     assert chosen_scope is not None
 
@@ -662,6 +652,123 @@ def ladder_for(
         contractor=contractor,
         zone_scope=chosen_scope,
     )
+
+
+class _Search:
+    """Подбор ступени по одному пулу семьи для одной строки КП (`ladder_for` и `excluded_trace`).
+
+    `excluded` — тендерные отметки строки КП: их строки не берёт ни срез кандидатов (`known`), ни срез
+    выпавших (`dropped_on`); пул без отметок ищут с пустым `excluded`.
+    """
+
+    def __init__(
+        self, kp: KpWork, history: WorkHistory, pool: _FamilyPool, excluded: frozenset[int], tender_class_id: int
+    ) -> None:
+        self.kp = kp
+        self.pool = pool
+        self.excluded = excluded
+        self.tender_class_id = tender_class_id
+        info = history.families.get(kp.family_id)
+        self.releasable_ladder = (
+            info is not None
+            and kp.schema_id == info.schema_id
+            and any(p in info.releasable_ids for p in info.main_parameter_ids)
+        )
+        required = _required_ids(info)
+        self.kp_values = _values_key(kp.main_values, kp.forms, kp.conflicted, required, _releasable_ids(info))
+        # Конфликт строки КП: ступени 1 и 3 не берут её вовсе; 2 и 4 — только если конфликт по
+        # неотпускаемому параметру (отпускаемый и так отпущен).
+        self.by_variant_blocked = bool(kp.conflicted)
+        self.by_values_blocked = bool(kp.conflicted & set(required))
+        # Область (спека «зона как предпочтение» §1 п. 2): семья с флажком — только своя зона; строка КП без
+        # зоны — вся история; иначе своя зона, а если в ней ни одна ступень ничего не нашла — все остальные.
+        self.strict = kp.zone_required or kp.family_id in history.zone_required
+        self.scopes = _scopes(kp.zone, strict=self.strict)
+
+    # Ступень берёт строки области: ступени 1 и 3 — с вариантом строки КП, ступени 2 и 4 — с её значениями
+    # неотпускаемых параметров на действующей версии схемы, и только если у строки КП доступна лестница
+    # отпускаемых. Класс: 1 и 2 — класс тендера.
+    def rung_slice(self, scope: ZoneScope, rung_no: RungNo, zoned: Mapping, anywhere: Mapping) -> tuple:
+        kp = self.kp
+        if rung_no in (1, 3):
+            if self.by_variant_blocked:
+                return ()
+            tail: int | _ValuesKey = kp.variant_id
+        else:
+            if not self.releasable_ladder or self.by_values_blocked:
+                return ()
+            tail = self.kp_values
+        if scope == "own":
+            items: tuple = () if kp.zone is None else zoned.get((kp.zone, tail), ())
+        else:
+            everywhere = anywhere.get(tail, ())
+            items = everywhere if scope == "any" else tuple(i for i in everywhere if _zone_of(i) != kp.zone)
+        if self.excluded:
+            items = tuple(item for item in items if _line_of(item).position_item_id not in self.excluded)
+        return items
+
+    def known(self, scope: ZoneScope, rung_no: RungNo) -> tuple:
+        return self.rung_slice(scope, rung_no, *_known_maps(rung_no, self.pool))
+
+    def class_fits(self, rung_no: RungNo, contract: HistoryContract) -> bool:
+        return (contract.rate_class_id == self.tender_class_id) == (rung_no in (1, 2))
+
+    def dropped_on(self, scope: ZoneScope, rung_no: RungNo, picked_ids: set[int]) -> set[int]:
+        unknown = self.rung_slice(scope, rung_no, *_unknown_maps(rung_no, self.pool))
+        return {
+            contract.contract_id
+            for _line, contract in unknown
+            if self.class_fits(rung_no, contract) and contract.contract_id not in picked_ids
+        }
+
+    def pairs(self) -> list[ExcludedStep]:
+        return [(scope, rung_no) for scope in self.scopes for rung_no in _RUNGS]
+
+    def picked_in(self, scope: ZoneScope, rung_no: RungNo) -> list[_Candidate]:
+        return [c for c in self.known(scope, rung_no) if self.class_fits(rung_no, c.contract)]
+
+    def first_pair(self) -> tuple[ZoneScope, RungNo, list[_Candidate]] | None:
+        """Первая пара «область, ступень», где нашлись кандидаты класса; `None` — ступени нет."""
+        for scope, rung_no in self.pairs():
+            picked = self.picked_in(scope, rung_no)
+            if picked:
+                return scope, rung_no, picked
+        return None
+
+
+def excluded_trace(kp: KpWork, history: WorkHistory, *, tender_class_id: int) -> ExcludedTrace:
+    """След исключённого (спека «Не аналог» §3 п. 5): отмеченные кандидаты (с «ошибкой в цене» или из
+    `kp.excluded`) в парах «область, ступень» от `S0` до `S1` включительно, каждый — с первой парой, где он
+    стоял бы. `S0` — первая пара подбора по пулу без отметок и без `kp.excluded`, `S1` — первая пара по
+    обычному пулу с отметками (или конец обхода); `S0` нет — след пуст. Порядок — обход пар, внутри пары —
+    порядок строк истории в пуле. Пул без отметок строится только при отметках в семье или непустом
+    `kp.excluded`, в том числе у строки со ступенью."""
+    if not (history.has_marks(kp.family_id) or kp.excluded):
+        return ()
+    clean = _Search(kp, history, history.pool_unmarked(kp.family_id), frozenset(), tender_class_id)
+    marked = _Search(kp, history, history.pool(kp.family_id), kp.excluded, tender_class_id)
+    trace: list[tuple[_Candidate, ExcludedStep]] = []
+    seen: set[int] = set()
+    started = False
+    for scope, rung_no in clean.pairs():
+        clean_picked = clean.picked_in(scope, rung_no)
+        if not started:
+            if not clean_picked:
+                continue
+            started = True
+        for cand in clean_picked:
+            pid = cand.line.position_item_id
+            if pid in seen or not (cand.line.price_error or pid in kp.excluded):
+                continue
+            seen.add(pid)
+            trace.append((cand, (scope, rung_no)))
+        if marked.picked_in(scope, rung_no):
+            break
+    return tuple(trace)
+
+
+def _line_of(item: _Candidate | _Unknown) -> WorkHistoryLine:
+    return item.line if isinstance(item, _Candidate) else item[0]
 
 
 def _scopes(zone: Zone | None, *, strict: bool) -> tuple[ZoneScope, ...]:
@@ -745,7 +852,7 @@ def parts_reference(
     required = _required_ids(info)
     releasable = _releasable_ids(info)
     blocked = bool(kp.conflicted & set(required))
-    candidates = history.pool(kp.family_id).candidates
+    candidates = [c for c in history.pool(kp.family_id).candidates if c.line.position_item_id not in kp.excluded]
     strict = kp.zone_required or kp.family_id in history.zone_required
     result: list[dict] = []
     for parameter_id in info.main_parameter_ids:
@@ -836,7 +943,8 @@ def _no_history_reason(
     composite: bool = False,
     zone_strict: bool = False,
 ) -> NoHistoryReason:
-    """Первая причина по кандидатам семьи любого класса и любой зоны (§2.10). Параметры совпали —
+    """Причина прежней цепочки по кандидатам семьи любого класса и любой зоны (§2.10); `excluded` ставит
+    `ladder_for` поверх неё. Первая причина цепочки (§2.10). Параметры совпали —
     у кандидата тот же вариант либо (ступени 2 и 4 доступны, `values_key` задан) тот же ключ ступеней
     2 и 4. `conflicted` — у строки КП есть конфликтный главный параметр, мешающий на всех ступенях:
     причина раньше `no_params`. `composite` — у строки составное главное значение (спека упрощения
