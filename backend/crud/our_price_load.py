@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session, aliased
 
 from crud.analytics import latest_estimates
 from crud.comparison import _estimate_period
+from crud.lump_sum import load_lump_overrides, typical_rates
 from crud.project_passport import CATEGORY_TOTALS
 from crud.semantic_queue import open_suggestion_queues
 from models import (
@@ -60,6 +61,7 @@ from models import (
 )
 from services.analog_ladder import CompositeValue, FamilyLadderInfo, Form, WorkHistoryLine
 from services.composite_values import composite_parts
+from services.lump_sum import lump_check
 from services.our_price import HistoryContract, HistoryLine, KpLine, LineKey
 from services.our_price_money import CategoryRow
 from services.zone_rules import Zone, normalize_title
@@ -742,6 +744,10 @@ def load_work_history(
     ).all()
     infos = _variant_infos(db, [row[5] for row in rows])
     conflicts = _conflicted_parameters(db, [row[6] for row in rows])
+    # «комплект или ставка» (спека строк-сумм §1 п. 4): строка с семьёй и вариантом; цена, вес и единица —
+    # по `lump_check`; база — та же, что у нетто. Ставки и поправки — одним запросом на набор.
+    rates = typical_rates(db)
+    overrides = load_lump_overrides(db, [row[0] for row in rows])
     titles_of: dict[int, frozenset[str]] = {}
     lines: list[WorkHistoryLine] = []
     for (
@@ -750,6 +756,15 @@ def load_work_history(
         if chain_id not in titles_of:
             titles_of[chain_id] = frozenset(normalize_title(title) for title in titles)
         info = infos[variant_id]
+        check = lump_check(
+            family_id=info.family_id,
+            unit_id=unit_id,
+            unit_price=unit_price,
+            weight=weight,
+            vat_base=vat_base,
+            override=overrides.get(item_id),
+            rates=rates,
+        )
         lines.append(
             WorkHistoryLine(
                 position_item_id=item_id,
@@ -767,6 +782,7 @@ def load_work_history(
                 conflicted=_conflicts_of(conflicts, context_id, info.schema_id),
                 forms=info.forms,
                 unit_id=unit_id,
+                lump=check is not None and check.is_lump,
             )
         )
     return lines, _family_ladder_infos(db)
@@ -925,6 +941,7 @@ def load_kp_lines(
     if zone_required is None:
         zone_required = _zone_required_families(db)
     chapter = aliased(PositionItem)
+    item_position = aliased(CatalogPosition)  # единица обычной ставки: по PositionItem.catalog_position_id
     rows = db.execute(
         sa.select(
             Lot.estimate_id,
@@ -944,11 +961,13 @@ def load_kp_lines(
             CatalogPosition.unit_id,
             PositionItem.section_chain_id,
             PositionItem.chapter_item_id,
+            item_position.unit_id,
         )
         .select_from(PositionItem)
         .join(Proposal, Proposal.id == PositionItem.proposal_id)
         .join(Lot, Lot.id == Proposal.lot_id)
         .outerjoin(UnitOfMeasure, UnitOfMeasure.id == PositionItem.unit_id)
+        .outerjoin(item_position, item_position.id == PositionItem.catalog_position_id)
         # составной FK держит главу и строку в одном предложении
         .outerjoin(chapter, chapter.id == PositionItem.chapter_item_id)
         .outerjoin(ContextMember, ContextMember.position_item_id == PositionItem.id)
@@ -976,6 +995,12 @@ def load_kp_lines(
     }
     releasable_live = _releasable_live(db, current_schema_of)
     paused = _claim_paused(db) if chains or releasable_live else False
+    # «комплект или ставка» (спека строк-сумм §1 п. 4): база — та же, что даёт нетто строки КП
+    vat_bases = kp_vat_bases(db, estimate_ids)
+    rates = typical_rates(db)
+    overrides = load_lump_overrides(
+        db, [row[1] for row in rows if row[11] is not None and row[12] != "SYSTEM"]
+    )
     for row in rows:
         (
             estimate_id,
@@ -995,10 +1020,24 @@ def load_kp_lines(
             unit_id,
             chain_id,
             chapter_item_id,
+            catalog_unit_id,
         ) = row
         info = infos.get(variant_id) if variant_id is not None else None
         signal = signals.get(item_id, CatalogSignal(False, False))
         is_system = kind == "SYSTEM"
+        lump = (
+            None
+            if is_system or info is None
+            else lump_check(
+                family_id=info.family_id,
+                unit_id=catalog_unit_id,
+                unit_price=unit_price,
+                weight=weight,
+                vat_base=vat_bases[estimate_id],
+                override=overrides.get(item_id),
+                rates=rates,
+            )
+        )
         chain = chains.get(chain_id) if chain_id is not None else None
         # у работы с вариантом: живое задание зоны цепочки без зоны или признака «можно
         # отпустить» семьи на действующую схему (спека §2.16); пауза — не «разбирает», а «ждёт»
@@ -1034,6 +1073,8 @@ def load_kp_lines(
                     zone_waiting=chain is not None
                     and chain.zone is None
                     and (chain.disputed or chain.stuck or waiting_chain),
+                    lump=lump,
+                    catalog_unit_id=catalog_unit_id,
                 ),
                 title=title,
                 unit=unit,

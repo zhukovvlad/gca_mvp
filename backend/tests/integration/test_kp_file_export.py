@@ -1419,3 +1419,100 @@ class TestPeriodByEstimate:
             "has_forecast",
             "used_years",
         }
+
+
+# ---------------------------------------------------------------------------
+#  Комплект вместо ставки: цель на строку договора-комплект в выгруженной книге (спека строк-сумм §5 п. 2, 5)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def admin_client(admin_client, db_session, tmp_storage):
+    """Клиент `admin`, который закрепляет сцену перед запросом и пишет в каталог теста (поправка — только `admin`)."""
+    from main import app
+    from storage import get_storage
+
+    send = admin_client.request
+
+    def request(*args, **kwargs):
+        Session.commit(db_session)
+        return send(*args, **kwargs)
+
+    admin_client.request = request
+    app.dependency_overrides[get_storage] = lambda: tmp_storage
+    return admin_client
+
+
+def _xlsx_line(client, ctx) -> dict[str, object]:
+    """Строка КП в выгруженной книге: подпись столбца -> значение ячейки."""
+    content = _export_ok(client, ctx.stage, ctx.rnd, ctx.part).content
+    headers, rows, _ws = _table(content)
+    title_column = headers.index("Наименование")
+    (found,) = (row for row in rows if row[title_column] == ctx.item.job_title_in_proposal)
+    return dict(zip(headers, found, strict=True))
+
+
+def _lump_mark(client, item, verdict="lump") -> None:
+    response = client.put(f"/api/v1/position-items/{item.id}/lump-sum", json={"verdict": verdict})
+    assert response.status_code == 200, response.text
+
+
+def _lump_unmark(client, item) -> None:
+    assert client.delete(f"/api/v1/position-items/{item.id}/lump-sum").status_code == 204
+
+
+def test_lump_file_a_reference_target_on_a_row_marked_lump_has_no_price_in_the_workbook(admin_client, stage) -> None:
+    from tests.integration.test_ref_analogs_target import _body, _save_ctx, _zone_scene
+
+    ctx = _zone_scene(stage)
+    _save_ctx(admin_client, ctx, _body(ctx.rows[0].id, "zone"))
+    assert _num(_xlsx_line(admin_client, ctx)["Наша расценка за ед."]) == D("120")
+    assert _xlsx_line(admin_client, ctx)["Источник"]
+
+    _lump_mark(admin_client, ctx.rows[0])
+    line = _xlsx_line(admin_client, ctx)
+
+    assert (line["Наша расценка за ед."], line["Отклонение, %"], line["Источник"], line["Комментарий"]) == (
+        None,
+        None,
+        None,
+        None,
+    )
+
+    _lump_unmark(admin_client, ctx.rows[0])
+
+    assert _num(_xlsx_line(admin_client, ctx)["Наша расценка за ед."]) == D("120")
+
+
+def test_lump_file_a_saved_analog_on_a_lump_row_takes_the_lowest_of_the_rest_in_the_workbook(
+    admin_client, stage
+) -> None:
+    from tests.integration.test_ref_analogs_target import _own_scene
+
+    ctx = _own_scene(stage, prices=("100", "100", "100", "90"))
+    assert ctx.put(admin_client, {"kind": "analog", "analog_id": ctx.rows[0].id}).status_code == 204
+    assert _num(_xlsx_line(admin_client, ctx)["Наша расценка за ед."]) == D("120")
+
+    _lump_mark(admin_client, ctx.rows[0])
+    line = _xlsx_line(admin_client, ctx)
+
+    assert _num(line["Наша расценка за ед."]) == D("108")  # 90 нетто — самая низкая из оставшихся, база КП 20 %
+    assert line["Источник"]
+
+    _lump_unmark(admin_client, ctx.rows[0])
+
+    assert _num(_xlsx_line(admin_client, ctx)["Наша расценка за ед."]) == D("120")
+
+
+def test_lump_file_an_agreement_on_a_lump_sum_row_has_a_price_in_the_workbook(admin_client, stage) -> None:
+    from tests.integration.test_ref_analogs_target import _zone_scene
+
+    ctx = _zone_scene(stage)
+    _lump_mark(admin_client, ctx.item)
+    assert _xlsx_line(admin_client, ctx)["Наша расценка за ед."] is None
+    _agree(stage.db, ctx.item, D("90"), admin_client.user)
+
+    line = _xlsx_line(admin_client, ctx)
+
+    assert _num(line["Наша расценка за ед."]) == D("108")
+    assert str(line["Источник"]).startswith("Договорились")

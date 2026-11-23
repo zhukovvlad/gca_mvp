@@ -139,6 +139,13 @@ describe("карточка справочной цели: возврат и сб
     expect(screen.queryByTestId("reference-target")).not.toBeInTheDocument();
   });
 
+  it("справочная цель на комплект: причина «комплект вместо ставки»", () => {
+    renderCard(referenceChoiceFixture({ active: false, reset_reason: "lump_sum", reference: null }));
+    expect(screen.getByTestId("reference-target-inactive")).toHaveTextContent(
+      "Справочная цель не действует: комплект вместо ставки"
+    );
+  });
+
   it("сброшенная справочная цель не порождает плашку «самая низкая» у карточек стратегий", () => {
     const line = workLineFixture({
       choice: referenceChoiceFixture({ active: false, reset_reason: "kind_changed", reference: refRowFixture() }),

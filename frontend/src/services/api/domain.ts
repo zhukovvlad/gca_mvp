@@ -110,6 +110,7 @@ import type {
   AgreedBasis,
   KpFilePreview,
   KpSentFileItem,
+  LumpVerdict,
   OurPriceLineView,
   ReferenceSearchResult,
   ReferenceTargetBody,
@@ -606,6 +607,15 @@ export const tendersApi = {
     api
       .get<Blob>(`/v1/tenders/${tenderId}/changes-export`, { responseType: "blob" })
       .then((r) => r.data),
+};
+
+/** Поправка «комплект или ставка» к строке сметы (спека комплектов §3): действует на всех экранах. */
+export const positionItemsApi = {
+  putLumpSum: (id: number, verdict: LumpVerdict): Promise<void> =>
+    api.put(`/v1/position-items/${id}/lump-sum`, { verdict }).then(() => undefined),
+
+  deleteLumpSum: (id: number): Promise<void> =>
+    api.delete(`/v1/position-items/${id}/lump-sum`).then(() => undefined),
 };
 
 // ---------------------------------------------------------------------------

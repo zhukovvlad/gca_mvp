@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { ourPriceLineFixture } from "@/test/fixtures";
+import { lumpFixture, lumpLineFixture, ourPriceLineFixture } from "@/test/fixtures";
 import type { WorkRung } from "@/types/domain";
 
-import { formatRatio, linesCount, offerSubtitle, progressCaption, roundSubtitle, priceBasisLabel,VAT_NET_LABEL, VAT_UNKNOWN_LABEL, inflationCaptionOf, KP_NOT_ADJUSTED_NOTE, groupLinesCaption, ratioNote, unitWarnContracts, unitWarnKp, isWaitingAdminLine, LINE_STATE_LABEL, lineStateLabel, periodRu, targetInactiveNote, WAITING_ADMIN_LABEL, workRungCaption, workRungLabel, analogsMore, COMPOSITE_NO_TARGET, EXPORT_SOURCE, TARGET_CARD, TARGET_MARK, targetSameContract, otherZonesLabel, zoneScopeMark, otherZonesWhy, ANY_ZONE_WHY, analogZoneBadge, zoneRequiredNote, zoneRequiredNoZonePrefix, refLinkTitle, refSections, refTruncated } from "./ourPriceCopy";
+import { formatRatio, linesCount, offerSubtitle, progressCaption, roundSubtitle, priceBasisLabel,VAT_NET_LABEL, VAT_UNKNOWN_LABEL, inflationCaptionOf, KP_NOT_ADJUSTED_NOTE, groupLinesCaption, ratioNote, unitWarnContracts, unitWarnKp, isWaitingAdminLine, LINE_STATE_LABEL, lineStateLabel, periodRu, targetInactiveNote, WAITING_ADMIN_LABEL, workRungCaption, workRungLabel, analogsMore, COMPOSITE_NO_TARGET, EXPORT_SOURCE, TARGET_CARD, TARGET_MARK, targetSameContract, otherZonesLabel, zoneScopeMark, otherZonesWhy, ANY_ZONE_WHY, analogZoneBadge, zoneRequiredNote, zoneRequiredNoZonePrefix, refLinkTitle, refSections, refTruncated, FILTER_HINT, lumpCaption, lumpOverrideNote, lumpUnitGenitive, lumpWhy } from "./ourPriceCopy";
 
 describe("groupLinesCaption", () => {
   it.each([
@@ -354,5 +354,107 @@ describe("зона как предпочтение: подписи (спека �
       "У семьи «Двери» зона обязательна: аналоги из других зон не берутся в сравнение. Они ниже — для справки."
     );
     expect(zoneRequiredNoZonePrefix("Двери")).toBe("У семьи «Двери» зона обязательна. ");
+  });
+});
+
+describe("строка, похожая на комплект (спека комплектов §8)", () => {
+  const NB = " ";
+  const author = { id: 7, email: "admin@example.test" };
+
+  it("состояние названо «Похоже на комплект», строка показывает это название, а плитка «не разобраны» называет такие строки", () => {
+    expect(LINE_STATE_LABEL.lump_sum).toBe("Похоже на комплект");
+    expect(lineStateLabel(lumpLineFixture())).toBe("Похоже на комплект");
+    expect(FILTER_HINT.not_comparable).toContain("похожие на комплект");
+  });
+
+  describe("lumpCaption", () => {
+    it("кратность — целые с разделителем разрядов", () => {
+      expect(lumpCaption(lumpFixture({ ratio: "16989.1234" }))).toBe(`цена в 16${NB}989 раз выше обычной ставки семьи`);
+      expect(lumpCaption(lumpFixture({ ratio: "2361.5" }))).toBe(`цена в 2${NB}362 раз выше обычной ставки семьи`);
+    });
+
+    it("ставки нет — «обычной ставки нет», а не кратность", () => {
+      const caption = lumpCaption(lumpFixture({ typical: null, typical_lines: 0, ratio: null }));
+      expect(caption).toBe("обычной ставки нет");
+      expect(caption).not.toContain("раз");
+    });
+  });
+
+  describe("lumpWhy", () => {
+    it("ставка есть: цифры правила и родительный падеж единицы", () => {
+      expect(lumpWhy(lumpFixture(), "net")).toBe(
+        `В смете: 1 м2 × 69${NB}259${NB}002,83${NB}₽ без НДС. Обычная ставка семьи «Монтаж воздуховодов вентиляции» — 4${NB}077,00${NB}₽ за м2 ` +
+          `(медиана 5 строк с настоящим объёмом). Цена строки выше в 16${NB}989 раз: похоже на цену комплекта, а не квадратного метра. ` +
+          "Со ставками договоров её не сравнить."
+      );
+    });
+
+    it("в виде «с НДС» цены берутся показанные и подписаны ставкой КП", () => {
+      const text = lumpWhy(lumpFixture(), "shown", "22.00");
+      expect(text).toContain(`× 84${NB}495${NB}983,45${NB}₽ с НДС 22 %.`);
+      expect(text).toContain(`— 4${NB}974,00${NB}₽ за м2`);
+    });
+
+    it("«с НДС» без ставки КП — цены нетто с подписью «без НДС», а не показанные без подписи", () => {
+      const text = lumpWhy(lumpFixture(), "shown", null);
+      expect(text).toContain(`× 69${NB}259${NB}002,83${NB}₽ без НДС.`);
+      expect(text).not.toContain("с НДС");
+    });
+
+    it("число строк пула — в родительном падеже после «медиана»", () => {
+      expect(lumpWhy(lumpFixture({ typical_lines: 3 }), "net")).toContain("медиана 3 строк с настоящим объёмом");
+      expect(lumpWhy(lumpFixture({ typical_lines: 21 }), "net")).toContain("медиана 21 строки с настоящим объёмом");
+      expect(lumpWhy(lumpFixture({ typical_lines: 11 }), "net")).toContain("медиана 11 строк с настоящим объёмом");
+    });
+
+    it("ставки нет: текст без цифр ставки и кратности", () => {
+      const text = lumpWhy(lumpFixture({ typical: null, typical_lines: 0, ratio: null, unit: "шт", family: "Выключатель" }), "net");
+      expect(text).toBe(
+        `В смете: 1 шт × 69${NB}259${NB}002,83${NB}₽. Обычной ставки у семьи «Выключатель» в этой единице нет ` +
+          "(строк с настоящим объёмом меньше трёх), а одна шт за такую цену — похоже на комплект."
+      );
+    });
+
+    it("поправка «это комплект» при rule = false: кто и когда, и что правило считает ставкой", () => {
+      const lump = lumpFixture({
+        rule: false,
+        is_lump: true,
+        override: { verdict: "lump", set_by: author, set_at: "2026-11-22T09:30:00+00:00" },
+      });
+      expect(lumpWhy(lump, "net")).toBe("Поправлено вручную: admin@example.test, 22.11.2026. Правило считает строку ставкой.");
+    });
+
+    it("поправка «это комплект» при rule = true остаётся пояснением правила, а не поправки", () => {
+      const lump = lumpFixture({ override: { verdict: "lump", set_by: author, set_at: "2026-11-22T09:30:00+00:00" } });
+      expect(lumpWhy(lump, "net")).toContain("Цена строки выше в");
+    });
+  });
+
+  describe("lumpUnitGenitive", () => {
+    it.each([
+      ["м", "метра"],
+      ["м2", "квадратного метра"],
+      ["м²", "квадратного метра"],
+      ["м3", "кубического метра"],
+      ["т", "тонны"],
+      ["кг", "килограмма"],
+    ])("%s", (unit, expected) => {
+      expect(lumpUnitGenitive(unit)).toBe(expected);
+    });
+
+    it("немерная единица не склоняется — «ставки за {единица}»", () => {
+      expect(lumpUnitGenitive("шт")).toBe("ставки за шт");
+    });
+  });
+
+  describe("lumpOverrideNote", () => {
+    it("с поправкой — «поправлено вручную: {email}, {дата}»", () => {
+      const lump = lumpFixture({ override: { verdict: "rate", set_by: author, set_at: "2026-11-22T09:30:00+00:00" } });
+      expect(lumpOverrideNote(lump)).toBe("поправлено вручную: admin@example.test, 22.11.2026");
+    });
+
+    it("без поправки подписи нет", () => {
+      expect(lumpOverrideNote(lumpFixture())).toBeNull();
+    });
   });
 });

@@ -1,6 +1,7 @@
-import { formatDecimalMoney, formatNumber, pluralRu, roundDecimal } from "@/lib/format";
+import { formatDate, formatDecimalMoney, formatNumber, pluralRu, roundDecimal } from "@/lib/format";
 import type {
   Decimal,
+  LumpView,
   NoHistoryReason,
   OurPriceAnalog,
   OurPriceLine,
@@ -20,6 +21,7 @@ import type {
 import { SECTION_ZONES, ZONE_LABEL } from "@/pages/families/labels";
 
 import type { OfferFilter } from "./offerFilter";
+import type { VatView } from "./money";
 import { lowerFirst } from "./paramsCopy";
 
 /**
@@ -37,6 +39,7 @@ export const LINE_STATE_LABEL: Record<OurPriceLineState, string> = {
   no_zone: "зона раздела не определена",
   no_history: "нет наших договоров для сравнения",
   unit_mismatch: "разные единицы учёта",
+  lump_sum: "Похоже на комплект",
   comparable: "сопоставима",
 };
 
@@ -261,7 +264,7 @@ export const FILTER_LABEL: Record<OfferFilter, string> = {
 export const FILTER_HINT: Partial<Record<Exclude<OfferFilter, "all">, string>> = {
   below_lowest: "риск допработ и замены",
   unit_mismatch: "вопрос подрядчику про единицу учёта",
-  not_comparable: "не разобраны, нет в договорах, нет цены",
+  not_comparable: "не разобраны, нет в договорах, нет цены, похожие на комплект",
 };
 
 export const PER_SQM_TILE_LABEL = "КП на м² объекта";
@@ -373,6 +376,97 @@ export function lineStateLabel(line: OurPriceLine): string | null {
     return NO_HISTORY_REASON_LABEL[line.no_history_reason];
   }
   return LINE_STATE_LABEL[line.state];
+}
+
+/** Подпись единицы в родительном падеже для мерных кодов: «а не квадратного метра» (спека комплектов §8 п. 2). */
+const UNIT_GENITIVE: Record<string, string> = {
+  "м": "метра",
+  "м2": "квадратного метра",
+  "м²": "квадратного метра",
+  "м3": "кубического метра",
+  "м³": "кубического метра",
+  "т": "тонны",
+  "кг": "килограмма",
+};
+
+/** Единица в родительном падеже; у прочих («шт», «компл») склонять нечем — «ставки за {единица}». */
+export function lumpUnitGenitive(unit: string): string {
+  return UNIT_GENITIVE[unit.trim().toLowerCase()] ?? `ставки за ${unit}`;
+}
+
+/** «медиана N строк»: число строк в родительном падеже («3 строк», «21 строки»), как в тексте спеки комплектов §8 п. 2. */
+function lumpRowsGenitive(count: number): string {
+  const one = count % 10 === 1 && count % 100 !== 11;
+  return `${formatNumber(count)} ${one ? "строки" : "строк"}`;
+}
+
+/** Кратность комплекта: до целых с разделителем разрядов («16 989»). */
+function lumpRatioText(ratio: Decimal): string {
+  return formatNumber(Number(roundDecimal(ratio, 0)));
+}
+
+/** Подпись под меткой «Похоже на комплект» в таблице строк (спека комплектов §8 п. 1). */
+export function lumpCaption(lump: LumpView): string {
+  if (lump.ratio === null || lump.typical === null) return "обычной ставки нет";
+  return `цена в ${lumpRatioText(lump.ratio)} раз выше обычной ставки семьи`;
+}
+
+/** Цена панели в нужном виде; нет показанной цены (база НДС неизвестна) — нетто. */
+function lumpMoney(pair: { net: Decimal; shown: Decimal | null }, vat: VatView): { text: string; shown: boolean } {
+  const shown = vat === "shown" && pair.shown !== null;
+  return { text: formatDecimalMoney(shown ? pair.shown : pair.net, "₽", 2), shown };
+}
+
+/** Поправка у строки: «поправлено вручную: {email}, {дата}»; без поправки `null`. */
+export function lumpOverrideNote(lump: LumpView): string | null {
+  if (lump.override === null) return null;
+  return `поправлено вручную: ${lump.override.set_by.email}, ${formatDate(lump.override.set_at)}`;
+}
+
+/**
+ * Пояснение «Сравнения» строки-комплекта (спека комплектов §8 п. 2): три вида — ставка есть,
+ * ставки нет, поправка «это комплект» при `rule = false`. `vatRate` — ставка КП для подписи
+ * «с НДС {ставка} %»; без неё цены идут нетто.
+ */
+export function lumpWhy(lump: LumpView, vat: VatView, vatRate: Decimal | null = null): string {
+  if (lump.override !== null && lump.override.verdict === "lump" && !lump.rule) {
+    return `Поправлено вручную: ${lump.override.set_by.email}, ${formatDate(lump.override.set_at)}. Правило считает строку ставкой.`;
+  }
+  // Без ставки КП «с НДС» подписать нечем: цены идут нетто, а не показанными без подписи.
+  const view: VatView = vat === "shown" && vatRate !== null ? "shown" : "net";
+  const price = lumpMoney(lump.unit_price, view);
+  if (lump.typical === null || lump.ratio === null) {
+    return `В смете: 1 ${lump.unit} × ${price.text}. Обычной ставки у семьи «${lump.family}» в этой единице нет (строк с настоящим объёмом меньше трёх), а одна ${lump.unit} за такую цену — похоже на комплект.`;
+  }
+  const typical = lumpMoney(lump.typical, view);
+  const basis = price.shown && vatRate !== null ? vatShownLabel(vatRate) : VAT_NET_LABEL;
+  return `В смете: 1 ${lump.unit} × ${price.text} ${basis}. Обычная ставка семьи «${lump.family}» — ${typical.text} за ${lump.unit} (медиана ${lumpRowsGenitive(lump.typical_lines)} с настоящим объёмом). Цена строки выше в ${lumpRatioText(lump.ratio)} раз: похоже на цену комплекта, а не ${lumpUnitGenitive(lump.unit)}. Со ставками договоров её не сравнить.`;
+}
+
+/** Блок поправки «Комплект или ставка» (спека комплектов §8 п. 3). */
+export const LUMP_BLOCK_TITLE = "Комплект или ставка";
+export const LUMP_BLOCK_HINT =
+  "Поправка хранится у этой строки сметы и действует на всех экранах. «Это ставка» вернёт строку в обычное сравнение.";
+export const LUMP_COMPARISON_NOTE = "не сравнивается";
+export const LUMP_CHOICE_LABEL = { rule: "Как решило правило", lump: "Это комплект", rate: "Это ставка" } as const;
+
+/** Действие в списке аналогов (спека комплектов §8 п. 4) и его подтверждение. */
+export const LUMP_ANALOG_ACTION = "это комплект — убрать из сравнения";
+export function lumpAnalogConfirm(title: string): string {
+  return `Строка договора «${title}» перестанет служить аналогом во всех КП. Вернуть — в «Найти в договорах».`;
+}
+export const LUMP_ANALOG_CONFIRM_TITLE = "Убрать строку из сравнения?";
+export const LUMP_ANALOG_CONFIRM_CANCEL = "Отмена";
+
+/** «Найти в договорах» (спека комплектов §8 п. 5): метка, пометка поправки, подсказка у «сделать целью». */
+export const LUMP_SEARCH_MARK = "похоже на комплект";
+export const LUMP_SEARCH_OVERRIDE = "поправлено вручную";
+export const LUMP_NOT_TARGET = "Похоже на комплект — не цель для ставки";
+export const LUMP_ROW_MENU = "Комплект или ставка";
+
+/** «Как решило правило (комплект)» — ответ правила в скобках. */
+export function lumpRuleChoiceLabel(lump: LumpView): string {
+  return `${LUMP_CHOICE_LABEL.rule} (${lump.rule ? "комплект" : "ставка"})`;
 }
 
 function analogsCount(n: number): string {
@@ -531,6 +625,7 @@ export const TARGET_RESET_REASON: Record<TargetResetReason, string> = {
   no_freshest: "самой свежей расценки больше нет",
   no_contractor: "среди аналогов больше нет договора с этим подрядчиком",
   reference_unavailable: "строка договора больше не годится как справочная",
+  lump_sum: "комплект вместо ставки",
 };
 export function targetInactiveNote(reason: TargetResetReason | null): string {
   const why = reason === null ? "" : `: ${TARGET_RESET_REASON[reason]}`;

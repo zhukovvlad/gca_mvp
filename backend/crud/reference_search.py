@@ -16,7 +16,8 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
 from crud.common import DomainError
-from crud.our_price import reference_row_view, search_context
+from crud.lump_sum import typical_rates
+from crud.our_price import reference_lump_view, reference_row_view, search_context
 from crud.our_price_inflation import plan_history_inflation, round_target_month
 from crud.our_price_load import (
     KpLineRow,
@@ -123,7 +124,21 @@ def _find_row(
             "Справочный поиск доступен у строки-работы; у системы справочных строк нет.",
             code=CODE_REFERENCE_NOT_APPLICABLE,
         )
+    if row.line.is_lump:  # состояние `lump_sum`: лестницы нет, справочной цели не будет (спека строк-сумм §6 п. 1)
+        raise DomainError(
+            422,
+            "Строка КП похожа на комплект: справочного поиска у неё нет.",
+            code=CODE_REFERENCE_NOT_APPLICABLE,
+        )
     return row
+
+
+def _lump_key(line: ReferenceLine) -> tuple[bool, int | None] | None:
+    """Составляющая ключа свёртки поиска: итог правила и, у строки с поправкой, её id — такая
+    строка остаётся отдельной, чтобы снять поправку можно было с неё самой."""
+    if line.lump is None:
+        return None
+    return line.lump.is_lump, None if line.lump.override is None else line.position_item_id
 
 
 def search_reference(
@@ -275,9 +290,13 @@ def search_reference(
     built.sort(key=order)
     kind_of = {ref.position_item_id: kind for _line, ref, kind in built}
     titles = {line.position_item_id: line.title for line, _ref, _kind in built}
-    folded = fold_group_rows([ref for _line, ref, _kind in built], titles)
+    # строка с поправкой не сворачивается ни с кем: меню поправки работает с представителем
+    decision = {line.position_item_id: _lump_key(line) for line, _ref, _kind in built}
+    folded = fold_group_rows([ref for _line, ref, _kind in built], titles, decision)
     shown = folded[:SEARCH_LIMIT]
 
+    line_of = {line.position_item_id: line for line, _ref, _kind in built}
+    unit_labels = typical_rates(db).unit_labels
     details = load_analog_details(db, [pid_ for _row, ids in shown for pid_ in ids])
     chapter_ids = {details[pid_][4] for _row, ids in shown for pid_ in ids} - {None}
     steps = chapter_steps(db, chapter_ids)
@@ -292,6 +311,7 @@ def search_reference(
             kp_unit_id=row.unit_id,
             details=details,
             steps=steps,
+            lump=reference_lump_view(line_of[ref.position_item_id], participant.base, unit_labels),
         )
         view["conversion_kind"] = kind_of[ref.position_item_id]
         rows.append(view)
@@ -314,5 +334,5 @@ def _find_lines(
         statement = statement.where(
             sa.false() if row.unit_id is None else CatalogPosition.unit_id == row.unit_id
         )
-    return reference_lines_from_rows(db.execute(statement).all(), factors)
+    return reference_lines_from_rows(db, db.execute(statement).all(), factors)
 

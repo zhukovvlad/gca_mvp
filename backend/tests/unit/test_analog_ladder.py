@@ -1243,3 +1243,83 @@ def test_zone_scope_is_none_exactly_when_there_is_no_rung() -> None:
     assert (none.rung_no, none.zone_scope) == (None, None)
     found = run(kp(), [line(1, 1, "100")], [contract(1)])
     assert (found.rung_no, found.zone_scope) == (1, "own")
+
+
+# ---------------------------------------------------------------------------
+#  Комплект договора не кандидат пула нигде (спека строк-сумм §4 п. 4)
+# ---------------------------------------------------------------------------
+
+
+def lump(pid: int, contract_id: int, price: str, **kwargs) -> WorkHistoryLine:
+    return dataclasses.replace(line(pid, contract_id, price, **kwargs), lump=True)
+
+
+def test_lump_a_lump_line_is_not_an_analog_and_the_neighbour_rate_stays_in_the_fork() -> None:
+    lines = [line(1, 1, "100"), lump(2, 2, "100"), line(3, 3, "120")]
+    ladder = run(kp(), lines, [contract(1), contract(2), contract(3)])
+    assert (ladder.rung_no, ids(ladder)) == (1, [1, 3])
+    assert ladder.remainder_ids == frozenset({1, 3})
+
+
+def test_lump_the_same_line_without_the_flag_is_an_analog() -> None:
+    lines = [line(1, 1, "100"), line(2, 2, "100"), line(3, 3, "120")]
+    ladder = run(kp(), lines, [contract(1), contract(2), contract(3)])
+    assert ids(ladder) == [1, 2, 3]
+
+
+def test_lump_the_only_candidate_of_a_rung_leaves_no_rung() -> None:
+    ladder = run(kp(), [lump(1, 1, "100")], [contract(1)])
+    assert ladder.rung_no is None and ids(ladder) == []
+    assert ladder.lowest is None and ladder.freshest is None
+
+
+def test_lump_a_lump_line_is_neither_an_outlier_nor_in_the_median_of_the_selection() -> None:
+    contracts = [contract(1), contract(2), contract(3)]
+    ladder = run(kp(), [line(1, 1, "100"), line(2, 2, "120"), lump(3, 3, "50000")], contracts)
+    assert ids(ladder) == [1, 2]
+    assert all(a.outlier_ratio is None for a in ladder.analogs)
+    assert ladder.remainder_ids == frozenset({1, 2})
+    # без признака та же строка есть в справке и портит отбор: остаток другой
+    plain = run(kp(), [line(1, 1, "100"), line(2, 2, "120"), line(3, 3, "50000")], contracts)
+    assert ids(plain) == [1, 2, 3] and plain.remainder_ids != ladder.remainder_ids
+
+
+def test_lump_a_lump_line_is_not_the_lowest() -> None:
+    contracts = [contract(1), contract(2), contract(3)]
+    ladder = run(kp(), [line(1, 1, "100"), line(2, 2, "120"), lump(3, 3, "90")], contracts)
+    assert ladder.lowest is not None and (ladder.lowest.value, ladder.lowest.analog_id) == (D(100), 1)
+    plain = run(kp(), [line(1, 1, "100"), line(2, 2, "120"), line(3, 3, "90")], contracts)
+    assert plain.lowest is not None and plain.lowest.analog_id == 3
+
+
+def test_lump_a_lump_line_is_not_the_freshest() -> None:
+    contracts = [contract(1, period=YearMonth(2026, 1)), contract(2, period=YearMonth(2026, 6))]
+    ladder = run(kp(), [line(1, 1, "100"), lump(2, 2, "110")], contracts, target=YearMonth(2026, 7))
+    assert ladder.freshest is not None and ladder.freshest.analog_id == 1
+    plain = run(kp(), [line(1, 1, "100"), line(2, 2, "110")], contracts, target=YearMonth(2026, 7))
+    assert plain.freshest is not None and plain.freshest.analog_id == 2
+
+
+def test_lump_a_lump_line_of_the_tender_contractor_is_not_the_contractor_figure() -> None:
+    contracts = [contract(1, contractor=50), contract(2, contractor=99)]
+    ladder = run(kp(), [line(1, 1, "100"), lump(2, 2, "110")], contracts, contractor=99)
+    assert ladder.contractor is None
+    plain = run(kp(), [line(1, 1, "100"), line(2, 2, "110")], contracts, contractor=99)
+    assert plain.contractor is not None and plain.contractor.analog_id == 2
+
+
+def test_lump_a_lump_line_is_not_in_vat_dropped() -> None:
+    """Комплект с неизвестной базой — не «выпавший» договор: пул его вовсе не видит."""
+    ladder = run(kp(), [lump(1, 1, "100", vat=None)], [contract(1)])
+    assert (ladder.rung_no, ladder.vat_dropped) == (None, ())
+    plain = run(kp(), [line(1, 1, "100", vat=None)], [contract(1)])
+    assert (plain.rung_no, plain.vat_dropped) == (None, (1,))
+
+
+def test_lump_work_history_is_lump_follows_the_history_lines() -> None:
+    from services.analog_ladder import WorkHistory
+
+    history = WorkHistory(
+        [line(1, 1, "100"), lump(2, 2, "100")], {FAMILY: info()}, {1: contract(1), 2: contract(2)}, factors=None
+    )
+    assert (history.is_lump(1), history.is_lump(2), history.is_lump(777)) == (False, True, False)

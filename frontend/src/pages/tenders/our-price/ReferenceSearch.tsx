@@ -10,7 +10,14 @@ import type { ReferenceSearchResult, ReferenceSearchRow, ReferenceUnits } from "
 import { ZONE_LABEL } from "@/pages/families/labels";
 
 import type { VatView } from "./money";
-import { REF_SEARCH, refSearchFound, refTruncated } from "./ourPriceCopy";
+import {
+  LUMP_SEARCH_MARK,
+  LUMP_SEARCH_OVERRIDE,
+  lumpCaption,
+  REF_SEARCH,
+  refSearchFound,
+  refTruncated,
+} from "./ourPriceCopy";
 import { ReferenceRows } from "./ReferenceRows";
 
 /** Предел выдачи после свёртки (спека справочных аналогов §2.12): по нему `truncated` говорит «первые 50». */
@@ -118,6 +125,7 @@ export function ReferenceSearch({
                 vat={vat}
                 kpUnit={kpUnit}
                 canChoose={canChoose}
+                canLump={canChoose}
                 busy={busy}
                 testPrefix="search"
                 fold={false}
@@ -157,6 +165,17 @@ function SearchMarks({ row }: { row: ReferenceSearchRow }) {
       {row.conversion_kind === "manual_needed" && (
         <Badge variant="secondary" className="h-auto py-0.5">
           {REF_SEARCH.manualNeeded}
+        </Badge>
+      )}
+      {row.lump?.is_lump === true && (
+        <Badge
+          variant="secondary"
+          data-testid="search-lump-mark"
+          title={lumpCaption(row.lump)}
+          className="h-auto py-0.5"
+        >
+          {LUMP_SEARCH_MARK}
+          {row.lump.override !== null && ` · ${LUMP_SEARCH_OVERRIDE}`}
         </Badge>
       )}
     </div>

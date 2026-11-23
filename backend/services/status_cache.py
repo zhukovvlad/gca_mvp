@@ -103,3 +103,7 @@ class StatusCache(Generic[T]):
 # Тип значения — `HeavyStatusParts` (crud/semantic_queue.py); не импортируется,
 # чтобы не тянуть crud в сервисный модуль.
 status_cache: StatusCache = StatusCache(lambda: settings.SEMANTIC_STATUS_CACHE_TTL_S)
+
+# Второй экземпляр: обычные ставки «комплект или ставка» (`services/lump_sum.TypicalRates`, спека
+# строк-сумм §2 п. 2). Свой срок, те же точки сброса, что у `status_cache`.
+typical_rates_cache: StatusCache = StatusCache(lambda: settings.TYPICAL_RATES_CACHE_TTL_S)

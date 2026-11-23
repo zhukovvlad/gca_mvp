@@ -152,6 +152,9 @@ class FileContext:
     stage_date: date | None
     contractor_title: str
     exported_on: date
+    #: `position_item_id` строк КП, чья сохранённая цель (`analog`/`reference`) указывает на строку договора-комплект
+    #: (спека строк-сумм §5 п. 2); признак считает `crud.our_price._target_lump`, ядро его не вычисляет.
+    lump_targets: frozenset[int] = frozenset()
 
 
 # --- вход комментария ---------------------------------------------------------------------
@@ -176,6 +179,7 @@ def line_comment_inputs(
     agreed_net: Decimal | None,
     saved_target: SavedTarget | None = None,
     reference: ReferenceSource | None = None,
+    target_lump: bool = False,
 ) -> CommentInputs:
     """Вход комментария строки: единственное место, где он собирается.
 
@@ -184,8 +188,15 @@ def line_comment_inputs(
     выбор `saved_target`, иначе самая низкая), системы — договор самой низкой ставки. `reference` —
     строка договора, которую сцена чтения признала справочной для этой строки КП; цель она даёт,
     только если сохранённый выбор — справочная цель (спека справочных аналогов §2.14, §2.15).
+    `target_lump` — цель указывает на строку договора-комплект: выбор недействующий (спека строк-сумм §5 п. 2).
     """
-    choice = resolve_target(saved_target, result, is_system=line.is_system, reference_available=reference is not None)
+    choice = resolve_target(
+        saved_target,
+        result,
+        is_system=line.is_system,
+        reference_available=reference is not None,
+        target_lump=target_lump,
+    )
     active_reference = reference if choice is not None and choice.active and choice.kind == "reference" else None
     if line.is_system:
         level = result.rung.level if result.rung is not None else None
@@ -304,6 +315,7 @@ def _file_line(
         agreed_net=agreed[0] if agreed is not None else None,
         saved_target=targets.get(src.position_item_id),
         reference=references.get(src.position_item_id),
+        target_lump=src.position_item_id in context.lump_targets,
     )
     target = target_net(inp)
 

@@ -662,3 +662,16 @@ class TestPartsReferenceScopes:
         parts = parts_of(reference(composite_kp(), [hline(1, 1, "50", PLATES, variant=301)], contracts_of(1)))
 
         assert parts[BEAMS].zone_scope is None
+
+
+class TestPartsReferenceLump:
+    def test_a_lump_line_is_not_counted_in_a_part(self):
+        lines, contracts = two_parts_scene()
+        lines = [dataclasses.replace(ln, lump=True) if ln.position_item_id == 2 else ln for ln in lines]
+
+        (parameter,) = reference(composite_kp(), lines, contracts)
+        plates = {part.value_id: part for part in parameter["parts"]}[PLATES]
+
+        assert (plates.analogs, plates.contracts) == (4, 4)  # строка 2 (37) выпала, договор 1 остался со строкой 1
+        assert (plates.min, plates.max) == (D("36"), D("42"))
+        assert plates.lowest_analog_id == 1  # соседняя ставка 36 того же договора осталась

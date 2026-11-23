@@ -9,13 +9,22 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from dataclasses import dataclass
 from decimal import Decimal
 
 import pytest
 import sqlalchemy as sa
 
-from models import CatalogContext, CatalogPosition, ContextMember, ContextParameterValue, KpLineTarget, UserRole
+from models import (
+    CatalogContext,
+    CatalogPosition,
+    ContextMember,
+    ContextParameterValue,
+    KpLineTarget,
+    UnitOfMeasure,
+    UserRole,
+)
 from services.family_links import LinkInput, create_link, delete_link
 from tests.integration.test_our_price_load import World
 from tests.integration.test_our_price_offer_api import _inflation_scene, _json, _line_of, _ok, _panel, _put, _url
@@ -1401,3 +1410,433 @@ def test_ref_analogs_target_a_zone_row_carries_the_family_of_the_line_and_a_row_
     assert found[bare.id]["family_id"] is None
     no_family = Ctx(stage, ctx.rnd, ctx.part, stage.kp(ctx.part, D("144"), variant=False), [])
     assert no_family.panel(admin_client)["line"]["family_id"] is None
+
+
+# ---------------------------------------------------------------------------
+#  Комплект вместо ставки: цели, отказы, три пути, ответ (спека строк-сумм §5, §7, §9 п. 7, 9, 13)
+# ---------------------------------------------------------------------------
+
+
+def _lump_url(item) -> str:
+    return f"/api/v1/position-items/{item.id}/lump-sum"
+
+
+def _mark(client, item, verdict="lump") -> dict:
+    response = client.put(_lump_url(item), json={"verdict": verdict})
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _unmark(client, item) -> None:
+    response = client.delete(_lump_url(item))
+    assert response.status_code == 204, response.text
+
+
+def _preview_line(client, ctx) -> dict:
+    """Строка предпросмотра файла подрядчику: тот же расчёт, что у книги xlsx."""
+    url = (
+        f"/api/v1/tenders/{ctx.stage.tender.id}/rounds/{ctx.rnd.id}"
+        f"/our-price/offers/{ctx.part.offer.id}/export-preview"
+    )
+    response = client.get(url)
+    assert response.status_code == 200, response.text
+    (found,) = (r for r in _json(response)["rows"] if r.get("position_item_id") == ctx.item.id)
+    return found
+
+
+def _no_target_in_the_file(row: dict) -> None:
+    assert (row["ours"], row["deviation_pct"], row["source"], row["comment"], row["comment_kind"]) == (
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+
+
+def test_lump_target_a_reference_target_on_a_row_marked_lump_is_reset_on_the_screen_the_panel_and_the_file(
+    admin_client, stage
+) -> None:
+    """Review Focus 3: цель выбрана до того, как строку договора пометили комплектом (экран, панель, файл)."""
+    ctx = _zone_scene(stage)
+    target = ctx.rows[0]
+    _save_ctx(admin_client, ctx, _body(target.id, "zone"))
+    active = ctx.panel(admin_client)["line"]
+    assert active["state"] == "no_history" and active["choice"]["active"] is True
+    assert D(_preview_line(admin_client, ctx)["ours"]) == D("120")  # 100 нетто, база КП 20 %
+
+    _mark(admin_client, target)
+
+    for line in (ctx.panel(admin_client)["line"], ctx.offer_line(admin_client)):
+        assert line["choice"]["kind"] == "reference" and line["choice"]["analog_id"] == target.id
+        assert line["choice"]["active"] is False and line["choice"]["reset_reason"] == "lump_sum"
+        assert line["target_kind"] is None
+    panel = ctx.panel(admin_client)
+    assert panel["line"]["file_ours"] is None
+    assert panel["comment"]["template_text"] is None
+    _no_target_in_the_file(_preview_line(admin_client, ctx))
+    assert _stored(stage.db, ctx.item) is not None  # запись цели осталась
+
+    _unmark(admin_client, target)
+
+    assert ctx.panel(admin_client)["line"]["choice"]["active"] is True
+    assert D(_preview_line(admin_client, ctx)["ours"]) == D("120")
+
+
+def test_lump_target_a_rate_correction_on_the_target_row_keeps_the_reference_target_acting(
+    admin_client, stage
+) -> None:
+    ctx = _zone_scene(stage)
+    _save_ctx(admin_client, ctx, _body(ctx.rows[0].id, "zone"))
+
+    _mark(admin_client, ctx.rows[0], "rate")
+
+    assert ctx.panel(admin_client)["line"]["choice"]["active"] is True
+    assert D(_preview_line(admin_client, ctx)["ours"]) == D("120")
+
+
+def test_lump_target_a_reference_target_on_a_rule_lump_row_is_reset_and_a_rate_correction_restores_it(
+    admin_client, stage
+) -> None:
+    """Комплект по правилу, а не по поправке: строку цели после выбора переписали в вес 1 и цену 600 (обычная
+    ставка ключа 100, порог мерной единицы 5). «Это ставка» возвращает цель — на экране и в файле; снятие
+    поправки — снова ответ правила."""
+    from models import PositionItem
+
+    ctx = _zone_scene(stage, prices=("100", "100", "100", "100"))
+    target = ctx.rows[0]
+    _save_ctx(admin_client, ctx, _body(target.id, "zone"))
+    stage.db.execute(
+        sa.update(PositionItem)
+        .where(PositionItem.id == target.id)
+        .values(suggested_quantity=D("1"), quantity=D("1"), unit_cost_total=D("600"), total_cost_total=D("600"))
+    )
+    stage.db.flush()
+
+    line = ctx.panel(admin_client)["line"]
+    assert (line["choice"]["active"], line["choice"]["reset_reason"]) == (False, "lump_sum")
+    assert line["choice"]["reference"]["lump"]["rule"] is True
+    _no_target_in_the_file(_preview_line(admin_client, ctx))
+
+    _mark(admin_client, target, "rate")
+
+    line = ctx.panel(admin_client)["line"]
+    assert (line["choice"]["active"], line["choice"]["reset_reason"]) == (True, None)
+    assert D(_preview_line(admin_client, ctx)["ours"]) == D("720")  # 600 нетто, база КП 20 %
+
+    _unmark(admin_client, target)
+
+    assert ctx.panel(admin_client)["line"]["choice"]["reset_reason"] == "lump_sum"
+    _no_target_in_the_file(_preview_line(admin_client, ctx))
+
+
+def test_lump_target_a_saved_analog_that_became_a_lump_falls_back_to_the_lowest_of_the_rest(
+    admin_client, stage
+) -> None:
+    """Сравнимая строка, цель `analog` на строку со 100, другие аналоги остаются (90, 100, 100)."""
+    ctx = _own_scene(stage, prices=("100", "100", "100", "90"))
+    target = ctx.rows[0]
+    assert ctx.put(admin_client, {"kind": "analog", "analog_id": target.id}).status_code == 204
+    assert D(_preview_line(admin_client, ctx)["ours"]) == D("120")
+    assert ctx.panel(admin_client)["line"]["choice"]["active"] is True
+
+    _mark(admin_client, target)
+
+    for line in (ctx.panel(admin_client)["line"], ctx.offer_line(admin_client)):
+        assert line["choice"]["active"] is False and line["choice"]["reset_reason"] == "lump_sum"
+    row = _preview_line(admin_client, ctx)
+    assert D(row["ours"]) == D("108")  # самая низкая из оставшихся: 90 нетто, база КП 20 %
+    assert row["state"] == "comparable" and row["source"] is not None
+
+    _unmark(admin_client, target)
+
+    assert ctx.panel(admin_client)["line"]["choice"]["active"] is True
+    assert D(_preview_line(admin_client, ctx)["ours"]) == D("120")
+
+
+def test_lump_target_a_lump_contract_row_that_is_not_the_target_leaves_the_target_acting(
+    admin_client, stage
+) -> None:
+    ctx = _own_scene(stage, prices=("100", "100", "100", "90"))
+    assert ctx.put(admin_client, {"kind": "analog", "analog_id": ctx.rows[0].id}).status_code == 204
+
+    _mark(admin_client, ctx.rows[3])
+
+    assert ctx.panel(admin_client)["line"]["choice"]["active"] is True
+    assert D(_preview_line(admin_client, ctx)["ours"]) == D("120")
+
+
+def test_lump_target_a_lump_sum_kp_row_resets_every_target_and_its_state_is_lump_sum(admin_client, stage) -> None:
+    ctx = _zone_scene(stage)
+    _save_ctx(admin_client, ctx, _body(ctx.rows[0].id, "zone"))
+
+    _mark(admin_client, ctx.item)
+
+    for line in (ctx.panel(admin_client)["line"], ctx.offer_line(admin_client)):
+        assert line["state"] == "lump_sum"
+        assert line["choice"]["active"] is False and line["choice"]["reset_reason"] == "lump_sum"
+    _no_target_in_the_file(_preview_line(admin_client, ctx))
+
+
+def test_lump_target_an_agreement_on_a_lump_sum_row_acts_and_the_file_has_a_price(admin_client, stage) -> None:
+    from tests.integration.test_kp_file_scene import _agree
+
+    ctx = _zone_scene(stage)
+    _mark(admin_client, ctx.item)
+    _no_target_in_the_file(_preview_line(admin_client, ctx))
+    _agree(stage.db, ctx.item, D("90"), admin_client.user)
+
+    row = _preview_line(admin_client, ctx)
+
+    assert row["state"] == "lump_sum"
+    assert D(row["ours"]) == D("108") and row["source"].startswith("Договорились")
+    line = ctx.offer_line(admin_client)
+    assert line["agreed"] is not None and line["target_kind"] == "agreed"
+
+
+# --- отказы записи цели -----------------------------------------------------------------------
+
+
+def test_lump_target_put_target_on_a_lump_sum_row_is_target_not_applicable(admin_client, stage) -> None:
+    ctx = _own_scene(stage)
+    body = {"kind": "analog", "analog_id": ctx.rows[0].id}
+    _mark(admin_client, ctx.item)
+
+    _refused(ctx.put(admin_client, body), 422, "target_not_applicable")
+
+    assert _no_row(ctx)
+
+
+def test_lump_target_put_target_on_a_comparable_row_with_the_same_body_is_accepted(admin_client, stage) -> None:
+    ctx = _own_scene(stage)
+
+    assert ctx.put(admin_client, {"kind": "analog", "analog_id": ctx.rows[0].id}).status_code == 204
+
+
+def test_lump_target_put_reference_target_on_a_lump_sum_row_is_refused_before_the_conversion_checks(
+    admin_client, stage
+) -> None:
+    ctx = _zone_scene(stage)
+    _mark(admin_client, ctx.item)
+
+    # тело с неверным пересчётом (единицы равны): сегодня это `conversion_not_needed`
+    _refused(ctx.put(admin_client, _body(ctx.rows[0].id, "zone", _manual("2"))), 422, "target_not_applicable")
+
+    assert _no_row(ctx)
+
+
+def test_lump_target_put_reference_target_on_a_lump_contract_row_is_refused_before_the_conversion_checks(
+    admin_client, stage
+) -> None:
+    ctx = _zone_scene(stage)
+    _mark(admin_client, ctx.rows[0])
+
+    detail = _refused(ctx.put(admin_client, _body(ctx.rows[0].id, "zone", _manual("2"))), 422, "reference_is_lump_sum")
+
+    assert detail["message"] and _no_row(ctx)
+
+
+def test_lump_target_the_same_wrong_body_on_ordinary_rows_gives_the_old_conversion_refusal(admin_client, stage) -> None:
+    """Соседний вход: ни строка КП, ни строка договора не комплекты — отказ уже другой."""
+    ctx = _zone_scene(stage)
+    _refused(ctx.put(admin_client, _body(ctx.rows[0].id, "zone", _manual("2"))), 422, "conversion_not_needed")
+    _mark(admin_client, ctx.rows[1], "rate")  # «это ставка» комплектом не делает
+    _refused(ctx.put(admin_client, _body(ctx.rows[1].id, "zone", _manual("2"))), 422, "conversion_not_needed")
+
+
+def test_lump_target_a_row_corrected_back_to_a_rate_can_be_the_reference_target_again(admin_client, stage) -> None:
+    ctx = _zone_scene(stage)
+    _mark(admin_client, ctx.rows[0])
+    _refused(ctx.put(admin_client, _body(ctx.rows[0].id, "zone")), 422, "reference_is_lump_sum")
+
+    _unmark(admin_client, ctx.rows[0])
+
+    assert ctx.put(admin_client, _body(ctx.rows[0].id, "zone")).status_code == 204
+
+
+# --- ответ: lump строки и итоги ---------------------------------------------------------------
+
+
+def test_lump_target_the_line_carries_the_lump_view_with_the_typical_rate(admin_client, stage) -> None:
+    """Пул ключа: четыре строки договоров по 100 и строка КП (нетто 120) — обычная ставка 100 из пяти строк."""
+    ctx = _own_scene(stage, prices=("100", "100", "100", "100"))
+    unit = stage.db.get(UnitOfMeasure, stage.world.unit_id).symbol
+
+    for lump in (ctx.panel(admin_client)["line"]["lump"], ctx.offer_line(admin_client)["lump"]):
+        assert (lump["rule"], lump["is_lump"], lump["measure"]) == (False, False, True)
+        assert (D(lump["unit_price"]["net"]), D(lump["unit_price"]["shown"])) == (D("120"), D("144"))
+        assert (D(lump["typical"]["net"]), D(lump["typical"]["shown"])) == (D("100"), D("120"))
+        assert lump["typical_lines"] == 5
+        assert isinstance(lump["ratio"], str) and D(lump["ratio"]) == D("1.2")
+        assert (lump["threshold"], lump["family"], lump["unit"], lump["override"]) == (
+            "5",
+            stage.family.title,
+            unit,
+            None,
+        )
+
+
+def test_lump_target_without_a_typical_rate_the_view_has_typical_null_and_zero_lines(admin_client, stage) -> None:
+    rnd, part = _kp_part(stage)
+    ctx = Ctx(stage, rnd, part, stage.kp(part, D("144")), [])
+
+    lump = ctx.offer_line(admin_client)["lump"]
+
+    assert (lump["typical"], lump["typical_lines"], lump["ratio"]) == (None, 0, None)
+    assert (lump["rule"], lump["is_lump"]) == (False, False)  # вес 10 — ставка при любой цене
+
+
+def test_lump_target_the_override_in_the_view_carries_the_author_and_the_time(admin_client, stage) -> None:
+    ctx = _own_scene(stage)
+    written = _mark(admin_client, ctx.item)
+
+    lump = ctx.offer_line(admin_client)["lump"]
+
+    assert (lump["rule"], lump["is_lump"]) == (False, True)
+    assert lump["override"]["verdict"] == "lump"
+    assert lump["override"]["set_by"] == {"id": admin_client.user.id, "email": admin_client.user.email}
+    assert dt.datetime.fromisoformat(lump["override"]["set_at"]) == dt.datetime.fromisoformat(written["set_at"])
+
+
+def test_lump_target_a_line_without_a_variant_has_lump_null(admin_client, stage) -> None:
+    rnd, part = _kp_part(stage)
+    ctx = Ctx(stage, rnd, part, stage.kp(part, D("144"), variant=False), [])
+
+    assert ctx.offer_line(admin_client)["lump"] is None
+
+
+def test_lump_target_a_system_line_has_lump_null(admin_client, stage) -> None:
+    rnd, part = _kp_part(stage)
+    system = _put(stage, part.proposal, "R", D("1"), total=D("5000"), kind="SYSTEM")
+    ctx = Ctx(stage, rnd, part, system, [])
+
+    assert ctx.offer_line(admin_client)["lump"] is None
+
+
+def test_lump_target_lump_sum_lines_are_counted_in_the_totals_of_the_round_and_the_offer(admin_client, stage) -> None:
+    ctx = _own_scene(stage)
+    _mark(admin_client, ctx.item)
+
+    round_body = _round_ok(admin_client, stage.tender, ctx.rnd)
+    (participant,) = (p for p in round_body["participants"] if p["offer_id"] == ctx.part.offer.id)
+    by_state = participant["totals"]["not_comparable"]["by_state"]
+    offer_body = ctx.offer(admin_client)
+    (article,) = (a for a in offer_body["articles"] if a["work_category_id"] == stage.cats["R"].id)
+
+    assert by_state["lump_sum"]["lines"] == 1
+    assert D(by_state["lump_sum"]["amount"]["net"]) == D("1200")  # 120 нетто × вес 10
+    assert article["lines_totals"]["not_comparable"]["by_state"]["lump_sum"]["lines"] == 1
+
+
+def test_lump_target_a_row_that_is_not_lump_is_not_in_the_lump_sum_totals(admin_client, stage) -> None:
+    ctx = _own_scene(stage)
+
+    round_body = _round_ok(admin_client, stage.tender, ctx.rnd)
+    (participant,) = (p for p in round_body["participants"] if p["offer_id"] == ctx.part.offer.id)
+
+    assert "lump_sum" not in participant["totals"]["not_comparable"]["by_state"]
+
+
+# --- поиск «Найти в договорах» -----------------------------------------------------------------
+
+
+def test_lump_search_a_lump_contract_row_stays_in_the_results_with_the_flag_and_the_order_is_unchanged(
+    admin_client, stage
+) -> None:
+    ctx = _zone_scene(stage, prices=("100", "110", "120", "1000"))
+    before = ctx.search(admin_client, "Подготовка")
+    assert [row["analog_id"] for row in before["rows"]] == [row.id for row in ctx.rows]
+    assert all(row["lump"]["is_lump"] is False for row in before["rows"])
+
+    _mark(admin_client, ctx.rows[0])
+    after = ctx.search(admin_client, "Подготовка")
+
+    assert [row["analog_id"] for row in after["rows"]] == [row.id for row in ctx.rows]  # порядок прежний
+    assert (after["total_lines"], after["truncated"]) == (before["total_lines"], before["truncated"]) == (4, False)
+    flags = {row["analog_id"]: row["lump"] for row in after["rows"]}
+    assert flags[ctx.rows[0].id]["is_lump"] is True and flags[ctx.rows[0].id]["rule"] is False
+    assert flags[ctx.rows[0].id]["override"]["verdict"] == "lump"
+    assert all(flags[row.id]["is_lump"] is False for row in ctx.rows[1:])
+    # цены признака — в ставке показа строки КП (20 %)
+    assert (D(flags[ctx.rows[0].id]["unit_price"]["net"]), D(flags[ctx.rows[0].id]["unit_price"]["shown"])) == (
+        D("100"),
+        D("120"),
+    )
+
+
+def test_lump_search_a_marked_twin_is_not_folded_into_its_ordinary_twin_and_unmarking_folds_them_again(
+    admin_client, stage
+) -> None:
+    """Две одинаковые строки одного договора: поправка у второй выводит её из свёртки — метка и меню
+    поправки её собственные (ревью Codex PR #94, P2); снятая поправка сворачивает их снова."""
+    chain = _underground(stage)
+    others = [_contract_row(stage, D(price), chain=chain, title="Подготовка")[1] for price in ("110", "120", "1000")]
+    contract = stage.world.contract(rate_class=stage.rate_class)
+    _, proposal = stage.world.estimate(contract, vat_rate=D("0"))
+    first, second = (_row(stage, proposal, D("100"), chain=chain, title="Подготовка") for _ in range(2))
+    rnd, part = _kp_part(stage)
+    ctx = Ctx(stage, rnd, part, stage.kp(part, D("144")), [first, second, *others])
+
+    def twins() -> list[dict]:
+        rows = ctx.search(admin_client, "Подготовка")["rows"]
+        return [row for row in rows if {first.id, second.id} & set(row["ids"])]
+
+    (folded,) = twins()
+    assert folded["ids"] == sorted([first.id, second.id]) and folded["lump"]["is_lump"] is False
+
+    _mark(admin_client, second)
+    shown = {row["analog_id"]: row for row in twins()}
+    assert set(shown) == {first.id, second.id}
+    assert shown[second.id]["ids"] == [second.id] and shown[first.id]["ids"] == [first.id]
+    assert shown[second.id]["lump"]["is_lump"] is True and shown[second.id]["lump"]["override"]["verdict"] == "lump"
+    assert shown[first.id]["lump"]["is_lump"] is False and shown[first.id]["lump"]["override"] is None
+    # обычная строка-близнец по-прежнему годится в цель
+    _save_ctx(admin_client, ctx, _body(first.id))
+
+    _mark(admin_client, second, "rate")
+    corrected = {row["analog_id"]: row for row in twins()}
+    assert set(corrected) == {first.id, second.id}  # поправка «это ставка» тоже видна у своей строки
+    assert corrected[second.id]["lump"]["override"]["verdict"] == "rate"
+
+    _unmark(admin_client, second)
+    (again,) = twins()
+    assert again["ids"] == sorted([first.id, second.id]) and again["lump"]["override"] is None
+
+
+def test_lump_search_a_row_without_a_family_has_lump_null(admin_client, stage) -> None:
+    ctx = _zone_scene(stage)
+    contract = stage.world.contract(rate_class=stage.rate_class)
+    _, proposal = stage.world.estimate(contract, vat_rate=D("0"))
+    bare = _row(stage, proposal, D("100"), title="Подготовка без семьи")
+    stage.db.execute(sa.delete(ContextMember).where(ContextMember.position_item_id == bare.id))
+    stage.db.flush()
+
+    found = {row["analog_id"]: row for row in ctx.search(admin_client, "без семьи")["rows"]}
+
+    assert found[bare.id]["lump"] is None
+
+
+def test_lump_search_the_lump_flag_in_the_results_follows_a_rate_correction(admin_client, stage) -> None:
+    ctx = _zone_scene(stage, prices=("100", "110", "120", "1000"))
+    _mark(admin_client, ctx.rows[0], "lump")
+    _mark(admin_client, ctx.rows[0], "rate")
+
+    found = {row["analog_id"]: row["lump"] for row in ctx.search(admin_client, "Подготовка")["rows"]}
+
+    assert found[ctx.rows[0].id]["is_lump"] is False
+    assert found[ctx.rows[0].id]["override"]["verdict"] == "rate"
+
+
+def test_lump_search_a_lump_sum_kp_row_opens_no_search(admin_client, stage) -> None:
+    ctx = _zone_scene(stage)
+    _mark(admin_client, ctx.item)
+
+    response = admin_client.get(f"{ctx.url}/reference-search", params={"q": "Подготовка"})
+
+    _refused(response, 422, "reference_not_applicable")
+
+
+def test_lump_search_the_same_query_on_a_row_that_is_not_lump_sum_is_answered(admin_client, stage) -> None:
+    ctx = _zone_scene(stage)
+
+    assert admin_client.get(f"{ctx.url}/reference-search", params={"q": "Подготовка"}).status_code == 200

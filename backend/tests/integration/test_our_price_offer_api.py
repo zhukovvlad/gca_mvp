@@ -17,7 +17,7 @@ from decimal import Decimal
 import pytest
 import sqlalchemy as sa
 
-from models import ContextMember, FamilyParameter, PositionItem, SemanticJob, UnitOfMeasure
+from models import ContextMember, FamilyParameter, LumpSumOverride, PositionItem, SemanticJob, UnitOfMeasure
 from tests import comparison_fixtures as fx
 from tests.integration.test_our_price_load import World
 from tests.integration.test_our_price_round_api import (
@@ -87,6 +87,7 @@ LINE_KEYS = {
     "no_history_reason",
     "group",
     "unit_mismatch",
+    "lump",
     "target_kind",
     "choice",
     "agreed",
@@ -199,6 +200,13 @@ def _history(stage_, unit_cost, *, vat=D("0"), rate_class="own", contractor=None
     _put(stage_, proposal, cat, unit_cost, **kwargs)
     stage_.db.flush()
     return contract, estimate, proposal
+
+
+def _as_rate(stage_, item):
+    """Строка весом 1 в мерной единице без обычной ставки ключа — комплект по правилу; тесты ниже
+    сравнивают её как ставку, поэтому фикстура ставит поправку «это ставка» (спека строк-сумм §3)."""
+    stage_.db.add(LumpSumOverride(position_item_id=item.id, verdict="rate", set_by=stage_.world.admin.id))
+    stage_.db.flush()
 
 
 def _second_variant(stage_, text="80 мм"):
@@ -587,6 +595,7 @@ class TestLineForm:
         rnd = stage.round()
         part = stage.participant(rnd, "Подрядчик А", vat=D("0"))
         item = stage.kp(part, D("150"), qty=D("1"))
+        _as_rate(stage, item)
 
         line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
 
@@ -1321,6 +1330,7 @@ class TestLinePanelAuto:
         rnd = stage.round()
         part = stage.participant(rnd, "Подрядчик А", vat=D("0"))
         item = stage.kp(part, D("150"), qty=D("1"))
+        _as_rate(stage, item)
 
         panel = _panel(member_client, stage.tender, rnd, part, item)
 

@@ -86,6 +86,8 @@ class WorkHistoryLine:
     forms: Mapping[int, Form] = field(default_factory=dict)
     #: Единица строки — `catalog_positions.unit_id` её каталожной позиции; нужна справочным блокам для пересчёта.
     unit_id: int | None = None
+    #: Строка похожа на комплект (спека строк-сумм §1, с учётом поправки): не кандидат пула нигде.
+    lump: bool = False
 
 
 @dataclass(frozen=True)
@@ -364,13 +366,20 @@ class WorkHistory:
         #: Семьи с флажком «зона обязательна»: пул такой семьи не берёт строки договоров без зоны.
         self.zone_required = zone_required
         self._lines_by_family: dict[int, list[WorkHistoryLine]] = {}
+        self._lump_ids: set[int] = set()
         for line in lines:
             self._lines_by_family.setdefault(line.family_id, []).append(line)
+            if line.lump:
+                self._lump_ids.add(line.position_item_id)
         self._pools: dict[int, _FamilyPool] = {}
 
     def lines_of(self, family_id: int) -> Sequence[WorkHistoryLine]:
         """Строки истории семьи, как загружены; без запросов."""
         return self._lines_by_family.get(family_id, ())
+
+    def is_lump(self, position_item_id: int) -> bool:
+        """Строка договора истории похожа на комплект (по строкам истории; вне истории — нет)."""
+        return position_item_id in self._lump_ids
 
     def pool(self, family_id: int) -> _FamilyPool:
         found = self._pools.get(family_id)
@@ -384,6 +393,8 @@ class WorkHistory:
         for line in self._lines_by_family.get(family_id, ()):
             contract = self.contracts.get(line.contract_id)
             if contract is None:
+                continue
+            if line.lump:  # комплект договора не кандидат нигде: единственное место отбора (спека строк-сумм §4 п. 4)
                 continue
             if not is_price(line.unit_price) or not is_weight(line.weight):
                 continue

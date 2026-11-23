@@ -25,6 +25,7 @@ from routers import estimate_vat as estimate_vat_router
 from routers import estimates as estimates_router
 from routers import import_jobs as import_jobs_router
 from routers import inflation_series as inflation_series_router
+from routers import lump_sum as lump_sum_router
 from routers import rate_standards as rate_standards_router
 from routers import references as references_router
 from routers import reports as reports_router
@@ -36,7 +37,7 @@ from routers import units
 from services.maintenance import run_startup_maintenance
 from services.semantic_client import ModelClient, OpenRouterClient
 from services.semantic_runner import SemanticRunner
-from services.status_cache import status_cache
+from services.status_cache import status_cache, typical_rates_cache
 from storage import get_storage
 
 
@@ -189,6 +190,7 @@ async def invalidate_status_cache_on_write(request: Request, call_next):
         return await call_next(request)
     finally:
         status_cache.invalidate()
+        typical_rates_cache.invalidate()
 
 
 # Auth router — без обязательной авторизации (login, me, refresh, logout)
@@ -242,6 +244,8 @@ app.include_router(reports_router.router, dependencies=_auth_dep)
 # admin (§2.7, §2.10); каждый маршрут несёт СВОЙ `Depends(require_admin)`
 # (см. докстринг routers/semantic.py), здесь — только аутентификация.
 app.include_router(semantic_router.router, dependencies=_auth_dep)
+# Поправка «комплект или ставка» у строки сметы — только admin (спека строк-сумм §3).
+app.include_router(lump_sum_router.router, dependencies=_auth_dep)
 
 
 @app.get("/api/health")

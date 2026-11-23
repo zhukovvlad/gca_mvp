@@ -1200,3 +1200,88 @@ def test_kp_file_header_text_is_raw_data():
     head = header(tender_title="=Т", object_title="-О", contractor_title="@П")
     assert (head.tender, head.object, head.contractor) == ("=Т", "-О", "@П")
     assert not head.filename.startswith("'")
+
+
+# ---------------------------------------------------------------------------
+#  Цель на строку договора-комплект (спека строк-сумм §5 п. 2): признак даёт `FileContext.lump_targets`
+# ---------------------------------------------------------------------------
+
+
+def _file_with_targets(src_line, res, *, saved, lump_targets=frozenset(), references=None, agreements=None):
+    evaluation = OfferEvaluation(lines={res.position_item_id: res}, groups=())
+    (row,) = build_file_rows(
+        [src_line],
+        evaluation,
+        comments={},
+        agreements=agreements or {},
+        targets={src_line.position_item_id: saved},
+        references=references or {},
+        context=context(contracts=(1, 2), lump_targets=lump_targets),
+    )
+    assert isinstance(row, FileLine)
+    return row
+
+
+def _two_analogs():
+    """Аналоги 100 (договор 1, нетто 100, самая низкая) и 200 (договор 2, нетто 130); КП 160."""
+    return result(contracts=(rate(1, "100"), rate(2, "130")), ours=D(100), kp_unit_net=D(160), kp_total_net=D(320))
+
+
+def test_kp_file_a_saved_analog_acts_without_the_lump_flag():
+    row = _file_with_targets(line(unit_price=D(160), total=D(320)), _two_analogs(), saved=("analog", 200))
+
+    assert row.ours == D(130)
+
+
+def test_kp_file_a_saved_analog_that_became_a_lump_falls_back_to_the_lowest_of_the_rest():
+    row = _file_with_targets(
+        line(unit_price=D(160), total=D(320)), _two_analogs(), saved=("analog", 200), lump_targets=frozenset({1})
+    )
+
+    assert row.ours == D(100)  # самая низкая из оставшихся, как у строки без выбора
+    assert row.source is not None and "100,00 ₽ за м2" in row.source
+
+
+def test_kp_file_the_lump_flag_of_another_row_does_not_reset_this_rows_target():
+    row = _file_with_targets(
+        line(unit_price=D(160), total=D(320)), _two_analogs(), saved=("analog", 200), lump_targets=frozenset({2})
+    )
+
+    assert row.ours == D(130)
+
+
+def test_kp_file_a_reference_target_on_a_lump_row_gives_no_price_and_no_template_comment():
+    from tests.unit.test_ref_analogs_comment import no_history, source
+
+    src = line(unit_price=D(160), total=D(320))
+    res = no_history(kp_unit_net=D(160), kp_total_net=D(320))
+    active = _file_with_targets(src, res, saved=("reference", 555), references={1: source("100")})
+    reset = _file_with_targets(
+        src, res, saved=("reference", 555), references={1: source("100")}, lump_targets=frozenset({1})
+    )
+
+    assert active.ours == D(100) and active.comment_kind == "template"
+    assert (reset.ours, reset.source, reset.comment, reset.comment_kind, reset.deviation_pct) == (
+        None, None, None, None, None,
+    )
+
+
+def test_kp_file_an_agreement_on_a_lump_sum_row_still_gives_the_price():
+    src = line(unit_price=D(160), total=D(320))
+    res = result(state=LineState.lump_sum, ladder=None, contracts=(), range=None, ours=None, position=None)
+
+    row = _file_with_targets(
+        src, res, saved=("reference", 555), lump_targets=frozenset({1}), agreements={1: (D(90), "01.11.2026")}
+    )
+
+    assert row.ours == D(90) and row.source == "Договорились 01.11.2026"
+
+
+def test_kp_file_a_lump_sum_row_without_an_agreement_has_no_price_and_no_template_comment():
+    src = line(unit_price=D(160), total=D(320))
+    res = result(state=LineState.lump_sum, ladder=None, contracts=(), range=None, ours=None, position=None)
+
+    row = _file_with_targets(src, res, saved=("analog", 100))
+
+    assert (row.ours, row.source, row.comment, row.comment_kind) == (None, None, None, None)
+

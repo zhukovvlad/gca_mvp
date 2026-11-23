@@ -1,0 +1,376 @@
+{
+ "lines_total": {
+  "history": 4766,
+  "kp": 63575
+ },
+ "unknown_base": {
+  "history": {
+   "lines": 0,
+   "volume_one": 0
+  },
+  "kp": {
+   "lines": 0,
+   "volume_one": 0
+  }
+ },
+ "volume_one": {
+  "history": {
+   "<50": {
+    "MON": 4,
+    "PCS": 21,
+    "_all": 25
+   },
+   "<200": {
+    "MON": 4,
+    "PCS": 17,
+    "TON": 1,
+    "_all": 22
+   },
+   "<2": {
+    "PCS": 168,
+    "M3": 1,
+    "M2": 1,
+    "_all": 170
+   },
+   "нет обычной ставки": {
+    "SET": 2,
+    "M2": 17,
+    "M": 16,
+    "PCS": 18,
+    "_all": 53
+   },
+   "<5": {
+    "PCS": 36,
+    "TON": 1,
+    "M2": 1,
+    "_all": 38
+   },
+   "<10": {
+    "PCS": 17,
+    "TON": 2,
+    "_all": 19
+   },
+   "<20": {
+    "PCS": 18,
+    "MON": 7,
+    "_all": 25
+   },
+   ">=200": {
+    "PCS": 36,
+    "M": 85,
+    "M2": 21,
+    "MON": 1,
+    "_all": 143
+   }
+  },
+  "kp": {
+   "<20": {
+    "MON": 8,
+    "PCS": 75,
+    "M2": 22,
+    "_all": 105
+   },
+   "нет обычной ставки": {
+    "PCS": 108,
+    "M2": 50,
+    "M": 24,
+    "M3": 18,
+    "SET": 2,
+    "_all": 202
+   },
+   "<2": {
+    "PCS": 1853,
+    "M3": 328,
+    "M2": 657,
+    "M": 94,
+    "TON": 35,
+    "MON": 27,
+    "_all": 2994
+   },
+   "<10": {
+    "PCS": 132,
+    "MON": 5,
+    "M2": 15,
+    "M": 1,
+    "M3": 2,
+    "_all": 155
+   },
+   ">=200": {
+    "M2": 428,
+    "M": 175,
+    "PCS": 156,
+    "TON": 10,
+    "MON": 4,
+    "M3": 67,
+    "_all": 840
+   },
+   "<200": {
+    "PCS": 107,
+    "MON": 14,
+    "M2": 128,
+    "M3": 17,
+    "TON": 1,
+    "_all": 267
+   },
+   "<5": {
+    "PCS": 540,
+    "M3": 23,
+    "M": 8,
+    "MON": 9,
+    "TON": 9,
+    "M2": 6,
+    "_all": 595
+   },
+   "<50": {
+    "PCS": 167,
+    "MON": 13,
+    "M2": 66,
+    "TON": 4,
+    "M3": 3,
+    "_all": 253
+   }
+  }
+ },
+ "thresholds": {
+  "5/50": {
+   "history_sums": 200,
+   "history_families": 36,
+   "history_applicable": 200,
+   "history_zones": {
+    "territory": 17,
+    "whole": 5,
+    "null": 132,
+    "underground": 18,
+    "aboveground": 28
+   },
+   "kp_sums_all_estimates": 1312,
+   "differs_from_recorded_prices": 2,
+   "kp_sums_in_snapshot": 1203,
+   "kp_zones_in_snapshot": {
+    "underground": 227,
+    "aboveground": 516,
+    "null": 261,
+    "territory": 172,
+    "whole": 27
+   },
+   "kp_states_today": {
+    "unit_mismatch": 524,
+    "no_history": 389,
+    "comparable": 179,
+    "no_variant": 68,
+    "no_zone": 43
+   },
+   "kp_lump_sum_expected": 1135,
+   "kp_lump_sum_expected_states_today": {
+    "unit_mismatch": 524,
+    "no_history": 389,
+    "comparable": 179,
+    "no_zone": 43
+   },
+   "kp_not_applicable": {
+    "no_variant_today": 68
+   },
+   "kp_not_territory": 1031,
+   "kp_find_family_sum": 333,
+   "kp_find_variant_sum": 308,
+   "kp_find_family_sum_states_today": {
+    "comparable": 167,
+    "unit_mismatch": 81,
+    "no_zone": 43,
+    "no_history": 42
+   }
+  },
+  "10/50": {
+   "history_sums": 198,
+   "history_families": 36,
+   "history_applicable": 198,
+   "history_zones": {
+    "territory": 17,
+    "whole": 5,
+    "null": 130,
+    "underground": 18,
+    "aboveground": 28
+   },
+   "kp_sums_all_estimates": 1294,
+   "differs_from_recorded_prices": 2,
+   "kp_sums_in_snapshot": 1186,
+   "kp_zones_in_snapshot": {
+    "underground": 223,
+    "aboveground": 506,
+    "null": 258,
+    "territory": 172,
+    "whole": 27
+   },
+   "kp_states_today": {
+    "unit_mismatch": 522,
+    "no_history": 381,
+    "comparable": 178,
+    "no_variant": 62,
+    "no_zone": 43
+   },
+   "kp_lump_sum_expected": 1124,
+   "kp_lump_sum_expected_states_today": {
+    "unit_mismatch": 522,
+    "no_history": 381,
+    "comparable": 178,
+    "no_zone": 43
+   },
+   "kp_not_applicable": {
+    "no_variant_today": 62
+   },
+   "kp_not_territory": 1014,
+   "kp_find_family_sum": 333,
+   "kp_find_variant_sum": 306,
+   "kp_find_family_sum_states_today": {
+    "comparable": 167,
+    "unit_mismatch": 81,
+    "no_zone": 43,
+    "no_history": 42
+   }
+  },
+  "3/50": {
+   "history_sums": 201,
+   "history_families": 37,
+   "history_applicable": 201,
+   "history_zones": {
+    "territory": 17,
+    "whole": 5,
+    "null": 132,
+    "underground": 18,
+    "aboveground": 29
+   },
+   "kp_sums_all_estimates": 1328,
+   "differs_from_recorded_prices": 2,
+   "kp_sums_in_snapshot": 1219,
+   "kp_zones_in_snapshot": {
+    "underground": 228,
+    "aboveground": 527,
+    "null": 265,
+    "territory": 172,
+    "whole": 27
+   },
+   "kp_states_today": {
+    "unit_mismatch": 524,
+    "no_history": 401,
+    "comparable": 180,
+    "no_variant": 71,
+    "no_zone": 43
+   },
+   "kp_lump_sum_expected": 1148,
+   "kp_lump_sum_expected_states_today": {
+    "unit_mismatch": 524,
+    "no_history": 401,
+    "comparable": 180,
+    "no_zone": 43
+   },
+   "kp_not_applicable": {
+    "no_variant_today": 71
+   },
+   "kp_not_territory": 1047,
+   "kp_find_family_sum": 342,
+   "kp_find_variant_sum": 308,
+   "kp_find_family_sum_states_today": {
+    "comparable": 167,
+    "unit_mismatch": 89,
+    "no_zone": 43,
+    "no_history": 43
+   }
+  },
+  "5/20": {
+   "history_sums": 225,
+   "history_families": 41,
+   "history_applicable": 225,
+   "history_zones": {
+    "territory": 34,
+    "whole": 7,
+    "null": 134,
+    "underground": 21,
+    "aboveground": 29
+   },
+   "kp_sums_all_estimates": 1492,
+   "differs_from_recorded_prices": 2,
+   "kp_sums_in_snapshot": 1363,
+   "kp_zones_in_snapshot": {
+    "underground": 235,
+    "aboveground": 549,
+    "null": 263,
+    "territory": 288,
+    "whole": 28
+   },
+   "kp_states_today": {
+    "unit_mismatch": 595,
+    "no_history": 458,
+    "comparable": 199,
+    "no_variant": 68,
+    "no_zone": 43
+   },
+   "kp_lump_sum_expected": 1295,
+   "kp_lump_sum_expected_states_today": {
+    "unit_mismatch": 595,
+    "no_history": 458,
+    "comparable": 199,
+    "no_zone": 43
+   },
+   "kp_not_applicable": {
+    "no_variant_today": 68
+   },
+   "kp_not_territory": 1075,
+   "kp_find_family_sum": 338,
+   "kp_find_variant_sum": 312,
+   "kp_find_family_sum_states_today": {
+    "comparable": 168,
+    "unit_mismatch": 81,
+    "no_history": 46,
+    "no_zone": 43
+   }
+  },
+  "5/100": {
+   "history_sums": 191,
+   "history_families": 33,
+   "history_applicable": 191,
+   "history_zones": {
+    "territory": 11,
+    "whole": 5,
+    "null": 132,
+    "underground": 18,
+    "aboveground": 25
+   },
+   "kp_sums_all_estimates": 1229,
+   "differs_from_recorded_prices": 5,
+   "kp_sums_in_snapshot": 1135,
+   "kp_zones_in_snapshot": {
+    "underground": 220,
+    "aboveground": 503,
+    "null": 260,
+    "territory": 125,
+    "whole": 27
+   },
+   "kp_states_today": {
+    "unit_mismatch": 498,
+    "no_history": 360,
+    "comparable": 166,
+    "no_variant": 68,
+    "no_zone": 43
+   },
+   "kp_lump_sum_expected": 1067,
+   "kp_lump_sum_expected_states_today": {
+    "unit_mismatch": 498,
+    "no_history": 360,
+    "comparable": 166,
+    "no_zone": 43
+   },
+   "kp_not_applicable": {
+    "no_variant_today": 68
+   },
+   "kp_not_territory": 1010,
+   "kp_find_family_sum": 327,
+   "kp_find_variant_sum": 305,
+   "kp_find_family_sum_states_today": {
+    "comparable": 165,
+    "unit_mismatch": 81,
+    "no_zone": 43,
+    "no_history": 38
+   }
+  }
+ }
+}

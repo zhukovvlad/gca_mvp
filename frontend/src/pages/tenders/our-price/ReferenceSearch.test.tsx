@@ -9,6 +9,7 @@ import {
   OUR_PRICE_OFFER_ID,
   OUR_PRICE_ROUND_ID,
   OUR_PRICE_TENDER_ID,
+  lumpFixture,
   refLinkRowFixture,
   referenceLineViewFixture,
   referenceSearchFixture,
@@ -292,5 +293,131 @@ describe("поиск по договорам: выбор цели", () => {
     await search("подготовка");
     await userEvent.click(within(await screen.findByTestId("ref-row-search-9001")).getByRole("button", { name: /сделать целью/ }));
     await waitFor(() => expect(asked().length).toBeGreaterThanOrEqual(2));
+  });
+});
+
+describe("поиск по договорам: «похоже на комплект»", () => {
+  const LUMP_PATH = "/api/v1/position-items/:id/lump-sum";
+  const AUTHOR = { id: 7, email: "boss@example.test" };
+  const lumpRow = (over: Parameters<typeof lumpFixture>[0] = {}) =>
+    referenceSearchRowFixture({ analog_id: 9701, ids: [9701], lump: lumpFixture(over) });
+
+  function serveLump() {
+    const asked: Array<{ method: string; id: string; body: unknown }> = [];
+    const handle = async ({ request, params }: { request: Request; params: Record<string, unknown> }) => {
+      const text = await request.text();
+      asked.push({ method: request.method, id: String(params.id), body: text === "" ? null : JSON.parse(text) });
+      return request.method === "PUT" ? HttpResponse.json({}) : new HttpResponse(null, { status: 204 });
+    };
+    server.use(http.put(LUMP_PATH, handle), http.delete(LUMP_PATH, handle));
+    return asked;
+  }
+
+  it("строка-комплект: метка, подсказка с кратностью, «сделать целью» погашено с подсказкой", async () => {
+    serve();
+    handlerState.referenceSearchResult = referenceSearchFixture([lumpRow()]);
+    renderSheet();
+    await search("воздуховод");
+    const row = await screen.findByTestId("ref-row-search-9701");
+    const mark = within(row).getByTestId("search-lump-mark");
+    expect(mark).toHaveTextContent("похоже на комплект");
+    expect(mark).not.toHaveTextContent("поправлено вручную");
+    expect(mark.getAttribute("title")).toMatch(/^цена в 16\s989 раз выше обычной ставки семьи$/);
+    expect(within(row).getByRole("button", { name: /сделать целью/ })).toBeDisabled();
+    expect(within(row).getByTestId("ref-row-search-9701-not-target")).toHaveAttribute(
+      "title",
+      "Похоже на комплект — не цель для ставки"
+    );
+  });
+
+  it("поправка администратора «это комплект»: метка с «поправлено вручную»", async () => {
+    serve();
+    handlerState.referenceSearchResult = referenceSearchFixture([
+      lumpRow({ rule: false, override: { verdict: "lump", set_by: AUTHOR, set_at: "2026-11-22T09:30:00+00:00" } }),
+    ]);
+    renderSheet();
+    await search("воздуховод");
+    expect(await screen.findByTestId("search-lump-mark")).toHaveTextContent("похоже на комплект · поправлено вручную");
+  });
+
+  it("строка без признака (is_lump=false и lump=null): метки нет, цель выбирается как раньше", async () => {
+    serve();
+    handlerState.referenceSearchResult = referenceSearchFixture([
+      lumpRow({ is_lump: false, rule: false }),
+      referenceSearchRowFixture({ analog_id: 9702, ids: [9702], lump: null }),
+    ]);
+    renderSheet();
+    await search("воздуховод");
+    const rate = await screen.findByTestId("ref-row-search-9701");
+    const plain = screen.getByTestId("ref-row-search-9702");
+    expect(screen.queryByTestId("search-lump-mark")).not.toBeInTheDocument();
+    expect(within(rate).getByRole("button", { name: /сделать целью/ })).toBeEnabled();
+    expect(within(plain).getByRole("button", { name: /сделать целью/ })).toBeEnabled();
+  });
+
+  it("admin: меню строки с тремя положениями; выбор уходит сразу (PUT lump, DELETE для «как решило правило»)", async () => {
+    serve();
+    const asked = serveLump();
+    handlerState.referenceSearchResult = referenceSearchFixture([lumpRow()]);
+    renderSheet();
+    await search("воздуховод");
+    await userEvent.click(await screen.findByTestId("ref-row-search-9701-lump-menu"));
+    expect(await screen.findByTestId("ref-row-search-9701-lump-rule")).toHaveTextContent("Как решило правило (комплект)");
+    expect(screen.getByTestId("ref-row-search-9701-lump-lump")).toHaveTextContent("Это комплект");
+    await userEvent.click(screen.getByTestId("ref-row-search-9701-lump-rate"));
+    await waitFor(() => expect(asked).toHaveLength(1));
+    expect(asked[0]).toEqual({ method: "PUT", id: "9701", body: { verdict: "rate" } });
+  });
+
+  it("admin: возврат к правилу — DELETE", async () => {
+    serve();
+    const asked = serveLump();
+    handlerState.referenceSearchResult = referenceSearchFixture([
+      lumpRow({ override: { verdict: "rate", set_by: AUTHOR, set_at: "2026-11-22T09:30:00+00:00" }, is_lump: false }),
+    ]);
+    renderSheet();
+    await search("воздуховод");
+    await userEvent.click(await screen.findByTestId("ref-row-search-9701-lump-menu"));
+    await userEvent.click(await screen.findByTestId("ref-row-search-9701-lump-rule"));
+    await waitFor(() => expect(asked).toHaveLength(1));
+    expect(asked[0]).toEqual({ method: "DELETE", id: "9701", body: null });
+  });
+
+  it("member: метка есть, меню поправки нет; строка с lump=null меню не имеет и у admin", async () => {
+    serve();
+    handlerState.referenceSearchResult = referenceSearchFixture([lumpRow()]);
+    const view = renderSheet(MEMBER);
+    await search("воздуховод");
+    await screen.findByTestId("search-lump-mark");
+    expect(screen.queryByTestId("ref-row-search-9701-lump-menu")).not.toBeInTheDocument();
+    view.unmount();
+
+    handlerState.referenceSearchResult = referenceSearchFixture([
+      referenceSearchRowFixture({ analog_id: 9702, ids: [9702], lump: null }),
+    ]);
+    renderSheet(ADMIN);
+    await search("подготовка");
+    await screen.findByTestId("ref-row-search-9702");
+    expect(screen.queryByTestId("ref-row-search-9702-lump-menu")).not.toBeInTheDocument();
+  });
+
+  it("422 reference_is_lump_sum при выборе цели: панель перечитывается", async () => {
+    let lineReads = 0;
+    server.use(
+      http.get(LINE_PATH, () => {
+        lineReads += 1;
+        return HttpResponse.json(referenceLineViewFixture({ zones: [] }));
+      }),
+      http.put(`${LINE_PATH}/target`, () =>
+        HttpResponse.json({ detail: { code: "reference_is_lump_sum", message: "Комплект." } }, { status: 422 })
+      )
+    );
+    handlerState.referenceSearchResult = referenceSearchFixture([referenceSearchRowFixture()]);
+    renderSheet();
+    await search("подготовка");
+    const button = within(await screen.findByTestId("ref-row-search-9001")).getByRole("button", { name: /сделать целью/ });
+    const before = lineReads;
+    await userEvent.click(button);
+    await waitFor(() => expect(lineReads).toBeGreaterThan(before));
   });
 });

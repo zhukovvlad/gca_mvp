@@ -436,9 +436,14 @@ def reference_marks(
     return marks
 
 
-def fold_group_rows(rows: Sequence[RefRow], titles: Mapping[int, str]) -> list[tuple[RefRow, tuple[int, ...]]]:
+def fold_group_rows(
+    rows: Sequence[RefRow], titles: Mapping[int, str], lump: Mapping[int, typing.Hashable] | None = None
+) -> list[tuple[RefRow, tuple[int, ...]]]:
     """Свёртка строк группы (спека §2.11): одного договора, с равными наименованием, единицей,
-    ценой, пересчётом (или причиной его отсутствия), зоной и пометкой. Порядок — первого появления."""
+    ценой, пересчётом (или причиной его отсутствия), зоной и пометкой. Порядок — первого появления.
+
+    `lump` — строка -> решение «комплект или ставка» (поиск): строки с разным решением не
+    сворачиваются, иначе метка и меню поправки скрытой строки достались бы представителю."""
 
     def key(row: RefRow) -> FoldKey:
         conversion = row.conversion
@@ -451,6 +456,7 @@ def fold_group_rows(rows: Sequence[RefRow], titles: Mapping[int, str]) -> list[t
             basis=(row.no_conversion_reason or "") if conversion is None else conversion.basis,
             zone=row.zone,
             mark=row.outlier_ratio,
+            lump=None if lump is None else lump.get(row.position_item_id),
         )
 
     return fold_rows(rows, key, lambda row: row.position_item_id)

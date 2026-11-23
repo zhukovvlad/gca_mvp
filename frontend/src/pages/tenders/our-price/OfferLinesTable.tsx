@@ -24,6 +24,7 @@ import {
   EMPTY_LINES_LABEL,
   LINE_COLUMN,
   lineStateLabel,
+  lumpCaption,
   RUNG_LEVEL_LABEL,
   RUNG_MANUAL_INACTIVE_TAG,
   RUNG_MANUAL_TAG,
@@ -297,7 +298,7 @@ export function OfferLinesTable({ lines, layout, vat, rateClass, canResolve = fa
               <span
                 className={cn(
                   "font-mono tabular-nums",
-                  line.state === "unit_mismatch" && "text-fg-muted"
+                  (line.state === "unit_mismatch" || line.state === "lump_sum") && "text-fg-muted"
                 )}
               >
                 {diff === null ? DASH : formatSigned(diff)}
@@ -305,6 +306,14 @@ export function OfferLinesTable({ lines, layout, vat, rateClass, canResolve = fa
               {label !== null && (
                 <Badge variant="outline" className="mt-0.5 block h-auto max-w-full whitespace-normal rounded-lg py-0.5 text-left">
                   <LineStateText line={line} label={label} canResolve={canResolve} />
+                  {line.state === "lump_sum" && line.lump !== null && (
+                    <span
+                      data-testid={`lump-caption-${line.position_item_id}`}
+                      className="block text-[0.6875rem] leading-snug text-fg-secondary"
+                    >
+                      {lumpCaption(line.lump)}
+                    </span>
+                  )}
                 </Badge>
               )}
             </div>

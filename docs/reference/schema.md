@@ -842,3 +842,16 @@ kp_line_targets                      -- (+7 колонок, 0027): цель-«с
 ## 13. Флажок семьи «зона обязательна»
 
 Миграция `0028` ([спека зоны как предпочтения](../superpowers/specs/2026-11-20-zone-as-preference-design.md), раздел 4): три колонки `work_families` — `zone_required` (`NOT NULL`, по умолчанию `false`), `zone_required_changed_by` (`users`, `RESTRICT`) и `zone_required_changed_at`; CHECK `ck_work_families_zone_required_author` — автор без времени не бывает, время без автора — запись стартового списка. Стартовый список — семь названий (`lower(btrim(title))`: двери, облицовка керамогранитом, покраска стен, вывоз и утилизация грунта, светильники, монтаж воздуховодов вентиляции, изоляция воздуховодов) у неархивных семей во всех единицах; не найденные названия миграция печатает в вывод. `downgrade` снимает три колонки и ограничение. Литерал CHECK продублирован константой в `models.py` и в миграции, паритет — `test_zone_required_schema.py::TestParityWithMigration`.
+
+## 14. Поправки «комплект или ставка»
+
+Миграция `0029` ([спека строк-сумм](../superpowers/specs/2026-11-22-lump-sum-lines-design.md), раздел 3): одна новая таблица, существующие не меняются. Отсутствие поправки — отсутствие строки («как решило правило»). Таблица — в `_DOMAIN_TABLES` тестов.
+
+```
+lump_sum_overrides                   -- решение администратора о строке сметы: комплект это или ставка
+  position_item_id PK → position_items ON DELETE CASCADE
+  verdict text NOT NULL, set_by NOT NULL → users ON DELETE RESTRICT, set_at timestamptz NOT NULL default now()
+  # CHECK ck_lump_sum_overrides_verdict: verdict IN ('lump', 'rate')
+```
+
+Каскад по строке уносит поправку при замене и удалении сметы, договора, участника, раунда и тендера; замена сметы договора (`_replace_existing`) предупреждает о потерянных поправках. Автор — `RESTRICT`: пользователь с поправками не удаляется. Литерал CHECK продублирован константой `CK_LUMP_SUM_VERDICT` в `models.py` и в миграции, паритет — `test_lump_sum_load.py::TestParityWithMigration`. `downgrade` удаляет таблицу вместе с поправками.
