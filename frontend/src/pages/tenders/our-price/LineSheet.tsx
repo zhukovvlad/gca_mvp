@@ -321,7 +321,10 @@ function PanelContent({
           canEdit={canEdit}
         />
       )}
-      {line.state !== "lump_sum" && line.lump !== null && <LumpBlock line={line} canEdit={canEdit} vat={vat} />}
+      {/* У строки со ступенью блок поправки стоит в «Сравнении» сразу под карточками (макет, состояние 3). */}
+      {line.state !== "lump_sum" && line.lump !== null && !(line.kind === "work" && line.work_rung !== null) && (
+        <LumpBlock line={line} canEdit={canEdit} vat={vat} />
+      )}
       {line.rungs.length > 0 && (
         <Ladder
           line={line}
@@ -551,6 +554,7 @@ function WorkComparison({ tenderId, roundId, offerId, seriesId, line, data, vat,
         busy={put.isPending || del.isPending}
         onChoose={choose}
       />
+      {line.lump !== null && <LumpBlock line={line} canEdit={canEdit} vat={vat} />}
       <h4 className="pt-1 text-xs font-semibold uppercase tracking-wide text-fg-secondary">{SHEET_SECTION.analogs}</h4>
       <AnalogsTable
         analogs={data.analogs}

@@ -968,12 +968,15 @@ describe("панель строки, похожей на комплект", () =
     await waitFor(() => expect(asked.length).toBeGreaterThanOrEqual(2));
   });
 
-  it("сравнимая строка с lump: блок поправки есть под «Сравнением»", async () => {
+  it("сравнимая строка с lump: блок поправки в «Сравнении» сразу под карточками, раньше списка аналогов", async () => {
     serve(() => workLineViewFixture({ line: { lump: lumpFixture({ rule: false, is_lump: false }) } }));
     renderSheet();
     const block = await screen.findByTestId("lump-block");
     const comparison = screen.getByTestId("sheet-comparison");
-    expect(comparison.compareDocumentPosition(block) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(comparison).toContainElement(block);
+    const [firstAnalog] = within(comparison).getAllByTestId(/^analog-\d+$/);
+    expect(block.compareDocumentPosition(firstAnalog) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getAllByTestId("lump-block")).toHaveLength(1);
     expect(within(block).getByRole("button", { name: "Как решило правило (ставка)" })).toBeInTheDocument();
     expect(screen.queryByTestId("lump-why")).not.toBeInTheDocument();
   });
