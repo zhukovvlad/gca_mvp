@@ -3512,7 +3512,13 @@ export interface WorkRung {
 /** Область подбора аналогов по зоне: `own` - зона строки КП, `other` - остальные зоны и строки без зоны, `any` - все. */
 export type ZoneScope = "own" | "other" | "any";
 
-export type NoHistoryReason = "no_family" | "path_conflict" | "composite" | "no_params" | "no_zone_match";
+export type NoHistoryReason =
+  | "no_family"
+  | "path_conflict"
+  | "composite"
+  | "no_params"
+  | "no_zone_match"
+  | "excluded";
 
 export interface LowestFigure {
   value: MoneyPair;
@@ -3540,7 +3546,8 @@ export type TargetResetReason =
   | "no_freshest"
   | "no_contractor"
   | "reference_unavailable"
-  | "lump_sum";
+  | "lump_sum"
+  | "excluded";
 
 /** Подсказки карточки справочной цели (спека справочных аналогов §2.14): на цифры не влияют. */
 export interface ReferenceHints {
@@ -3600,6 +3607,34 @@ export interface OurPriceAnalog {
   zone: SectionZone | null;
   /** Значения отпущенных параметров в порядке `analog_columns` панели (спека параметров варианта §2.5). */
   released_values: Array<{ value: string | null; conflict: boolean; differs: boolean }>;
+}
+
+/** Вид отметки строки договора (спека «Не аналог» §7 п. 1): «ошибка в цене» или тендерная. */
+export type MarkKind = "price_error" | "tender";
+
+export interface MarkView {
+  kind: MarkKind;
+  reason: string;
+  set_by: UserRef;
+  set_at: string;
+}
+
+/**
+ * Исключённая из аналогов строка договора панели (спека «Не аналог» §7 п. 2): поля аналога без
+ * меток цели, пара «ступень, область», где она стояла бы, и её отметки («ошибка в цене» первой).
+ */
+export interface ExcludedAnalog
+  extends Omit<OurPriceAnalog, "outlier_ratio" | "is_lowest" | "is_freshest" | "selectable"> {
+  step: { rung: 1 | 2 | 3 | 4; zone_scope: ZoneScope };
+  marks: MarkView[];
+}
+
+/** Идентификаторы строки КП: от неё берётся ключ формы для тендерной отметки. */
+export interface LineIds {
+  tenderId: number;
+  roundId: number;
+  offerId: number;
+  kpItemId: number;
 }
 
 /** Откуда значение параметра строки (спека параметров варианта §2.2). */
@@ -4080,6 +4115,8 @@ export interface OurPriceLineView {
   contracts: OurPriceRungContract[];
   /** Справка работы в порядке §2.11; у системы пусто. */
   analogs: OurPriceAnalog[];
+  /** Исключённые отметками строки договоров в порядке следа подбора (спека «Не аналог» §7 п. 2); пусто — нет. */
+  excluded: ExcludedAnalog[];
   /** Колонки отпущенных параметров таблицы аналогов; пусто вне ступеней 2 и 4. */
   analog_columns: Array<{ name: string }>;
   /** Справка «по частям» сборной строки; пусто у остальных. На цель и итоги не влияет. */

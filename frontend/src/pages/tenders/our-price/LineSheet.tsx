@@ -11,6 +11,8 @@ import { kpDecisionMutationKey, useDeleteTarget, useOurPriceLine, usePutTarget }
 import type { Decimal, OurPriceLine, OurPriceLineView, RungLevel, RungScope } from "@/types/domain";
 
 import { AnalogsTable } from "./AnalogsTable";
+import { ExcludedAnalogs } from "./ExcludedAnalogs";
+import { movedOnText } from "./excludedModel";
 import { LineWhere } from "./LineWhere";
 import { PartsReference } from "./PartsReference";
 import { ReferencePanel } from "./ReferenceBlocks";
@@ -24,6 +26,7 @@ import {
   analogsInContracts,
   contractNumber,
   contractsShort,
+  EXCLUDED_NO_COMPARE,
   CONTRACT_LOWER_BOUND,
   COMPOSITE_NO_TARGET,
   CONTRACT_WITH_CONTRACTOR,
@@ -284,6 +287,24 @@ function PanelContent({
           </p>
         </Section>
       )}
+      {line.kind === "work" && line.no_history_reason === "excluded" && (
+        <Section title={SHEET_SECTION.comparison} testId="sheet-comparison">
+          <p
+            data-testid="excluded-no-compare"
+            className="rounded-md border border-border bg-surface-sunken px-2.5 py-1.5 text-[12.5px] text-fg"
+          >
+            {EXCLUDED_NO_COMPARE}
+          </p>
+          <ExcludedAnalogs
+            items={data.excluded}
+            workRung={null}
+            vat={vat}
+            canEdit={canEdit}
+            ids={{ tenderId, roundId, offerId, kpItemId: line.position_item_id }}
+            family={line.family}
+          />
+        </Section>
+      )}
       {line.state === "lump_sum" && line.lump !== null && (
         <Section title={SHEET_SECTION.comparison} testId="sheet-comparison">
           <div className="flex flex-wrap items-center gap-1.5 text-sm">
@@ -518,6 +539,8 @@ function WorkComparison({ tenderId, roundId, offerId, seriesId, line, data, vat,
   const choice = line.choice;
   const pinnedAnalogId = choice !== null && choice.active && choice.kind === "analog" ? choice.analog_id : null;
   const canChoose = canEdit && line.state === "comparable";
+  const ids = { tenderId, roundId, offerId, kpItemId: line.position_item_id };
+  const movedOn = movedOnText(data.excluded, rungNo);
   // Карточка шлёт вид стратегии, а не аналог: «самая низкая» — снять выбор, остальные — PUT с видом.
   const choose = (strategy: TargetStrategy) => {
     if (strategy === "lowest") del.mutate({ positionItemId: line.position_item_id });
@@ -546,6 +569,14 @@ function WorkComparison({ tenderId, roundId, offerId, seriesId, line, data, vat,
           {scopeWhy}
         </p>
       )}
+      {movedOn !== null && (
+        <p
+          data-testid="excluded-moved-on"
+          className="rounded-md border border-border bg-surface-sunken px-2.5 py-1.5 text-[12.5px] text-fg"
+        >
+          {movedOn}
+        </p>
+      )}
       <TargetCards
         line={line}
         analogs={data.analogs}
@@ -567,7 +598,17 @@ function WorkComparison({ tenderId, roundId, offerId, seriesId, line, data, vat,
         busy={put.isPending || del.isPending}
         columns={data.analog_columns}
         zoneScope={scope}
+        ids={ids}
+        formLabel={line.unit === null ? line.title : `${line.title}, ${line.unit}`}
         onChoose={(analogId) => put.mutate({ positionItemId: line.position_item_id, kind: "analog", analogId })}
+      />
+      <ExcludedAnalogs
+        items={data.excluded}
+        workRung={rungNo}
+        vat={vat}
+        canEdit={canEdit}
+        ids={ids}
+        family={line.family}
       />
     </Section>
   );

@@ -1,3 +1,4 @@
+import { MoreHorizontal } from "lucide-react";
 import { useState } from "react";
 
 import {
@@ -12,12 +13,21 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleTrigger } from "@/components/ui/collapsible";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { compareDecimalStrings } from "@/lib/decimal";
 import { cn } from "@/lib/utils";
-import { useSetLumpSum } from "@/services/queries";
-import type { OurPriceAnalog, ZoneScope } from "@/types/domain";
+import { useSetLumpSum, useSetMark } from "@/services/queries";
+import type { LineIds, MarkKind, OurPriceAnalog, ZoneScope } from "@/types/domain";
 
 import { LineWhere } from "./LineWhere";
+import { MarkDialog } from "./MarkDialog";
 import { formatMoney, formatUnitPrice, pick, type VatView } from "./money";
 import {
   ANALOG_FIRST,
@@ -33,6 +43,11 @@ import {
   LUMP_ANALOG_CONFIRM_CANCEL,
   LUMP_ANALOG_CONFIRM_TITLE,
   lumpAnalogConfirm,
+  MARK_ACTION,
+  MARK_DIALOG_TITLE,
+  MARK_MENU_LABEL,
+  MARK_MENU_TRIGGER,
+  markScopeText,
   periodRu,
 } from "./ourPriceCopy";
 import { releasedValueText } from "./paramsCopy";
@@ -56,8 +71,12 @@ export interface AnalogsTableProps {
   columns: Array<{ name: string }>;
   /** Область подбора ступени: при `other` и `any` у каждого аналога метка его зоны. */
   zoneScope: ZoneScope;
-  /** «Это комплект — убрать из сравнения» у каждого аналога — только `admin` (спека комплектов §8 п. 4). */
+  /** Меню аналога («это комплект», «не аналог в этом тендере», «ошибка в цене») — только `admin` (спека «Не аналог» §8 п. 1). */
   canLump?: boolean;
+  /** Строка КП панели: от неё тендерная отметка берёт ключ формы. */
+  ids: LineIds;
+  /** Строка формы словами для окна тендерной отметки: «наименование, единица». */
+  formLabel: string;
 }
 
 const DASH = "—";
@@ -113,10 +132,14 @@ export function AnalogsTable({
   columns,
   zoneScope,
   canLump = false,
+  ids,
+  formLabel,
 }: AnalogsTableProps) {
   const [open, setOpen] = useState(false);
   const [pendingLump, setPendingLump] = useState<OurPriceAnalog | null>(null);
+  const [pendingMark, setPendingMark] = useState<{ kind: MarkKind; analog: OurPriceAnalog } | null>(null);
   const setLump = useSetLumpSum();
+  const setMark = useSetMark();
   if (analogs.length === 0) {
     return (
       <p data-testid="analogs-empty" className="text-sm text-fg-secondary">
@@ -179,6 +202,45 @@ export function AnalogsTable({
                   <span data-testid={`analog-date-${a.analog_id}`} className="font-mono text-xs text-fg-secondary tabular-nums">
                     {periodRu(a.period)}
                   </span>
+                  {canLump && (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger
+                        render={
+                          <Button
+                            type="button"
+                            size="icon-xs"
+                            variant="ghost"
+                            className="ml-1 align-middle"
+                            data-testid={`analog-menu-${a.analog_id}`}
+                            aria-label={MARK_MENU_TRIGGER}
+                            disabled={setLump.isPending || setMark.isPending}
+                          />
+                        }
+                      >
+                        <MoreHorizontal aria-hidden="true" />
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-auto min-w-56">
+                        <DropdownMenuGroup>
+                          <DropdownMenuLabel>{MARK_MENU_LABEL}</DropdownMenuLabel>
+                          <DropdownMenuItem data-testid={`analog-lump-${a.analog_id}`} onClick={() => setPendingLump(a)}>
+                            {LUMP_ANALOG_ACTION}
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            data-testid={`analog-mark-tender-${a.analog_id}`}
+                            onClick={() => setPendingMark({ kind: "tender", analog: a })}
+                          >
+                            {MARK_ACTION.tender}
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            data-testid={`analog-mark-price-error-${a.analog_id}`}
+                            onClick={() => setPendingMark({ kind: "price_error", analog: a })}
+                          >
+                            {MARK_ACTION.price_error}
+                          </DropdownMenuItem>
+                        </DropdownMenuGroup>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  )}
                 </div>
               </div>
               {(marks.length > 0 || isTarget || a.outlier_ratio !== null || showZone) && (
@@ -229,26 +291,12 @@ export function AnalogsTable({
                 </dl>
               )}
               <LineWhere article={a.article} chapterPath={a.chapter_path} scope="contract" />
-              {((canChoose && a.selectable && a.analog_id !== pinnedAnalogId) || canLump) && (
+              {canChoose && a.selectable && a.analog_id !== pinnedAnalogId && (
                 <div className="flex flex-wrap items-center gap-2">
-                  {canChoose && a.selectable && a.analog_id !== pinnedAnalogId && (
-                    <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => onChoose(a.analog_id)}>
-                      <span aria-hidden="true">◎</span>
-                      {ANALOG_MAKE_TARGET}
-                    </Button>
-                  )}
-                  {canLump && (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      data-testid={`analog-lump-${a.analog_id}`}
-                      disabled={setLump.isPending}
-                      onClick={() => setPendingLump(a)}
-                    >
-                      {LUMP_ANALOG_ACTION}
-                    </Button>
-                  )}
+                  <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => onChoose(a.analog_id)}>
+                    <span aria-hidden="true">◎</span>
+                    {ANALOG_MAKE_TARGET}
+                  </Button>
                 </div>
               )}
             </div>
@@ -261,6 +309,34 @@ export function AnalogsTable({
         >
           {open ? ANALOGS_LESS : analogsMore(hidden, list.length)}
         </CollapsibleTrigger>
+      )}
+      {canLump && (
+        <MarkDialog
+          kind={pendingMark?.kind ?? "tender"}
+          title={MARK_DIALOG_TITLE[pendingMark?.kind ?? "tender"]}
+          scopeText={
+            pendingMark === null
+              ? ""
+              : markScopeText(
+                  pendingMark.kind,
+                  { title: pendingMark.analog.title, objectTitle: pendingMark.analog.object_title },
+                  formLabel,
+                  ids.tenderId
+                )
+          }
+          open={pendingMark !== null}
+          onOpenChange={(next) => {
+            if (!next) setPendingMark(null);
+          }}
+          busy={setMark.isPending}
+          onSubmit={(reason) => {
+            if (pendingMark === null) return;
+            setMark.mutate(
+              { ...ids, kind: pendingMark.kind, positionItemId: pendingMark.analog.analog_id, reason },
+              { onSuccess: () => setPendingMark(null) }
+            );
+          }}
+        />
       )}
       {canLump && (
         <AlertDialog

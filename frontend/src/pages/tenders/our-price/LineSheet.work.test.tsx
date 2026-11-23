@@ -9,10 +9,12 @@ import {
   articleRefFixture,
   chapterPathFixture,
   compositeLineViewFixture,
+  excludedAnalogFixture,
   contractorFigureFixture,
   KP_FILE_AUTHOR,
   lumpFixture,
   lumpLineFixture,
+  markViewFixture,
   OUR_PRICE_LINE_ID,
   OUR_PRICE_OFFER_ID,
   OUR_PRICE_ROUND_ID,
@@ -986,5 +988,102 @@ describe("панель строки, похожей на комплект", () =
     renderSheet();
     await screen.findByTestId("sheet-comparison");
     expect(screen.queryByTestId("lump-block")).not.toBeInTheDocument();
+  });
+});
+
+describe("панель строки-работы: исключённые из аналогов (спека «Не аналог» §8)", () => {
+  const excluded = (id: number, over = {}) =>
+    excludedAnalogFixture({ analog_id: id, title: `Исключённая ${id}`, ...over });
+  const withExcluded = (items: ReturnType<typeof excluded>[], line = {}) => ({
+    ...workLineViewFixture({ line }),
+    excluded: items,
+  });
+  const noAnalogs = (items: ReturnType<typeof excluded>[]): OurPriceLineView => ({
+    ...workLineViewFixture({
+      line: { state: "no_history", no_history_reason: "excluded", work_rung: null, lowest: null, to_lowest: null, analogs_count: 0 },
+      analogs: [],
+    }),
+    excluded: items,
+  });
+
+  it("«Исключены (N)» под аналогами, свёрнут; без исключённых блока нет", async () => {
+    serve(() => withExcluded([excluded(1), excluded(2)]));
+    renderSheet();
+    const comparison = await screen.findByTestId("sheet-comparison");
+    const toggle = within(comparison).getByRole("button", { name: "Исключены (2)" });
+    expect(screen.queryByTestId("excluded-1")).not.toBeInTheDocument();
+    const lastAnalog = within(comparison).getAllByTestId(/^analog-\d+$/).at(-1)!;
+    expect(lastAnalog.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("список пуст — «Исключены» нет", async () => {
+    serve(() => workLineViewFixture());
+    renderSheet();
+    await screen.findByTestId("sheet-comparison");
+    expect(screen.queryByRole("button", { name: /Исключены/ })).not.toBeInTheDocument();
+  });
+
+  it("строка «почему ушёл дальше» стоит над карточками «Сравнения», когда пара следа раньше пары work_rung", async () => {
+    serve(() =>
+      withExcluded([excluded(1, { step: { rung: 4, zone_scope: "own" } })], {
+        work_rung: { no: 4, released: ["Марка"], other_class: false, zone_scope: "other" },
+      })
+    );
+    renderSheet();
+    const why = await screen.findByTestId("excluded-moved-on");
+    expect(why).toHaveTextContent("Ступень 4, другие зоны: на ступени 4 своей зоны аналоги исключены вручную (1)");
+    const cards = screen.getByTestId("figure-lowest");
+    expect(why.compareDocumentPosition(cards) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("строки «почему ушёл дальше» нет, когда след на самой паре work_rung", async () => {
+    serve(() => withExcluded([excluded(1, { step: { rung: 1, zone_scope: "own" } })]));
+    renderSheet();
+    await screen.findByTestId("sheet-comparison");
+    expect(screen.queryByTestId("excluded-moved-on")).not.toBeInTheDocument();
+  });
+
+  it("причина excluded: пояснение спеки, раскрытый список, подпись состояния", async () => {
+    serve(() => noAnalogs([excluded(1), excluded(2)]));
+    renderSheet();
+    expect(await screen.findByTestId("sheet-state")).toHaveTextContent("Аналоги исключены вручную");
+    expect(screen.getByTestId("excluded-no-compare")).toHaveTextContent(
+      "Найденные строки договоров отмечены «не аналог». Сравнить не с чем."
+    );
+    expect(screen.getByRole("button", { name: "Исключены (2)" })).toBeInTheDocument();
+    expect(screen.getByTestId("excluded-1")).toBeInTheDocument();
+    expect(screen.getByTestId("excluded-2")).toBeInTheDocument();
+  });
+
+  it("admin: у отметки «Снять»; member: отметки видны, «Снять» нет", async () => {
+    const make = () => noAnalogs([excluded(1, { marks: [markViewFixture({ kind: "tender" })] })]);
+    serve(make);
+    const admin = renderSheet({}, ADMIN);
+    expect(await screen.findByRole("button", { name: "Снять в этом тендере" })).toBeInTheDocument();
+    admin.unmount();
+    serve(make);
+    renderSheet({}, MEMBER);
+    await screen.findByTestId("excluded-1");
+    expect(screen.getByTestId("excluded-mark-1")).toHaveTextContent("не аналог в этом тендере");
+    expect(screen.queryByRole("button", { name: /Снять/ })).not.toBeInTheDocument();
+  });
+
+  it("«Снять в этом тендере» шлёт DELETE с ключами строки КП панели и перечитывает панель", async () => {
+    const deletes: string[] = [];
+    const asked = serve(() => noAnalogs([excluded(5, { marks: [markViewFixture({ kind: "tender" })] })]));
+    server.use(
+      http.delete(`${LINE_PATH}/not-analog/:analogId`, ({ request }) => {
+        deletes.push(new URL(request.url).pathname);
+        return new HttpResponse(null, { status: 204 });
+      })
+    );
+    renderSheet();
+    await userEvent.click(await screen.findByRole("button", { name: "Снять в этом тендере" }));
+    await waitFor(() =>
+      expect(deletes).toEqual([
+        `/api/v1/tenders/${OUR_PRICE_TENDER_ID}/rounds/${OUR_PRICE_ROUND_ID}/our-price/offers/${OUR_PRICE_OFFER_ID}/lines/${OUR_PRICE_LINE_ID}/not-analog/5`,
+      ])
+    );
+    await waitFor(() => expect(asked.length).toBeGreaterThanOrEqual(2));
   });
 });
