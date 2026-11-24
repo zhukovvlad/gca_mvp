@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 import sqlalchemy as sa
@@ -17,9 +18,10 @@ from models import PositionItem
 from tests.integration.test_our_price_load import World
 from tests.integration.test_our_price_offer_api import _json, _line_of, _ok, _other_family, _pair, _panel, _url
 from tests.integration.test_our_price_round_api import Stage
-from tests.integration.test_ref_analogs_panel import _contract_row, _kp_part, _row, _strict
+from tests.integration.test_ref_analogs_panel import Linked, _contract_row, _kp_part, _row, _set_value, _strict
 from tests.integration.test_ref_analogs_search import _search
 from tests.integration.test_semantic_queue_api import _unit_id
+from tests.integration.test_simplify_target import _parts_scene
 
 pytestmark = pytest.mark.integration
 
@@ -133,6 +135,23 @@ def test_panel_excluded_card_carries_the_analog_fields_step_and_the_mark(admin_c
     assert isinstance(mark["set_at"], str)
 
 
+def test_panel_excluded_card_fields_equal_the_analog_card_of_the_same_row_before_the_mark(admin_client, stage) -> None:
+    """Оракул полей — карточка той же строки среди аналогов до отметки (спека §7 п. 2: «поля аналога из
+    analogs[] без outlier_ratio и меток цели»): договор, объект, подрядчик, период, путь и статья строки
+    договора, место, цены в ставке участника — те же значения, а не только те же ключи."""
+    rows = _history(stage)
+    rnd, part = _kp_part(stage)
+    kp = _kp_line(stage, part)
+    before = {card["analog_id"]: card for card in _panel(admin_client, stage.tender, rnd, part, kp)["analogs"]}
+    _mark_tender(admin_client, stage, rnd, part, kp, rows[0])
+    (card,) = _panel(admin_client, stage.tender, rnd, part, kp)["excluded"]
+    analog = before[rows[0].id]
+    shared = set(analog) - {"outlier_ratio", "is_lowest", "is_freshest", "selectable", "released_values"}
+    assert shared <= set(card)
+    assert {key: card[key] for key in shared} == {key: analog[key] for key in shared}
+    assert analog["place_match"] > 0 and analog["period"] is not None and analog["chapter_path"]
+
+
 def test_panel_never_returns_the_internal_base_reason(admin_client, stage) -> None:
     rows, rnd, part, kp = _scene(stage, admin_client)
     for pid in [row.id for row in rows[1:]]:
@@ -210,6 +229,28 @@ def test_panel_trace_lists_every_excluded_row_in_the_order_of_the_walk(admin_cli
     assert sorted(_ids(body["excluded"])) == sorted([rows[0].id, rows[1].id])
     assert _ids(body["analogs"]) == [rows[2].id, rows[3].id]
     assert all(card["step"] == {"rung": 1, "zone_scope": "own"} for card in body["excluded"])
+
+
+def test_panel_excluded_follows_the_order_of_the_walk_not_the_row_ids(admin_client, stage) -> None:
+    """Порядок `excluded` — порядок следа (спека §3 п. 5, §7 п. 2): пара своей зоны раньше пары других зон.
+    Строка другой зоны заведена первой — её id меньше, поэтому порядок по id дал бы обратный список."""
+    chain = stage.world.chain(("Корпус", "Подземная часть"), "underground")
+    under_marked = _contract_row(stage, D("200"), chain=chain, title="Подготовка")[1]
+    under_free = _contract_row(stage, D("220"), chain=chain, title="Подготовка")[1]
+    own = _contract_row(stage, D("100"), title="Подготовка")[1]
+    assert under_marked.id < own.id
+    rnd, part = _kp_part(stage)
+    kp = _kp_line(stage, part)
+    _mark_tender(admin_client, stage, rnd, part, kp, own)
+    _mark_price_error(admin_client, stage, under_marked)
+    body = _panel(admin_client, stage.tender, rnd, part, kp)
+    assert _ids(body["analogs"]) == [under_free.id]
+    assert _ids(body["excluded"]) == [own.id, under_marked.id]
+    assert [card["step"] for card in body["excluded"]] == [
+        {"rung": 1, "zone_scope": "own"},
+        {"rung": 1, "zone_scope": "other"},
+    ]
+    assert [[m["kind"] for m in card["marks"]] for card in body["excluded"]] == [["tender"], ["price_error"]]
 
 
 def test_panel_i_beam_scenario_one_card_with_its_estimate_path_and_two_analogs(admin_client, stage) -> None:
@@ -408,3 +449,36 @@ def test_zone_block_opens_over_excluded_in_the_search_scope(admin_client, stage)
     assert {row.id for row in under} <= set(found)
     assert found[under[3].id]["outlier_ratio"] == "10"
     assert [found[row.id]["outlier_ratio"] for row in under[:3]] == [None, None, None]
+
+
+# ---------------------------------------------------------------------------
+#  Справки панели берут `excluded` строки КП (спека §3 п. 2, §5 п. 2; §9 п. 3) — по поверхности
+# ---------------------------------------------------------------------------
+
+
+def test_parts_reference_of_the_panel_drops_the_row_with_the_tender_mark(admin_client, stage, world, db_session) -> None:
+    """«По частям»: строка «плиты 36» с тендерной отметкой на ключ сборной строки не считается в части —
+    аналогов плит два, самая низкая — 40."""
+    _types, scene = _parts_scene(stage, world, db_session)
+    before = _panel(admin_client, stage.tender, scene.rnd, scene.part, scene.item)["parts_reference"][0]["parts"][0]
+    assert (before["analogs"], before["lowest"]["analog_id"]) == (3, scene.ids["p36"])
+    _mark_tender(admin_client, stage, scene.rnd, scene.part, scene.item, SimpleNamespace(id=scene.ids["p36"]))
+    plates = _panel(admin_client, stage.tender, scene.rnd, scene.part, scene.item)["parts_reference"][0]["parts"][0]
+    assert (plates["analogs"], plates["lowest"]["analog_id"]) == (2, scene.ids["p40"])
+    assert _pair(plates["min"]) == (D("40"), D("40"))
+
+
+def test_link_block_of_the_panel_drops_the_row_with_the_tender_mark(admin_client, stage) -> None:
+    """Блок связей: строка связанной семьи с тендерной отметкой на ключ строки КП в группе не стоит, вторая
+    строка остаётся — группа не закрылась, а отфильтрована."""
+    scene = Linked(stage)
+    _, second = _contract_row(
+        stage, D("1200"), family=scene.ref_family, variant=scene.ref_variant, unit="M2", title="Подготовка"
+    )
+    _set_value(stage, second, scene.ref_schema, scene.ref_param, "100 мм")
+    stage.db.flush()
+    (before,) = scene.panel(admin_client)["reference_links"]
+    assert {row["analog_id"] for row in before["rows"]} == {scene.ref_item.id, second.id}
+    _mark_tender(admin_client, stage, scene.rnd, scene.part, scene.kp_item, scene.ref_item)
+    (group,) = scene.panel(admin_client)["reference_links"]
+    assert {row["analog_id"] for row in group["rows"]} == {second.id}
