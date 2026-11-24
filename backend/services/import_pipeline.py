@@ -56,7 +56,7 @@ from services.matching import MatchCounters, match_positions
 from services.round_import import import_round, projection_for_inn
 from services.semantic_cost import event_cap_from
 from services.semantic_reconcile import contexts_of_estimates, reconcile_semantic_jobs
-from services.status_cache import status_cache, typical_rates_cache
+from services.status_cache import status_cache, suspicion_cache, typical_rates_cache
 from services.unit_resolution import UnitResolver
 from storage import Storage, StorageFileNotFound
 from utils import utcnow_aware
@@ -290,6 +290,7 @@ def run_import_job(
     finally:
         status_cache.invalidate()
         typical_rates_cache.invalidate()
+        suspicion_cache.invalidate()
 
 
 def _run_import_job(

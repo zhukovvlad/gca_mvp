@@ -25,6 +25,7 @@ from models import User
 from responses import decimal_json
 from routers.domain_errors import raise_domain_error
 from services.maintenance import purge_files_best_effort
+from services.status_cache import suspicion_cache
 from storage import Storage, get_storage
 
 router = APIRouter(prefix="/api/v1/contracts", tags=["contracts"])
@@ -293,5 +294,6 @@ def delete_contract(
         file_keys = crud_contracts.delete_contract(db, contract_id)
     except DomainError as e:
         _raise(e)
+    suspicion_cache.invalidate()  # договор ушёл: индекс подозрений больше не его (спека §1 п. 3)
     purge_files_best_effort(storage, file_keys, context=f"Удаление договора {contract_id}")
     return Response(status_code=status.HTTP_204_NO_CONTENT)

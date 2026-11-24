@@ -771,12 +771,15 @@ def _status_cache_off(monkeypatch) -> Iterator[None]:
     включённым кэшем они читали бы прежнее значение. Тесты кэша включают срок
     сами (спека кэша сводки §2.5)."""
     from config import settings
-    from services.status_cache import status_cache, typical_rates_cache
+    from services.status_cache import status_cache, suspicion_cache, typical_rates_cache
 
     monkeypatch.setattr(settings, "SEMANTIC_STATUS_CACHE_TTL_S", 0)
     monkeypatch.setattr(settings, "TYPICAL_RATES_CACHE_TTL_S", 0)
+    monkeypatch.setattr(settings, "SUSPICION_CACHE_TTL_S", 0)
     status_cache.invalidate()
     typical_rates_cache.invalidate()
+    suspicion_cache.invalidate()
     yield
     status_cache.invalidate()
     typical_rates_cache.invalidate()
+    suspicion_cache.invalidate()

@@ -15,6 +15,7 @@ from crud.common import DomainError
 from database import get_db
 from models import User
 from routers.domain_errors import raise_domain_error
+from services.status_cache import suspicion_cache
 
 router = APIRouter(prefix="/api/v1", tags=["not-analog"])
 
@@ -50,6 +51,7 @@ def set_price_error_route(
         )
         response = crud_not_analog.mark_view(mark)
         db.commit()
+        suspicion_cache.invalidate()  # «ошибка в цене» меняет статистику групп (спека §1 п. 3)
         return response
     except DomainError as exc:
         db.rollback()
@@ -69,6 +71,7 @@ def clear_price_error_route(
     try:
         crud_not_analog.clear_price_error(db, position_item_id=position_item_id)
         db.commit()
+        suspicion_cache.invalidate()
     except DomainError as exc:
         db.rollback()
         raise_domain_error(exc)
