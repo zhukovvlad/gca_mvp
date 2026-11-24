@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Подозрительные строки</title>
+<style>
+  /* Цвета — токены приложения (frontend/src/index.css), светлая и тёмная тема. */
+  :root {
+    --page: #F4F2EC; --surface: #FFFFFF; --sunken: #F7F6F2; --fg: #1F2128; --fg2: #5A5D66; --fg3: #8E8B82; --muted: #B5B2A8;
+    --border: rgba(0,0,0,.14); --subtle: rgba(0,0,0,.08);
+    --warn: #B5642E; --warn-soft: #FAF1E1; --warn-border: #E8C8A8; --warn-text: #6B3915; --info-text: #2C4A60;
+    --action: #2D3A30; --action-text: #F7F6F2;
+    --m-low: #2563A8; --m-fresh: #0E7C7B; --m-contr: #7A4FB5; --m-contr-soft: #EEE6F8; --m-on: #FFFFFF;
+    --chip: #EFEDE7; --new: #2563A8; --new-soft: #E6EEF8;
+  }
+  :root[data-theme="dark"] {
+    --page: #1A1D24; --surface: #232730; --sunken: #1F232B; --fg: #EDEAE0; --fg2: #B5B2A8; --fg3: #8E8B82; --muted: #6E6B65;
+    --border: #3A4148; --subtle: #2D323D;
+    --warn: #D49A6E; --warn-soft: #353027; --warn-border: #4A3D2E; --warn-text: #D49A6E; --info-text: #A5C0D6;
+    --action: #B8C4BB; --action-text: #1A1D24;
+    --m-low: #6DA7EC; --m-fresh: #4FC3C1; --m-contr: #9085E9; --m-contr-soft: #2E2A45; --m-on: #1A1D24;
+    --chip: #2D323D; --new: #6DA7EC; --new-soft: #1E2A3A;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--fg); font: 14px/1.45 "Inter", "Segoe UI", system-ui, sans-serif; }
+  .mono { font-family: "JetBrains Mono", Consolas, monospace; font-variant-numeric: tabular-nums; }
+  .wrap { max-width: 1560px; margin: 0 auto; padding: 16px; }
+  .note { border: 1px dashed var(--fg3); border-radius: 10px; padding: 10px 14px; color: var(--fg2); font-size: 13px; margin-bottom: 14px; max-width: 1000px; }
+  .note b { color: var(--fg); }
+  .bar button { font: inherit; font-size: 13px; padding: 5px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); color: var(--fg); cursor: pointer; margin-bottom: 18px; }
+  .state { margin-bottom: 34px; }
+  .state > h2 { font-size: 15px; margin: 0 0 6px; }
+  .state > .sub { font-size: 12.5px; color: var(--fg2); margin: 0 0 12px; max-width: 1000px; }
+  .tag { display: inline-block; font-size: 11px; letter-spacing: .05em; text-transform: uppercase; border-radius: 5px; padding: 1px 7px; margin: 0 0 8px; }
+  .tag.before { background: var(--chip); color: var(--fg2); }
+  .tag.after { background: var(--new-soft); color: var(--new); }
+  .pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(600px, 1fr)); gap: 22px; align-items: start; }
+  .xs { font-size: 11px; line-height: 1.35; }
+  .fg2 { color: var(--fg2); } .fg3 { color: var(--fg3); }
+  /* shadcn Badge */
+  .b { display: inline-flex; align-items: center; gap: 4px; border-radius: 999px; font-size: 12px; padding: 1px 8px; white-space: nowrap; }
+  .b.sec { background: var(--chip); color: var(--fg); }
+  .b.out { border: 1px solid var(--border); color: var(--fg); }
+  .b.state { display: block; white-space: normal; border-radius: 8px; text-align: left; margin-top: 2px; padding: 2px 8px; border: 1px solid var(--border); font-size: 12px; }
+  .b.new { outline: 2px solid var(--new); outline-offset: 1px; }
+  .b.mk { color: var(--m-on); font-weight: 600; padding: 3px 8px; border-radius: 6px; }
+  .b.low { background: var(--m-low); } .b.fresh { background: var(--m-fresh); } .b.contr { background: var(--m-contr); }
+  /* таблица строк */
+  .tablecard { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th { text-align: left; font-weight: 500; color: var(--fg2); font-size: 12px; padding: 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  td { padding: 8px; border-bottom: 1px solid var(--subtle); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  .r { text-align: right; }
+  .work { min-width: 220px; max-width: 280px; }
+  .cap { display: block; font-size: 11px; line-height: 1.35; color: var(--fg2); white-space: normal; }
+  .hl { background: var(--new-soft); color: var(--new); border-radius: 3px; padding: 0 3px; }
+  /* панель строки (Sheet) */
+  .sheet { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; max-width: 640px; box-shadow: 0 6px 20px rgba(0,0,0,.08); }
+  .sh-head { padding: 16px 16px 10px; }
+  .sh-title { font-weight: 600; font-size: 16px; }
+  .sh-desc { font-size: 13px; color: var(--fg2); margin-top: 2px; }
+  .sh-body { padding: 0 16px 20px; display: grid; gap: 20px; }
+  .sec h4 { margin: 0 0 8px; font-size: 12px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--fg2); }
+  .lbl { font-size: 11px; font-weight: 500; letter-spacing: .05em; text-transform: uppercase; color: var(--fg3); margin: 0 0 2px; }
+  .crumbs { font-size: 12px; }
+  .path { font-size: 12px; }
+  .path div { padding-left: calc(var(--d) * 14px); }
+  .zone { margin-top: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--sunken); padding: 10px 12px; display: grid; gap: 6px; }
+  .zone.undecided { border-color: var(--warn-border); background: var(--warn-soft); }
+  .zhead { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .zname { font-weight: 600; } .zname.warn { color: var(--warn); }
+  .src { font-size: 12px; color: var(--fg2); background: var(--chip); border-radius: 6px; padding: 1px 7px; white-space: nowrap; }
+  .q { display: inline-flex; width: 15px; height: 15px; border-radius: 50%; border: 1px solid var(--fg2); color: var(--fg2); font-size: 10px; font-weight: 600; align-items: center; justify-content: center; margin: 0 4px; vertical-align: 1px; }
+  .small { font-size: 12.5px; }
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; font-size: 12.5px; background: var(--surface); }
+  .toggle span { padding: 4px 9px; border-right: 1px solid var(--border); }
+  .toggle span:last-child { border-right: 0; }
+  .toggle span.on { background: var(--action); color: var(--action-text); }
+  .link { font-size: 12.5px; color: var(--info-text); text-decoration: underline; text-underline-offset: 2px; }
+  dl.prices { display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; margin: 0; font-size: 13px; }
+  dl.prices dt { color: var(--fg2); } dl.prices dd { margin: 0; }
+  .why { font-size: 12.5px; border: 1px solid var(--border); background: var(--sunken); border-radius: 8px; padding: 6px 10px; }
+  .why.new { border-color: var(--new); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; }
+  .card { border: 1px solid var(--border); border-top-width: 4px; border-radius: 10px; padding: 10px 12px; display: grid; gap: 5px; background: var(--surface); }
+  .card.low { border-top-color: var(--m-low); } .card.fresh { border-top-color: var(--m-fresh); } .card.contr { border-top-color: var(--m-contr); }
+  .card.sel { background: var(--sunken); box-shadow: 0 0 0 2px var(--action); }
+  .card .big { font-size: 20px; font-weight: 600; }
+  .up { color: var(--warn-text); }
+  .analog { border-top: 1px solid var(--border); padding-top: 10px; font-size: 13px; display: grid; gap: 5px; }
+  .analog .top { display: flex; justify-content: space-between; gap: 10px; }
+  .where { display: grid; gap: 2px; font-size: 11.5px; }
+  .where .lbl { font-size: 10px; font-weight: 500; text-transform: uppercase; letter-spacing: .04em; color: var(--fg3); margin-top: 2px; }
+  .where .art { background: var(--new-soft); color: var(--new); border-radius: 5px; padding: 0 5px; }
+  .where .p { color: var(--fg2); } .where .n { font-family: ui-monospace, Consolas, monospace; color: var(--fg3); }
+  .refgroup { border: 1px dashed var(--border); background: var(--sunken); border-radius: 10px; padding: 10px 12px; display: grid; gap: 8px; }
+  .plate { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; font-size: 13px; }
+  .plate .bar2 { height: 6px; border-radius: 3px; background: var(--chip); margin-top: 8px; overflow: hidden; }
+  .plate .bar2 i { display: block; height: 100%; width: 93%; background: var(--action); }
+  .tip { background: var(--action); color: var(--action-text); font-size: 12.5px; border-radius: 8px; padding: 9px 11px; max-width: 420px; }
+  .del { text-decoration: line-through; opacity: .55; }
+  .ins { text-decoration: underline; text-decoration-color: var(--new); text-decoration-thickness: 2px; }
+  .ellipsis { color: var(--fg3); font-size: 12px; }
+  .surface { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; display: grid; gap: 14px; max-width: 640px; }
+  .surface h3 { margin: 0; font-size: 18px; font-weight: 500; }
+  .fld { display: grid; gap: 4px; font-size: 13px; }
+  .fld label { font-weight: 500; }
+  .inp { border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; background: var(--surface); }
+  .blk { border-top: 1px solid var(--subtle); padding-top: 12px; display: grid; gap: 8px; }
+  .blk.new { outline: 2px solid var(--new); outline-offset: 6px; border-radius: 2px; }
+  .blk h4 { margin: 0; font-size: 16px; font-weight: 500; }
+  .switch { display: inline-flex; align-items: center; gap: 8px; font-size: 13.5px; }
+  .switch i { width: 32px; height: 18px; border-radius: 9px; background: var(--action); position: relative; display: inline-block; }
+  .switch i::after { content: ""; position: absolute; top: 2px; left: 16px; width: 14px; height: 14px; border-radius: 50%; background: var(--action-text); }
+  .switch.off i { background: var(--chip); }
+  .switch.off i::after { left: 2px; background: var(--fg3); }
+  .btn { font-size: 13px; border-radius: 8px; padding: 5px 12px; border: 1px solid var(--border); background: var(--surface); color: var(--fg); }
+  .side { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; max-width: 520px; }
+  .legend { font-size: 12.5px; color: var(--fg2); max-width: 1000px; }
+  .legend li { margin: 3px 0; }
+  @media (max-width: 680px) { .pair { grid-template-columns: 1fr; } }
+  .pair > * { min-width: 0; } .wrap { overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+<style>
+  .page { background: var(--page); border: 1px solid var(--border); border-radius: 12px; padding: 20px 22px; display: grid; gap: 14px; }
+  .ph { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 1px solid var(--subtle); padding-bottom: 12px; }
+  .ph h1 { margin: 0; font: 500 28px/1.2 Georgia, "Times New Roman", serif; letter-spacing: -.01em; }
+  .tabs { display: inline-flex; background: var(--chip); border-radius: 9px; padding: 3px; gap: 2px; font-size: 13px; }
+  .tabs span { padding: 4px 12px; border-radius: 7px; color: var(--fg2); }
+  .tabs span.on { background: var(--surface); color: var(--fg); box-shadow: 0 1px 2px rgba(0,0,0,.1); }
+  .sel { border: 1px solid var(--border); border-radius: 8px; padding: 5px 10px; background: var(--surface); font-size: 13px; min-width: 260px; display: inline-flex; justify-content: space-between; gap: 10px; }
+  .list { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 4px 16px 14px; display: grid; gap: 10px; }
+  .grp { font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--fg3); margin-top: 10px; }
+  .it { border-top: 1px solid var(--subtle); padding-top: 10px; display: grid; gap: 6px; font-size: 13px; }
+  .it .top { display: flex; justify-content: space-between; gap: 10px; }
+  .fact { font-size: 12.5px; color: var(--warn-text); background: var(--warn-soft); border: 1px solid var(--warn-border); border-radius: 6px; padding: 2px 8px; justify-self: start; }
+  .acts { display: flex; gap: 6px; flex-wrap: wrap; }
+  .acts .btn { font-size: 12.5px; padding: 3px 10px; }
+  .done { opacity: .8; }
+  .coll { font-size: 12.5px; color: var(--fg2); }
+  .nb { border: 1px solid var(--subtle); border-radius: 8px; background: var(--sunken); padding: 6px 8px; display: grid; gap: 6px; }
+  .nb table { font-size: 12px; }
+  .nb td { padding: 3px 6px; border-bottom: 1px solid var(--subtle); }
+  .nb th { padding: 3px 6px; font-size: 11px; }
+  .nb tr.me td { background: var(--warn-soft); font-weight: 600; }
+  .nb tr.tw td { background: var(--new-soft); }
+  .hint { border: 1px solid var(--warn-border); background: var(--warn-soft); border-radius: 8px; padding: 6px 10px; font-size: 12.5px; display: grid; gap: 6px; }
+  .hint b { color: var(--warn-text); }
+  .req { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 10px 20px; font-size: 13px; }
+  .req .lbl { margin: 0; }
+  .susp { grid-column: 1 / -1; border-top: 1px solid var(--subtle); padding-top: 10px; }
+</style>
+
+<div class="wrap">
+<div class="bar"><button onclick="document.documentElement.dataset.theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'">Светлая / тёмная тема</button></div>
+
+<div class="note"><b>Подозрительные строки договоров — макет гейта 1.</b> Строки, цены и соседние строки — со
+стенда, 24.11.2026; цены без НДС (у VEER база НДС 0 %, поэтому цены совпадают со сметой). Состояние
+разбора условное: Тушино уже отмечено «ошибкой в цене», потолок Jois разобран «не ошибкой», остальные не
+разобраны. Рисовано по коду страниц `ContractsPage`, `ContractCardPage` и карточки аналога `AnalogsTable`.
+<span class="ins">Подчёркнуто</span> — новое.</div>
+
+<!-- 1 -->
+<div class="state">
+  <h2>1. Страница «Договоры» → вкладка «Подозрительные строки» (только администратор)</h2>
+  <p class="sub">Вкладки — новое; «Договоры» — сегодняшняя таблица договоров без изменений. Фильтр по договору — из
+  договоров, где есть подозрительные. «Строки рядом в смете» свёрнуты; здесь раскрыты у двух строк.</p>
+  <div class="page" style="max-width:1080px">
+    <div class="ph"><div><h1>Договоры</h1><div class="small fg2">Всего: 7</div></div><span class="btn">＋ Новый договор</span></div>
+    <div class="row"><span class="tabs"><span>Договоры</span><span class="on ins">Подозрительные строки (4)</span></span>
+      <span class="sel">Все договоры <span class="fg3">▾</span></span></div>
+    <div class="list">
+      <div class="grp">Не разобраны · 4</div>
+
+      <div class="it"><div class="top"><div><b>Плинтус из керамогранита</b> <span class="xs fg2">· м</span></div><div><b class="mono">5 085,00</b> <span class="xs fg2">₽ без НДС</span></div></div>
+        <div class="xs fg2">VEER 1 оч UB2 · дог. UB2-CIW · п. 673</div>
+        <span class="fact">та же цена у соседней строки «Керамогранит 600х1200 мм», м² — строкой выше</span>
+        <div class="coll">▾ Строки рядом в смете</div>
+        <div class="nb"><table>
+          <tr><th>п.</th><th>Наименование</th><th>Ед.</th><th class="r">Цена</th><th class="r">Материалы</th><th class="r">Работы</th></tr>
+          <tr><td class="n mono">670</td><td>Цементно-песчаная стяжка М200, армированная сеткой – 80мм</td><td>м²</td><td class="r mono">2 064,00</td><td class="r mono">700,00</td><td class="r mono">950,00</td></tr>
+          <tr><td class="n mono">671</td><td>Обеспылевание</td><td>м²</td><td class="r mono">186,00</td><td class="r mono">50,00</td><td class="r mono">100,00</td></tr>
+          <tr class="tw"><td class="n mono">672</td><td>Керамогранит 600х1200 мм</td><td>м²</td><td class="r mono">5 085,00</td><td class="r mono">1 500,00</td><td class="r mono">2 587,50</td></tr>
+          <tr class="me"><td class="n mono">673</td><td>Плинтус из керамогранита</td><td>м</td><td class="r mono">5 085,00</td><td class="r mono">1 500,00</td><td class="r mono">2 587,50</td></tr>
+          <tr><td class="n mono">675</td><td>Стены - бетон А3: Окраска в 2-а слоя согласно дизайн-проекту</td><td>м²</td><td class="r mono">3 636,60</td><td class="r mono">1 155,00</td><td class="r mono">1 760,00</td></tr>
+          <tr><td class="n mono">677</td><td>Потолок - бетон А3: Окраска в 2-а слоя согласно дизайн-проекту</td><td>м²</td><td class="r mono">3 636,60</td><td class="r mono">1 155,00</td><td class="r mono">1 760,00</td></tr>
+          <tr><td class="n mono">679</td><td>Поручни метеллические. Согласовать с Заказчиком.</td><td>м</td><td class="r mono">11 899,50</td><td class="r mono">6 825,00</td><td class="r mono">2 750,00</td></tr>
+        </table>
+        <div class="where"><span class="lbl">статья классификатора</span><span>8 Отделочные работы (паркинг, надземная часть МОП) › 8.2 Отделка надземной части (в т.ч. меблировка) › <span class="art">8.2.2 Отделка эвакуационные лестничные клетки и коридоры надземная часть</span></span><span class="lbl">в смете договора</span><span class="p"><span class="n">п. 526</span> — Отделка паркинга, технических помещений, МОП, двери, ворота и шлагбаумы в соответствии с дизайн-проектом</span><span class="p" style="padding-left:14px"><span class="n">п. 581</span> — Отделка надземной части</span><span class="p" style="padding-left:28px"><span class="n">п. 668</span> — Эвакуационные лестничные клетки и коридоры</span><span class="p" style="padding-left:42px"><span class="n">п. 669</span> — Пол</span></div></div>
+        <div class="acts"><span class="btn">Ошибка в цене…</span><span class="btn ins">Не ошибка…</span></div></div>
+
+      <div class="it"><div class="top"><div><b>Лифт ЛФ-1.1ПИ грузоподъемностью 1000 кг</b> <span class="xs fg2">· шт</span></div><div><b class="mono">550 000 000,00</b> <span class="xs fg2">₽ без НДС</span></div></div>
+        <div class="xs fg2">VEER 1 оч UB2 · дог. UB2-CIW · п. 726</div>
+        <span class="fact">×39 к медиане семьи «Лифты» (14 219 863 ₽, 40 строк из 6 договоров)</span>
+        <div class="coll">▾ Строки рядом в смете</div>
+        <div class="nb"><table>
+          <tr><th>п.</th><th>Наименование</th><th>Ед.</th><th class="r">Цена</th><th class="r">Материалы</th><th class="r">Работы</th></tr>
+          <tr><td class="n mono">719</td><td>Входная дверь в квартиру/аппартаменты Декоративная накладка</td><td>шт</td><td class="r mono">127 563,75</td><td class="r mono">100 000,00</td><td class="r mono">10 925,00</td></tr>
+          <tr><td class="n mono">721</td><td>Внутренняя навигация в паркинге, МОП и лестничных клетках</td><td>компл</td><td class="r mono">4 800 000,00</td><td class="r mono">3 500 000,00</td><td class="r mono">500 000,00</td></tr>
+          <tr><td class="n mono">722</td><td>Внутренняя навигация в МОП и лестничных клетках надземной части</td><td>компл</td><td class="r mono">12 750 000,00</td><td class="r mono">8 500 000,00</td><td class="r mono">2 125 000,00</td></tr>
+          <tr class="me"><td class="n mono">726</td><td>Лифт ЛФ-1.1ПИ грузоподъемностью 1000 кг</td><td>шт</td><td class="r mono">550 000 000,00</td><td class="r mono">500 000 000,00</td><td class="r mono">0,00</td></tr>
+          <tr><td class="n mono">727</td><td>Лифт ЛФ-1.2 грузоподъемностью 630 кг</td><td>шт</td><td class="r mono">0,00</td><td class="r mono">0,00</td><td class="r mono">0,00</td></tr>
+          <tr><td class="n mono">729</td><td>Лифт ЛФ-2.1 грузоподъемностью 800 кг</td><td>шт</td><td class="r mono">0,00</td><td class="r mono">0,00</td><td class="r mono">0,00</td></tr>
+          <tr><td class="n mono">730</td><td>Лифт ЛФ-2.2 грузоподъемностью 800 кг</td><td>шт</td><td class="r mono">0,00</td><td class="r mono">0,00</td><td class="r mono">0,00</td></tr>
+        </table></div>
+        <div class="acts"><span class="btn">Ошибка в цене…</span><span class="btn ins">Не ошибка…</span></div></div>
+
+      <div class="it"><div class="top"><div><b>Велопарковка МАФ маркет артикул BUS400</b> <span class="xs fg2">· шт</span></div><div><b class="mono">239 133,50</b> <span class="xs fg2">₽ без НДС</span></div></div>
+        <div class="xs fg2">VEER 1 оч UB9 · дог. ВЕР1-ГП</div>
+        <span class="fact">×14 к медиане семьи «Велопарковки» (16 500 ₽, 11 строк из 7 договоров)</span>
+        <div class="coll">▸ Строки рядом в смете</div>
+        <div class="acts"><span class="btn">Ошибка в цене…</span><span class="btn ins">Не ошибка…</span></div></div>
+
+      <div class="it"><div class="top"><div><b>Гидроизоляция свай</b> <span class="xs fg2">· м²</span></div><div><b class="mono">9 923,76</b> <span class="xs fg2">₽ без НДС</span></div></div>
+        <div class="xs fg2">Jois 1 · дог. ДГП-3С10</div>
+        <span class="fact">×10 к медиане семьи «Укладка гидроизоляции» (989,80 ₽, 229 строк из 7 договоров)</span>
+        <div class="coll">▸ Строки рядом в смете</div>
+        <div class="acts"><span class="btn">Ошибка в цене…</span><span class="btn ins">Не ошибка…</span></div></div>
+
+      <div class="grp">Разобраны · 3 ▾ <span class="fg3" style="text-transform:none;letter-spacing:0;font-weight:400">(раскрыто)</span></div>
+      <div class="it done"><div class="top"><div><b>М/к для технического балкона</b> <span class="xs fg2">· т</span></div><div><b class="mono">3 698,75</b> <span class="xs fg2">₽ без НДС</span></div></div>
+        <div class="xs fg2">Тушино 1 оч. Cityzen · дог. ТУШ-1-СМР</div>
+        <div><span class="b sec">ошибка в цене · во всех тендерах</span> <span class="xs fg2">«4 438 ₽ за тонну — строка-сумма с единицей «т»» · not-analog-stand@example.com · 24.11.2026</span> <span class="link">Снять во всех тендерах…</span></div></div>
+      <div class="it done"><div class="top"><div><b>М/к для технического балкона</b> <span class="xs fg2">· т</span></div><div><b class="mono">3 698,75</b> <span class="xs fg2">₽ без НДС</span></div></div>
+        <div class="xs fg2">Тушино 1 оч. Cityzen · дог. ТУШ-1-СМР</div>
+        <div><span class="b sec">ошибка в цене · во всех тендерах</span> <span class="xs fg2">«4 438 ₽ за тонну — строка-сумма с единицей «т»» · not-analog-stand@example.com · 24.11.2026</span> <span class="link">Снять во всех тендерах…</span></div></div>
+      <div class="it done"><div class="top"><div><b>Потолок: окраска эпоксидной краской по шлифованной поверхности</b> <span class="xs fg2">· м²</span></div><div><b class="mono">3 132,32</b> <span class="xs fg2">₽ без НДС</span></div></div>
+        <div class="xs fg2">Jois 1 · дог. ДГП-3С10</div>
+        <div><span class="b out ins">не ошибка</span> <span class="xs fg2">«другая работа — перенести из «Обработки бетонных поверхностей» в окраску» · admin@… · 24.11.2026</span> <span class="link ins">Вернуть</span></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- 2 -->
+<div class="state">
+  <h2>2. Карточка договора → счётчик в блоке реквизитов (только администратор)</h2>
+  <p class="sub">Неразобранные строки этого договора; ссылка — на вкладку списка с фильтром по договору. При нуле
+  строки нет.</p>
+  <div class="page" style="max-width:1080px">
+    <div class="ph"><div><h1>UB2-CIW</h1><div class="small fg2">VEER 1 оч UB2 · ООО "АНТТЕК"</div></div></div>
+    <div class="req">
+      <div><p class="lbl">класс</p><span class="b sec">Бизнес</span></div>
+      <div><p class="lbl">подписант</p>…</div>
+      <div><p class="lbl">дата</p>…</div>
+      <div class="susp ins"><span class="link">Подозрительные строки: 2 →</span> <span class="xs fg3">не разобраны</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- 3 -->
+<div class="state">
+  <h2>3. Панель строки КП → карточка аналога (по ходу торга)</h2>
+  <p class="sub">Строка КП о лифте, аналог — лифт VEER за 550 млн. Кнопки — только у администратора; «Ошибка в
+  цене…» и «Не аналог в этом тендере…» открывают окна фичи «Не аналог».</p>
+  <div class="pair">
+    <div><span class="tag after">администратор · не разобрано</span>
+      <div class="sheet"><div class="sh-body" style="padding-top:16px"><div class="sec"><h4>Аналоги · 3</h4>
+        <div class="analog"><div class="top"><div><b>VEER 1 оч UB2</b> <span class="xs fg2">· UB2-CIW · 2024</span></div><div><b class="mono">550 000 000</b> <span class="xs fg2">₽/шт</span> <span class="b out" style="margin-left:6px">⋯</span></div></div>
+          <div class="fg2">Лифт ЛФ-1.1ПИ грузоподъемностью 1000 кг</div>
+          <div class="hint ins"><span><b>Подозрительная цена:</b> ×39 к медиане семьи «Лифты» (14 219 863 ₽, 40 строк из 6 договоров)</span>
+            <div class="acts"><span class="btn">Ошибка в цене…</span><span class="btn">Не аналог в этом тендере…</span><span class="btn">Не ошибка…</span></div></div>
+        </div></div></div></div>
+    </div>
+    <div><span class="tag after">участник · тот же аналог</span>
+      <div class="sheet"><div class="sh-body" style="padding-top:16px"><div class="sec"><h4>Аналоги · 3</h4>
+        <div class="analog"><div class="top"><div><b>VEER 1 оч UB2</b> <span class="xs fg2">· UB2-CIW · 2024</span></div><div><b class="mono">550 000 000</b> <span class="xs fg2">₽/шт</span></div></div>
+          <div class="fg2">Лифт ЛФ-1.1ПИ грузоподъемностью 1000 кг</div>
+          <div class="hint ins"><span><b>Подозрительная цена:</b> ×39 к медиане семьи «Лифты» (14 219 863 ₽, 40 строк из 6 договоров)</span></div>
+        </div></div></div></div>
+    </div>
+    <div><span class="tag after">после «не ошибка»</span>
+      <div class="sheet"><div class="sh-body" style="padding-top:16px"><div class="sec"><h4>Аналоги · 3</h4>
+        <div class="analog"><div class="top"><div><b>VEER 1 оч UB2</b> <span class="xs fg2">· UB2-CIW · 2024</span></div><div><b class="mono">550 000 000</b> <span class="xs fg2">₽/шт</span> <span class="b out" style="margin-left:6px">⋯</span></div></div>
+          <div class="fg2">Лифт ЛФ-1.1ПИ грузоподъемностью 1000 кг</div>
+          <div class="xs fg3 ins">проверено, не ошибка: «сверено со сметой» · admin@… · 24.11.2026</div>
+        </div></div></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- 4 -->
+<div class="state">
+  <h2>4. Окно «Не ошибка»</h2>
+  <div class="surface" style="max-width:460px">
+    <h3>Не ошибка</h3>
+    <div class="small fg2">Строка «Велопарковка МАФ маркет артикул BUS400» договора VEER 1 оч UB9 уйдёт из
+    подозрительных и перестанет показывать подсказку. Аналогом она остаётся, как сейчас. Решение можно вернуть.</div>
+    <div class="fld"><label>Причина</label><div class="inp" style="min-height:52px">другое изделие (МАФ на 10 велосипедов), цена верная</div><span class="xs fg3">51 / 300</span></div>
+    <div class="row" style="justify-content:flex-end"><span class="btn">Отмена</span><span class="btn" style="background:var(--action);color:var(--action-text)">Сохранить</span></div>
+  </div>
+</div>
+</div>
+</body>
+</html>
