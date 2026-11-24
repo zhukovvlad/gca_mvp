@@ -203,6 +203,24 @@ export function previousText(decision: NotErrorDecision): string {
   return `${basisText(decision.basis)}`;
 }
 
+export const HINT_TITLE = "Подозрительная цена";
+export const HINT_TWIN_TITLE = "та же цена, другая единица";
+export const HINT_LINK = "Разобрать в списке ↗";
+export const HINT_LINK_NOTE = "новая вкладка: строки рядом в смете и цены по договорам; панель КП остаётся открытой";
+
+/** Адрес строки в списке подозрительных (вкладка администратора, пункт прокручивается и раскрывается). */
+export function hintListHref(analogId: number): string {
+  return `/contracts?tab=suspicious&line=${analogId}`;
+}
+
+/** Предложение подсказки панели (макет, раздел 3): «в 10,6 раза дороже обычного: эта строка … ₽ за м², обычная цена … — … ₽, середина цен 7 договоров». Цифры — только из `suspicion`. */
+export function hintSentence(fact: FactView, line: { unit: string | null; net: string | null }): string {
+  if (fact.kind === "twin") return factSentence(fact, line);
+  const family = fact.family_title === null ? "обычная цена" : `обычная цена «${fact.family_title}»`;
+  const own = line.net === null ? "эта строка" : `эта строка ${formatMoney(line.net)}${perUnit(fact.unit)}`;
+  return `${factorWords(fact.ratio, fact.direction)} обычного: ${own}, ${family} — ${formatMoney(fact.usual)}, середина цен ${contractsWord(fact.contracts)}.`;
+}
+
 /** Серая строчка панели: «проверено, не ошибка — {основание}: «{причина}» · {автор} · {дата}». */
 export function checkedLine(decision: NotErrorDecision): string {
   return `проверено, не ошибка — ${basisText(decision.basis)}: ${decisionByline(decision)}`;

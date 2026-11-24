@@ -3607,6 +3607,17 @@ export interface OurPriceAnalog {
   zone: SectionZone | null;
   /** Значения отпущенных параметров в порядке `analog_columns` панели (спека параметров варианта §2.5). */
   released_values: Array<{ value: string | null; conflict: boolean; differs: boolean }>;
+  /** Подсказка «подозрительная цена» (спека подозрительных строк §4 п. 3): только факты без решения; `null` - подозрения нет. */
+  suspicion: AnalogSuspicion | null;
+  /** Решения «не ошибка» по строке, новые сверху (приходят и когда `suspicion` равен `null`). */
+  not_error: NotErrorDecision[];
+}
+
+/** Подсказка аналога: номинальное нетто без НДС и индексации, не зависит от режима панели. */
+export interface AnalogSuspicion {
+  facts: FactView[];
+  net: Decimal | null;
+  prices: GroupPricesView | null;
 }
 
 /** Вид отметки строки договора (спека «Не аналог» §7 п. 1): «ошибка в цене» или тендерная. */
@@ -3624,7 +3635,10 @@ export interface MarkView {
  * меток цели, пара «ступень, область», где она стояла бы, и её отметки («ошибка в цене» первой).
  */
 export interface ExcludedAnalog
-  extends Omit<OurPriceAnalog, "outlier_ratio" | "is_lowest" | "is_freshest" | "selectable"> {
+  extends Omit<
+    OurPriceAnalog,
+    "outlier_ratio" | "is_lowest" | "is_freshest" | "selectable" | "suspicion" | "not_error"
+  > {
   step: { rung: 1 | 2 | 3 | 4; zone_scope: ZoneScope };
   marks: MarkView[];
 }

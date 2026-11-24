@@ -43,6 +43,7 @@ import type {
   MoneyPair,
   KpFilePreview,
   KpSentFileItem,
+  AnalogSuspicion,
   OurPriceAnalog,
   OtherZone,
   FamilyLinkView,
@@ -3359,6 +3360,38 @@ export function ourPriceAnalogFixture(overrides: Partial<OurPriceAnalog> = {}): 
     chapter_path: chapterPathFixture("Корпус 1", "Надземная часть"),
     zone: null,
     released_values: [],
+    suspicion: null,
+    not_error: [],
+    ...overrides,
+  };
+}
+
+/** Подсказка аналога по реальной форме ответа (`analog_suspicions`): выброс вверх, ×10,6, семь договоров. */
+export function analogSuspicionFixture(overrides: Partial<AnalogSuspicion> = {}): AnalogSuspicion {
+  return {
+    facts: [
+      {
+        basis: { kind: "outlier", family_id: 11, unit_id: 3, direction: "up" },
+        kind: "outlier",
+        direction: "up",
+        ratio: "10.649",
+        usual: "1929.93",
+        family_title: "Устройство плитной теплоизоляции",
+        unit: "м²",
+        contracts: 7,
+      },
+    ],
+    net: "20550.98",
+    prices: {
+      family_title: "Устройство плитной теплоизоляции",
+      unit: "м²",
+      usual: "1929.93",
+      contracts: [
+        { contract_id: 101, object_title: "Объект Ж", lines: 1, price: "20550.98", low: "20550.98", high: "20550.98", is_own: true },
+        { contract_id: 102, object_title: "VEER 1 оч UB9", lines: 2, price: "1740.75", low: "1700.00", high: "1800.00", is_own: false },
+        { contract_id: 103, object_title: "TOP TOWER", lines: 1, price: "1929.93", low: "1929.93", high: "1929.93", is_own: false },
+      ],
+    },
     ...overrides,
   };
 }
@@ -3376,7 +3409,9 @@ export function markViewFixture(overrides: Partial<MarkView> = {}): MarkView {
 
 /** Исключённая строка договора панели: поля аналога без меток цели, пара следа и отметки. */
 export function excludedAnalogFixture(overrides: Partial<ExcludedAnalog> = {}): ExcludedAnalog {
-  const { outlier_ratio, is_lowest, is_freshest, selectable, ...fields } = ourPriceAnalogFixture();
+  const { outlier_ratio, is_lowest, is_freshest, selectable, suspicion, not_error, ...fields } = ourPriceAnalogFixture();
+  void suspicion;
+  void not_error;
   void outlier_ratio;
   void is_lowest;
   void is_freshest;

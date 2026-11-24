@@ -1,5 +1,6 @@
 import { MoreHorizontal } from "lucide-react";
 import { useState } from "react";
+import { toast } from "sonner";
 
 import {
   AlertDialog,
@@ -23,8 +24,26 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { compareDecimalStrings } from "@/lib/decimal";
 import { cn } from "@/lib/utils";
-import { useSetLumpSum, useSetMark } from "@/services/queries";
-import type { LineIds, MarkKind, OurPriceAnalog, ZoneScope } from "@/types/domain";
+import { PriceStrip } from "@/pages/contracts/PriceStrip";
+import {
+  ACTION_NOT_ERROR,
+  ACTION_PRICE_ERROR,
+  checkedLine,
+  factorText,
+  HINT_LINK,
+  HINT_LINK_NOTE,
+  HINT_TITLE,
+  HINT_TWIN_TITLE,
+  hintListHref,
+  hintSentence,
+  NOT_ERROR_SUBMIT,
+  NOT_ERROR_TITLE,
+  notErrorScopeText,
+  STRIP_NOMINAL_NOTE,
+  SUSPICION_CHANGED_NOTICE,
+} from "@/pages/contracts/suspiciousCopy";
+import { apiErrorCode, SUSPICION_CHANGED_CODE, useSetLumpSum, useSetMark, useSetNotError } from "@/services/queries";
+import type { AnalogSuspicion, LineIds, MarkKind, OurPriceAnalog, ZoneScope } from "@/types/domain";
 
 import { LineWhere } from "./LineWhere";
 import { MarkDialog } from "./MarkDialog";
@@ -80,6 +99,91 @@ export interface AnalogsTableProps {
 }
 
 const DASH = "—";
+
+interface AnalogHintProps {
+  analog: OurPriceAnalog;
+  suspicion: AnalogSuspicion;
+  /** Только `admin`: ссылка в список и кнопки решений. */
+  canAct: boolean;
+  disabled: boolean;
+  onPriceError: () => void;
+  onTender: () => void;
+  onNotError: () => void;
+}
+
+/**
+ * Подсказка «подозрительная цена» у аналога (спека подозрительных строк §5 п. 4; макет, раздел 3).
+ * Цифры — только из `suspicion` (номинальное нетто без НДС и индексации): режим панели их не меняет.
+ */
+function AnalogHint({ analog, suspicion, canAct, disabled, onPriceError, onTender, onNotError }: AnalogHintProps) {
+  const outlierFacts = suspicion.facts.filter((fact) => fact.kind === "outlier");
+  const line = { unit: analog.unit, net: suspicion.net };
+  return (
+    <div
+      data-testid={`analog-hint-${analog.analog_id}`}
+      data-kind={suspicion.facts[0]?.kind}
+      className={cn(
+        "grid min-w-0 gap-1.5 rounded-[10px] border p-2.5",
+        suspicion.facts[0]?.kind === "twin"
+          ? "border-mark-contractor bg-mark-contractor-soft"
+          : "border-warning-border bg-warning-soft"
+      )}
+    >
+      {suspicion.facts.map((fact, index) => (
+        <div key={index} className="flex min-w-0 items-start gap-2">
+          {fact.kind === "outlier" && (
+            <span
+              data-testid="analog-hint-factor"
+              className="shrink-0 text-[34px] leading-none font-semibold tracking-tight whitespace-nowrap text-warning tabular-nums"
+            >
+              {factorText(fact.ratio, fact.direction)}
+            </span>
+          )}
+          <span
+            className={cn(
+              "min-w-0 text-xs break-words",
+              fact.kind === "outlier" ? "text-warning-text" : "text-mark-contractor"
+            )}
+          >
+            <b>{fact.kind === "outlier" ? HINT_TITLE : `${HINT_TITLE} — ${HINT_TWIN_TITLE}`}</b>
+            {fact.kind === "outlier" ? " — " : ": "}
+            {hintSentence(fact, line)}
+          </span>
+        </div>
+      ))}
+      {outlierFacts.length > 0 && suspicion.prices !== null && suspicion.net !== null && (
+        <PriceStrip prices={suspicion.prices} net={suspicion.net} compact />
+      )}
+      <p className="text-2xs text-fg-secondary">{STRIP_NOMINAL_NOTE}</p>
+      {canAct && (
+        <>
+          <div className="text-xs">
+            <a
+              href={hintListHref(analog.analog_id)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-action underline underline-offset-2"
+            >
+              {HINT_LINK}
+            </a>{" "}
+            <span className="text-2xs text-fg-tertiary">{HINT_LINK_NOTE}</span>
+          </div>
+          <div data-testid="analog-hint-actions" className="flex flex-wrap gap-1.5">
+            <Button type="button" size="sm" variant="outline" disabled={disabled} onClick={onPriceError}>
+              {ACTION_PRICE_ERROR}
+            </Button>
+            <Button type="button" size="sm" variant="outline" disabled={disabled} onClick={onTender}>
+              {MARK_ACTION.tender}
+            </Button>
+            <Button type="button" size="sm" variant="outline" disabled={disabled} onClick={onNotError}>
+              {ACTION_NOT_ERROR}
+            </Button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 
 /** Метки цели аналога по порядку важности: низкая, свежая, с подрядчиком. */
 function marksOf(a: OurPriceAnalog, contractorAnalogId: number | null): TargetMarkKind[] {
@@ -138,8 +242,10 @@ export function AnalogsTable({
   const [open, setOpen] = useState(false);
   const [pendingLump, setPendingLump] = useState<OurPriceAnalog | null>(null);
   const [pendingMark, setPendingMark] = useState<{ kind: MarkKind; analog: OurPriceAnalog } | null>(null);
+  const [pendingNotError, setPendingNotError] = useState<OurPriceAnalog | null>(null);
   const setLump = useSetLumpSum();
   const setMark = useSetMark();
+  const setNotError = useSetNotError();
   if (analogs.length === 0) {
     return (
       <p data-testid="analogs-empty" className="text-sm text-fg-secondary">
@@ -268,6 +374,23 @@ export function AnalogsTable({
               >
                 {a.title}
               </p>
+              {a.suspicion !== null && (
+                <AnalogHint
+                  analog={a}
+                  suspicion={a.suspicion}
+                  canAct={canLump}
+                  disabled={setLump.isPending || setMark.isPending || setNotError.isPending}
+                  onPriceError={() => setPendingMark({ kind: "price_error", analog: a })}
+                  onTender={() => setPendingMark({ kind: "tender", analog: a })}
+                  onNotError={() => setPendingNotError(a)}
+                />
+              )}
+              {a.suspicion === null &&
+                a.not_error.map((decision, index) => (
+                  <p key={index} data-testid="analog-checked" className="text-2xs break-words text-fg-tertiary">
+                    {checkedLine(decision)}
+                  </p>
+                ))}
               {columns.length > 0 && (
                 <dl data-testid={`analog-released-${a.analog_id}`} className="flex flex-wrap gap-x-4 gap-y-0.5 text-xs">
                   {columns.map((column, i) => {
@@ -334,6 +457,45 @@ export function AnalogsTable({
             setMark.mutate(
               { ...ids, kind: pendingMark.kind, positionItemId: pendingMark.analog.analog_id, reason },
               { onSuccess: () => setPendingMark(null) }
+            );
+          }}
+        />
+      )}
+      {canLump && (
+        <MarkDialog
+          kind="not_error"
+          title={NOT_ERROR_TITLE}
+          submitLabel={NOT_ERROR_SUBMIT}
+          scopeText={
+            pendingNotError?.suspicion
+              ? notErrorScopeText(
+                  { title: pendingNotError.title, objectTitle: pendingNotError.object_title },
+                  pendingNotError.suspicion.facts,
+                  pendingNotError.unit
+                )
+              : ""
+          }
+          open={pendingNotError !== null}
+          onOpenChange={(next) => {
+            if (!next) setPendingNotError(null);
+          }}
+          busy={setNotError.isPending}
+          onSubmit={(reason) => {
+            if (pendingNotError?.suspicion == null) return;
+            setNotError.mutate(
+              {
+                positionItemId: pendingNotError.analog_id,
+                reason,
+                bases: pendingNotError.suspicion.facts.map((fact) => fact.basis),
+              },
+              {
+                onSuccess: () => setPendingNotError(null),
+                onError: (error) => {
+                  if (apiErrorCode(error) !== SUSPICION_CHANGED_CODE) return;
+                  setPendingNotError(null);
+                  toast.error(SUSPICION_CHANGED_NOTICE);
+                },
+              }
             );
           }}
         />
