@@ -23,7 +23,7 @@ const many = (n: number): OurPriceAnalog[] =>
   );
 
 const IDS: LineIds = { tenderId: 6, roundId: 2, offerId: 64, kpItemId: 5001 };
-const FORM = "Двутавр 20Б1, т";
+const FORM = "«Двутавр 20Б1», т";
 
 function renderTable(props: Partial<AnalogsTableProps> = {}) {
   return renderWithProviders(
@@ -211,7 +211,7 @@ describe("справка аналогов", () => {
       );
       await openItem("analog-mark-tender-9200");
       expect(await screen.findByTestId("mark-scope")).toHaveTextContent(
-        "Строка «Монтаж кровли» договора TOP TOWER не будет аналогом для строки формы «Двутавр 20Б1, т» у всех участников и во всех этапах тендера 6. В других тендерах она остаётся аналогом."
+        "Строка «Монтаж кровли» договора TOP TOWER не будет аналогом для строки формы «Двутавр 20Б1», т у всех участников и во всех этапах тендера 6. В других тендерах она остаётся аналогом."
       );
       expect(screen.getByRole("button", { name: "Исключить" })).toBeDisabled();
       expect(asked).toHaveLength(0);

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { lumpFixture, lumpLineFixture, ourPriceLineFixture } from "@/test/fixtures";
 import type { WorkRung } from "@/types/domain";
 
-import { formatRatio, linesCount, offerSubtitle, progressCaption, roundSubtitle, priceBasisLabel,VAT_NET_LABEL, VAT_UNKNOWN_LABEL, inflationCaptionOf, KP_NOT_ADJUSTED_NOTE, groupLinesCaption, ratioNote, unitWarnContracts, unitWarnKp, isWaitingAdminLine, LINE_STATE_LABEL, lineStateLabel, periodRu, targetInactiveNote, WAITING_ADMIN_LABEL, workRungCaption, workRungLabel, analogsMore, COMPOSITE_NO_TARGET, EXPORT_SOURCE, TARGET_CARD, TARGET_MARK, targetSameContract, otherZonesLabel, zoneScopeMark, otherZonesWhy, ANY_ZONE_WHY, analogZoneBadge, zoneRequiredNote, zoneRequiredNoZonePrefix, refLinkTitle, refSections, refTruncated, FILTER_HINT, lumpCaption, lumpOverrideNote, lumpUnitGenitive, lumpWhy, NO_HISTORY_REASON_LABEL, TARGET_RESET_REASON, MARK_ACTION, MARK_DIALOG_TITLE, MARK_KIND_LABEL, MARK_CLEAR, markScopeText, excludedPairLabel, excludedWouldBe, excludedTitle, excludedMovedOn } from "./ourPriceCopy";
+import { formatRatio, linesCount, offerSubtitle, progressCaption, roundSubtitle, priceBasisLabel,VAT_NET_LABEL, VAT_UNKNOWN_LABEL, inflationCaptionOf, KP_NOT_ADJUSTED_NOTE, groupLinesCaption, ratioNote, unitWarnContracts, unitWarnKp, isWaitingAdminLine, LINE_STATE_LABEL, lineStateLabel, periodRu, targetInactiveNote, WAITING_ADMIN_LABEL, workRungCaption, workRungLabel, analogsMore, COMPOSITE_NO_TARGET, EXPORT_SOURCE, TARGET_CARD, TARGET_MARK, targetSameContract, otherZonesLabel, zoneScopeMark, otherZonesWhy, ANY_ZONE_WHY, analogZoneBadge, zoneRequiredNote, zoneRequiredNoZonePrefix, refLinkTitle, refSections, refTruncated, FILTER_HINT, lumpCaption, lumpOverrideNote, lumpUnitGenitive, lumpWhy, NO_HISTORY_REASON_LABEL, TARGET_RESET_REASON, MARK_ACTION, MARK_DIALOG_TITLE, MARK_KIND_LABEL, MARK_CLEAR, markFormLabel, markScopeText, excludedPairLabel, excludedWouldBe, excludedTitle, excludedMovedOn } from "./ourPriceCopy";
 
 describe("groupLinesCaption", () => {
   it.each([
@@ -480,8 +480,10 @@ describe("отметки «не аналог»: тексты", () => {
       tender: "не аналог в этом тендере",
     });
     expect(MARK_CLEAR).toEqual({ tender: "Снять в этом тендере", price_error: "Снять во всех тендерах…" });
-    expect(markScopeText("tender", { title: "Монтаж", objectTitle: "TOP" }, "Двутавр, т", 6)).toBe(
-      "Строка «Монтаж» договора TOP не будет аналогом для строки формы «Двутавр, т» у всех участников и во всех этапах тендера 6. В других тендерах она остаётся аналогом."
+    expect(markFormLabel("Двутавр", "т")).toBe("«Двутавр», т");
+    expect(markFormLabel("Двутавр", null)).toBe("«Двутавр»");
+    expect(markScopeText("tender", { title: "Монтаж", objectTitle: "TOP" }, markFormLabel("Двутавр", "т"), 6)).toBe(
+      "Строка «Монтаж» договора TOP не будет аналогом для строки формы «Двутавр», т у всех участников и во всех этапах тендера 6. В других тендерах она остаётся аналогом."
     );
   });
 

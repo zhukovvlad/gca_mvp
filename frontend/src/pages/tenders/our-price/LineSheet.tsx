@@ -69,6 +69,7 @@ import {
   unitWarnContracts,
   unitWarnKp,
   VAT_DROPPED_NOTE,
+  markFormLabel,
 } from "./ourPriceCopy";
 import { ExportBlock } from "./ExportBlock";
 import { LineStateText } from "./LineStateText";
@@ -599,7 +600,7 @@ function WorkComparison({ tenderId, roundId, offerId, seriesId, line, data, vat,
         columns={data.analog_columns}
         zoneScope={scope}
         ids={ids}
-        formLabel={line.unit === null ? line.title : `${line.title}, ${line.unit}`}
+        formLabel={markFormLabel(line.title, line.unit)}
         onChoose={(analogId) => put.mutate({ positionItemId: line.position_item_id, kind: "analog", analogId })}
       />
       <ExcludedAnalogs

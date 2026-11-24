@@ -488,6 +488,10 @@ export const MARK_CLEAR_CONFIRM_OK = "Снять везде";
 export function markReasonCounter(length: number): string {
   return `${length} / ${MARK_REASON_MAX}`;
 }
+/** Подпись строки формы в окне отметки (макет, раздел 2): наименование в кавычках, единица — после них. */
+export function markFormLabel(title: string, unit: string | null): string {
+  return unit === null ? `«${title}»` : `«${title}», ${unit}`;
+}
 /** Область действия окна отметки (макет, разделы 1-2): строка договора, кого и где она перестаёт быть аналогом. */
 export function markScopeText(
   kind: MarkKind,
@@ -498,7 +502,7 @@ export function markScopeText(
   if (kind === "price_error") {
     return `Строка «${row.title}» договора ${row.objectTitle} перестанет быть аналогом во всех тендерах и выпадет из обычной ставки семьи. Отметку можно снять.`;
   }
-  return `Строка «${row.title}» договора ${row.objectTitle} не будет аналогом для строки формы «${form}» у всех участников и во всех этапах тендера ${tenderId}. В других тендерах она остаётся аналогом.`;
+  return `Строка «${row.title}» договора ${row.objectTitle} не будет аналогом для строки формы ${form} у всех участников и во всех этапах тендера ${tenderId}. В других тендерах она остаётся аналогом.`;
 }
 /** Подтверждение снятия «ошибки в цене» (макет, раздел 4): действует во всех тендерах. */
 export function markClearConfirmText(
