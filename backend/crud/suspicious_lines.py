@@ -198,18 +198,41 @@ def neighbor_row_view(details: LineDetails, *, is_self: bool, is_twin: bool) -> 
 # ---------------------------------------------------------------------------
 
 
-def _build_index(db: Session) -> SuspicionIndex:
+@dataclass(frozen=True)
+class IndexBundle:
+    """Значение `suspicion_cache`: индекс и подписи его групп, собранные вместе (R16). Подписи нужны
+    панели строки: договор группы может быть договором объекта тендера, которого нет в её истории.
+    Холодная сборка добавляет к построению индекса 2 запроса: названия семей и символы единиц — отдельно
+    (`_titles`); подписи договоров берутся из уже загруженной истории, без запроса."""
+
+    index: SuspicionIndex
+    contracts: Mapping[int, tuple[str, str]]  # contract_id -> (номер, объект)
+    titles: Titles  # {"family": {id: название}, "unit": {id: символ}}
+
+
+def _build_bundle(db: Session) -> IndexBundle:
     contracts, _ = load_history(db, exclude_object_id=None)
     estimate_of = {contract.contract_id: contract.estimate_id for contract in contracts}
     lines, _ = load_work_history(db, estimate_of=estimate_of)
     neighbors = load_estimate_neighbors(db, estimate_of.values())
-    return build_suspicion_index(lines, neighbors)
+    index = build_suspicion_index(lines, neighbors)
+    keys = set(index.groups) | set(index.group_of.values())
+    titles = _titles(db, families={k[0] for k in keys}, units={k[1] for k in keys}, details={})
+    return IndexBundle(
+        index=index,
+        contracts={c.contract_id: (c.number, c.object_title) for c in contracts},
+        titles={"family": titles["family"], "unit": titles["unit"]},
+    )
+
+
+def _bundle(db: Session) -> IndexBundle:
+    return suspicion_cache.get(lambda: _build_bundle(db))
 
 
 def suspicion_index(db: Session) -> SuspicionIndex:
     """Индекс подозрений по всем договорам через `suspicion_cache` (срок `SUSPICION_CACHE_TTL_S`,
     сбрасывает закрытый список мест спеки §1 п. 3)."""
-    return suspicion_cache.get(lambda: _build_index(db))
+    return _bundle(db).index
 
 
 # ---------------------------------------------------------------------------
@@ -448,6 +471,105 @@ def decision_view(record: NotErrorRecord, titles: Titles) -> dict:
     }
 
 
+def group_prices_view(
+    index: SuspicionIndex,
+    item_id: int,
+    own_contract_id: int,
+    *,
+    titles: Titles,
+    object_titles: Mapping[int, str],
+) -> dict | None:
+    """`GroupPricesView` спеки §4 п. 2 строки `item_id`: цены договоров её группы; `is_own` — договор
+    самой строки (`own_contract_id`). Нет группы или обычной цены — `None`. Единственное построение:
+    его зовут и список, и панель строки — цифры на двух поверхностях совпадают по построению."""
+    key = index.group_of.get(item_id)
+    group = None if key is None else index.groups.get(key)
+    if group is None or group.usual is None:
+        return None
+    return {
+        "family_title": titles["family"].get(key[0]),
+        "unit": titles["unit"].get(key[1]),
+        "usual": _s(group.usual),
+        "contracts": [
+            {
+                "contract_id": c.contract_id,
+                "object_title": object_titles[c.contract_id],
+                "lines": c.lines,
+                "price": _s(c.price),
+                "low": _s(c.low),
+                "high": _s(c.high),
+                "is_own": c.contract_id == own_contract_id,
+            }
+            for c in group.contracts
+        ],
+    }
+
+
+def analog_suspicions(db: Session, contract_of: Mapping[int, int]) -> dict[int, dict]:
+    """Поля `suspicion` и `not_error` аналогов панели (спека §4 п. 3) — `{analog_id: {...}}`;
+    вход — `{analog_id: contract_id договора аналога}` (по нему `is_own` в `prices`).
+
+    Индекс и подписи — из `suspicion_cache` (одна сборка на оба; холодная — +2 запроса на подписи семей
+    и единиц, см. `IndexBundle`). Запросы при тёплом индексе: решения
+    по идентификаторам аналогов (если они есть) и, только если у аналогов есть двойник в фактах без
+    решения или в решениях, — подробности соседей одним запросом; подписи семьи и единицы решения,
+    которых нет в кэше (группа давно распалась), — ещё один запрос. `suspicion` — факты БЕЗ решения,
+    `net` и `prices` индекса; нет таких фактов — `None`. `not_error` — все решения, новые сверху."""
+    ids = sorted(contract_of)
+    if not ids:
+        return {}
+    bundle = _bundle(db)
+    index = bundle.index
+    records = load_not_error(db, ids)
+    undecided: dict[int, list[Fact]] = {}
+    for item_id in ids:
+        decided = {record.basis for record in records.get(item_id, ())}
+        facts = [fact for fact in index.facts.get(item_id, ()) if fact.basis not in decided]
+        if facts:
+            undecided[item_id] = facts
+    neighbor_ids = {
+        basis.neighbor_item_id
+        for item_id in ids
+        for basis in _bases(undecided.get(item_id, ()), records.get(item_id, ()))
+        if isinstance(basis, TwinBasis)
+    }
+    details = load_line_details(db, neighbor_ids)
+    titles: dict[str, dict] = {
+        "family": dict(bundle.titles["family"]),
+        "unit": dict(bundle.titles["unit"]),
+        "item_title": {i: d.title for i, d in details.items()},
+        "item_number": {i: d.item_number for i, d in details.items() if d.item_number is not None},
+    }
+    wanted = [
+        b for item_id in ids for b in _bases((), records.get(item_id, ())) if isinstance(b, OutlierBasis)
+    ]
+    missing_families = {b.family_id for b in wanted} - titles["family"].keys()
+    missing_units = {b.unit_id for b in wanted} - titles["unit"].keys()
+    if missing_families or missing_units:
+        extra = _titles(db, families=missing_families, units=missing_units, details={})
+        titles["family"].update(extra["family"])
+        titles["unit"].update(extra["unit"])
+    object_titles = {cid: head[1] for cid, head in bundle.contracts.items()}
+
+    result: dict[int, dict] = {}
+    for item_id in ids:
+        facts = undecided.get(item_id)
+        suspicion = None
+        if facts:
+            suspicion = {
+                "facts": [fact_view(index, fact, details, titles) for fact in facts],
+                "net": _s(index.net.get(item_id)),
+                "prices": group_prices_view(
+                    index, item_id, contract_of[item_id], titles=titles, object_titles=object_titles
+                ),
+            }
+        result[item_id] = {
+            "suspicion": suspicion,
+            "not_error": [decision_view(record, titles) for record in records.get(item_id, ())],
+        }
+    return result
+
+
 # ---------------------------------------------------------------------------
 #  Состояния строк
 # ---------------------------------------------------------------------------
@@ -629,28 +751,12 @@ def suspicious_list(db: Session, *, contract_id: int | None) -> dict:
             **price_head(line, index.net.get(item_id)),
         }
 
+    object_titles = {cid: head[1] for cid, head in heads.items()}
+
     def prices_view(item_id: int) -> dict | None:
-        key = index.group_of.get(item_id)
-        group = None if key is None else index.groups.get(key)
-        if group is None or group.usual is None:
-            return None
-        return {
-            "family_title": titles["family"].get(key[0]),
-            "unit": titles["unit"].get(key[1]),
-            "usual": _s(group.usual),
-            "contracts": [
-                {
-                    "contract_id": c.contract_id,
-                    "object_title": heads[c.contract_id][1],
-                    "lines": c.lines,
-                    "price": _s(c.price),
-                    "low": _s(c.low),
-                    "high": _s(c.high),
-                    "is_own": c.contract_id == lines[item_id].contract_id,
-                }
-                for c in group.contracts
-            ],
-        }
+        return group_prices_view(
+            index, item_id, lines[item_id].contract_id, titles=titles, object_titles=object_titles
+        )
 
     unresolved = []
     for item_id in unresolved_ids:

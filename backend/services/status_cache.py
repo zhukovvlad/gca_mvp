@@ -108,7 +108,8 @@ status_cache: StatusCache = StatusCache(lambda: settings.SEMANTIC_STATUS_CACHE_T
 # строк-сумм §2 п. 2). Свой срок, те же точки сброса, что у `status_cache`.
 typical_rates_cache: StatusCache = StatusCache(lambda: settings.TYPICAL_RATES_CACHE_TTL_S)
 
-# Третий экземпляр: индекс подозрительных строк договоров (`SuspicionIndex`, спека «Подозрительные
+# Третий экземпляр: индекс подозрительных строк договоров и подписи его групп (`IndexBundle` из
+# `crud/suspicious_lines`: `SuspicionIndex` + договоры, семьи, единицы; спека «Подозрительные
 # строки» §1 п. 3, §2 п. 6). Свой срок и свой закрытый список точек сброса: прослойка `main.py`,
 # сбрасывающая кэши на любой не-GET, его не трогает.
 suspicion_cache: StatusCache = StatusCache(lambda: settings.SUSPICION_CACHE_TTL_S)

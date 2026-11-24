@@ -146,7 +146,10 @@ def test_panel_excluded_card_fields_equal_the_analog_card_of_the_same_row_before
     _mark_tender(admin_client, stage, rnd, part, kp, rows[0])
     (card,) = _panel(admin_client, stage.tender, rnd, part, kp)["excluded"]
     analog = before[rows[0].id]
-    shared = set(analog) - {"outlier_ratio", "is_lowest", "is_freshest", "selectable", "released_values"}
+    # `suspicion` и `not_error` — поля только аналогов (спека подозрительных строк §4 п. 3), исключённым не даются
+    shared = set(analog) - {
+        "outlier_ratio", "is_lowest", "is_freshest", "selectable", "released_values", "suspicion", "not_error",
+    }
     assert shared <= set(card)
     assert {key: card[key] for key in shared} == {key: analog[key] for key in shared}
     assert analog["place_match"] > 0 and analog["period"] is not None and analog["chapter_path"]

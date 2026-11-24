@@ -53,6 +53,7 @@ from crud.our_price_load import (
 from crud.reference_lines import ReferenceLine, load_link_values, load_reference_lines
 from crud.section_chains import zone_chain_info
 from crud.stage_summary import pct_str
+from crud.suspicious_lines import analog_suspicions
 from models import (
     Contractor,
     Estimate,
@@ -1758,10 +1759,12 @@ def _analogs_view(
     released_values: Mapping[int, list[dict]],
     tree: Mapping[int, CategoryMeta],
     steps: Mapping[int, tuple[ChapterStep, ...]],
+    suspicions: Mapping[int, dict],
 ) -> list[dict]:
     """Справка работы: все аналоги выбранной ступени (включая выбросы) в порядке спеки §2.11.
     У системы и у работы без ступени — пусто. «Где аналог» — статья раздела строки договора и
-    полный путь по смете договора, не статья строки КП."""
+    полный путь по смете договора, не статья строки КП. `suspicions` — поля `suspicion` и
+    `not_error` каждого аналога (спека подозрительных строк §4 п. 3)."""
     ladder = result.ladder
     if ladder is None or ladder.rung_no is None:
         return []
@@ -1798,6 +1801,7 @@ def _analogs_view(
                 "zone": analog.zone,
                 "selectable": analog.outlier_ratio is None,
                 "released_values": released_values.get(analog.position_item_id, []),
+                **suspicions[analog.position_item_id],
             }
         )
     return view
@@ -2240,7 +2244,10 @@ def build_line_view(
 
     vat_dropped = _vat_dropped_view(scene, row, result)
     analog_columns, released_values = _released_view(db, scene, row, result)
-    analogs = _analogs_view(scene, participant, result, analog_details, released_values, tree, steps)
+    ladder = result.ladder
+    shown_analogs = [] if ladder is None or ladder.rung_no is None else ladder.analogs
+    suspicions = analog_suspicions(db, {a.position_item_id: a.contract_id for a in shown_analogs})
+    analogs = _analogs_view(scene, participant, result, analog_details, released_values, tree, steps, suspicions)
     excluded = _excluded_view(
         scene, participant, row, trace, analog_details, tree, steps, load_price_error_marks(db, trace_ids)
     )
