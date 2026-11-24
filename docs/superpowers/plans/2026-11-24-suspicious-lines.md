@@ -5,6 +5,11 @@
 **Спека:** [`docs/superpowers/specs/2026-11-24-suspicious-lines-design.md`](../specs/2026-11-24-suspicious-lines-design.md) (редакция 3)
 **Дизайн и макет:** [`docs/superpowers/design/2026-11-24-suspicious-lines.md`](../design/2026-11-24-suspicious-lines.md)
 **Ветка:** `feat/suspicious-lines`, черновой PR #104
+**Редакция 2** — по ревью Codex к `511932c`: подробности строк (соседи, количество, разбивка)
+— пакетный загрузчик `load_line_details`, индекс хранит строки смет (решение 8, задачи 2, 3,
+5); общие представления пути и статьи вынесены в `crud/line_views.py` — цикла импортов нет
+(решение 7, задача 3); снятие «ошибки в цене» из списка — свой хук с подтверждением (решение
+4, задача 6); Review Focus п. 2 — по правилу приоритета отмеченной строки.
 
 **Goal:** система находит подозрительные строки смет договоров (выброс к обычной цене по
 договорам и цена-двойник) и показывает их администратору списком на `/contracts` и
@@ -46,8 +51,9 @@
    строку в семью B, где она тоже выброс, — строка снова «не разобрана» с `previous` из
    решения по A, а `PUT` из окна, открытого по A, — `409` — задачи 2 и 4.
 2. Группа ровно из трёх договоров, один из которых даёт выброс и получает «ошибку в
-   цене»: обычной цены больше нет, двойник этой группы выбирает «обе», строка остаётся в
-   `resolved` — задачи 2 и 3.
+   цене»: обычной цены больше нет; отмеченная строка остаётся в `resolved`, пара двойника
+   с ней помечает только её (приоритет `price_error`), а пара двойника без отметок в этой
+   группе — обе строки (обычной цены нет ни у одной) — задачи 2 и 3.
 3. Отметка на строке, которой нет в индексе (комплект, прежняя смета, `NaN`, база
    неизвестна): «Разобраны» показывают её с причиной цены, а не теряют и не падают на
    сериализации — задача 3.
@@ -93,14 +99,29 @@
    множествам `BasisKey`, без версии кэша (Review Focus п. 5).
 4. `MarkDialog` обобщается, а не копируется: `kind` получает `"not_error"`, новый
    необязательный `submitLabel` (по умолчанию нынешний `MARK_SUBMIT`). «Ошибка в цене» из
-   списка зовёт `positionItemsApi.putPriceError` новым хуком `usePriceErrorFromList` —
-   `useSetMark` требует `LineIds` строки КП, которых у списка нет.
+   списка ставится и снимается своими хуками `useSetPriceErrorFromList` и
+   `useClearPriceErrorFromList` (`positionItemsApi.putPriceError` / `deletePriceError`) —
+   `useSetMark` и `useClearMark` требуют `LineIds` строки КП, которых у списка нет. Снятие —
+   через `AlertDialog` с текстами `MARK_CLEAR_CONFIRM_TITLE`, `MARK_CLEAR_CONFIRM_OK`
+   (`ourPriceCopy.ts`, как в «Исключены»); оба хука перечитывают `qk.suspicious`,
+   `qk.tenders.ourPriceAll` и `qk.tenders.kpFilePreviewsAll` (как `invalidateAfterMark`).
 5. Полоса цен — `PriceStrip` на `ChartContainer` + `ScatterChart` recharts с
    логарифмической осью X (`scale="log"`, `domain` по степеням 10 вокруг точек); один
    компонент для списка и панели (`compact` для панели), обёрнут в свой блок прокрутки
    (§5 п. 5).
 6. Порядок места в смете для соседей — `row_number() OVER (PARTITION BY estimate ORDER BY
    position_items.id)` по строкам без глав (как в замере `twin_pick_measure.py`).
+7. **Цикла импортов нет** (ред. 2): `_path_view`, `_article_ref` и `_category_chain`
+   переезжают из `crud/our_price.py` в новый `crud/line_views.py` под именами `path_view`,
+   `article_ref` (без изменения тел); `crud/our_price.py` импортирует их оттуда. Зависимости
+   — в одну сторону: `crud.our_price → crud.suspicious_lines → crud.line_views`;
+   `crud.suspicious_lines` ничего из `crud.our_price` не импортирует.
+8. **Подробности строк** (ред. 2): индекс хранит строки смет без глав
+   (`SuspicionIndex.rows` — смета → строки по месту), чтобы окно ±3 и сосед двойника
+   находились без запроса; подписи и деньги строк (номер, наименование, единица,
+   количество, цена, материалы, работы, сумма, база НДС, раздел и статья) — пакетным
+   `load_line_details(db, ids)` по нужным идентификаторам, одним запросом на ответ. Его же
+   зовёт панель — только для соседей фактов-двойников своих аналогов.
 
 ## Задачи
 
@@ -182,6 +203,7 @@ class GroupStats:
 @dataclass(frozen=True)
 class SuspicionIndex:
     facts: Mapping[int, tuple[Fact, ...]]
+    rows: Mapping[int, tuple[NeighborRow, ...]]     # смета -> строки без глав по месту
     groups: Mapping[tuple[int, int], GroupStats]
     group_of: Mapping[int, tuple[int, int]]
     net: Mapping[int, Decimal]
@@ -218,19 +240,34 @@ def state_of(facts: Sequence[Fact], decided: Collection[Basis],
 
 ### Task 3: индекс, список и счётчики
 
-**Files:** `crud/suspicious_lines.py` (новый); `routers/suspicious_lines.py` (новый); `main.py`;
+**Files:** `crud/suspicious_lines.py` (новый); `crud/line_views.py` (новый, перенос из
+`crud/our_price.py` по решению 7); `crud/our_price.py` (импорт оттуда);
+`routers/suspicious_lines.py` (новый); `main.py`;
 сбросы индекса — `services/import_pipeline.py` (`run_import_job`), `routers/contracts.py`
 (`delete_contract`), `routers/not_analog.py` (price-error `PUT`/`DELETE`),
 `routers/lump_sum.py`; тесты `tests/integration/test_suspicious_api.py` (новый).
 
 **Interfaces**
-- Потребляет: задачи 1–2; существуют `load_work_history`, `load_analog_details`,
-  `chapter_steps`, `_path_view`, `_article_ref`, `category_tree`, `load_price_error_marks`,
-  `mark_view`, `require_admin`.
+- Потребляет: задачи 1–2; существуют `load_work_history`, `chapter_steps`,
+  `category_tree`, `load_price_error_marks`, `mark_view`, `require_admin`; переносятся
+  `_path_view`, `_article_ref`, `_category_chain` (`crud/our_price.py`).
 - Производит:
 
 ```python
+# crud/line_views.py
+def path_view(steps: Sequence[ChapterStep]) -> list[dict]
+def article_ref(tree: Mapping[int, CategoryMeta], category_id: int | None) -> dict | None
+# crud/suspicious_lines.py
 def load_estimate_neighbors(db: Session, estimate_ids: Collection[int]) -> list[NeighborRow]
+@dataclass(frozen=True)
+class LineDetails:
+    position_item_id: int; item_number: str | None; title: str; unit: str | None
+    quantity: Decimal | None              # coalesce(suggested_quantity, quantity)
+    unit_cost_total: Decimal | None; unit_cost_materials: Decimal | None
+    unit_cost_works: Decimal | None; total_cost_total: Decimal | None
+    vat_base: Decimal | None; category_id: int | None; chapter_item_id: int | None
+def load_line_details(db: Session, position_item_ids: Collection[int]) -> dict[int, LineDetails]
+def neighbor_row_view(details: LineDetails, *, is_self: bool, is_twin: bool) -> dict  # NeighborRow спеки
 def suspicion_index(db: Session) -> SuspicionIndex          # через suspicion_cache
 @dataclass(frozen=True)
 class NotErrorRecord: basis: Basis; reason: str; set_by_id: int; set_by_email: str; set_at: datetime
@@ -241,7 +278,8 @@ class DecidedLine:            # строка решения, независим�
     unit_cost_total: Decimal | None; vat_base: Decimal | None
 def load_decided_lines(db: Session) -> list[DecidedLine]
 def price_head(line: DecidedLine, net: Decimal | None) -> dict   # net/gross/raw/price_note, §4 п. 2
-def fact_view(index: SuspicionIndex, fact: Fact, titles: Mapping[str, Mapping[int, str]]) -> dict
+def fact_view(index: SuspicionIndex, fact: Fact, details: Mapping[int, LineDetails],
+              titles: Mapping[str, Mapping[int, str]]) -> dict
 def decision_view(record: NotErrorRecord, titles: Mapping[str, Mapping[int, str]]) -> dict
 def suspicious_list(db: Session, *, contract_id: int | None) -> dict   # ответ §4 п. 2
 def suspicious_counts(db: Session) -> dict                              # §3 п. 4
@@ -261,6 +299,12 @@ def suspicious_counts(db: Session) -> dict                              # §3 п
   (`latest = false`), строки с неизвестной базой (`vat_unknown`, `gross`); цена пусто, 0,
   −100, `NaN`, `Infinity` — `no_price`, `no_price`, `negative`/`"-100"`,
   `not_finite`/`"NaN"`, `not_finite`/`"Infinity"`.
+- Сосед двойника вне пула кандидатов (без семьи): `facts[].neighbor` несёт номер,
+  наименование, единицу, количество, цену, материалы, работы и сумму из
+  `load_line_details`; те же поля — в его строке `neighbors`.
+- Импорт: `python -c "import routers.suspicious_lines, routers.our_price"` и в обратном
+  порядке — без ошибки; `crud/suspicious_lines.py` не импортирует `crud.our_price`
+  (проверка `grep`); существующие тесты панели после переноса — зелёные.
 - Соседи: денежные поля — нетто конечных значений (в том числе 0 и отрицательных), при
   неизвестной базе — как в смете с `gross: true`, `NaN` — как хранится, пусто — `null`.
 - Счётчики: `total` и `by_contract` — только не разобранные; совпадают с длиной
@@ -333,7 +377,8 @@ class NotErrorRequest(BaseModel):
 `tests/integration/test_suspicious_panel.py` (новый), `tests/integration/test_not_analog_panel.py`.
 
 **Interfaces**
-- Потребляет: задачи 2–4 (`suspicion_index`, `load_not_error`, `fact_view`, `decision_view`).
+- Потребляет: задачи 2–4 (`suspicion_index`, `load_not_error`, `load_line_details`,
+  `fact_view`, `decision_view`).
 - Производит: поля аналога `suspicion` и `not_error` спеки §4 п. 3.
 
 **Утверждения** (критическое §7 п. 7)
@@ -345,7 +390,10 @@ class NotErrorRequest(BaseModel):
 - Все факты решены — `suspicion = null`, `not_error` — записи; без фактов и решений — оба
   пустые. У `member` — те же поля.
 - Число запросов панели с тёплым индексом растёт на один (решения по идентификаторам
-  аналогов).
+  аналогов) и ещё на один, только если у аналогов есть факты-двойники
+  (`load_line_details` соседей); без двойников второго запроса нет.
+- Сосед двойника вне пула: поля `facts[].neighbor` в панели равны полям того же соседа в
+  пункте списка, включая количество, материалы и работы.
 
 **Проверка**
 - `pytest tests/integration/test_suspicious_panel.py tests/integration/test_not_analog_panel.py`
@@ -357,15 +405,16 @@ class NotErrorRequest(BaseModel):
 
 **Files:** `types/domain.ts`, `services/api/domain.ts`, `services/queryKeys.ts` (`qk.suspicious`),
 `services/queries.ts` (`useSuspiciousLines`, `useSuspiciousCounts`, `useSetNotError`,
-`useClearNotError`, `usePriceErrorFromList`); `pages/contracts/{suspiciousCopy.ts,
+`useClearNotError`, `useSetPriceErrorFromList`, `useClearPriceErrorFromList`); `pages/contracts/{suspiciousCopy.ts,
 SuspiciousTab.tsx,SuspectItem.tsx,PriceStrip.tsx,TwinPair.tsx}` (новые);
 `pages/contracts/{ContractsPage.tsx,ContractCardPage.tsx}`;
 `pages/tenders/our-price/MarkDialog.tsx`; тесты рядом; `test/fixtures.ts`;
 `docs/reference/screens.md`.
 
 **Interfaces**
-- Потребляет: ответы задач 3–4; существуют `MarkDialog`, `LineWhere`, `positionItemsApi.putPriceError`,
-  `invalidateAfterMark`, `toastApiError`, `ChartContainer`.
+- Потребляет: ответы задач 3–4; существуют `MarkDialog`, `LineWhere`,
+  `positionItemsApi.putPriceError`, `positionItemsApi.deletePriceError`, `invalidateAfterMark`,
+  `toastApiError`, `ChartContainer`, `MARK_CLEAR_CONFIRM_TITLE`, `MARK_CLEAR_CONFIRM_OK`.
 - Производит: `SuspectView`, `ResolvedView`, `FactView`, `BasisKey`, `NotErrorDecision`,
   `GroupPricesView`, `NeighborRow` в `types/domain.ts` (поля — спека §4);
   `PriceStrip({ prices, net, compact }: PriceStripProps)`; `MarkDialogProps.submitLabel?: string`.
@@ -386,6 +435,10 @@ SuspiciousTab.tsx,SuspectItem.tsx,PriceStrip.tsx,TwinPair.tsx}` (новые);
   заново»; «Сохранить» занят до ответа.
 - Мутации «не ошибки» и «ошибки в цене» перечитывают `qk.suspicious` и
   `qk.tenders.ourPriceAll`.
+- «Снять во всех тендерах…» в «Разобраны»: открывается подтверждение
+  `MARK_CLEAR_CONFIRM_TITLE`; «Отмена» — запроса нет; «Снять везде» — `DELETE
+  /v1/position-items/{id}/price-error` без контекста КП, перечитаны список, счётчики и
+  `ourPriceAll`.
 - Карточка договора у `admin`: «Подозрительные строки: n →» со ссылкой
   `/contracts?tab=suspicious&contract={id}`; при нуле и у `member` — нет.
 - 390 px: таблицы блоков ≥ 760 px с прокруткой внутри, деньги без переноса.
