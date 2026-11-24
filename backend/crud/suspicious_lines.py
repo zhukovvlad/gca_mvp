@@ -31,7 +31,13 @@ from sqlalchemy.orm import Session, aliased
 from crud.analytics import latest_estimates
 from crud.common import DomainError, iso
 from crud.line_views import article_ref, path_view
-from crud.not_analog import Mark, load_price_error_marks, mark_view
+from crud.not_analog import (
+    CODE_POSITION_ITEM_NOT_FOUND,
+    Mark,
+    _lock_contract_item,
+    load_price_error_marks,
+    mark_view,
+)
 from crud.our_price_load import category_tree, load_history, load_work_history
 from models import (
     Contract,
@@ -61,6 +67,9 @@ from services.suspicious_lines import (
     build_suspicion_index,
     state_of,
 )
+
+CODE_NOT_SUSPICIOUS = "not_suspicious"
+CODE_SUSPICION_CHANGED = "suspicion_changed"
 
 #: Окно соседей в пункте списка: строк без глав до и после (спека §4 п. 2).
 NEIGHBOR_WINDOW = 3
@@ -248,6 +257,54 @@ def load_not_error(db: Session, position_item_ids: Collection[int] | None) -> di
             )
         )
     return result
+
+
+def _model_of(position_item_id: int, basis: Basis, reason: str, actor_id: int) -> NotErrorMark:
+    common = {"position_item_id": position_item_id, "reason": reason, "set_by": actor_id}
+    if isinstance(basis, OutlierBasis):
+        return NotErrorMark(
+            kind="outlier", family_id=basis.family_id, unit_id=basis.unit_id, direction=basis.direction, **common
+        )
+    return NotErrorMark(kind="twin", neighbor_item_id=basis.neighbor_item_id, **common)
+
+
+def set_not_error(
+    db: Session, *, position_item_id: int, reason: str, bases: Collection[Basis], actor_id: int
+) -> list[NotErrorRecord]:
+    """Решение «не ошибка» по переданным основаниям (спека §3 п. 1). Порядок: замок строки (404,
+    422 `not_analog_not_applicable`), свежий индекс в той же транзакции, факты `F` и решения `D` строки;
+    `F` пуст — 422 `not_suspicious`; `P ⊄ F` или `F \\ D ⊄ P` — 409 `suspicion_changed`, ничего не
+    пишется. Иначе вставляются `P \\ D` (у решённых записи не трогаются). Возвращает ВСЕ записи
+    строки, новые сверху. Не коммитит."""
+    _lock_contract_item(db, position_item_id)
+    suspicion_cache.invalidate()  # свежий индекс: окно администратора могло устареть
+    index = suspicion_index(db)
+    facts = {fact.basis for fact in index.facts.get(position_item_id, ())}
+    if not facts:
+        raise DomainError(422, "По строке нет подозрений.", code=CODE_NOT_SUSPICIOUS)
+    passed = set(bases)
+    decided = {record.basis for record in load_not_error(db, [position_item_id]).get(position_item_id, ())}
+    if not passed <= facts or not (facts - decided) <= passed:
+        raise DomainError(409, "Подозрение по строке изменилось — проверьте заново.", code=CODE_SUSPICION_CHANGED)
+    fresh = sorted(passed - decided, key=repr)
+    for basis in fresh:
+        db.add(_model_of(position_item_id, basis, reason, actor_id))
+    db.flush()
+    return load_not_error(db, [position_item_id]).get(position_item_id, [])
+
+
+def clear_not_error(db: Session, *, position_item_id: int) -> None:
+    """Снять все решения «не ошибка» строки. Строки нет — 404; факты, смета и `SYSTEM` не
+    проверяются; без решений — ничего. Не коммитит."""
+    locked = db.execute(
+        sa.select(PositionItem.id).where(PositionItem.id == position_item_id).with_for_update()
+    ).one_or_none()
+    if locked is None:
+        raise DomainError(
+            404, f"Строка сметы {position_item_id} не найдена.", code=CODE_POSITION_ITEM_NOT_FOUND
+        )
+    db.execute(sa.delete(NotErrorMark).where(NotErrorMark.position_item_id == position_item_id))
+    db.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -477,6 +534,19 @@ def _titles(db: Session, *, families: Collection[int], units: Collection[int], d
 
 def _bases(facts, records) -> list[Basis]:
     return [fact.basis for fact in facts] + [record.basis for record in records]
+
+
+def decisions_view(db: Session, records: Collection[NotErrorRecord]) -> list[dict]:
+    """`NotErrorDecision[]` для ответа `PUT`: титулы семей, единиц и соседей — как в списке."""
+    bases = [record.basis for record in records]
+    neighbor_ids = {b.neighbor_item_id for b in bases if isinstance(b, TwinBasis)}
+    titles = _titles(
+        db,
+        families={b.family_id for b in bases if isinstance(b, OutlierBasis)},
+        units={b.unit_id for b in bases if isinstance(b, OutlierBasis)},
+        details=load_line_details(db, neighbor_ids),
+    )
+    return [decision_view(record, titles) for record in records]
 
 
 def suspicious_list(db: Session, *, contract_id: int | None) -> dict:

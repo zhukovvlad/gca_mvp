@@ -252,6 +252,7 @@ app.include_router(lump_sum_router.router, dependencies=_auth_dep)
 app.include_router(not_analog_router.router, dependencies=_auth_dep)
 # Подозрительные строки договоров (спека 2026-11-24): список и счётчики — только admin.
 app.include_router(suspicious_lines_router.router, dependencies=_auth_dep)
+app.include_router(suspicious_lines_router.decisions_router, dependencies=_auth_dep)
 
 
 @app.get("/api/health")

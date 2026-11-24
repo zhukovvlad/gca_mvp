@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 import sqlalchemy as sa
 
+import crud.suspicious_lines as crud_suspicious
 from config import settings
 from crud.suspicious_lines import (
     DecidedLine,
@@ -23,7 +24,17 @@ from crud.suspicious_lines import (
     price_head,
     suspicion_index,
 )
-from models import NotErrorMark, PositionItem, PriceErrorMark, SectionChain, UnitOfMeasure, WorkCategory
+from models import (
+    CatalogContext,
+    ContextMember,
+    NotErrorMark,
+    PositionItem,
+    PriceErrorMark,
+    SectionChain,
+    UnitOfMeasure,
+    UserRole,
+    WorkCategory,
+)
 from money.vat import gross_to_net
 from services import import_pipeline
 from services.status_cache import suspicion_cache
@@ -685,3 +696,373 @@ class TestIndexCache:
         _warm(monkeypatch)
         assert admin_client.put(_na_url(kp, item.id), json={"reason": "иное"}).status_code == 200
         assert suspicion_cache.get(lambda: "fresh") == "warm"
+
+
+# ---------------------------------------------------------------------------
+#  Решения «не ошибка»: PUT и DELETE (спека §3 п. 1–2; план, задача 4)
+# ---------------------------------------------------------------------------
+
+
+def _ne_url(item_id) -> str:
+    return f"/api/v1/position-items/{item_id}/not-error"
+
+
+def _facts_of(client, item) -> list[dict]:
+    """Основания фактов строки в окне администратора: поле `basis` у `FactView`."""
+    body = _get(client)
+    row = next(r for r in body["unresolved"] + body["resolved"] if r["position_item_id"] == item.id)
+    return [fact["basis"] for fact in row["facts"]]
+
+
+def _put(client, item_id, bases, reason="другое изделие"):
+    return client.put(_ne_url(item_id), json={"reason": reason, "bases": bases})
+
+
+def _marks(scene, item=None) -> list[NotErrorMark]:
+    scene.db.expire_all()
+    query = sa.select(NotErrorMark).order_by(NotErrorMark.id)
+    if item is not None:
+        query = query.where(NotErrorMark.position_item_id == item.id)
+    return list(scene.db.execute(query).scalars())
+
+
+def _family_b(scene, contract_b, contract_c):
+    """Вторая семья с двумя договорами по 100; строка донора даёт контексту чужой вариант."""
+    family = scene.family("Семья Б")
+    donor = _item(scene, contract_b, D("100"), family=family)
+    _item(scene, contract_c, D("100"), family=family)
+    return donor
+
+
+def _context_of(item):
+    return (
+        sa.select(CatalogContext)
+        .join(ContextMember, ContextMember.context_id == CatalogContext.id)
+        .where(ContextMember.position_item_id == item.id)
+    )
+
+
+def _move(scene, item, donor) -> None:
+    """Перевести строку в семью донора (контекст берёт его семью и вариант)."""
+    source = scene.db.execute(_context_of(donor)).scalar_one()
+    target = scene.db.execute(_context_of(item)).scalar_one()
+    scene.db.execute(
+        sa.update(CatalogContext)
+        .where(CatalogContext.id == target.id)
+        .values(
+            work_family_id=source.work_family_id,
+            work_variant_id=source.work_variant_id,
+            variant_at=source.variant_at,
+            variant_paths_hash=source.variant_paths_hash,
+        )
+    )
+    scene.db.flush()
+
+
+def _add_twin(scene, contract):
+    """Соседка с той же ценой и другой единицей сразу после строки: новое основание-двойник."""
+    return _item(scene, contract, D("10"), unit="PCS", family=None)
+
+
+def _outlier_down(scene) -> dict:
+    return {
+        "kind": "outlier", "family_id": scene.family().id, "unit_id": _unit_id(scene.db, "M2"), "direction": "down",
+    }
+
+
+class TestNotErrorPut:
+    def test_writes_the_facts_without_decision_resets_the_index_and_returns_all_records(
+        self, scene, admin_client, monkeypatch
+    ):
+        s = _three(scene)
+        bases = _facts_of(admin_client, s.cheap)
+        _warm(monkeypatch)
+        response = _put(admin_client, s.cheap.id, bases, reason="  другое изделие  ")
+        assert response.status_code == 200, response.text
+        family = scene.family()
+        (decision,) = response.json()
+        assert decision["basis"] == {
+            "kind": "outlier", "family_id": family.id, "unit_id": _unit_id(scene.db, "M2"),
+            "direction": "down", "family_title": family.title, "unit": _symbol(scene, "M2"),
+        }
+        assert decision["reason"] == "другое изделие"
+        assert decision["set_by"] == {"id": admin_client.user.id, "email": admin_client.user.email}
+        (row,) = _marks(scene, s.cheap)
+        assert (row.kind, row.family_id, row.direction, row.set_by) == (
+            "outlier", family.id, "down", admin_client.user.id,
+        )
+        assert dt.datetime.fromisoformat(decision["set_at"]) == row.set_at
+        assert _is_cold()
+        suspicion_cache.invalidate()  # `_is_cold` положил в кэш пробное значение
+        body = _get(admin_client)
+        assert body["unresolved"] == [] and _ids(body["resolved"]) == [s.cheap.id]
+
+    def test_repeat_with_the_same_set_keeps_the_records_and_their_signatures(self, scene, admin_client):
+        s = _three(scene)
+        bases = _facts_of(admin_client, s.cheap)
+        first = _put(admin_client, s.cheap.id, bases, reason="первая причина").json()
+        ids_before = [row.id for row in _marks(scene, s.cheap)]
+        again = _put(admin_client, s.cheap.id, bases, reason="вторая причина")
+        assert again.status_code == 200
+        assert again.json() == first
+        assert [row.id for row in _marks(scene, s.cheap)] == ids_before
+        assert _marks(scene, s.cheap)[0].reason == "первая причина"
+
+    def test_twin_decision_names_the_neighbor_in_the_response(self, scene, admin_client):
+        contract = _contract(scene)
+        line = _item(scene, contract, D("500"), number="4.1")
+        twin = _item(scene, contract, D("500"), unit="PCS", family=None, number="4.2")
+        response = _put(admin_client, line.id, [{"kind": "twin", "neighbor_item_id": twin.id}])
+        assert response.status_code == 200, response.text
+        assert response.json()[0]["basis"] == {
+            "kind": "twin", "neighbor_item_id": twin.id,
+            "neighbor": {"item_number": "4.2", "title": twin.job_title_in_proposal},
+        }
+
+    def test_the_line_gets_decisions_in_two_groups_over_its_life(self, scene, admin_client):
+        s = _three(scene)
+        donor = _family_b(scene, s.b, s.c)
+        first = _put(admin_client, s.cheap.id, _facts_of(admin_client, s.cheap), reason="для семьи А")
+        assert first.status_code == 200
+        _move(scene, s.cheap, donor)
+        body = _get(admin_client)
+        (item,) = (r for r in body["unresolved"] if r["position_item_id"] == s.cheap.id)
+        assert len(item["facts"]) == 1 and len(item["previous"]) == 1
+        assert item["facts"][0]["family_title"] == "Семья Б" and item["previous"][0]["reason"] == "для семьи А"
+        response = _put(admin_client, s.cheap.id, _facts_of(admin_client, s.cheap), reason="для семьи Б")
+        assert response.status_code == 200, response.text
+        records = response.json()
+        assert [d["reason"] for d in records] == ["для семьи Б", "для семьи А"]  # новое сверху
+        assert [d["basis"]["family_title"] for d in records] == ["Семья Б", scene.family().title]
+        body = _get(admin_client)
+        (resolved,) = (r for r in body["resolved"] if r["position_item_id"] == s.cheap.id)
+        assert [d["reason"] for d in resolved["not_error"]] == ["для семьи Б", "для семьи А"]
+        assert len(_marks(scene, s.cheap)) == 2
+
+    def test_two_bases_from_two_administrators_keep_their_own_signatures(self, scene, admin_client, factories):
+        other = factories.UserFactory.create(role=UserRole.admin)
+        s = _three(scene)
+        _not_error(scene, s.cheap, at=T0, reason="первый", user=other)
+        _add_twin(scene, s.a)
+        body = _get(admin_client)
+        (item,) = body["unresolved"]
+        assert [f["kind"] for f in item["facts"]] == ["twin"]
+        assert [(d["reason"], d["set_by"]["email"]) for d in item["previous"]] == [("первый", other.email)]
+        response = _put(admin_client, s.cheap.id, _facts_of(admin_client, s.cheap), reason="второй")
+        assert response.status_code == 200, response.text
+        assert [(d["reason"], d["set_by"]["email"]) for d in response.json()] == [
+            ("второй", admin_client.user.email), ("первый", other.email),
+        ]
+        (resolved,) = _get(admin_client)["resolved"]
+        assert [(d["reason"], d["set_by"]["email"]) for d in resolved["not_error"]] == [
+            ("второй", admin_client.user.email), ("первый", other.email),
+        ]
+        assert [(r.reason, r.set_by) for r in _marks(scene, s.cheap)] == [
+            ("первый", other.id), ("второй", admin_client.user.id),
+        ]
+
+    def test_a_passed_basis_that_is_already_decided_is_not_rewritten(self, scene, admin_client, factories):
+        other = factories.UserFactory.create(role=UserRole.admin)
+        s = _three(scene)
+        _not_error(scene, s.cheap, at=T0, reason="первый", user=other)
+        _add_twin(scene, s.a)
+        everything = [_outlier_down(scene)] + _facts_of(admin_client, s.cheap)
+        response = _put(admin_client, s.cheap.id, everything, reason="второй")
+        assert response.status_code == 200, response.text
+        assert sorted(d["reason"] for d in response.json()) == ["второй", "первый"]
+        first = next(r for r in _marks(scene, s.cheap) if r.kind == "outlier")
+        assert (first.reason, first.set_by, first.set_at) == ("первый", other.id, T0)
+
+
+class TestNotErrorRace:
+    def test_the_window_over_family_a_does_not_confirm_family_b(self, scene, admin_client):
+        s = _three(scene)
+        donor = _family_b(scene, s.b, s.c)
+        window = _facts_of(admin_client, s.cheap)  # окно открыли по семье А
+        _move(scene, s.cheap, donor)  # фоновый разбор перевёл строку в семью Б
+        response = _put(admin_client, s.cheap.id, window)
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "suspicion_changed"
+        assert _marks(scene) == []
+
+    def test_a_new_twin_after_the_window_is_409(self, scene, admin_client):
+        s = _three(scene)
+        window = _facts_of(admin_client, s.cheap)
+        _add_twin(scene, s.a)
+        response = _put(admin_client, s.cheap.id, window)
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "suspicion_changed"
+        assert _marks(scene) == []
+
+    def test_a_passed_basis_that_is_not_among_the_facts_is_409(self, scene, admin_client):
+        s = _three(scene)
+        window = _facts_of(admin_client, s.cheap)
+        extra = {**window[0], "direction": "up"}
+        response = _put(admin_client, s.cheap.id, window + [extra])
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "suspicion_changed"
+        assert _marks(scene) == []
+
+    def test_a_missing_undecided_fact_is_409(self, scene, admin_client):
+        s = _three(scene)
+        _add_twin(scene, s.a)
+        bases = _facts_of(admin_client, s.cheap)
+        assert len(bases) == 2
+        response = _put(admin_client, s.cheap.id, [b for b in bases if b["kind"] == "twin"])
+        assert response.status_code == 409
+        assert _marks(scene) == []
+
+    def test_a_new_twin_with_a_decided_basis_in_the_window_is_409(self, scene, admin_client):
+        s = _three(scene)
+        _not_error(scene, s.cheap, at=T0)  # решено по выбросу
+        window = [_outlier_down(scene)]  # старое окно видело только его
+        _add_twin(scene, s.a)  # появился двойник без решения
+        response = _put(admin_client, s.cheap.id, window)
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "suspicion_changed"
+        # откат 409 снимает и подготовленное тестом решение: новых записей нет, двойнику решения не поставлено
+        assert not any(r.kind == "twin" for r in _marks(scene, s.cheap))
+
+    def test_the_index_rebuilt_with_the_same_content_is_200(self, scene, admin_client):
+        s = _three(scene)
+        window = _facts_of(admin_client, s.cheap)
+        suspicion_cache.invalidate()  # пересчёт без изменений данных
+        assert _put(admin_client, s.cheap.id, window).status_code == 200
+        assert len(_marks(scene, s.cheap)) == 1
+
+    def test_the_row_is_locked_before_the_index_is_read(self, scene, admin_client, monkeypatch):
+        """Доказывает порядок вызовов: замок строки (`_lock_contract_item`) взят до чтения индекса. Сам
+        Postgres-замок тут не виден: его держит тот же сеанс."""
+        s = _three(scene)
+        window = _facts_of(admin_client, s.cheap)
+        calls: list[str] = []
+        real_lock, real_index = crud_suspicious._lock_contract_item, crud_suspicious.suspicion_index
+        monkeypatch.setattr(
+            crud_suspicious, "_lock_contract_item", lambda *a, **k: (calls.append("lock"), real_lock(*a, **k))[1]
+        )
+        monkeypatch.setattr(
+            crud_suspicious, "suspicion_index", lambda *a, **k: (calls.append("index"), real_index(*a, **k))[1]
+        )
+        real_load = crud_suspicious.load_not_error
+        monkeypatch.setattr(
+            crud_suspicious, "load_not_error", lambda *a, **k: (calls.append("decisions"), real_load(*a, **k))[1]
+        )
+        assert _put(admin_client, s.cheap.id, window).status_code == 200
+        assert calls[0] == "lock" and "index" in calls and "decisions" in calls  # и чтение решений — после замка
+
+
+class TestNotErrorPutRefusals:
+    def test_missing_row_is_404(self, admin_client):
+        response = _put(admin_client, 999_999_999, [{"kind": "twin", "neighbor_item_id": 1}])
+        assert response.status_code == 404
+        assert response.json()["detail"]["code"] == "position_item_not_found"
+
+    def _expect_not_applicable(self, admin_client, item):
+        response = _put(admin_client, item.id, [{"kind": "twin", "neighbor_item_id": 1}])
+        assert response.status_code == 422
+        assert response.json()["detail"]["code"] == "not_analog_not_applicable"
+
+    def test_kp_estimate_is_not_applicable(self, scene, admin_client):
+        _, proposal = scene.offer_estimate()
+        self._expect_not_applicable(admin_client, scene.line(proposal))
+
+    def test_chapter_is_not_applicable(self, scene, admin_client):
+        item = _contract_item(scene)
+        scene.db.execute(sa.update(PositionItem).where(PositionItem.id == item.id).values(is_chapter=True))
+        self._expect_not_applicable(admin_client, item)
+
+    def test_system_context_is_not_applicable(self, scene, admin_client):
+        item = _contract_item(scene)
+        scene.db.execute(sa.update(CatalogContext).values(semantic_kind="SYSTEM"))
+        self._expect_not_applicable(admin_client, item)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"reason": "", "bases": [{"kind": "twin", "neighbor_item_id": 1}]},
+            {"reason": "   ", "bases": [{"kind": "twin", "neighbor_item_id": 1}]},
+            {"reason": "я" * 301, "bases": [{"kind": "twin", "neighbor_item_id": 1}]},
+            {"reason": "причина", "bases": []},
+            {"reason": "причина"},
+            {"reason": "причина", "bases": [{"kind": "other"}]},
+            {"reason": "причина", "bases": [{"kind": "outlier", "family_id": 1, "unit_id": 1, "direction": "left"}]},
+            {"reason": "причина", "bases": [{"kind": "twin"}]},
+        ],
+    )
+    def test_invalid_body_is_422(self, scene, admin_client, body):
+        s = _three(scene)
+        assert admin_client.put(_ne_url(s.cheap.id), json=body).status_code == 422
+        assert _marks(scene) == []
+
+    def test_the_reason_of_300_chars_passes(self, scene, admin_client):
+        s = _three(scene)
+        response = _put(admin_client, s.cheap.id, _facts_of(admin_client, s.cheap), reason="я" * 300)
+        assert response.status_code == 200
+
+    def test_a_line_without_facts_is_not_suspicious(self, scene, admin_client):
+        item = _contract_item(scene)
+        response = _put(admin_client, item.id, [{"kind": "twin", "neighbor_item_id": 1}])
+        assert response.status_code == 422
+        assert response.json()["detail"]["code"] == "not_suspicious"
+        assert _marks(scene) == []
+
+    def test_member_gets_403(self, scene, member_client):
+        s = _three(scene)
+        assert _put(member_client, s.cheap.id, [{"kind": "twin", "neighbor_item_id": 1}]).status_code == 403
+        assert _marks(scene) == []
+
+
+class TestNotErrorDelete:
+    def _decided(self, scene, admin_client):
+        s = _three(scene)
+        assert _put(admin_client, s.cheap.id, _facts_of(admin_client, s.cheap)).status_code == 200
+        return s
+
+    def test_removes_every_decision_of_the_line_and_resets_the_index(self, scene, admin_client, monkeypatch):
+        s = self._decided(scene, admin_client)
+        _add_twin(scene, s.a)
+        assert _put(admin_client, s.cheap.id, _facts_of(admin_client, s.cheap), reason="второй").status_code == 200
+        assert len(_marks(scene, s.cheap)) == 2
+        _warm(monkeypatch)
+        assert admin_client.delete(_ne_url(s.cheap.id)).status_code == 204
+        assert _marks(scene) == []
+        assert _is_cold()
+        suspicion_cache.invalidate()
+        assert _ids(_get(admin_client)["unresolved"]) == [s.cheap.id]
+
+    def test_after_the_suspicion_is_gone(self, scene, admin_client):
+        s = self._decided(scene, admin_client)
+        scene.db.execute(
+            sa.update(PositionItem).where(PositionItem.id == s.cheap.id).values(unit_cost_total=D("100"))
+        )
+        scene.db.flush()
+        suspicion_cache.invalidate()
+        assert admin_client.delete(_ne_url(s.cheap.id)).status_code == 204
+        assert _marks(scene) == []
+
+    def test_after_the_line_became_a_system_one(self, scene, admin_client):
+        s = self._decided(scene, admin_client)
+        scene.db.execute(sa.update(CatalogContext).values(semantic_kind="SYSTEM"))
+        scene.db.flush()
+        assert admin_client.delete(_ne_url(s.cheap.id)).status_code == 204
+        assert _marks(scene) == []
+
+    def test_repeat_is_204(self, scene, admin_client):
+        s = self._decided(scene, admin_client)
+        assert admin_client.delete(_ne_url(s.cheap.id)).status_code == 204
+        assert admin_client.delete(_ne_url(s.cheap.id)).status_code == 204
+
+    def test_a_kp_line_without_decisions_is_204(self, scene, admin_client):
+        _, proposal = scene.offer_estimate()
+        assert admin_client.delete(_ne_url(scene.line(proposal).id)).status_code == 204
+
+    def test_missing_row_is_404(self, admin_client):
+        response = admin_client.delete(_ne_url(999_999_999))
+        assert response.status_code == 404
+        assert response.json()["detail"]["code"] == "position_item_not_found"
+
+    def test_member_gets_403(self, scene, member_client):
+        s = _three(scene)
+        _not_error(scene, s.cheap)
+        assert member_client.delete(_ne_url(s.cheap.id)).status_code == 403
+        assert len(_marks(scene, s.cheap)) == 1
