@@ -329,6 +329,27 @@ def test_not_analog_targets_search_does_not_fold_a_tender_marked_row_with_its_tw
     }
 
 
+def test_not_analog_targets_search_does_not_fold_two_marked_twins_with_each_other(admin_client, stage) -> None:
+    """Строка с отметкой не сворачивается ни с кем, в том числе с отмеченной близняшкой (спека §5 п. 1): ключ
+    свёртки несёт id отмеченной строки, а не только наличие отметки, иначе метка и закрытый выбор цели скрытой
+    строки достались бы представителю."""
+    _, proposal = stage.world.estimate(stage.world.contract(rate_class=stage.rate_class), vat_rate=D("0"))
+    first = _row(stage, proposal, D("1000"), title="Бетон", cat="R")
+    twin = _row(stage, proposal, D("1000"), title="Бетон", cat="R2")
+    rnd, part, item = _kp_scene(stage)
+
+    _mark_price_error(admin_client, stage, first)
+    _mark_tender(admin_client, stage, rnd, part, item, twin)
+    body = _search(admin_client, stage, rnd, part, item, "Бетон")
+
+    assert sorted(_search_ids(body)) == sorted([first.id, twin.id])
+    assert all(len(row["ids"]) == 1 for row in body["rows"])
+    assert {row["analog_id"]: [m["kind"] for m in row["marks"]] for row in body["rows"]} == {
+        first.id: ["price_error"],
+        twin.id: ["tender"],
+    }
+
+
 def test_not_analog_targets_the_panel_rows_of_the_reference_blocks_carry_an_empty_marks_list(admin_client, stage) -> None:
     """Строка справочного блока панели собирается той же функцией, что строка поиска: поле `marks` есть всегда."""
     from tests.integration.test_ref_analogs_target import _linked, _panel_row

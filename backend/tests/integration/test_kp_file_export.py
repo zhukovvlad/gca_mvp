@@ -13,6 +13,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import io
+import re
 from decimal import Decimal
 from types import SimpleNamespace
 from urllib.parse import unquote
@@ -215,6 +216,14 @@ def _disposition_name(response) -> str:
 
 def _dec(value) -> Decimal | None:
     return None if value is None else D(value)
+
+
+_MONEY = re.compile(r"(?<![\d,])\d{1,3}(?: \d{3})*,\d{2}(?!\d)")
+
+
+def _money_amounts(text: str) -> set[Decimal]:
+    """Суммы текста в записи `format_rub` («34 154,00»), числами."""
+    return {D(found.replace(" ", "").replace(",", ".")) for found in _MONEY.findall(text)}
 
 
 def _unit_name(db, world) -> str:
@@ -719,13 +728,19 @@ class TestPreviewRows:
         body = _preview(member_client, stage, scene.rnd, scene.part)
 
         forbidden = {D("130"), D("156"), D("115"), D("138")}
+        amounts_in_texts: set[Decimal] = set()
         for row in body["rows"]:
             if row["kind"] == "section":
                 continue
             for key in ("quantity", "kp_unit_price", "kp_total", "ours", "deviation_pct"):
                 assert _dec(row[key]) not in forbidden, (key, row[key])
             for key in ("source", "inflation", "comment"):
-                assert "130" not in (row[key] or "") and "115" not in (row[key] or ""), (key, row[key])
+                # суммы в текстах — `format_rub` («1 234,56»); подстрокой не искать: номера объектов, договоров и
+                # подрядчиков из счётчиков фабрик («Объект 1157», «ГП-0115») зависят от числа тестов до этого
+                amounts = _money_amounts(row[key] or "")
+                assert not amounts & forbidden, (key, row[key])
+                amounts_in_texts |= amounts
+        assert D("120") in amounts_in_texts  # источник строки «2.1» — 120,00 ₽: суммы из текстов действительно читаются
 
     @pytest.mark.parametrize("bad", ["NaN", "Infinity"])
     @pytest.mark.parametrize(
