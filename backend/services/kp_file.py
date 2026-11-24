@@ -155,6 +155,10 @@ class FileContext:
     #: `position_item_id` строк КП, чья сохранённая цель (`analog`/`reference`) указывает на строку договора-комплект
     #: (спека строк-сумм §5 п. 2); признак считает `crud.our_price._target_lump`, ядро его не вычисляет.
     lump_targets: frozenset[int] = frozenset()
+    #: `position_item_id` строк КП, чья сохранённая цель (`analog`/`reference`) указывает на исключённую строку
+    #: договора («ошибка в цене» или тендерная отметка ключа формы строки КП; спека «Не аналог» §6 п. 4); признак
+    #: считает `crud.our_price._target_excluded`, ядро его не вычисляет.
+    excluded_targets: frozenset[int] = frozenset()
 
 
 # --- вход комментария ---------------------------------------------------------------------
@@ -180,6 +184,7 @@ def line_comment_inputs(
     saved_target: SavedTarget | None = None,
     reference: ReferenceSource | None = None,
     target_lump: bool = False,
+    target_excluded: bool,
 ) -> CommentInputs:
     """Вход комментария строки: единственное место, где он собирается.
 
@@ -189,6 +194,8 @@ def line_comment_inputs(
     строка договора, которую сцена чтения признала справочной для этой строки КП; цель она даёт,
     только если сохранённый выбор — справочная цель (спека справочных аналогов §2.14, §2.15).
     `target_lump` — цель указывает на строку договора-комплект: выбор недействующий (спека строк-сумм §5 п. 2).
+    `target_excluded` — цель указывает на исключённую строку договора: выбор недействующий (спека «Не аналог»
+    §6 п. 2); параметр обязательный, чтобы новый вызывающий не считал цель действующей молча.
     """
     choice = resolve_target(
         saved_target,
@@ -196,6 +203,7 @@ def line_comment_inputs(
         is_system=line.is_system,
         reference_available=reference is not None,
         target_lump=target_lump,
+        target_excluded=target_excluded,
     )
     active_reference = reference if choice is not None and choice.active and choice.kind == "reference" else None
     if line.is_system:
@@ -316,6 +324,7 @@ def _file_line(
         saved_target=targets.get(src.position_item_id),
         reference=references.get(src.position_item_id),
         target_lump=src.position_item_id in context.lump_targets,
+        target_excluded=src.position_item_id in context.excluded_targets,
     )
     target = target_net(inp)
 

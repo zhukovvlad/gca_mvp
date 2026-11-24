@@ -385,6 +385,7 @@ class WorkHistory:
         self.zone_required = zone_required
         self._lines_by_family: dict[int, list[WorkHistoryLine]] = {}
         self._lump_ids: set[int] = set()
+        self._price_error_ids: set[int] = set()
         self._marked_families: set[int] = set()
         for line in lines:
             self._lines_by_family.setdefault(line.family_id, []).append(line)
@@ -392,6 +393,7 @@ class WorkHistory:
                 self._lump_ids.add(line.position_item_id)
             if line.price_error:
                 self._marked_families.add(line.family_id)
+                self._price_error_ids.add(line.position_item_id)
         self._pools: dict[int, _FamilyPool] = {}
         self._unmarked_pools: dict[int, _FamilyPool] = {}
 
@@ -402,6 +404,10 @@ class WorkHistory:
     def is_lump(self, position_item_id: int) -> bool:
         """Строка договора истории похожа на комплект (по строкам истории; вне истории — нет)."""
         return position_item_id in self._lump_ids
+
+    def is_price_error(self, position_item_id: int) -> bool:
+        """Строка договора истории с отметкой «ошибка в цене» (по строкам истории; вне истории — нет)."""
+        return position_item_id in self._price_error_ids
 
     def pool(self, family_id: int) -> _FamilyPool:
         found = self._pools.get(family_id)

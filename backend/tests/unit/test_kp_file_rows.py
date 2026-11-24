@@ -610,6 +610,7 @@ def test_kp_file_deviation_pct_function_takes_the_comment_inputs():
         kp_vat_base=D(0),
         inflation=None,
         agreed_net=None,
+        target_excluded=False,
     )
     assert deviation_pct(inp) == D("20.0")
 
@@ -855,6 +856,7 @@ def test_kp_file_comment_kind_is_template_exactly_when_the_template_exists(res, 
         kp_vat_base=D(0),
         inflation=None,
         agreed_net=agreed,
+        target_excluded=False,
     )
     expected = template_text(inp)
     assert (row.comment_kind == "template") == (expected is not None)
@@ -873,6 +875,7 @@ def comment_inputs(src: KpSourceLine, res: LineResult, **overrides):
         kp_vat_base=D(0),
         inflation=None,
         agreed_net=None,
+        target_excluded=False,
     )
     values.update(overrides)
     return line_comment_inputs(src, res, **values)
@@ -1285,3 +1288,77 @@ def test_kp_file_a_lump_sum_row_without_an_agreement_has_no_price_and_no_templat
 
     assert (row.ours, row.source, row.comment, row.comment_kind) == (None, None, None, None)
 
+
+
+# ---------------------------------------------------------------------------
+#  Цель на исключённую строку («Не аналог», спека §6 п. 4): признак даёт `FileContext.excluded_targets`
+# ---------------------------------------------------------------------------
+
+
+def _file_excluded(src_line, res, *, saved, excluded_targets=frozenset(), references=None):
+    evaluation = OfferEvaluation(lines={res.position_item_id: res}, groups=())
+    (row,) = build_file_rows(
+        [src_line],
+        evaluation,
+        comments={},
+        agreements={},
+        targets={src_line.position_item_id: saved},
+        references=references or {},
+        context=context(contracts=(1, 2), excluded_targets=excluded_targets),
+    )
+    assert isinstance(row, FileLine)
+    return row
+
+
+def test_kp_file_a_saved_analog_on_an_excluded_row_falls_back_to_the_lowest_of_the_rest():
+    src = line(unit_price=D(160), total=D(320))
+    active = _file_excluded(src, _two_analogs(), saved=("analog", 200))
+    reset = _file_excluded(src, _two_analogs(), saved=("analog", 200), excluded_targets=frozenset({1}))
+
+    assert active.ours == D(130)
+    assert reset.ours == D(100)
+    assert reset.source is not None and "100,00 ₽ за м2" in reset.source
+
+
+def test_kp_file_the_excluded_flag_of_another_row_does_not_reset_this_rows_target():
+    row = _file_excluded(
+        line(unit_price=D(160), total=D(320)), _two_analogs(), saved=("analog", 200), excluded_targets=frozenset({2})
+    )
+
+    assert row.ours == D(130)
+
+
+def test_kp_file_a_reference_target_on_an_excluded_row_is_reset_like_a_row_without_a_choice():
+    from tests.unit.test_ref_analogs_comment import no_history, source
+
+    src = line(unit_price=D(160), total=D(320))
+    res = no_history(kp_unit_net=D(160), kp_total_net=D(320))
+    active = _file_excluded(src, res, saved=("reference", 555), references={1: source("100")})
+    reset = _file_excluded(
+        src, res, saved=("reference", 555), references={1: source("100")}, excluded_targets=frozenset({1})
+    )
+
+    assert active.ours == D(100) and active.comment_kind == "template"
+    assert (reset.ours, reset.source, reset.comment, reset.comment_kind, reset.deviation_pct) == (
+        None, None, None, None, None,
+    )
+
+
+def test_kp_file_context_has_no_excluded_targets_by_default():
+    assert context().excluded_targets == frozenset()
+
+
+def test_kp_file_line_comment_inputs_requires_the_excluded_flag():
+    """`target_excluded` — обязательный именованный параметр: вызов без него не собирается."""
+    values = dict(
+        history=context().history,
+        tender_class_id=TENDER_CLASS,
+        tender_contractor_id=TENDER_CONTRACTOR,
+        tender_area=AREA,
+        kp_vat_base=D(0),
+        inflation=None,
+        agreed_net=None,
+    )
+    with pytest.raises(TypeError):
+        line_comment_inputs(line(unit_price=D(120)), result(), **values)
+    assert line_comment_inputs(line(unit_price=D(120)), result(), target_excluded=False, **values) is not None

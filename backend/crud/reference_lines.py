@@ -20,6 +20,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
 from crud.lump_sum import load_lump_overrides, typical_rates
+from crud.not_analog import Mark
 from crud.our_price_load import _WEIGHT, _price_ok, _weight_ok
 from models import (
     CatalogContext,
@@ -31,9 +32,11 @@ from models import (
     FamilyParameterValue,
     Lot,
     PositionItem,
+    PriceErrorMark,
     Proposal,
     SectionChain,
     UnitOfMeasure,
+    User,
     ValueSource,
     WorkFamily,
 )
@@ -73,6 +76,9 @@ class ReferenceLine:
     lump: LumpCheck | None = None
     #: Название семьи (подпись признака «комплект»); `None` — у строки нет семьи.
     family_title: str | None = None
+    #: Отметки строки, не зависящие от строки КП: «ошибка в цене» (спека «Не аналог» §7 п. 4). Тендерная отметка
+    #: зависит от строки КП и добавляется вызывающим (`crud.reference_search`, `crud.our_price._target_excluded`).
+    marks: tuple[Mark, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -98,7 +104,8 @@ def reference_lines_query(contracts: Sequence[HistoryContract]) -> sa.Select:
     контекста проходит. Колонки: `position_item_id`, `contract_id`, `estimate_id`,
     `title`, `unit_id`, `unit_symbol`, `family_id`, `context_id`, `zone`,
     `chain_titles`, `chapter_item_id`, `unit_cost_total`, `vat_base`, `weight`, `variant_id`,
-    `archived_at`, `family_title` (последние три и вес — для решения «комплект или ставка»). Условие 6
+    `archived_at`, `family_title` (последние три и вес — для решения «комплект или ставка»), `pe_reason`,
+    `pe_set_by`, `pe_email`, `pe_set_at` («ошибка в цене», `NULL` — отметки нет; тем же запросом). Условие 6
     здесь не применяется (см. докстроку модуля).
     """
     estimate_ids = sorted({contract.estimate_id for contract in contracts})
@@ -121,6 +128,10 @@ def reference_lines_query(contracts: Sequence[HistoryContract]) -> sa.Select:
             CatalogContext.work_variant_id.label("variant_id"),
             CatalogContext.archived_at.label("archived_at"),
             WorkFamily.title.label("family_title"),
+            PriceErrorMark.reason.label("pe_reason"),
+            PriceErrorMark.set_by.label("pe_set_by"),
+            User.email.label("pe_email"),
+            PriceErrorMark.set_at.label("pe_set_at"),
         )
         .select_from(PositionItem)
         .join(Proposal, Proposal.id == PositionItem.proposal_id)
@@ -132,6 +143,8 @@ def reference_lines_query(contracts: Sequence[HistoryContract]) -> sa.Select:
         .outerjoin(CatalogPosition, CatalogPosition.id == PositionItem.catalog_position_id)
         .outerjoin(UnitOfMeasure, UnitOfMeasure.id == CatalogPosition.unit_id)
         .outerjoin(SectionChain, SectionChain.id == PositionItem.section_chain_id)
+        .outerjoin(PriceErrorMark, PriceErrorMark.position_item_id == PositionItem.id)
+        .outerjoin(User, User.id == PriceErrorMark.set_by)
         .where(
             Estimate.id.in_(estimate_ids),
             PositionItem.is_chapter.is_(False),
@@ -212,6 +225,11 @@ def reference_lines_from_rows(
                 else None
             ),
             family_title=row.family_title,
+            marks=(
+                ()
+                if getattr(row, "pe_set_by", None) is None
+                else (Mark("price_error", row.pe_reason, row.pe_set_by, row.pe_email, row.pe_set_at),)
+            ),
         )
     return lines
 

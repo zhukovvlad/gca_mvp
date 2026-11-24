@@ -1098,6 +1098,7 @@ def _comment_inputs(
         saved_target=saved,
         reference=None if references is None else references.sources.get(row.line.position_item_id),
         target_lump=_target_lump(scene, references, saved),
+        target_excluded=_target_excluded(scene, references, saved, row.line),
     )
 
 
@@ -1122,6 +1123,27 @@ def _target_lump(scene: _Scene, references: _ReferenceTargets | None, saved: Sav
         line = references.lines.get(analog_id)
         return line is not None and line.lump is not None and line.lump.is_lump
     return False
+
+
+def _target_excluded(
+    scene: _Scene, references: _ReferenceTargets | None, saved: SavedTarget | None, line: KpLine
+) -> bool:
+    """Сохранённая цель `analog`/`reference` указывает на исключённую строку договора (спека «Не аналог» §6 п. 2):
+    на строку с «ошибкой в цене» или на строку из `excluded` строки КП (тендерная отметка её ключа формы).
+    Единственное место, где этот признак считается; экран, комментарий и файл подрядчику берут его отсюда, ядро
+    (`services/`) его не вычисляет. «Ошибка в цене»: для `analog` — по истории сцены, для `reference` — по отметкам
+    справочных строк сцены чтения (`ReferenceLine.marks`)."""
+    if saved is None:
+        return False
+    kind, analog_id = saved
+    if analog_id is None or kind not in ("analog", "reference"):
+        return False
+    if analog_id in scene.not_analog.get(line.form_key, {}):
+        return True
+    if kind == "analog":
+        return scene.work_history.is_price_error(analog_id)
+    ref = None if references is None else references.lines.get(analog_id)
+    return ref is not None and bool(ref.marks)
 
 
 def _template_text(
@@ -1418,6 +1440,7 @@ def _decision_fields(
         is_system=row.line.is_system,
         reference_available=saved is not None and saved[1] in references.lines,
         target_lump=_target_lump(scene, references, saved),
+        target_excluded=_target_excluded(scene, references, saved, row.line),
     )
     choice_view = None
     if choice is not None:
@@ -2043,11 +2066,14 @@ def reference_row_view(
     details: _Details,
     steps: Mapping[int, tuple[ChapterStep, ...]],
     lump: dict | None = None,
+    marks: Sequence[Mark] = (),
 ) -> dict:
     """Строка справочного блока или выдачи поиска (спека справочных аналогов §2.16): `ids` — свёрнутые
     строки, `kp_unit_net` — нетто цены строки КП за единицу для отклонения, `kp_unit_id` — единица
     строки КП: по ней решается `needs_conversion` тем же предикатом, что у сервера. `lump` — готовый
-    `LumpView` строки договора (`reference_lump_view`); у строк блоков панели его нет (комплектов там нет)."""
+    `LumpView` строки договора (`reference_lump_view`); у строк блоков панели его нет (комплектов там нет).
+    `marks` — отметки строки договора, действующие для строки КП («ошибка в цене» первой; спека «Не аналог» §7
+    п. 4); у строк блоков панели их нет — отмеченная строка кандидатом блока не бывает."""
     rate = participant.base
     title, unit, _titles, _category, _chapter = details[row.position_item_id]
     paths: list[list[dict]] = []
@@ -2095,6 +2121,7 @@ def reference_row_view(
         "param_value": row.param_value,
         "family_id": row.family_id,
         "lump": lump,
+        "marks": [mark_view(mark) for mark in marks],
     }
 
 
@@ -2341,6 +2368,12 @@ def build_file_inputs(
     lump_targets = frozenset(
         pid for pid in decisions.targets if _target_lump(scene, references, _saved_target(decisions, pid))
     )
+    kp_line_of = {row.line.position_item_id: row.line for row in scene.kp_lines[estimate_id]}
+    excluded_targets = frozenset(
+        pid
+        for pid in decisions.targets
+        if pid in kp_line_of and _target_excluded(scene, references, _saved_target(decisions, pid), kp_line_of[pid])
+    )
     context = FileContext(
         kp_vat_base=participant.base,
         history=scene.index,
@@ -2357,6 +2390,7 @@ def build_file_inputs(
         contractor_title=participant.contractor_title,
         exported_on=exported_on,
         lump_targets=lump_targets,
+        excluded_targets=excluded_targets,
     )
     return FileInputs(
         context=context,
