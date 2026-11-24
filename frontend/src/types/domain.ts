@@ -4393,3 +4393,128 @@ export interface JournalParams {
   limit?: number;
   offset?: number;
 }
+
+// ---------------------------------------------------------------------------
+//  Подозрительные строки договоров (спека 2026-11-24-suspicious-lines-design.md, разделы 3-4)
+// ---------------------------------------------------------------------------
+
+/** Основание факта или решения «не ошибка»: что именно проверил администратор (спека, раздел 1 п. 2). */
+export type BasisKey =
+  | { kind: "outlier"; family_id: number; unit_id: number; direction: "up" | "down" }
+  | { kind: "twin"; neighbor_item_id: number };
+
+export type BasisView = BasisKey &
+  (
+    | { kind: "outlier"; family_title: string | null; unit: string | null }
+    | { kind: "twin"; neighbor: { item_number: string | null; title: string | null } }
+  );
+
+/** Решение «не ошибка» по одному основанию строки (спека, раздел 4 п. 1). */
+export interface NotErrorDecision {
+  basis: BasisView;
+  reason: string;
+  set_by: UserRef;
+  set_at: string;
+}
+
+/**
+ * Строка сметы рядом с подозрительной. Деньги — десятичные строки без округления: нетто по базе
+ * сметы, а при неизвестной базе (`gross`) — как в смете; нечисловое значение приходит как хранится.
+ */
+export interface NeighborRow {
+  position_item_id: number;
+  item_number: string | null;
+  title: string;
+  unit: string | null;
+  quantity: Decimal | null;
+  unit_price: Decimal | null;
+  materials: Decimal | null;
+  works: Decimal | null;
+  total: Decimal | null;
+  /** Деньги строки как в смете: база НДС сметы неизвестна. */
+  gross: boolean;
+  is_self: boolean;
+  is_twin: boolean;
+}
+
+export type FactView = { basis: BasisKey } & (
+  | {
+      kind: "outlier";
+      direction: "up" | "down";
+      ratio: Decimal;
+      usual: Decimal;
+      family_title: string | null;
+      unit: string | null;
+      contracts: number;
+    }
+  | { kind: "twin"; neighbor: NeighborRow }
+);
+
+export interface GroupPriceContract {
+  contract_id: number;
+  object_title: string;
+  lines: number;
+  price: Decimal;
+  low: Decimal;
+  high: Decimal;
+  is_own: boolean;
+}
+
+/** Цены договоров группы «семья, единица»: откуда обычная цена (спека, раздел 4 п. 2). */
+export interface GroupPricesView {
+  family_title: string | null;
+  unit: string | null;
+  usual: Decimal;
+  contracts: GroupPriceContract[];
+}
+
+/** Почему у отмеченной строки нет нетто (спека, раздел 4 п. 2, таблица `price_note`). */
+export type PriceNote = "no_price" | "negative" | "not_finite" | "vat_unknown";
+
+export interface SuspiciousLineHead {
+  position_item_id: number;
+  contract: { id: number; number: string; object_title: string };
+  item_number: string | null;
+  title: string;
+  unit: string | null;
+  /** Строка последней сметы договора. */
+  latest: boolean;
+  net: Decimal | null;
+  gross: Decimal | null;
+  raw: string | null;
+  price_note: PriceNote | null;
+}
+
+export interface SuspectView extends SuspiciousLineHead {
+  facts: FactView[];
+  /** Решения на другие основания; пусто — решений не было. */
+  previous: NotErrorDecision[];
+  neighbors: NeighborRow[];
+  where: { article: OurPriceArticleRef | null; chapter_path: OurPriceChapterStep[] };
+  prices: GroupPricesView | null;
+}
+
+export interface ResolvedView extends SuspiciousLineHead {
+  price_error: MarkView | null;
+  not_error: NotErrorDecision[];
+  /** Пусто — «правило сейчас её не ловит». */
+  facts: FactView[];
+}
+
+export interface SuspiciousContractOption {
+  contract_id: number;
+  number: string;
+  object_title: string;
+  unresolved: number;
+}
+
+export interface SuspiciousLinesResponse {
+  unresolved: SuspectView[];
+  resolved: ResolvedView[];
+  contracts: SuspiciousContractOption[];
+}
+
+export interface SuspiciousCounts {
+  total: number;
+  by_contract: Record<string, number>;
+}

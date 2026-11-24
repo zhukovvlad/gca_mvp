@@ -3757,6 +3757,12 @@ export const handlers = [
     );
   }),
 
+  // --- Подозрительные строки: по умолчанию пусто, тест подставляет свой ответ через `server.use` ---
+  http.get("/api/v1/suspicious-lines/counts", () => HttpResponse.json({ total: 0, by_contract: {} })),
+  http.get("/api/v1/suspicious-lines", () =>
+    HttpResponse.json({ unresolved: [], resolved: [], contracts: [] })
+  ),
+
   // --- Договоры ---
   http.get("/api/v1/contracts", ({ request }) => {
     const url = new URL(request.url);

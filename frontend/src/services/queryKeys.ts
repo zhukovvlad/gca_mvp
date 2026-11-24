@@ -54,6 +54,14 @@ export const qk = {
     importJobs: (id: number) => ["contracts", "import-jobs", id] as const,
   },
 
+  /** Подозрительные строки договоров: список по договору и счётчики (спека, раздел 3). */
+  suspicious: {
+    /** Префикс списка и счётчиков: его перечитывают мутации «не ошибки» и «ошибки в цене». */
+    all: ["suspicious"] as const,
+    list: (contractId: number | null) => ["suspicious", "list", contractId] as const,
+    counts: ["suspicious", "counts"] as const,
+  },
+
   importJobs: {
     all: ["import-jobs"] as const,
     one: (id: number) => ["import-jobs", id] as const,

@@ -1,6 +1,13 @@
 import type { AdminUser } from "@/types/admin";
 import type {
   AppSettings,
+  GroupPricesView,
+  NeighborRow,
+  NotErrorDecision,
+  ResolvedView,
+  SuspectView,
+  SuspiciousCounts,
+  SuspiciousLinesResponse,
   ExcludedAnalog,
   MarkView,
   InflationSeries,
@@ -3849,3 +3856,205 @@ export function constantLinkFixture(overrides: Partial<FamilyLinkView> = {}): Fa
     ...overrides,
   });
 }
+
+// ---------------------------------------------------------------------------
+//  Подозрительные строки договоров (спека 2026-11-24-suspicious-lines-design.md, раздел 4;
+//  форма сверена с `backend/crud/suspicious_lines.py`: `neighbor_row_view`, `fact_view`, `decision_view`).
+//  Цифры — со стенда, как в макете: велопарковка VEER за 239 133,50 при обычной 16 500,00.
+// ---------------------------------------------------------------------------
+
+export function neighborRowFixture(overrides: Partial<NeighborRow> = {}): NeighborRow {
+  return {
+    position_item_id: 9001,
+    item_number: "998",
+    title: "Урна тройная МАФ маркет артикул CS330x",
+    unit: "шт",
+    quantity: "7.000000",
+    unit_price: "140985.54",
+    materials: "90835.95",
+    works: "36334.38",
+    total: "986898.79",
+    gross: false,
+    is_self: false,
+    is_twin: false,
+    ...overrides,
+  };
+}
+
+export const suspiciousGroupPrices: GroupPricesView = {
+  family_title: "Велопарковки",
+  unit: "шт",
+  usual: "16500.00",
+  contracts: [
+    { contract_id: 11, object_title: "Jois 1", lines: 2, price: "9590.45", low: "7090.91", high: "12089.99", is_own: false },
+    { contract_id: 12, object_title: "МИРА", lines: 2, price: "16385.42", low: "13750.00", high: "19020.83", is_own: false },
+    { contract_id: 13, object_title: "TOP TOWER", lines: 3, price: "16500.00", low: "16500.00", high: "24462.10", is_own: false },
+    { contract_id: 14, object_title: "VEER 1 оч UB9", lines: 1, price: "239133.50", low: "239133.50", high: "239133.50", is_own: true },
+  ],
+};
+
+export const notErrorDecisionOutlier: NotErrorDecision = {
+  basis: { kind: "outlier", family_id: 70, unit_id: 5, direction: "up", family_title: "Двери", unit: "шт" },
+  reason: "автоматические раздвижные двери — другое изделие, цена верная",
+  set_by: { id: 1, email: "admin@example.test" },
+  set_at: "2026-11-24T10:00:00+00:00",
+};
+
+/** Выброс: велопарковка, неразобранная, один факт, окно соседей и таблица цен. */
+export function suspectOutlierFixture(overrides: Partial<SuspectView> = {}): SuspectView {
+  return {
+    position_item_id: 5001,
+    contract: { id: 14, number: "ВЕР1-ГП", object_title: "VEER 1 оч UB9" },
+    item_number: "999",
+    title: "Велопарковка МАФ маркет артикул BUS400",
+    unit: "шт",
+    latest: true,
+    net: "239133.50",
+    gross: null,
+    raw: null,
+    price_note: null,
+    facts: [
+      {
+        basis: { kind: "outlier", family_id: 71, unit_id: 5, direction: "up" },
+        kind: "outlier",
+        direction: "up",
+        ratio: "14.4929",
+        usual: "16500.00",
+        family_title: "Велопарковки",
+        unit: "шт",
+        contracts: 7,
+      },
+    ],
+    previous: [],
+    neighbors: [
+      neighborRowFixture({ position_item_id: 9001, item_number: "998" }),
+      neighborRowFixture({
+        position_item_id: 5001,
+        item_number: "999",
+        title: "Велопарковка МАФ маркет артикул BUS400",
+        quantity: "4.000000",
+        unit_price: "239133.50",
+        materials: "154071.95",
+        works: "61628.78",
+        total: "956534.00",
+        is_self: true,
+      }),
+      neighborRowFixture({ position_item_id: 9002, item_number: "1000", title: "Стул Glyni Филдс", unit_price: "66532.27" }),
+    ],
+    where: {
+      article: null,
+      chapter_path: [{ chapter_item_id: 1, title: "Благоустройство", number: "900" }],
+    },
+    prices: suspiciousGroupPrices,
+    ...overrides,
+  };
+}
+
+/** Двойник: плинтус по цене керамогранита за м². */
+export function suspectTwinFixture(overrides: Partial<SuspectView> = {}): SuspectView {
+  const neighbor = neighborRowFixture({
+    position_item_id: 6002,
+    item_number: "672",
+    title: "Керамогранит 600х1200 мм",
+    unit: "м²",
+    quantity: "3979.14",
+    unit_price: "5085.00",
+    materials: "1500.00",
+    works: "2587.50",
+    total: "20233937.63",
+    is_twin: true,
+  });
+  return {
+    position_item_id: 6001,
+    contract: { id: 15, number: "UB2-CIW", object_title: "VEER 1 оч UB2" },
+    item_number: "673",
+    title: "Плинтус из керамогранита",
+    unit: "м",
+    latest: true,
+    net: "5085.00",
+    gross: null,
+    raw: null,
+    price_note: null,
+    facts: [{ basis: { kind: "twin", neighbor_item_id: 6002 }, kind: "twin", neighbor }],
+    previous: [],
+    neighbors: [
+      neighbor,
+      neighborRowFixture({
+        position_item_id: 6001,
+        item_number: "673",
+        title: "Плинтус из керамогранита",
+        unit: "м",
+        quantity: "1210.41",
+        unit_price: "5085.00",
+        materials: "1500.00",
+        works: "2587.50",
+        total: "6154914.51",
+        is_self: true,
+      }),
+    ],
+    where: { article: null, chapter_path: [] },
+    prices: null,
+    ...overrides,
+  };
+}
+
+export function resolvedFixture(overrides: Partial<ResolvedView> = {}): ResolvedView {
+  return {
+    position_item_id: 7001,
+    contract: { id: 16, number: "ТУШ-1-СМР", object_title: "Тушино 1 оч. Cityzen" },
+    item_number: "119",
+    title: "М/к для технического балкона",
+    unit: "т",
+    latest: true,
+    net: "3698.75",
+    gross: null,
+    raw: null,
+    price_note: null,
+    price_error: {
+      kind: "price_error",
+      reason: "4 438 ₽ за тонну — строка-сумма с единицей «т»",
+      set_by: { id: 1, email: "admin@example.test" },
+      set_at: "2026-11-24T09:00:00+00:00",
+    },
+    not_error: [],
+    facts: [],
+    ...overrides,
+  };
+}
+
+export const suspiciousListFixture: SuspiciousLinesResponse = {
+  unresolved: [suspectOutlierFixture(), suspectTwinFixture()],
+  resolved: [
+    resolvedFixture(),
+    resolvedFixture({
+      position_item_id: 7002,
+      title: "Двери тамбура раздвижные автоматические",
+      unit: "шт",
+      item_number: "300",
+      net: "1575000.00",
+      price_error: null,
+      not_error: [notErrorDecisionOutlier],
+      facts: [
+        {
+          basis: { kind: "outlier", family_id: 70, unit_id: 5, direction: "up" },
+          kind: "outlier",
+          direction: "up",
+          ratio: "19.6",
+          usual: "80208.00",
+          family_title: "Двери",
+          unit: "шт",
+          contracts: 6,
+        },
+      ],
+    }),
+  ],
+  contracts: [
+    { contract_id: 14, number: "ВЕР1-ГП", object_title: "VEER 1 оч UB9", unresolved: 1 },
+    { contract_id: 15, number: "UB2-CIW", object_title: "VEER 1 оч UB2", unresolved: 1 },
+  ],
+};
+
+export const suspiciousCountsFixture: SuspiciousCounts = {
+  total: 2,
+  by_contract: { "14": 1, "15": 1 },
+};

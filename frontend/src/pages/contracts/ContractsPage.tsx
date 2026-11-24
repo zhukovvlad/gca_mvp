@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { FilePlus2, MoreHorizontal, Search, Trash2 } from "lucide-react";
 
 import { Pager } from "@/components/domain/Pager";
@@ -35,11 +35,15 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useCurrentUser } from "@/hooks/useAuth";
 import type { ContractRow } from "@/types/domain";
 import { formatDate } from "@/lib/format";
 import { useDebounce } from "@/lib/useDebounce";
-import { useContracts, useRateClasses } from "@/services/queries";
+import { useContracts, useRateClasses, useSuspiciousCounts } from "@/services/queries";
+
+import { SuspiciousFilter, SuspiciousTab } from "./SuspiciousTab";
+import { SUSPICIOUS_TAB_CONTRACTS, suspiciousTabLabel } from "./suspiciousCopy";
 
 const PAGE_SIZE = 20;
 const ALL_CLASSES = "all";
@@ -62,6 +66,15 @@ const ALL_CLASSES = "all";
 export default function ContractsPage() {
   const { data: user } = useCurrentUser();
   const isAdmin = user?.role === "admin";
+
+  // Вкладка живёт в адресе (`?tab=suspicious&contract=..&line=..`): ссылки с карточки договора и из
+  // панели строки КП открывают её сразу. `member` вкладки не видит: `tab=suspicious` у него — «Договоры».
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tab = isAdmin && searchParams.get("tab") === "suspicious" ? "suspicious" : "contracts";
+  const countsQ = useSuspiciousCounts(isAdmin);
+  function changeTab(next: string | number | null) {
+    setSearchParams(next === "suspicious" ? { tab: "suspicious" } : {}, { replace: true });
+  }
 
   const [searchInput, setSearchInput] = useState("");
   const [rateClassId, setRateClassId] = useState<string>(ALL_CLASSES);
@@ -114,23 +127,8 @@ export default function ContractsPage() {
   compareAllParams.set("all", "1");
   const compareAllHref = `/compare?${compareAllParams.toString()}`;
 
-  return (
-    <div className="container-page py-8">
-      <PageHeader
-        serif
-        title="Договоры"
-        subtitle={
-          data ? `Всего: ${data.total}` : "Договоры генподряда, объекты и загруженные сметы"
-        }
-        actions={
-          isAdmin && (
-            <Button onClick={() => setFormOpen(true)}>
-              <FilePlus2 className="size-4" /> Новый договор
-            </Button>
-          )
-        }
-      />
-
+  const contractsView = (
+    <>
       <div className="mt-6 flex flex-wrap items-center gap-3">
         <InputGroup className="max-w-sm flex-1">
           <InputGroupInput
@@ -306,6 +304,43 @@ export default function ContractsPage() {
           </>
         )}
       </div>
+    </>
+  );
+
+  return (
+    <div className="container-page py-8">
+      <PageHeader
+        serif
+        title="Договоры"
+        subtitle={
+          data ? `Всего: ${data.total}` : "Договоры генподряда, объекты и загруженные сметы"
+        }
+        actions={
+          isAdmin && (
+            <Button onClick={() => setFormOpen(true)}>
+              <FilePlus2 className="size-4" /> Новый договор
+            </Button>
+          )
+        }
+      />
+
+      {isAdmin ? (
+        <Tabs value={tab} onValueChange={changeTab} className="mt-2">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <TabsList>
+              <TabsTrigger value="contracts">{SUSPICIOUS_TAB_CONTRACTS}</TabsTrigger>
+              <TabsTrigger value="suspicious">{suspiciousTabLabel(countsQ.data?.total)}</TabsTrigger>
+            </TabsList>
+            {tab === "suspicious" && <SuspiciousFilter />}
+          </div>
+          <TabsContent value="contracts">{contractsView}</TabsContent>
+          <TabsContent value="suspicious">
+            <SuspiciousTab key={searchParams.get("contract") ?? ""} />
+          </TabsContent>
+        </Tabs>
+      ) : (
+        contractsView
+      )}
 
       <ContractFormDialog open={formOpen} onOpenChange={setFormOpen} />
       <ContractDeleteDialog contract={toDelete} onOpenChange={() => setToDelete(null)} />
