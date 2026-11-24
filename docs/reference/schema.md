@@ -879,7 +879,7 @@ not_analog_marks                     -- «не аналог в этом тенд
 
 Ключ формы — `(normalize_title(job_title_in_proposal), position_items.unit_id)` строки КП (`KpLine.form_key`, `load_kp_lines`); `form_title` хранит уже нормализованный текст. `UNIQUE NULLS NOT DISTINCT` нужен, потому что единица формы бывает `NULL`: без него вторая такая же отметка прошла бы. Каскад по строке сметы уносит отметки при замене и удалении сметы и договора; каскад по тендеру — тендерные отметки. Автор и единица формы — `RESTRICT`. Загрузчики — `crud/not_analog.py` (`load_not_analog_marks` по тендеру, `load_price_error_marks` по идентификаторам); `WorkHistoryLine.price_error` читается в `load_work_history` тем же запросом; обычная ставка (`load_typical_rates`) строки с «ошибкой в цене» не берёт, тендерные отметки её не трогают. Литерал CHECK причины продублирован константой `CK_MARK_REASON` в `models.py` и в миграции, паритет — `test_not_analog_schema.py::TestParityWithMigration`. `downgrade` удаляет обе таблицы вместе с отметками.
 
-Миграция `0031` ([спека «Подозрительные строки договоров»](../superpowers/specs/2026-11-24-suspicious-lines-design.md), §1 п. 1): таблица решений «не ошибка», по строке на основание. Нет решения — нет строки. В `_DOMAIN_TABLES` тестов.
+Миграция `0031` ([спека «Подозрительные строки договоров»](../superpowers/specs/2026-11-24-suspicious-lines-design.md), раздел 1 п. 1): таблица решений «не ошибка», по строке на основание. Нет решения — нет строки. В `_DOMAIN_TABLES` тестов.
 
 ```
 not_error_marks                      -- «не ошибка»: администратор проверил подозрительную строку договора по одному основанию
