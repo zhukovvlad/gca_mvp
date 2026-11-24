@@ -564,6 +564,24 @@ class TestHistoryComposition:
         assert lines == []
         assert len(lines_other_object) == 1
 
+    def test_without_an_excluded_object_every_contract_and_its_lines_are_loaded(self, world, db_session):
+        first, second = world.contract(), world.contract()
+        _, proposal_first = world.estimate(first)
+        _, proposal_second = world.estimate(second)
+        family, schema = world.family()
+        _, variant = _simple_variant(world, family, schema)
+        world.line(proposal_first, family=family, variant=variant)
+        world.line(proposal_second, family=family, variant=variant)
+        db_session.flush()
+
+        contracts, lines = load_history(db_session, exclude_object_id=None)
+        contracts_excl, lines_excl = load_history(db_session, exclude_object_id=first.object_id)
+
+        assert {first.id, second.id} <= {c.contract_id for c in contracts}
+        assert len(lines) == 2
+        assert first.id not in {c.contract_id for c in contracts_excl}
+        assert len(lines_excl) == 1
+
     def test_signing_date_does_not_limit_the_history(self, world, db_session):
         future = world.contract(year=2090)
         world.estimate(future)

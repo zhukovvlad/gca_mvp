@@ -17,6 +17,7 @@ from database import get_db
 from models import User
 from routers.domain_errors import raise_domain_error
 from services.lump_sum import LumpVerdict
+from services.status_cache import suspicion_cache
 
 router = APIRouter(prefix="/api/v1/position-items", tags=["lump-sum"])
 
@@ -45,6 +46,7 @@ def set_lump_sum_route(
             "set_at": iso(row.set_at),
         }
         db.commit()
+        suspicion_cache.invalidate()  # поправка меняет состав кандидатов (спека §1 п. 3)
         return response
     except DomainError as exc:
         db.rollback()
@@ -64,6 +66,7 @@ def clear_lump_sum_route(
     try:
         crud_lump_sum.clear_lump_override(db, position_item_id=position_item_id)
         db.commit()
+        suspicion_cache.invalidate()
     except DomainError as exc:
         db.rollback()
         raise_domain_error(exc)

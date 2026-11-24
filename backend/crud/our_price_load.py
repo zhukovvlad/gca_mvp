@@ -498,11 +498,15 @@ def _line_key(info: _VariantInfo, variant_id: int) -> LineKey:
     return LineKey(family_id=info.family_id, variant_id=variant_id, first_main=info.first_main)
 
 
-def load_history(db: Session, *, exclude_object_id: int) -> tuple[list[HistoryContract], list[HistoryLine]]:
+def load_history(
+    db: Session, *, exclude_object_id: int | None
+) -> tuple[list[HistoryContract], list[HistoryLine]]:
     """Последние сметы договоров и их строки с вариантом (спека 4а §2.3).
 
     В историю не входят смета оферты (`contract_id IS NULL`: её отсекает
-    соединение с договорами) и договор объекта тендера; дата подписания состав не ограничивает. Строка истории — строка
+    соединение с договорами) и договоры объекта `exclude_object_id` (`None` — не исключается
+    ни один объект: подозрительные строки смотрят все договоры); дата подписания состав не
+    ограничивает. Строка истории — строка
     последней сметы без глав, чей контекст несёт вариант и не архивирован; цена
     и вес проходят предикаты в SQL (у системы — предикат на сумме строки).
     Строка с неизвестной базой НДС остаётся: она нужна ядру для названия
@@ -511,7 +515,7 @@ def load_history(db: Session, *, exclude_object_id: int) -> tuple[list[HistoryCo
     строки читаются по её идентификаторам, а не по повторному выбору «последней».
     """
     latest = latest_estimates()
-    contract_rows = db.execute(
+    contract_query = (
         sa.select(
             Contract.id,
             latest.c.estimate_id,
@@ -531,9 +535,11 @@ def load_history(db: Session, *, exclude_object_id: int) -> tuple[list[HistoryCo
         .join(ObjectModel, ObjectModel.id == Contract.object_id)
         .join(RateClass, RateClass.id == Contract.rate_class_id)
         .join(Contractor, Contractor.id == Contract.contractor_id)
-        .where(Contract.object_id != exclude_object_id)
         .order_by(Contract.id)
-    ).all()
+    )
+    if exclude_object_id is not None:
+        contract_query = contract_query.where(Contract.object_id != exclude_object_id)
+    contract_rows = db.execute(contract_query).all()
     contracts = [
         HistoryContract(
             contract_id=row[0],

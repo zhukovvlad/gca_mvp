@@ -17,9 +17,12 @@ import { qk } from "./queryKeys";
 import {
   useAcceptAllReleasable,
   useAcceptAllZones,
+  useClearMark,
   useDecideChainZone,
   useDecideReleasable,
   useQueueStatus,
+  useSetLumpSum,
+  useSetMark,
   useUpdateSchema,
 } from "./queries";
 
@@ -184,5 +187,49 @@ describe("решение не ждёт медленную сводку очер�
 
   it("принять все предложения зон", async () => {
     await withHeldStatus(useAcceptAllZones, (m) => m.mutate());
+  });
+});
+
+describe("решения из панели строки КП перечитывают подозрения", () => {
+  const listKey = qk.suspicious.list(null);
+  const countsKey = qk.suspicious.counts;
+
+  function seededSuspicion() {
+    const queryClient = makeClient();
+    for (const key of [listKey, countsKey]) queryClient.setQueryData(key, { seeded: true });
+    return queryClient;
+  }
+
+  const expectSuspicionInvalidated = (queryClient: QueryClient) => {
+    expect(invalidated(queryClient, listKey)).toBe(true);
+    expect(invalidated(queryClient, countsKey)).toBe(true);
+  };
+
+  it("поставленная «ошибка в цене»", async () => {
+    server.use(http.put("*/position-items/:id/price-error", () => new HttpResponse(null, { status: 204 })));
+    const queryClient = seededSuspicion();
+    const { result } = renderHook(() => useSetMark(), { wrapper: wrapperFor(queryClient) });
+    await act(() =>
+      result.current.mutateAsync({ tenderId: T, roundId: R, offerId: O, kpItemId: 1, kind: "price_error", positionItemId: 5, reason: "x" })
+    );
+    expectSuspicionInvalidated(queryClient);
+  });
+
+  it("снятая «ошибка в цене»", async () => {
+    server.use(http.delete("*/position-items/:id/price-error", () => new HttpResponse(null, { status: 204 })));
+    const queryClient = seededSuspicion();
+    const { result } = renderHook(() => useClearMark(), { wrapper: wrapperFor(queryClient) });
+    await act(() =>
+      result.current.mutateAsync({ tenderId: T, roundId: R, offerId: O, kpItemId: 1, kind: "price_error", positionItemId: 5 })
+    );
+    expectSuspicionInvalidated(queryClient);
+  });
+
+  it("поправка «комплект или ставка»", async () => {
+    server.use(http.put("*/position-items/:id/lump-sum", () => new HttpResponse(null, { status: 204 })));
+    const queryClient = seededSuspicion();
+    const { result } = renderHook(() => useSetLumpSum(), { wrapper: wrapperFor(queryClient) });
+    await act(() => result.current.mutateAsync({ id: 5, verdict: "lump" }));
+    expectSuspicionInvalidated(queryClient);
   });
 });

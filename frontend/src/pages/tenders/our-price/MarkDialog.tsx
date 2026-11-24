@@ -22,8 +22,11 @@ import {
   markReasonCounter,
 } from "./ourPriceCopy";
 
+/** Вид окна: отметка «не аналог» либо «не ошибка» подозрительной строки (спека подозрительных строк, раздел 5 п. 2). */
+export type MarkDialogKind = MarkKind | "not_error";
+
 export interface MarkDialogProps {
-  kind: MarkKind;
+  kind: MarkDialogKind;
   title: string;
   /** Область действия отметки: какая строка, для кого и где перестаёт быть аналогом. */
   scopeText: string;
@@ -31,12 +34,14 @@ export interface MarkDialogProps {
   onOpenChange: (open: boolean) => void;
   /** Причина без пробелов по краям: 1-300 символов. */
   onSubmit: (reason: string) => void;
-  /** Запрос идёт: «Исключить» занято до ответа. */
+  /** Запрос идёт: кнопка подтверждения занята до ответа. */
   busy: boolean;
+  /** Подпись кнопки подтверждения; по умолчанию «Исключить». */
+  submitLabel?: string;
 }
 
 /** Поле причины живёт внутри содержимого окна: закрытое окно размонтировано, причина не залипает. */
-function MarkForm({ kind, title, scopeText, onSubmit, busy }: Omit<MarkDialogProps, "open" | "onOpenChange">) {
+function MarkForm({ kind, title, scopeText, onSubmit, busy, submitLabel = MARK_SUBMIT }: Omit<MarkDialogProps, "open" | "onOpenChange">) {
   const [value, setValue] = useState("");
   const reason = value.trim();
   const valid = reason.length >= 1 && reason.length <= MARK_REASON_MAX;
@@ -66,7 +71,7 @@ function MarkForm({ kind, title, scopeText, onSubmit, busy }: Omit<MarkDialogPro
       <AlertDialogFooter>
         <AlertDialogCancel render={<Button variant="outline">{MARK_CANCEL}</Button>} />
         <Button type="button" data-testid="mark-submit" disabled={!valid || busy} onClick={() => onSubmit(reason)}>
-          {MARK_SUBMIT}
+          {submitLabel}
         </Button>
       </AlertDialogFooter>
     </>

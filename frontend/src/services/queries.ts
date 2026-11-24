@@ -15,6 +15,7 @@ import {
   referencesApi,
   reviewApi,
   semanticApi,
+  suspiciousApi,
   tendersApi,
   type ContractListParams,
 } from "./api/domain";
@@ -38,6 +39,7 @@ import type {
   KpFilePreview,
   LineIds,
   LumpVerdict,
+  BasisKey,
   MarkKind,
   OurPriceLineView,
   ReferenceConversionBody,
@@ -3426,14 +3428,17 @@ function invalidateAfterLadderDecision(
  * Поправка «комплект или ставка» к строке сметы: `verdict = null` снимает её («как решило правило»).
  * Поправка живёт у строки сметы и меняет сравнение на всех экранах «Против нашей цены» и файл
  * подрядчику (спека комплектов §8 п. 7), поэтому перечитывается тот же префикс, что после
- * решения по зоне; мутация держится до перечитывания, а группа переключателя занята.
+ * решения по зоне; мутация держится до перечитывания, а группа переключателя занята. Поправка
+ * меняет пул кандидатов, сервер сбрасывает индекс подозрений, поэтому сбрасывается и префикс
+ * `qk.suspicious.all` (список и счётчики) — но не для остальных решений торга.
  */
 export function useSetLumpSum() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, verdict }: { id: number; verdict: LumpVerdict | null }) =>
       verdict === null ? positionItemsApi.deleteLumpSum(id) : positionItemsApi.putLumpSum(id, verdict),
-    onSuccess: () => invalidateAfterLadderDecision(qc),
+    onSuccess: () =>
+      Promise.all([invalidateAfterLadderDecision(qc), qc.invalidateQueries({ queryKey: qk.suspicious.all })]),
     onError: toastApiError,
   });
 }
@@ -3441,9 +3446,13 @@ export function useSetLumpSum() {
 export type SetMarkVars = LineIds & { kind: MarkKind; positionItemId: number; reason: string };
 export type ClearMarkVars = LineIds & { kind: MarkKind; positionItemId: number };
 
-/** Отметки меняют аналоги и цену на всех экранах «Против нашей цены» и файл подрядчику (спека «Не аналог» §8 п. 7). */
+/**
+ * Отметки меняют аналоги и цену на всех экранах «Против нашей цены» и файл подрядчику (спека «Не аналог» §8 п. 7);
+ * «ошибка в цене» из панели строки КП меняет и список подозрений со счётчиками, поэтому сбрасывается `qk.suspicious.all`.
+ */
 function invalidateAfterMark(qc: ReturnType<typeof useQueryClient>) {
   return Promise.all([
+    qc.invalidateQueries({ queryKey: qk.suspicious.all }),
     qc.invalidateQueries({ queryKey: qk.tenders.ourPriceAll }),
     qc.invalidateQueries({ queryKey: qk.tenders.kpFilePreviewsAll }),
   ]);
@@ -3473,6 +3482,91 @@ export function useClearMark() {
         ? positionItemsApi.deletePriceError(v.positionItemId)
         : tendersApi.deleteNotAnalog(v, v.positionItemId),
     onSuccess: () => invalidateAfterMark(qc),
+    onError: toastApiError,
+  });
+}
+
+// ========== Подозрительные строки договоров (спека 2026-11-24-suspicious-lines-design.md) ==========
+
+/**
+ * Список «Подозрительные строки» (раздел 3 п. 3). `enabled` — только у `admin`: у `member` запрос не
+ * выполняется вовсе (маршрут отвечает 403, а вкладки у него нет).
+ */
+export function useSuspiciousLines(contractId: number | null, enabled: boolean) {
+  return useQuery({
+    queryKey: qk.suspicious.list(contractId),
+    queryFn: () => suspiciousApi.list(contractId ?? undefined),
+    enabled,
+  });
+}
+
+/** Счётчики вкладки и карточки договора (раздел 3 п. 4); только `admin`. */
+export function useSuspiciousCounts(enabled: boolean) {
+  return useQuery({ queryKey: qk.suspicious.counts, queryFn: suspiciousApi.counts, enabled });
+}
+
+/**
+ * Решения по подозрительным строкам меняют список, счётчики, аналоги и цену на экранах «Против нашей
+ * цены» и файл подрядчику (раздел 5 п. 7).
+ */
+function invalidateAfterSuspicion(qc: ReturnType<typeof useQueryClient>) {
+  return Promise.all([
+    qc.invalidateQueries({ queryKey: qk.suspicious.all }),
+    qc.invalidateQueries({ queryKey: qk.tenders.ourPriceAll }),
+    qc.invalidateQueries({ queryKey: qk.tenders.kpFilePreviewsAll }),
+  ]);
+}
+
+export const SUSPICION_CHANGED_CODE = "suspicion_changed";
+
+export type SetNotErrorVars = { positionItemId: number; reason: string; bases: BasisKey[] };
+
+/**
+ * «Не ошибка» (раздел 3 п. 1). `409 suspicion_changed` — не тост: подозрение по строке изменилось,
+ * экран перечитывается, а окно и сообщение «проверьте заново» ведёт вызывающий (`mutate(.., {onError})`).
+ */
+export function useSetNotError() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: SetNotErrorVars) => positionItemsApi.putNotError(v.positionItemId, v.reason, v.bases),
+    onSuccess: () => invalidateAfterSuspicion(qc),
+    onError: (err) => {
+      if (apiErrorCode(err) === SUSPICION_CHANGED_CODE) {
+        void invalidateAfterSuspicion(qc);
+        return;
+      }
+      toastApiError(err);
+    },
+  });
+}
+
+/** «Вернуть» (раздел 3 п. 2): снимает все решения «не ошибка» строки. */
+export function useClearNotError() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (positionItemId: number) => positionItemsApi.deleteNotError(positionItemId),
+    onSuccess: () => invalidateAfterSuspicion(qc),
+    onError: toastApiError,
+  });
+}
+
+/** «Ошибка в цене…» из списка: без контекста КП, в отличие от `useSetMark`. */
+export function useSetPriceErrorFromList() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { positionItemId: number; reason: string }) =>
+      positionItemsApi.putPriceError(v.positionItemId, v.reason),
+    onSuccess: () => invalidateAfterSuspicion(qc),
+    onError: toastApiError,
+  });
+}
+
+/** «Снять во всех тендерах…» из списка («Разобраны»): `DELETE …/price-error` без контекста КП. */
+export function useClearPriceErrorFromList() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (positionItemId: number) => positionItemsApi.deletePriceError(positionItemId),
+    onSuccess: () => invalidateAfterSuspicion(qc),
     onError: toastApiError,
   });
 }

@@ -33,6 +33,7 @@ from routers import reports as reports_router
 from routers import review as review_router
 from routers import semantic as semantic_router
 from routers import settings as settings_router
+from routers import suspicious_lines as suspicious_lines_router
 from routers import tenders as tenders_router
 from routers import units
 from services.maintenance import run_startup_maintenance
@@ -249,6 +250,9 @@ app.include_router(semantic_router.router, dependencies=_auth_dep)
 app.include_router(lump_sum_router.router, dependencies=_auth_dep)
 # Отметки «не аналог» и «ошибка в цене» — только admin (спека «Не аналог» §2).
 app.include_router(not_analog_router.router, dependencies=_auth_dep)
+# Подозрительные строки договоров (спека 2026-11-24): список и счётчики — только admin.
+app.include_router(suspicious_lines_router.router, dependencies=_auth_dep)
+app.include_router(suspicious_lines_router.decisions_router, dependencies=_auth_dep)
 
 
 @app.get("/api/health")

@@ -1,15 +1,22 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
+import { toast } from "sonner";
 import { describe, expect, it, vi } from "vitest";
 
 import { qk } from "@/services/queryKeys";
-import { ourPriceAnalogFixture } from "@/test/fixtures";
+import {
+  analogSuspicionFixture,
+  excludedAnalogFixture,
+  notErrorDecisionOutlier,
+  ourPriceAnalogFixture,
+} from "@/test/fixtures";
 import { server } from "@/test/server";
 import { createTestQueryClient, renderWithProviders } from "@/test/utils";
 import type { LineIds, OurPriceAnalog, ZoneScope } from "@/types/domain";
 
 import { AnalogsTable, type AnalogsTableProps } from "./AnalogsTable";
+import { ExcludedAnalogs } from "./ExcludedAnalogs";
 
 const many = (n: number): OurPriceAnalog[] =>
   Array.from({ length: n }, (_, i) =>
@@ -401,6 +408,271 @@ describe("справка аналогов", () => {
     renderTable({ analogs: [] });
     expect(screen.getByTestId("analogs-empty")).toBeInTheDocument();
     expect(screen.queryByTestId("analogs-table")).not.toBeInTheDocument();
+  });
+});
+
+describe("подсказка «подозрительная цена» у аналога", () => {
+  const NOT_ERROR = "/api/v1/position-items/:id/not-error";
+  const hinted = () =>
+    ourPriceAnalogFixture({
+      analog_id: 9300,
+      title: "Утепление стен - пеноплэкс t-100 мм",
+      unit: "м²",
+      suspicion: analogSuspicionFixture(),
+    });
+  const hintOf = (id = 9300) => screen.getByTestId(`analog-hint-${id}`);
+  /** Текст подсказки без полосы: подписи шкалы recharts в jsdom зависят от размеров, а не от данных. */
+  const hintText = () => {
+    const copy = hintOf().cloneNode(true) as HTMLElement;
+    copy.querySelector("[data-testid=price-strip]")?.remove();
+    return copy.textContent;
+  };
+
+  it("множитель, предложение с ценой строки и обычной ценой, полоса, подпись про номинал", () => {
+    renderTable({ analogs: [hinted()], canLump: true });
+    const hint = hintOf();
+    expect(within(hint).getByText("Подозрительная цена")).toBeInTheDocument();
+    expect(within(hint).getByTestId("analog-hint-factor")).toHaveTextContent("×10,6");
+    expect(hint).toHaveTextContent(
+      "в 10,6 раза дороже обычного: эта строка 20 550,98 ₽ за м², обычная цена «Устройство плитной теплоизоляции» — 1 929,93 ₽, середина цен 7 договоров."
+    );
+    expect(within(hint).getByTestId("price-strip")).toBeInTheDocument();
+    expect(hint).toHaveTextContent("Цены подсказки — номинальные, без НДС, без индексации.");
+  });
+
+  it("подсказка стоит сразу после наименования аналога, раньше статьи и пути в смете", () => {
+    renderTable({ analogs: [hinted()], columns: [{ name: "Марка" }] });
+    const card = screen.getByTestId("analog-9300");
+    const order = Array.from(card.children).map((el) => el.getAttribute("data-testid") ?? el.tagName);
+    const title = order.indexOf("analog-title-9300");
+    expect(title).toBeGreaterThanOrEqual(0);
+    expect(order[title + 1]).toBe("analog-hint-9300");
+    expect(card.querySelector("[data-testid=analog-hint-9300]")!.compareDocumentPosition(card.lastElementChild!)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING
+    );
+  });
+
+  it("серая строчка решения стоит сразу после наименования, раньше колонок, статьи и пути", () => {
+    renderTable({
+      analogs: [ourPriceAnalogFixture({ analog_id: 9304, suspicion: null, not_error: [notErrorDecisionOutlier] })],
+      columns: [{ name: "Марка" }],
+    });
+    const order = Array.from(screen.getByTestId("analog-9304").children).map(
+      (el) => el.getAttribute("data-testid") ?? el.tagName
+    );
+    const title = order.indexOf("analog-title-9304");
+    expect(title).toBeGreaterThanOrEqual(0);
+    expect(order[title + 1]).toBe("analog-checked");
+    expect(order.indexOf("analog-released-9304")).toBeGreaterThan(title + 1);
+  });
+
+  it("тон: выброс — тёплый (warning), двойник — тон пары двойника (mark-contractor)", () => {
+    renderTable({ analogs: [hinted()] });
+    expect(hintOf()).toHaveClass("bg-warning-soft", "border-warning-border");
+  });
+
+  it("двойник: заголовок «та же цена, другая единица», множителя нет", () => {
+    const twin = analogSuspicionFixture({
+      facts: [
+        {
+          basis: { kind: "twin", neighbor_item_id: 9400 },
+          kind: "twin",
+          neighbor: {
+            position_item_id: 9400,
+            item_number: "12",
+            title: "Утепление стен, рулон",
+            unit: "м",
+            quantity: "5",
+            unit_price: "100",
+            materials: null,
+            works: null,
+            total: "500",
+            gross: false,
+            is_self: false,
+            is_twin: true,
+          },
+        },
+      ],
+      prices: null,
+    });
+    renderTable({ analogs: [ourPriceAnalogFixture({ analog_id: 9300, unit: "м²", suspicion: twin })] });
+    const hint = hintOf();
+    expect(hint).toHaveTextContent("Подозрительная цена — та же цена, другая единица");
+    expect(within(hint).queryByTestId("analog-hint-factor")).not.toBeInTheDocument();
+    expect(hint).toHaveClass("bg-mark-contractor-soft", "border-mark-contractor");
+    expect(hint).toHaveTextContent("но там за м, а здесь за м²");
+    expect(within(hint).queryByTestId("price-strip")).not.toBeInTheDocument();
+  });
+
+  it("admin: ссылка в новой вкладке и три кнопки; member: подсказка без ссылки и кнопок", () => {
+    const admin = renderTable({ analogs: [hinted()], canLump: true });
+    const link = within(hintOf()).getByRole("link", { name: "Разобрать в списке ↗" });
+    expect(link).toHaveAttribute("href", "/contracts?tab=suspicious&line=9300");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+    expect(within(hintOf()).getAllByRole("button").map((b) => b.textContent)).toEqual([
+      "Ошибка в цене…",
+      "Не аналог в этом тендере…",
+      "Не ошибка…",
+    ]);
+    admin.unmount();
+    renderTable({ analogs: [hinted()], canLump: false });
+    expect(within(hintOf()).queryByRole("link")).not.toBeInTheDocument();
+    expect(within(hintOf()).queryByRole("button")).not.toBeInTheDocument();
+    expect(hintOf()).toHaveTextContent("Подозрительная цена");
+  });
+
+  it("цифры подсказки — из suspicion: НДС и цена аналога панели их не меняют", () => {
+    const net = renderTable({
+      analogs: [{ ...hinted(), price: { net: "24661.18", shown: "30000.00" }, nominal: { net: "1", shown: "2" } }],
+      vat: "net",
+    });
+    const before = hintText();
+    net.unmount();
+    renderTable({
+      analogs: [{ ...hinted(), price: { net: "7.00", shown: "9.00" }, nominal: { net: "7.00", shown: "9.00" } }],
+      vat: "shown",
+    });
+    expect(hintText()).toBe(before);
+    const flat = (before ?? "").replace(/\s/g, " ");
+    expect(flat).toContain("20 550,98");
+    expect(flat).not.toContain("24 661,18");
+  });
+
+  it("suspicion = null и решения есть: серая строчка на каждое решение, подсказки нет", () => {
+    const second = {
+      ...notErrorDecisionOutlier,
+      reason: "вторая причина",
+      basis: { kind: "twin" as const, neighbor_item_id: 1, neighbor: { item_number: "5", title: "Сосед" } },
+    };
+    renderTable({
+      analogs: [ourPriceAnalogFixture({ analog_id: 9301, suspicion: null, not_error: [notErrorDecisionOutlier, second] })],
+      canLump: true,
+    });
+    expect(screen.queryByTestId("analog-hint-9301")).not.toBeInTheDocument();
+    const lines = screen.getAllByTestId("analog-checked");
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toHaveTextContent(/^проверено, не ошибка — выброс в «Двери», дороже обычного: «автоматические раздвижные двери/);
+    expect(lines[0]).toHaveTextContent("admin@example.test");
+    expect(lines[1]).toHaveTextContent("«вторая причина»");
+  });
+
+  it("без suspicion и решений ничего не рисуется; в «Исключены» подсказки нет, даже если поле пришло", () => {
+    renderTable({ analogs: [ourPriceAnalogFixture({ analog_id: 9302 })] });
+    expect(screen.queryByTestId("analog-hint-9302")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("analog-checked")).not.toBeInTheDocument();
+    const excluded = { ...excludedAnalogFixture({ analog_id: 9303 }), suspicion: analogSuspicionFixture() };
+    renderWithProviders(
+      <ExcludedAnalogs items={[excluded]} workRung={null} vat="net" canEdit ids={IDS} />
+    );
+    expect(screen.queryByText("Подозрительная цена")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("analog-hint-9303")).not.toBeInTheDocument();
+  });
+
+  it("узкий экран: прокручивается только полоса, остальное — в ширине карточки", () => {
+    renderTable({ analogs: [hinted()], canLump: true });
+    const hint = hintOf();
+    expect(hint).toHaveClass("min-w-0");
+    const scrollers = Array.from(hint.querySelectorAll(".overflow-x-auto"));
+    expect(scrollers).toHaveLength(1);
+    expect(within(scrollers[0] as HTMLElement).getByRole("img", { name: "цены договоров и эта строка" })).toBeInTheDocument();
+    expect(within(hint).getByTestId("analog-hint-actions")).toHaveClass("flex-wrap");
+  });
+
+  it("«Ошибка в цене…» и «Не аналог в этом тендере…» открывают окна меню «…»", async () => {
+    renderTable({ analogs: [hinted()], canLump: true });
+    await userEvent.click(within(hintOf()).getByRole("button", { name: "Ошибка в цене…" }));
+    expect(await screen.findByTestId("mark-scope")).toHaveTextContent("перестанет быть аналогом во всех тендерах");
+    await userEvent.click(screen.getByRole("button", { name: "Отмена" }));
+    await waitFor(() => expect(screen.queryByTestId("mark-scope")).not.toBeInTheDocument());
+    await userEvent.click(within(hintOf()).getByRole("button", { name: "Не аналог в этом тендере…" }));
+    expect(await screen.findByTestId("mark-scope")).toHaveTextContent("у всех участников и во всех этапах тендера 6");
+  });
+
+  it("«Не ошибка…»: окно с основанием, PUT с bases фактов подсказки, окно закрыто", async () => {
+    const asked: Array<{ url: string; body: unknown }> = [];
+    server.use(
+      http.put(NOT_ERROR, async ({ request }) => {
+        asked.push({ url: new URL(request.url).pathname, body: await request.json() });
+        return HttpResponse.json([]);
+      })
+    );
+    const queryClient = createTestQueryClient();
+    const spy = vi.spyOn(queryClient, "invalidateQueries");
+    renderWithProviders(
+      <AnalogsTable
+        analogs={[hinted()]}
+        vat="net"
+        canChoose={false}
+        canLump
+        targetAnalogId={null}
+        pinnedAnalogId={null}
+        contractorAnalogId={null}
+        busy={false}
+        onChoose={() => undefined}
+        columns={[]}
+        zoneScope="own"
+        ids={IDS}
+        formLabel={FORM}
+      />,
+      { queryClient }
+    );
+    await userEvent.click(within(hintOf()).getByRole("button", { name: "Не ошибка…" }));
+    expect(await screen.findByTestId("mark-scope")).toHaveTextContent("выброс в «Устройство плитной теплоизоляции»");
+    await userEvent.type(screen.getByLabelText("Причина"), "это комплект с монтажом");
+    await userEvent.click(screen.getByRole("button", { name: "Сохранить" }));
+    await waitFor(() => expect(asked).toHaveLength(1));
+    expect(asked[0]).toEqual({
+      url: "/api/v1/position-items/9300/not-error",
+      body: {
+        reason: "это комплект с монтажом",
+        bases: [{ kind: "outlier", family_id: 11, unit_id: 3, direction: "up" }],
+      },
+    });
+    await waitFor(() => expect(screen.queryByTestId("mark-scope")).not.toBeInTheDocument());
+    const keys = spy.mock.calls.map((c) => JSON.stringify((c[0] as { queryKey: unknown }).queryKey));
+    expect(keys).toContain(JSON.stringify(qk.tenders.ourPriceAll));
+  });
+
+  it("409 suspicion_changed: окно закрыто, панель перечитана, сообщение «проверьте заново»", async () => {
+    server.use(
+      http.put(NOT_ERROR, () =>
+        HttpResponse.json(
+          { detail: { code: "suspicion_changed", message: "Подозрение по строке изменилось — проверьте заново." } },
+          { status: 409 }
+        )
+      )
+    );
+    const error = vi.spyOn(toast, "error").mockImplementation(() => "");
+    const queryClient = createTestQueryClient();
+    const spy = vi.spyOn(queryClient, "invalidateQueries");
+    renderWithProviders(
+      <AnalogsTable
+        analogs={[hinted()]}
+        vat="net"
+        canChoose={false}
+        canLump
+        targetAnalogId={null}
+        pinnedAnalogId={null}
+        contractorAnalogId={null}
+        busy={false}
+        onChoose={() => undefined}
+        columns={[]}
+        zoneScope="own"
+        ids={IDS}
+        formLabel={FORM}
+      />,
+      { queryClient }
+    );
+    await userEvent.click(within(hintOf()).getByRole("button", { name: "Не ошибка…" }));
+    await userEvent.type(await screen.findByLabelText("Причина"), "причина");
+    await userEvent.click(screen.getByRole("button", { name: "Сохранить" }));
+    await waitFor(() => expect(error).toHaveBeenCalledWith("Подозрение по строке изменилось — проверьте заново"));
+    await waitFor(() => expect(screen.queryByTestId("mark-scope")).not.toBeInTheDocument());
+    expect(error).toHaveBeenCalledTimes(1);
+    const keys = spy.mock.calls.map((c) => JSON.stringify((c[0] as { queryKey: unknown }).queryKey));
+    expect(keys).toContain(JSON.stringify(qk.tenders.ourPriceAll));
+    error.mockRestore();
   });
 });
 

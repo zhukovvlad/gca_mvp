@@ -878,3 +878,22 @@ not_analog_marks                     -- «не аналог в этом тенд
 ```
 
 Ключ формы — `(normalize_title(job_title_in_proposal), position_items.unit_id)` строки КП (`KpLine.form_key`, `load_kp_lines`); `form_title` хранит уже нормализованный текст. `UNIQUE NULLS NOT DISTINCT` нужен, потому что единица формы бывает `NULL`: без него вторая такая же отметка прошла бы. Каскад по строке сметы уносит отметки при замене и удалении сметы и договора; каскад по тендеру — тендерные отметки. Автор и единица формы — `RESTRICT`. Загрузчики — `crud/not_analog.py` (`load_not_analog_marks` по тендеру, `load_price_error_marks` по идентификаторам); `WorkHistoryLine.price_error` читается в `load_work_history` тем же запросом; обычная ставка (`load_typical_rates`) строки с «ошибкой в цене» не берёт, тендерные отметки её не трогают. Литерал CHECK причины продублирован константой `CK_MARK_REASON` в `models.py` и в миграции, паритет — `test_not_analog_schema.py::TestParityWithMigration`. `downgrade` удаляет обе таблицы вместе с отметками.
+
+Миграция `0031` ([спека «Подозрительные строки договоров»](../superpowers/specs/2026-11-24-suspicious-lines-design.md), раздел 1 п. 1): таблица решений «не ошибка», по строке на основание. Нет решения — нет строки. В `_DOMAIN_TABLES` тестов.
+
+```
+not_error_marks                      -- «не ошибка»: администратор проверил подозрительную строку договора по одному основанию
+  id bigint PK (identity), position_item_id NOT NULL → position_items ON DELETE CASCADE   -- строка договора
+  kind text NOT NULL ('outlier' | 'twin')
+  family_id NULL → work_families ON DELETE CASCADE, unit_id NULL → units_of_measure ON DELETE RESTRICT,
+  direction text NULL ('up' | 'down')                                  -- основание выброса
+  neighbor_item_id NULL → position_items ON DELETE CASCADE             -- основание двойника
+  reason text NOT NULL, set_by NOT NULL → users ON DELETE RESTRICT, set_at timestamptz NOT NULL default now()
+  # CHECK ck_not_error_marks_kind, ck_not_error_marks_direction
+  # CHECK ck_not_error_marks_shape: у outlier заданы family_id, unit_id, direction и пуст neighbor_item_id; у twin — наоборот
+  # CHECK ck_not_error_marks_reason: char_length(reason) BETWEEN 1 AND 300
+  # UNIQUE NULLS NOT DISTINCT uq_not_error_marks_key (position_item_id, kind, family_id, unit_id, direction, neighbor_item_id)
+  # INDEX ix_not_error_marks_position_item_id (position_item_id)
+```
+
+`UNIQUE NULLS NOT DISTINCT` нужен, потому что у двойника поля выброса `NULL`: без него второй такой же ряд прошёл бы. Семья ушла (слияние, удаление) или сосед удалён — основание уходит каскадом, и строка при новом подозрении снова «не разобрана». Выражения CHECK и имя формы (`CK_NOT_ERROR_SHAPE`) продублированы в `models.py` и миграции, паритет — `test_suspicious_schema.py::TestParityWithMigration`. `downgrade` удаляет таблицу вместе с решениями.

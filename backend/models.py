@@ -3897,3 +3897,65 @@ class NotAnalogMark(Base):
         ),
         Index("ix_not_analog_marks_tender_id", "tender_id"),
     )
+
+
+#: Решения «не ошибка» (миграция 0031, спека «Подозрительные строки» §1 п. 1). Выражения и имя
+#: формы продублированы в миграции; паритет — test_suspicious_schema.py.
+CK_NOT_ERROR_KIND = "kind IN ('outlier', 'twin')"
+CK_NOT_ERROR_DIRECTION = "direction IN ('up', 'down')"
+CK_NOT_ERROR_SHAPE = "ck_not_error_marks_shape"
+CK_NOT_ERROR_SHAPE_EXPR = (
+    "(kind = 'outlier' AND family_id IS NOT NULL AND unit_id IS NOT NULL "
+    "AND direction IS NOT NULL AND neighbor_item_id IS NULL) OR "
+    "(kind = 'twin' AND neighbor_item_id IS NOT NULL AND family_id IS NULL "
+    "AND unit_id IS NULL AND direction IS NULL)"
+)
+
+
+class NotErrorMark(Base):
+    """«Не ошибка»: решение администратора о подозрительной строке договора по одному основанию —
+    выброс цены (`family_id`, `unit_id`, `direction`) или двойник (`neighbor_item_id`). Нет
+    решения — нет строки; основание ушло (семья, сосед) — решение ушло каскадом."""
+    __tablename__ = "not_error_marks"
+
+    id = Column(BigInteger, primary_key=True)
+    position_item_id = Column(BigInteger, nullable=False)
+    kind = Column(Text, nullable=False)
+    family_id = Column(Integer, nullable=True)
+    unit_id = Column(Integer, nullable=True)
+    direction = Column(Text, nullable=True)
+    neighbor_item_id = Column(BigInteger, nullable=True)
+    reason = Column(Text, nullable=False)
+    set_by = Column(Integer, nullable=False)
+    set_at = Column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["position_item_id"], ["position_items.id"], ondelete="CASCADE",
+            name="fk_not_error_marks_position_item",
+        ),
+        ForeignKeyConstraint(
+            ["family_id"], ["work_families.id"], ondelete="CASCADE",
+            name="fk_not_error_marks_family",
+        ),
+        ForeignKeyConstraint(
+            ["unit_id"], ["units_of_measure.id"], ondelete="RESTRICT",
+            name="fk_not_error_marks_unit",
+        ),
+        ForeignKeyConstraint(
+            ["neighbor_item_id"], ["position_items.id"], ondelete="CASCADE",
+            name="fk_not_error_marks_neighbor",
+        ),
+        ForeignKeyConstraint(
+            ["set_by"], ["users.id"], ondelete="RESTRICT", name="fk_not_error_marks_set_by"
+        ),
+        CheckConstraint(CK_NOT_ERROR_KIND, name="ck_not_error_marks_kind"),
+        CheckConstraint(CK_NOT_ERROR_DIRECTION, name="ck_not_error_marks_direction"),
+        CheckConstraint(CK_NOT_ERROR_SHAPE_EXPR, name=CK_NOT_ERROR_SHAPE),
+        CheckConstraint(CK_MARK_REASON, name="ck_not_error_marks_reason"),
+        UniqueConstraint(
+            "position_item_id", "kind", "family_id", "unit_id", "direction", "neighbor_item_id",
+            name="uq_not_error_marks_key", postgresql_nulls_not_distinct=True,
+        ),
+        Index("ix_not_error_marks_position_item_id", "position_item_id"),
+    )

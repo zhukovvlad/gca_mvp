@@ -9,6 +9,10 @@ import api from "@/lib/api";
 import type { ID } from "@/types/common";
 import type {
   AcceptTargetDecisionInput,
+  BasisKey,
+  NotErrorDecision,
+  SuspiciousCounts,
+  SuspiciousLinesResponse,
   AcceptTargetDecisionResult,
   AcceptTransferInput,
   AcceptTransferResult,
@@ -624,13 +628,34 @@ export const positionItemsApi = {
     api.put(`/v1/position-items/${id}/lump-sum`, { verdict }).then(() => undefined),
 
   deleteLumpSum: (id: number): Promise<void> =>
-    api.delete(`/v1/position-items/${id}/lump-sum`).then(() => undefined),
+    api.delete(`/v1/position-items/${id}/lump-sum`).then(() => undefined),
+
   /** «Ошибка в цене» (спека «Не аналог» §2 п. 1): строка перестаёт быть аналогом во всех тендерах. */
   putPriceError: (id: number, reason: string): Promise<void> =>
     api.put(`/v1/position-items/${id}/price-error`, { reason }).then(() => undefined),
 
   deletePriceError: (id: number): Promise<void> =>
     api.delete(`/v1/position-items/${id}/price-error`).then(() => undefined),
+
+  /** «Не ошибка» (спека подозрительных строк, раздел 3 п. 1): `bases` — основания показанных фактов. */
+  putNotError: (id: number, reason: string, bases: BasisKey[]): Promise<NotErrorDecision[]> =>
+    api.put<NotErrorDecision[]>(`/v1/position-items/${id}/not-error`, { reason, bases }).then((r) => r.data),
+
+  deleteNotError: (id: number): Promise<void> =>
+    api.delete(`/v1/position-items/${id}/not-error`).then(() => undefined),
+};
+
+/** Список «Подозрительные строки» и счётчики (спека, раздел 3 п. 3-4) — право `admin`. */
+export const suspiciousApi = {
+  list: (contractId?: number): Promise<SuspiciousLinesResponse> =>
+    api
+      .get<SuspiciousLinesResponse>("/v1/suspicious-lines", {
+        params: contractId === undefined ? undefined : { contract_id: contractId },
+      })
+      .then((r) => r.data),
+
+  counts: (): Promise<SuspiciousCounts> =>
+    api.get<SuspiciousCounts>("/v1/suspicious-lines/counts").then((r) => r.data),
 };
 
 // ---------------------------------------------------------------------------

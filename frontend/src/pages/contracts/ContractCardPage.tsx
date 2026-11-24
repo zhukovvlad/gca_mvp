@@ -39,7 +39,9 @@ import {
   useContractImportJobs,
   useDownloadJobFile,
   useObject,
+  useSuspiciousCounts,
 } from "@/services/queries";
+import { CARD_LINK_NOTE, cardLinkLabel } from "./suspiciousCopy";
 import type { ContractImportJob } from "@/types/domain";
 
 /**
@@ -62,6 +64,9 @@ export default function ContractCardPage() {
   const [unlinkOpen, setUnlinkOpen] = useState(false);
 
   const contractQ = useContract(id);
+  // Счётчик подозрительных строк договора (спека 2026-11-24-suspicious-lines-design.md, раздел 5 п. 3): только admin.
+  const suspiciousQ = useSuspiciousCounts(isAdmin);
+  const suspiciousCount = id === undefined ? 0 : (suspiciousQ.data?.by_contract[String(id)] ?? 0);
   const jobsQ = useContractImportJobs(id);
   const contract = contractQ.data;
   /**
@@ -230,6 +235,18 @@ export default function ContractCardPage() {
             </Field>
           )}
         </dl>
+        {isAdmin && suspiciousCount > 0 && (
+          <div className="mt-4 flex flex-wrap items-baseline gap-2 border-t border-border-subtle pt-3">
+            <Link
+              data-testid="suspicious-link"
+              to={`/contracts?tab=suspicious&contract=${contract.id}`}
+              className="text-sm text-info-text underline underline-offset-2"
+            >
+              {cardLinkLabel(suspiciousCount)}
+            </Link>
+            <span className="text-xs text-fg-tertiary">{CARD_LINK_NOTE}</span>
+          </div>
+        )}
         {contract.tender_basis && (
           <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-border-subtle pt-4">
             {contract.estimate_origin === "from_offer" ? (

@@ -81,6 +81,20 @@ describe("окно отметки", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
+  it("submitLabel заменяет подпись кнопки подтверждения; kind=not_error — свой идентификатор поля", async () => {
+    const { onSubmit } = renderDialog({ kind: "not_error", title: "Не ошибка", submitLabel: "Сохранить" });
+    expect(screen.queryByRole("button", { name: "Исключить" })).not.toBeInTheDocument();
+    expect(field()).toHaveAttribute("id", "mark-reason-not_error");
+    await userEvent.type(field(), "цена верная");
+    await userEvent.click(screen.getByRole("button", { name: "Сохранить" }));
+    expect(onSubmit).toHaveBeenCalledWith("цена верная");
+  });
+
+  it("без submitLabel подпись прежняя — «Исключить»", () => {
+    renderDialog();
+    expect(submit()).toBeInTheDocument();
+  });
+
   it("закрыто — ничего не нарисовано", () => {
     renderDialog({ open: false });
     expect(screen.queryByTestId("mark-scope")).not.toBeInTheDocument();

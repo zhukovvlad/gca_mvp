@@ -16,6 +16,7 @@ from models import (
     Lot,
     LumpSumOverride,
     NotAnalogMark,
+    NotErrorMark,
     PositionItem,
     PriceErrorMark,
     Proposal,
@@ -2133,7 +2134,7 @@ def test_replace_warns_about_dropped_not_analog_marks(
 
     job = replace_upload(imported_estimate.contract_id)
     assert any(
-        "Отметки «не аналог» по строкам прежней сметы (2) не перенесены — поставьте заново" in w
+        "Отметки «не аналог» и «не ошибка» по строкам прежней сметы (2) не перенесены — поставьте заново" in w
         for w in job.warnings
     )
     for model in (PriceErrorMark, NotAnalogMark):
@@ -2145,3 +2146,65 @@ def test_replace_says_nothing_about_not_analog_marks_when_there_were_none(
 ):
     job = replace_upload(imported_estimate.contract_id)
     assert not any("Отметки «не аналог»" in w for w in job.warnings)
+
+
+def test_replace_counts_distinct_rows_with_tender_marks_and_not_error_decisions(
+    db_session, imported_estimate, admin_user, replace_upload, factories
+):
+    """Спека подозрительных строк §1 п. 4: одна тендерная отметка и строка с двумя решениями «не ошибка» —
+    две строки; строка с отметками всех трёх видов считается один раз; решения уходят каскадом."""
+    ids = _item_ids(db_session, imported_estimate.id, 2)
+    assert len(ids) == 2
+    outside = factories.PositionItemFactory.create()  # соседка из другой сметы
+    tender = factories.TenderFactory.create()
+    db_session.add(
+        NotAnalogMark(
+            tender_id=tender.id, form_title="стяжка", form_unit_id=None,
+            position_item_id=ids[0], reason="другой материал", set_by=admin_user.id,
+        )
+    )
+    for neighbor in (ids[0], outside.id):
+        db_session.add(
+            NotErrorMark(
+                position_item_id=ids[1], kind="twin", neighbor_item_id=neighbor,
+                reason="разные изделия", set_by=admin_user.id,
+            )
+        )
+    db_session.commit()
+
+    job = replace_upload(imported_estimate.contract_id)
+    assert [w for w in job.warnings if "не ошибка" in w] == [
+        "Отметки «не аналог» и «не ошибка» по строкам прежней сметы (2) не перенесены — поставьте заново"
+    ]
+    for model in (NotAnalogMark, NotErrorMark):
+        assert db_session.execute(sa.select(sa.func.count()).select_from(model)).scalar_one() == 0
+
+
+def test_replace_counts_a_row_with_all_three_kinds_of_marks_once(
+    db_session, imported_estimate, admin_user, replace_upload, factories
+):
+    ids = _item_ids(db_session, imported_estimate.id, 2)
+    tender = factories.TenderFactory.create()
+    db_session.add(PriceErrorMark(position_item_id=ids[0], reason="опечатка", set_by=admin_user.id))
+    db_session.add(
+        NotAnalogMark(
+            tender_id=tender.id, form_title="стяжка", form_unit_id=None,
+            position_item_id=ids[0], reason="другой материал", set_by=admin_user.id,
+        )
+    )
+    db_session.add(
+        NotErrorMark(
+            position_item_id=ids[0], kind="twin", neighbor_item_id=ids[1],
+            reason="разные изделия", set_by=admin_user.id,
+        )
+    )
+    db_session.commit()
+    job = replace_upload(imported_estimate.contract_id)
+    assert any("прежней сметы (1) не перенесены" in w and "не ошибка" in w for w in job.warnings)
+
+
+def test_replace_says_nothing_about_not_error_decisions_when_there_were_none(
+    db_session, imported_estimate, replace_upload
+):
+    job = replace_upload(imported_estimate.contract_id)
+    assert not any("не ошибка" in w for w in job.warnings)

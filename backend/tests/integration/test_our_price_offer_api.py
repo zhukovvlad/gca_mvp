@@ -1282,6 +1282,8 @@ class TestLinePanelAuto:
             "zone",
             "selectable",
             "released_values",
+            "suspicion",
+            "not_error",
         }
         assert first["contract_id"] == low.id
         assert first["object_title"] == low.object.title

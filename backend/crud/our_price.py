@@ -29,6 +29,7 @@ from crud.kp_decisions import (
     load_file_skeleton,
     load_unit_texts,
 )
+from crud.line_views import article_ref, category_chain, path_view
 from crud.lump_sum import typical_rates
 from crud.not_analog import FormKey, Mark, load_not_analog_marks, load_price_error_marks, mark_view
 from crud.our_price_inflation import plan_history_inflation, round_target_month
@@ -52,6 +53,7 @@ from crud.our_price_load import (
 from crud.reference_lines import ReferenceLine, load_link_values, load_reference_lines
 from crud.section_chains import zone_chain_info
 from crud.stage_summary import pct_str
+from crud.suspicious_lines import analog_suspicions
 from models import (
     Contractor,
     Estimate,
@@ -851,34 +853,6 @@ def _composite_parameter(line: KpLine, families: Mapping[int, FamilyLadderInfo])
     return None
 
 
-def _path_view(steps: Sequence[ChapterStep]) -> list[dict]:
-    """Путь по разделам сметы от её корня: ключ, название, номер раздела в файле."""
-    return [{"chapter_item_id": s.chapter_item_id, "title": s.title, "number": s.number} for s in steps]
-
-
-def _category_chain(tree: Mapping[int, CategoryMeta], category_id: int) -> list[CategoryMeta]:
-    """Статьи от корня до `category_id` включительно."""
-    chain = [tree[category_id]]
-    while chain[-1].parent_id is not None:
-        chain.append(tree[chain[-1].parent_id])
-    chain.reverse()
-    return chain
-
-
-def _article_ref(tree: Mapping[int, CategoryMeta], category_id: int | None) -> dict | None:
-    """Статья со своей цепочкой от корня (`chain` кончается самой статьёй); без статьи — `None`."""
-    if category_id is None:
-        return None
-    chain = _category_chain(tree, category_id)
-    node = chain[-1]
-    return {
-        "id": node.id,
-        "code": node.code,
-        "title": node.title,
-        "chain": [{"id": step.id, "code": step.code, "title": step.title} for step in chain],
-    }
-
-
 def _params_view(
     row: KpLineRow, result: LineResult, families: Mapping[int, FamilyLadderInfo]
 ) -> tuple[str | None, list[dict]]:
@@ -985,7 +959,7 @@ def _line_view(
         "unit_id": row.unit_id,
         "article_id": row.article_root_id,
         "category_id": row.category_id,
-        "chapter_path": _path_view(steps.get(row.chapter_item_id, ())),
+        "chapter_path": path_view(steps.get(row.chapter_item_id, ())),
         "title": row.title,
         "unit": row.unit,
         "quantity": row.quantity,
@@ -1562,7 +1536,7 @@ def _categories_view(
 ) -> list[dict]:
     """Статьи на путях строк и дополнительных работ, от корня до своей статьи, без лишних; по номеру."""
     own = [row.category_id for row in rows] + [category_id for category_id, _ in extra]
-    on_paths = {node.id for category_id in own if category_id is not None for node in _category_chain(tree, category_id)}
+    on_paths = {node.id for category_id in own if category_id is not None for node in category_chain(tree, category_id)}
     return [
         {
             "id": node.id,
@@ -1592,7 +1566,7 @@ def _node_totals_view(
             categories=(
                 (None,)
                 if row.category_id is None
-                else tuple(node.id for node in _category_chain(tree, row.category_id))
+                else tuple(node.id for node in category_chain(tree, row.category_id))
             ),
             chapters=tuple(step.chapter_item_id for step in steps.get(row.chapter_item_id, ())),
         )
@@ -1604,7 +1578,7 @@ def _node_totals_view(
             categories=(
                 (None,)
                 if category_id is None
-                else tuple(node.id for node in _category_chain(tree, category_id))
+                else tuple(node.id for node in category_chain(tree, category_id))
             ),
         )
         for category_id, amount in extra
@@ -1785,10 +1759,12 @@ def _analogs_view(
     released_values: Mapping[int, list[dict]],
     tree: Mapping[int, CategoryMeta],
     steps: Mapping[int, tuple[ChapterStep, ...]],
+    suspicions: Mapping[int, dict],
 ) -> list[dict]:
     """Справка работы: все аналоги выбранной ступени (включая выбросы) в порядке спеки §2.11.
     У системы и у работы без ступени — пусто. «Где аналог» — статья раздела строки договора и
-    полный путь по смете договора, не статья строки КП."""
+    полный путь по смете договора, не статья строки КП. `suspicions` — поля `suspicion` и
+    `not_error` каждого аналога (спека подозрительных строк §4 п. 3)."""
     ladder = result.ladder
     if ladder is None or ladder.rung_no is None:
         return []
@@ -1811,8 +1787,8 @@ def _analogs_view(
                 "contractor_id": contract.contractor_id,
                 "contractor_title": contract.contractor_title,
                 "section_titles": section_titles,
-                "article": _article_ref(tree, category_id),
-                "chapter_path": _path_view(steps.get(chapter_item_id, ())),
+                "article": article_ref(tree, category_id),
+                "chapter_path": path_view(steps.get(chapter_item_id, ())),
                 "title": title,
                 "unit": unit,
                 "price": money_pair(analog.net, rate, unit=True),
@@ -1825,6 +1801,7 @@ def _analogs_view(
                 "zone": analog.zone,
                 "selectable": analog.outlier_ratio is None,
                 "released_values": released_values.get(analog.position_item_id, []),
+                **suspicions[analog.position_item_id],
             }
         )
     return view
@@ -1875,8 +1852,8 @@ def _excluded_view(
                 "contractor_id": contract.contractor_id,
                 "contractor_title": contract.contractor_title,
                 "section_titles": section_titles,
-                "article": _article_ref(tree, category_id),
-                "chapter_path": _path_view(steps.get(chapter_item_id, ())),
+                "article": article_ref(tree, category_id),
+                "chapter_path": path_view(steps.get(chapter_item_id, ())),
                 "title": title,
                 "unit": unit,
                 "price": money_pair(cand.net, rate, unit=True),
@@ -2082,7 +2059,7 @@ def reference_row_view(
         chapter_item_id = details[analog_id][4]
         if chapter_item_id not in seen:
             seen.add(chapter_item_id)
-            paths.append(_path_view(steps.get(chapter_item_id, ())))
+            paths.append(path_view(steps.get(chapter_item_id, ())))
     deviation = None
     if kp_unit_net is not None and row.kp_unit_net is not None:
         with localcontext(_CONTEXT):
@@ -2267,7 +2244,10 @@ def build_line_view(
 
     vat_dropped = _vat_dropped_view(scene, row, result)
     analog_columns, released_values = _released_view(db, scene, row, result)
-    analogs = _analogs_view(scene, participant, result, analog_details, released_values, tree, steps)
+    ladder = result.ladder
+    shown_analogs = [] if ladder is None or ladder.rung_no is None else ladder.analogs
+    suspicions = analog_suspicions(db, {a.position_item_id: a.contract_id for a in shown_analogs})
+    analogs = _analogs_view(scene, participant, result, analog_details, released_values, tree, steps, suspicions)
     excluded = _excluded_view(
         scene, participant, row, trace, analog_details, tree, steps, load_price_error_marks(db, trace_ids)
     )
@@ -2280,7 +2260,7 @@ def build_line_view(
         **_line_view(row, result, rate, scene.index, scene.families, steps, scene.unit_labels),
         **_decision_fields(scene, participant, row, result, template, references),
         "file_ours": _file_ours(scene, participant, row, result, unit_texts[position_item_id], references),
-        "article": _article_ref(tree, row.category_id),
+        "article": article_ref(tree, row.category_id),
         **_other_zones_field(other_zones(reference.zones)),
     }
     return {

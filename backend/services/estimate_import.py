@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, union
 from sqlalchemy.orm import Session
 
 from models import (
@@ -40,6 +40,7 @@ from models import (
     Lot,
     LumpSumOverride,
     NotAnalogMark,
+    NotErrorMark,
     PositionItem,
     PriceErrorMark,
     Proposal,
@@ -834,22 +835,25 @@ def _replace_existing(
             "не перенесены — правило решит заново"
         )
 
-    # Отметки «не аналог» и «ошибка в цене» (спека «Не аналог» §2 п. 5) уходят каскадом со строками и
-    # не переносятся. Счёт обоих видов — ДО `delete`, по тому же замку строки сметы.
+    # Отметки «не аналог», «ошибка в цене» и решения «не ошибка» (спеки «Не аналог» §2 п. 5 и подозрительных
+    # строк §1 п. 4) уходят каскадом со строками и не переносятся. Считаются различные строки с отметкой
+    # хотя бы одного из трёх видов — ДО `delete`, по тому же замку строки сметы.
     old_items = (
         select(PositionItem.id)
         .join(Proposal, Proposal.id == PositionItem.proposal_id)
         .join(Lot, Lot.id == Proposal.lot_id)
         .where(Lot.estimate_id == old_id)
     )
-    marks = db.execute(
-        select(func.count()).select_from(PriceErrorMark).where(PriceErrorMark.position_item_id.in_(old_items))
-    ).scalar_one() + db.execute(
-        select(func.count()).select_from(NotAnalogMark).where(NotAnalogMark.position_item_id.in_(old_items))
-    ).scalar_one()
+    marked = union(
+        select(PriceErrorMark.position_item_id).where(PriceErrorMark.position_item_id.in_(old_items)),
+        select(NotAnalogMark.position_item_id).where(NotAnalogMark.position_item_id.in_(old_items)),
+        select(NotErrorMark.position_item_id).where(NotErrorMark.position_item_id.in_(old_items)),
+    ).subquery()
+    marks = db.execute(select(func.count()).select_from(marked)).scalar_one()
     if marks:
         warnings.append(
-            f"Отметки «не аналог» по строкам прежней сметы ({marks}) не перенесены — поставьте заново"
+            f"Отметки «не аналог» и «не ошибка» по строкам прежней сметы ({marks}) "
+            "не перенесены — поставьте заново"
         )
 
     db.execute(delete(Estimate).where(Estimate.id == old_id))

@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Подозрительные строки</title>
+<style>
+  /* Цвета — токены приложения (frontend/src/index.css), светлая и тёмная тема. */
+  :root {
+    --page: #F4F2EC; --surface: #FFFFFF; --sunken: #F7F6F2; --fg: #1F2128; --fg2: #5A5D66; --fg3: #8E8B82; --muted: #B5B2A8;
+    --border: rgba(0,0,0,.14); --subtle: rgba(0,0,0,.08);
+    --warn: #B5642E; --warn-soft: #FAF1E1; --warn-border: #E8C8A8; --warn-text: #6B3915; --info-text: #2C4A60;
+    --action: #2D3A30; --action-text: #F7F6F2;
+    --m-low: #2563A8; --m-fresh: #0E7C7B; --m-contr: #7A4FB5; --m-contr-soft: #EEE6F8; --m-on: #FFFFFF;
+    --chip: #EFEDE7; --new: #2563A8; --new-soft: #E6EEF8;
+  }
+  :root[data-theme="dark"] {
+    --page: #1A1D24; --surface: #232730; --sunken: #1F232B; --fg: #EDEAE0; --fg2: #B5B2A8; --fg3: #8E8B82; --muted: #6E6B65;
+    --border: #3A4148; --subtle: #2D323D;
+    --warn: #D49A6E; --warn-soft: #353027; --warn-border: #4A3D2E; --warn-text: #D49A6E; --info-text: #A5C0D6;
+    --action: #B8C4BB; --action-text: #1A1D24;
+    --m-low: #6DA7EC; --m-fresh: #4FC3C1; --m-contr: #9085E9; --m-contr-soft: #2E2A45; --m-on: #1A1D24;
+    --chip: #2D323D; --new: #6DA7EC; --new-soft: #1E2A3A;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--fg); font: 14px/1.45 "Inter", "Segoe UI", system-ui, sans-serif; }
+  .mono { font-family: "JetBrains Mono", Consolas, monospace; font-variant-numeric: tabular-nums; }
+  .wrap { max-width: 1560px; margin: 0 auto; padding: 16px; }
+  .note { border: 1px dashed var(--fg3); border-radius: 10px; padding: 10px 14px; color: var(--fg2); font-size: 13px; margin-bottom: 14px; max-width: 1000px; }
+  .note b { color: var(--fg); }
+  .bar button { font: inherit; font-size: 13px; padding: 5px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); color: var(--fg); cursor: pointer; margin-bottom: 18px; }
+  .state { margin-bottom: 34px; }
+  .state > h2 { font-size: 15px; margin: 0 0 6px; }
+  .state > .sub { font-size: 12.5px; color: var(--fg2); margin: 0 0 12px; max-width: 1000px; }
+  .tag { display: inline-block; font-size: 11px; letter-spacing: .05em; text-transform: uppercase; border-radius: 5px; padding: 1px 7px; margin: 0 0 8px; }
+  .tag.before { background: var(--chip); color: var(--fg2); }
+  .tag.after { background: var(--new-soft); color: var(--new); }
+  .pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(600px, 1fr)); gap: 22px; align-items: start; }
+  .xs { font-size: 11px; line-height: 1.35; }
+  .fg2 { color: var(--fg2); } .fg3 { color: var(--fg3); }
+  /* shadcn Badge */
+  .b { display: inline-flex; align-items: center; gap: 4px; border-radius: 999px; font-size: 12px; padding: 1px 8px; white-space: nowrap; }
+  .b.sec { background: var(--chip); color: var(--fg); }
+  .b.out { border: 1px solid var(--border); color: var(--fg); }
+  .b.state { display: block; white-space: normal; border-radius: 8px; text-align: left; margin-top: 2px; padding: 2px 8px; border: 1px solid var(--border); font-size: 12px; }
+  .b.new { outline: 2px solid var(--new); outline-offset: 1px; }
+  .b.mk { color: var(--m-on); font-weight: 600; padding: 3px 8px; border-radius: 6px; }
+  .b.low { background: var(--m-low); } .b.fresh { background: var(--m-fresh); } .b.contr { background: var(--m-contr); }
+  /* таблица строк */
+  .tablecard { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th { text-align: left; font-weight: 500; color: var(--fg2); font-size: 12px; padding: 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  td { padding: 8px; border-bottom: 1px solid var(--subtle); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  .r { text-align: right; }
+  .work { min-width: 220px; max-width: 280px; }
+  .cap { display: block; font-size: 11px; line-height: 1.35; color: var(--fg2); white-space: normal; }
+  .hl { background: var(--new-soft); color: var(--new); border-radius: 3px; padding: 0 3px; }
+  /* панель строки (Sheet) */
+  .sheet { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; max-width: 640px; box-shadow: 0 6px 20px rgba(0,0,0,.08); }
+  .sh-head { padding: 16px 16px 10px; }
+  .sh-title { font-weight: 600; font-size: 16px; }
+  .sh-desc { font-size: 13px; color: var(--fg2); margin-top: 2px; }
+  .sh-body { padding: 0 16px 20px; display: grid; gap: 20px; }
+  .sec h4 { margin: 0 0 8px; font-size: 12px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--fg2); }
+  .lbl { font-size: 11px; font-weight: 500; letter-spacing: .05em; text-transform: uppercase; color: var(--fg3); margin: 0 0 2px; }
+  .crumbs { font-size: 12px; }
+  .path { font-size: 12px; }
+  .path div { padding-left: calc(var(--d) * 14px); }
+  .zone { margin-top: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--sunken); padding: 10px 12px; display: grid; gap: 6px; }
+  .zone.undecided { border-color: var(--warn-border); background: var(--warn-soft); }
+  .zhead { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .zname { font-weight: 600; } .zname.warn { color: var(--warn); }
+  .src { font-size: 12px; color: var(--fg2); background: var(--chip); border-radius: 6px; padding: 1px 7px; white-space: nowrap; }
+  .q { display: inline-flex; width: 15px; height: 15px; border-radius: 50%; border: 1px solid var(--fg2); color: var(--fg2); font-size: 10px; font-weight: 600; align-items: center; justify-content: center; margin: 0 4px; vertical-align: 1px; }
+  .small { font-size: 12.5px; }
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; font-size: 12.5px; background: var(--surface); }
+  .toggle span { padding: 4px 9px; border-right: 1px solid var(--border); }
+  .toggle span:last-child { border-right: 0; }
+  .toggle span.on { background: var(--action); color: var(--action-text); }
+  .link { font-size: 12.5px; color: var(--info-text); text-decoration: underline; text-underline-offset: 2px; }
+  dl.prices { display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; margin: 0; font-size: 13px; }
+  dl.prices dt { color: var(--fg2); } dl.prices dd { margin: 0; }
+  .why { font-size: 12.5px; border: 1px solid var(--border); background: var(--sunken); border-radius: 8px; padding: 6px 10px; }
+  .why.new { border-color: var(--new); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; }
+  .card { border: 1px solid var(--border); border-top-width: 4px; border-radius: 10px; padding: 10px 12px; display: grid; gap: 5px; background: var(--surface); }
+  .card.low { border-top-color: var(--m-low); } .card.fresh { border-top-color: var(--m-fresh); } .card.contr { border-top-color: var(--m-contr); }
+  .card.sel { background: var(--sunken); box-shadow: 0 0 0 2px var(--action); }
+  .card .big { font-size: 20px; font-weight: 600; }
+  .up { color: var(--warn-text); }
+  .analog { border-top: 1px solid var(--border); padding-top: 10px; font-size: 13px; display: grid; gap: 5px; }
+  .analog .top { display: flex; justify-content: space-between; gap: 10px; }
+  .where { display: grid; gap: 2px; font-size: 11.5px; }
+  .where .lbl { font-size: 10px; font-weight: 500; text-transform: uppercase; letter-spacing: .04em; color: var(--fg3); margin-top: 2px; }
+  .where .art { background: var(--new-soft); color: var(--new); border-radius: 5px; padding: 0 5px; }
+  .where .p { color: var(--fg2); } .where .n { font-family: ui-monospace, Consolas, monospace; color: var(--fg3); }
+  .refgroup { border: 1px dashed var(--border); background: var(--sunken); border-radius: 10px; padding: 10px 12px; display: grid; gap: 8px; }
+  .plate { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; font-size: 13px; }
+  .plate .bar2 { height: 6px; border-radius: 3px; background: var(--chip); margin-top: 8px; overflow: hidden; }
+  .plate .bar2 i { display: block; height: 100%; width: 93%; background: var(--action); }
+  .tip { background: var(--action); color: var(--action-text); font-size: 12.5px; border-radius: 8px; padding: 9px 11px; max-width: 420px; }
+  .del { text-decoration: line-through; opacity: .55; }
+  .ins { }
+  .ellipsis { color: var(--fg3); font-size: 12px; }
+  .surface { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; display: grid; gap: 14px; max-width: 640px; }
+  .surface h3 { margin: 0; font-size: 18px; font-weight: 500; }
+  .fld { display: grid; gap: 4px; font-size: 13px; }
+  .fld label { font-weight: 500; }
+  .inp { border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; background: var(--surface); }
+  .blk { border-top: 1px solid var(--subtle); padding-top: 12px; display: grid; gap: 8px; }
+  .blk.new { outline: 2px solid var(--new); outline-offset: 6px; border-radius: 2px; }
+  .blk h4 { margin: 0; font-size: 16px; font-weight: 500; }
+  .switch { display: inline-flex; align-items: center; gap: 8px; font-size: 13.5px; }
+  .switch i { width: 32px; height: 18px; border-radius: 9px; background: var(--action); position: relative; display: inline-block; }
+  .switch i::after { content: ""; position: absolute; top: 2px; left: 16px; width: 14px; height: 14px; border-radius: 50%; background: var(--action-text); }
+  .switch.off i { background: var(--chip); }
+  .switch.off i::after { left: 2px; background: var(--fg3); }
+  .btn { font-size: 13px; border-radius: 8px; padding: 5px 12px; border: 1px solid var(--border); background: var(--surface); color: var(--fg); }
+  .side { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; max-width: 520px; }
+  .legend { font-size: 12.5px; color: var(--fg2); max-width: 1000px; }
+  .legend li { margin: 3px 0; }
+  @media (max-width: 680px) { .pair { grid-template-columns: 1fr; } }
+  .pair > * { min-width: 0; } .wrap { overflow-wrap: anywhere; }
+</style>
+<style>
+  .page { background: var(--page); border: 1px solid var(--border); border-radius: 12px; padding: 20px 22px; display: grid; gap: 14px; }
+  .ph { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 1px solid var(--subtle); padding-bottom: 12px; }
+  .ph h1 { margin: 0; font: 500 28px/1.2 Georgia, "Times New Roman", serif; letter-spacing: -.01em; }
+  .tabs { display: inline-flex; background: var(--chip); border-radius: 9px; padding: 3px; gap: 2px; font-size: 13px; }
+  .tabs span { padding: 4px 12px; border-radius: 7px; color: var(--fg2); }
+  .tabs span.on { background: var(--surface); color: var(--fg); box-shadow: 0 1px 2px rgba(0,0,0,.1); }
+  .sel { border: 1px solid var(--border); border-radius: 8px; padding: 5px 10px; background: var(--surface); font-size: 13px; min-width: 260px; display: inline-flex; justify-content: space-between; gap: 10px; }
+  .list { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 4px 16px 14px; display: grid; gap: 10px; }
+  .grp { font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--fg3); margin-top: 10px; }
+  .it { border-top: 1px solid var(--subtle); padding-top: 10px; display: grid; gap: 6px; font-size: 13px; }
+  .it .top { display: flex; justify-content: space-between; gap: 10px; }
+  .fact { font-size: 12.5px; color: var(--warn-text); background: var(--warn-soft); border: 1px solid var(--warn-border); border-radius: 6px; padding: 3px 9px; justify-self: start; }
+  .acts { display: flex; gap: 6px; flex-wrap: wrap; }
+  .acts .btn { font-size: 12.5px; padding: 3px 10px; }
+  .done { opacity: .85; }
+  details { border: 1px solid var(--subtle); border-radius: 8px; background: var(--sunken); }
+  details > summary { cursor: pointer; font-size: 12.5px; color: var(--fg2); padding: 5px 9px; list-style: none; user-select: none; }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::before { content: "▸ "; }
+  details[open] > summary::before { content: "▾ "; }
+  details > .in { padding: 0 9px 8px; display: grid; gap: 6px; overflow-x: auto; }
+  .nb table { font-size: 12px; }
+  .nb td, .nb th { padding: 3px 6px; border-bottom: 1px solid var(--subtle); }
+  .nb th { font-size: 11px; white-space: normal; vertical-align: bottom; }
+  .nb tr.me td { background: var(--warn-soft); font-weight: 600; }
+  .nb tr.tw td { background: var(--new-soft); }
+  .nb td.t { min-width: 220px; }
+  .nb table { min-width: 760px; }
+  .page, .list, .it, .it > *, details, details > .in, .why2, .why2 > *, .twin > * { min-width: 0; }
+  .it, .list, .page { max-width: 100%; }
+  .nb td.r, .nb th.r, .nb td.n, .mono { white-space: nowrap; overflow-wrap: normal; }
+  .hint { border: 1px solid var(--warn-border); background: var(--warn-soft); border-radius: 8px; padding: 6px 10px; font-size: 12.5px; display: grid; gap: 6px; }
+  .hint b { color: var(--warn-text); }
+  .req { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 10px 20px; font-size: 13px; }
+  .req .lbl { margin: 0; }
+  .susp { grid-column: 1 / -1; border-top: 1px solid var(--subtle); padding-top: 10px; }
+</style>
+<style>
+  .it { border: 1px solid var(--subtle); border-left: 4px solid var(--warn); border-radius: 10px; padding: 12px 14px; margin-top: 4px; gap: 8px; }
+  .it.tw { border-left-color: var(--m-contr); }
+  .it.done { border: 1px solid var(--subtle); border-left: 4px solid var(--muted); }
+  .kind { justify-self: start; font-size: 11.5px; font-weight: 600; border-radius: 999px; padding: 1px 9px; white-space: nowrap; }
+  .kind.out { background: var(--warn-soft); color: var(--warn-text); border: 1px solid var(--warn-border); }
+  .kind.tw { background: var(--m-contr-soft); color: var(--m-contr); border: 1px solid var(--m-contr); }
+  .it .top b.mono { font-size: 17px; }
+  .why2 { display: grid; grid-template-columns: 150px minmax(0,1fr); gap: 14px; align-items: center; background: var(--warn-soft); border: 1px solid var(--warn-border); border-radius: 10px; padding: 10px 14px; }
+  .big2 { display: flex; align-items: center; gap: 8px; }
+  .x { font: 600 34px/1 "Inter", "Segoe UI", system-ui, sans-serif; color: var(--warn); letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+  .x { white-space: nowrap; overflow-wrap: normal; flex: none; }
+  .x.sm { font-size: 24px; }
+  .big2 .w { font-size: 12px; line-height: 1.2; color: var(--warn-text); }
+  .strip { display: block; max-width: 620px; overflow: visible; }
+  .plot { overflow-x: auto; min-width: 0; } .plot .strip { min-width: 460px; }
+  .hint { min-width: 0; grid-template-columns: minmax(0, 1fr); }
+  .strip .tk { font: 10px "JetBrains Mono", Consolas, monospace; fill: var(--fg3); }
+  .strip .lb { font: 600 10.5px "Inter", "Segoe UI", sans-serif; fill: var(--fg); }
+  .strip .lb.w { fill: var(--warn); }
+  .legend2 { display: flex; flex-wrap: wrap; gap: 2px 14px; font-size: 11px; color: var(--fg2); margin-top: 2px; }
+  .lg { display: inline-flex; align-items: center; gap: 5px; }
+  .lg i { display: inline-block; }
+  .lg .d { width: 8px; height: 8px; border-radius: 50%; background: var(--fg3); }
+  .lg .d.own { background: var(--surface); border: 1.5px solid var(--fg2); }
+  .lg .d.me { width: 11px; height: 11px; background: var(--warn); }
+  .lg .u { width: 0; height: 11px; border-left: 1.5px dashed var(--fg); }
+  .lg .bd { width: 18px; height: 8px; border-radius: 4px; background: var(--chip); border: 1px solid var(--subtle); }
+  .fact2 { font-size: 12.5px; color: var(--fg2); }
+  .fact2 b { color: var(--fg); }
+  .twin { display: grid; grid-template-columns: minmax(0,1fr) 40px minmax(0,1fr); align-items: stretch; max-width: 640px; }
+  .tc { border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; background: var(--surface); display: grid; gap: 3px; font-size: 13px; }
+  .tc.me { border-color: var(--m-contr); background: var(--m-contr-soft); }
+  .tp { font-size: 15px; }
+  .tp b { font-size: 18px; }
+  .unit { font-weight: 700; font-size: 16px; color: var(--m-contr); border-bottom: 2px solid var(--m-contr); padding: 0 2px; }
+  .eq { display: flex; align-items: center; justify-content: center; font: 600 28px/1 sans-serif; color: var(--m-contr); }
+  .sumrow { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+  .sm1 { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--subtle); border-radius: 10px; padding: 6px 12px; background: var(--sunken); font-size: 12.5px; color: var(--fg2); }
+  .n2 { font: 600 20px/1 "Inter", "Segoe UI", sans-serif; color: var(--fg); font-variant-numeric: tabular-nums; }
+  .hint { gap: 8px; }
+  .ph2 { display: flex; gap: 10px; align-items: center; }
+  .nb tr.me td:first-child { box-shadow: inset 3px 0 0 var(--warn); }
+  @media (max-width: 680px) { .why2 { grid-template-columns: 1fr; } .twin { grid-template-columns: 1fr; } .eq { padding: 4px 0; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="bar"><button onclick="document.documentElement.dataset.theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'">Светлая / тёмная тема</button></div>
+
+<div class="note"><b>Подозрительные строки договоров — макет гейта 1.</b> Строки, количества и цены — со стенда, 24.11.2026,
+все цены <b>без НДС</b> (у Тушино и VEER UB9 НДС 20 % снят, у VEER UB2 база 0 %). Состояние разбора условное: м/к Тушино уже
+отмечена «ошибкой в цене», двери тамбура разобраны «не ошибкой», остальное не разобрано. Блоки «Строки рядом в смете» и
+«Цены этой работы в договорах» раскрываются щелчком. Рисовано по коду `ContractsPage`, `ContractCardPage` и карточки
+аналога `AnalogsTable`. Что нового по сравнению с сегодняшним приложением — в подписи к каждому разделу. Полоса цен — компонент `chart` из shadcn (recharts уже в проекте), шкала логарифмическая: каждое деление в 10 раз больше предыдущего; наведение на точку показывает договор и цену.</div>
+
+<div class="state">
+  <h2>1. Страница «Договоры» → вкладка «Подозрительные строки» (только администратор)</h2>
+  <p class="sub">Новое — вкладки и весь список; «Договоры» — сегодняшняя таблица без изменений. Фильтр по договору — из договоров, где есть
+  подозрительные. На узком экране таблицы прокручиваются вбок, числа не переносятся. Обычная цена работы считается по договорам: каждый договор даёт одну цену — середину своих строк.</p>
+  <div class="page" style="max-width:1120px">
+    <div class="ph"><div><h1>Договоры</h1><div class="small fg2">Всего: 7</div></div><span class="btn">＋ Новый договор</span></div>
+    <div class="row"><span class="tabs"><span>Договоры</span><span class="on">Подозрительные строки (4)</span></span>
+      <span class="sel">Все договоры <span class="fg3">▾</span></span></div>
+    <div class="list">
+      <div class='sumrow'><div class='sm1'><span class='n2'>4</span><span>не разобраны</span></div><div class='sm1'><span class='n2'>3</span><span class='kind out'>↕ цена выбивается</span></div><div class='sm1'><span class='n2'>1</span><span class='kind tw'>= та же цена, другая единица</span></div><div class='sm1'><span class='n2'>3</span><span>разобраны</span></div></div><div class="grp">Не разобраны · 4</div>
+      <div class='it tw'><span class='kind tw'>= та же цена, другая единица</span><div class='top'><div><b>Плинтус из керамогранита</b> <span class='xs fg2'>· м</span></div><div><b class='mono'>5 085,00</b> <span class='xs fg2'>₽ за м без НДС</span></div></div><div class='xs fg2'>VEER 1 оч UB2 · дог. UB2-CIW · п. 673</div><div class='twin'><div class='tc'><div class='xs fg3'>п. 672 · соседняя строка</div><div>Керамогранит 600х1200 мм</div><div class='tp'><b class='mono'>5 085,00</b> ₽ за <span class='unit'>м²</span></div><div class='xs fg2 mono'>мат. 1 500,00 · раб. 2 587,50</div></div><div class='eq'>=</div><div class='tc me'><div class='xs fg3'>п. 673 · эта строка</div><div>Плинтус из керамогранита</div><div class='tp'><b class='mono'>5 085,00</b> ₽ за <span class='unit'>м</span></div><div class='xs fg2 mono'>мат. 1 500,00 · раб. 2 587,50</div></div></div><span class='fact2'>Цена, материалы и работы совпадают до копейки, а единицы разные. Обычная цена плинтуса — <b class='mono'>1 833,08 ₽</b> за м.</span><details open><summary>Строки рядом в смете</summary><div class='in nb'><table><tr><th>п.</th><th>Наименование</th><th>Ед.</th><th class='r'>Кол-во</th><th class='r'>Цена за ед.</th><th class='r'>Материалы за ед.</th><th class='r'>Работы за ед.</th><th class='r'>Сумма</th></tr><tr><td class='n mono'>670</td><td class='t'>Цементно-песчаная стяжка М200, армированная сеткой – 80мм</td><td>м²</td><td class='r mono'>3 979,14</td><td class='r mono'>2 064,00</td><td class='r mono'>700,00</td><td class='r mono'>950,00</td><td class='r mono'>8 212 949,31</td></tr><tr><td class='n mono'>671</td><td class='t'>Обеспылевание</td><td>м²</td><td class='r mono'>3 979,14</td><td class='r mono'>186,00</td><td class='r mono'>50,00</td><td class='r mono'>100,00</td><td class='r mono'>740 120,43</td></tr><tr class='tw'><td class='n mono'>672</td><td class='t'>Керамогранит 600х1200 мм</td><td>м²</td><td class='r mono'>3 979,14</td><td class='r mono'>5 085,00</td><td class='r mono'>1 500,00</td><td class='r mono'>2 587,50</td><td class='r mono'>20 233 937,63</td></tr><tr class='me'><td class='n mono'>673</td><td class='t'>Плинтус из керамогранита</td><td>м</td><td class='r mono'>1 210,41</td><td class='r mono'>5 085,00</td><td class='r mono'>1 500,00</td><td class='r mono'>2 587,50</td><td class='r mono'>6 154 914,51</td></tr><tr><td class='n mono'>675</td><td class='t'>Стены - бетон А3: Окраска в 2-а слоя согласно дизайн-проекту</td><td>м²</td><td class='r mono'>14 722,83</td><td class='r mono'>3 636,60</td><td class='r mono'>1 155,00</td><td class='r mono'>1 760,00</td><td class='r mono'>53 541 028,32</td></tr><tr><td class='n mono'>677</td><td class='t'>Потолок - бетон А3: Окраска в 2-а слоя согласно дизайн-проекту</td><td>м²</td><td class='r mono'>3 979,14</td><td class='r mono'>3 636,60</td><td class='r mono'>1 155,00</td><td class='r mono'>1 760,00</td><td class='r mono'>14 470 548,20</td></tr><tr><td class='n mono'>679</td><td class='t'>Поручни метеллические. Согласовать с Заказчиком.</td><td>м</td><td class='r mono'>1 581,00</td><td class='r mono'>11 899,50</td><td class='r mono'>6 825,00</td><td class='r mono'>2 750,00</td><td class='r mono'>18 813 109,50</td></tr></table><span class='xs fg3'>По 3 строки сметы до и после, без заголовков разделов; цены без НДС; сумма — как в смете.</span><div class='where'><span class='lbl'>статья классификатора</span><span>8 Отделочные работы (паркинг, надземная часть МОП) › 8.2 Отделка надземной части (в т.ч. меблировка) › <span class='art'>8.2.2 Отделка эвакуационные лестничные клетки и коридоры надземная часть</span></span><span class='lbl'>в смете договора</span><span class='p'><span class='n'>п. 526</span> — Отделка паркинга, технических помещений, МОП, двери, ворота и шлагбаумы в соответствии с дизайн-проектом</span><span class='p' style='padding-left:14px'><span class='n'>п. 581</span> — Отделка надземной части</span><span class='p' style='padding-left:28px'><span class='n'>п. 668</span> — Эвакуационные лестничные клетки и коридоры</span><span class='p' style='padding-left:42px'><span class='n'>п. 669</span> — Пол</span></div></div></details><details><summary>Цены этой работы в договорах</summary><div class='in nb'><table><tr><th>Договор</th><th class='r'>Строк</th><th class='r'>Цена договора</th><th class='r'>От — до</th></tr><tr><td>МИРА</td><td class='r mono'>2</td><td class='r mono'>1 008,10</td><td class='r mono'>927,67 — 1 088,54</td></tr><tr><td>Cityzen Tr. 1 UB8b</td><td class='r mono'>14</td><td class='r mono'>1 833,08</td><td class='r mono'>1 467,18 — 1 833,08</td></tr><tr class='tw'><td>VEER 1 оч UB2</td><td class='r mono'>1</td><td class='r mono'>5 085,00</td><td class='r mono'>5 085,00 — 5 085,00</td></tr></table><span class='xs fg3'>«Устройство плинтуса», за м, без НДС. Цена договора — середина его строк этой работы; обычная цена <b>1 833,08 ₽</b> — середина цен договоров (каждый договор — один голос, сколько бы строк в нём ни было).</span></div></details><div class='acts'><span class='btn'>Ошибка в цене…</span><span class='btn'>Не ошибка…</span></div></div><div class='it out'><span class='kind out'>↕ цена выбивается</span><div class='top'><div><b>Утепление стен - пеноплэкс t-100 мм, h- 1500 м</b> <span class='xs fg2'>· м²</span></div><div><b class='mono'>20 550,98</b> <span class='xs fg2'>₽ за м² без НДС</span></div></div><div class='xs fg2'>Тушино 1 оч. Cityzen · дог. ТУШ-1-СМР · п. 119</div><div class='why2'><div class='big2'><span class='x'>×10,6</span><span class='w'>дороже<br>обычного</span></div><div class='plot'><svg class="strip" viewBox="0 0 560 64" width="100%" role="img" aria-label="цены договоров и эта строка"><rect x="233.0" y="21" width="56.2" height="18" rx="9" style="fill:var(--chip)"/><line x1="8" x2="552" y1="30" y2="30" style="stroke:var(--subtle)"/><line x1="8.0" x2="8.0" y1="42" y2="46" style="stroke:var(--fg3)"/><text x="0" y="57" text-anchor="start" class="tk">100 ₽</text><line x1="189.3" x2="189.3" y1="42" y2="46" style="stroke:var(--fg3)"/><text x="189.3" y="57" text-anchor="middle" class="tk">1 000 ₽</text><line x1="370.7" x2="370.7" y1="42" y2="46" style="stroke:var(--fg3)"/><text x="370.7" y="57" text-anchor="middle" class="tk">10 000 ₽</text><line x1="552.0" x2="552.0" y1="42" y2="46" style="stroke:var(--fg3)"/><text x="560" y="57" text-anchor="end" class="tk">100 000 ₽</text><line x1="241.1" x2="241.1" y1="14" y2="40" style="stroke:var(--fg);stroke-dasharray:3 2"/><text x="241.1" y="11" text-anchor="middle" class="lb">обычная</text><circle cx="203.1" cy="30" r="4.5" style="fill:var(--surface);stroke:var(--fg2);stroke-width:1.5"><title>Тушино 1 оч. Cityzen: 1 190,73 ₽</title></circle><circle cx="233.0" cy="30" r="4.5" style="fill:var(--fg3)"><title>VEER 1 оч UB9: 1 740,75 ₽</title></circle><circle cx="236.3" cy="30" r="4.5" style="fill:var(--fg3)"><title>Jois 1: 1 815,89 ₽</title></circle><circle cx="241.1" cy="30" r="4.5" style="fill:var(--fg3)"><title>TOP TOWER: 1 929,93 ₽</title></circle><circle cx="247.3" cy="30" r="4.5" style="fill:var(--fg3)"><title>VEER 1 оч UB2: 2 088,90 ₽</title></circle><circle cx="268.1" cy="30" r="4.5" style="fill:var(--fg3)"><title>МИРА: 2 720,35 ₽</title></circle><circle cx="289.2" cy="30" r="4.5" style="fill:var(--fg3)"><title>Cityzen Tr. 1 UB8b: 3 552,09 ₽</title></circle><line x1="241.1" x2="418.4" y1="30" y2="30" style="stroke:var(--warn);stroke-width:2"/><circle cx="427.4" cy="30" r="7.5" style="fill:var(--warn)"><title>эта строка: 20 550,98 ₽</title></circle><text x="435.4" y="11" text-anchor="middle" class="lb w">эта строка</text></svg><div class='legend2'><span class="lg"><i class="d"></i>цена договора</span><span class="lg"><i class="d own"></i>этот же договор</span><span class="lg"><i class="u"></i>обычная — середина договоров</span><span class="lg"><i class="d me"></i>эта строка</span><span class="lg"><i class="bd"></i>разброс других договоров</span></div></div></div><span class='fact2'>Обычная цена «Устройства плитной теплоизоляции» — <b class='mono'>1 929,93 ₽</b> за м²: середина цен 7 договоров. Эта строка — <b class='mono'>20 550,98 ₽</b>.</span><details open><summary>Строки рядом в смете</summary><div class='in nb'><table><tr><th>п.</th><th>Наименование</th><th>Ед.</th><th class='r'>Кол-во</th><th class='r'>Цена за ед.</th><th class='r'>Материалы за ед.</th><th class='r'>Работы за ед.</th><th class='r'>Сумма</th></tr><tr><td class='n mono'>116</td><td class='t'>Монтаж шпонки «Аквастоп» ДЗ-140/50-4/35</td><td>м</td><td class='r mono'>1 253,30</td><td class='r mono'>2 113,12</td><td class='r mono'>1 145,83</td><td class='r mono'>166,67</td><td class='r mono'>2 648 382,98</td></tr><tr><td class='n mono'>117</td><td class='t'>Устройство выравнивающего слоя</td><td>м²</td><td class='r mono'>3 885,68</td><td class='r mono'>1 512,73</td><td class='r mono'>412,50</td><td class='r mono'>527,08</td><td class='r mono'>5 877 999,20</td></tr><tr><td class='n mono'>118</td><td class='t'>Устройство проф мембрана Planter Extra Geo</td><td>м²</td><td class='r mono'>3 885,68</td><td class='r mono'>1 133,71</td><td class='r mono'>412,50</td><td class='r mono'>291,67</td><td class='r mono'>4 405 228,95</td></tr><tr class='me'><td class='n mono'>119</td><td class='t'>Утепление стен - пеноплэкс t-100 мм, h- 1500 м</td><td>м²</td><td class='r mono'>582,85</td><td class='r mono'>20 550,98</td><td class='r mono'>8 181,25</td><td class='r mono'>4 583,33</td><td class='r mono'>11 978 184,88</td></tr><tr><td class='n mono'>120</td><td class='t'>Гидроизоляция отверстий от стяжных болтов в наружных стенах (Урбан блок)</td><td>шт</td><td class='r mono'>3 885,68</td><td class='r mono'>919,04</td><td class='r mono'>320,83</td><td class='r mono'>250,00</td><td class='r mono'>3 571 102,76</td></tr><tr><td class='n mono'>122</td><td class='t'>Устройство виброзащиты Урбанблок Ub1A, Ub1В согласно разделов документации</td><td>м²</td><td class='r mono'>10 805,00</td><td class='r mono'>51 819,03</td><td class='r mono'>46 274,88</td><td class='r mono'>833,33</td><td class='r mono'>559 904 565,12</td></tr><tr><td class='n mono'>125</td><td class='t'>Планировка основания под пластовый дренаж</td><td>м²</td><td class='r mono'>10,89</td><td class='r mono'>350,00</td><td class='r mono'>0,00</td><td class='r mono'>291,67</td><td class='r mono'>3 811,50</td></tr></table><span class='xs fg3'>По 3 строки сметы до и после, без заголовков разделов; цены без НДС; сумма — как в смете.</span></div></details><details open><summary>Цены этой работы в договорах</summary><div class='in nb'><table><tr><th>Договор</th><th class='r'>Строк</th><th class='r'>Цена договора</th><th class='r'>От — до</th></tr><tr class='tw'><td>Тушино 1 оч. Cityzen</td><td class='r mono'>30</td><td class='r mono'>1 190,73</td><td class='r mono'>686,37 — 20 550,98</td></tr><tr><td>VEER 1 оч UB9</td><td class='r mono'>14</td><td class='r mono'>1 740,75</td><td class='r mono'>910,70 — 2 630,80</td></tr><tr><td>Jois 1</td><td class='r mono'>9</td><td class='r mono'>1 815,89</td><td class='r mono'>1 493,48 — 3 311,04</td></tr><tr><td>TOP TOWER</td><td class='r mono'>13</td><td class='r mono'>1 929,93</td><td class='r mono'>695,16 — 4 131,86</td></tr><tr><td>VEER 1 оч UB2</td><td class='r mono'>21</td><td class='r mono'>2 088,90</td><td class='r mono'>950,28 — 3 125,76</td></tr><tr><td>МИРА</td><td class='r mono'>18</td><td class='r mono'>2 720,35</td><td class='r mono'>1 469,84 — 3 041,27</td></tr><tr><td>Cityzen Tr. 1 UB8b</td><td class='r mono'>26</td><td class='r mono'>3 552,09</td><td class='r mono'>881,44 — 5 072,70</td></tr></table><span class='xs fg3'>«Устройство плитной теплоизоляции», за м², без НДС. Цена договора — середина его строк этой работы; обычная цена <b>1 929,93 ₽</b> — середина цен договоров (каждый договор — один голос, сколько бы строк в нём ни было).</span></div></details><div class='acts'><span class='btn'>Ошибка в цене…</span><span class='btn'>Не ошибка…</span></div></div><div class='it out'><span class='kind out'>↕ цена выбивается</span><div class='top'><div><b>Утепление стен - пеноплэкс t-100 мм, h- 1500 м</b> <span class='xs fg2'>· м²</span></div><div><b class='mono'>20 550,98</b> <span class='xs fg2'>₽ за м² без НДС</span></div></div><div class='xs fg2'>Тушино 1 оч. Cityzen · дог. ТУШ-1-СМР · вторая такая строка</div><div class='why2'><div class='big2'><span class='x'>×10,6</span><span class='w'>дороже<br>обычного</span></div><div class='plot'><svg class="strip" viewBox="0 0 560 64" width="100%" role="img" aria-label="цены договоров и эта строка"><rect x="233.0" y="21" width="56.2" height="18" rx="9" style="fill:var(--chip)"/><line x1="8" x2="552" y1="30" y2="30" style="stroke:var(--subtle)"/><line x1="8.0" x2="8.0" y1="42" y2="46" style="stroke:var(--fg3)"/><text x="0" y="57" text-anchor="start" class="tk">100 ₽</text><line x1="189.3" x2="189.3" y1="42" y2="46" style="stroke:var(--fg3)"/><text x="189.3" y="57" text-anchor="middle" class="tk">1 000 ₽</text><line x1="370.7" x2="370.7" y1="42" y2="46" style="stroke:var(--fg3)"/><text x="370.7" y="57" text-anchor="middle" class="tk">10 000 ₽</text><line x1="552.0" x2="552.0" y1="42" y2="46" style="stroke:var(--fg3)"/><text x="560" y="57" text-anchor="end" class="tk">100 000 ₽</text><line x1="241.1" x2="241.1" y1="14" y2="40" style="stroke:var(--fg);stroke-dasharray:3 2"/><text x="241.1" y="11" text-anchor="middle" class="lb">обычная</text><circle cx="203.1" cy="30" r="4.5" style="fill:var(--surface);stroke:var(--fg2);stroke-width:1.5"><title>Тушино 1 оч. Cityzen: 1 190,73 ₽</title></circle><circle cx="233.0" cy="30" r="4.5" style="fill:var(--fg3)"><title>VEER 1 оч UB9: 1 740,75 ₽</title></circle><circle cx="236.3" cy="30" r="4.5" style="fill:var(--fg3)"><title>Jois 1: 1 815,89 ₽</title></circle><circle cx="241.1" cy="30" r="4.5" style="fill:var(--fg3)"><title>TOP TOWER: 1 929,93 ₽</title></circle><circle cx="247.3" cy="30" r="4.5" style="fill:var(--fg3)"><title>VEER 1 оч UB2: 2 088,90 ₽</title></circle><circle cx="268.1" cy="30" r="4.5" style="fill:var(--fg3)"><title>МИРА: 2 720,35 ₽</title></circle><circle cx="289.2" cy="30" r="4.5" style="fill:var(--fg3)"><title>Cityzen Tr. 1 UB8b: 3 552,09 ₽</title></circle><line x1="241.1" x2="418.4" y1="30" y2="30" style="stroke:var(--warn);stroke-width:2"/><circle cx="427.4" cy="30" r="7.5" style="fill:var(--warn)"><title>эта строка: 20 550,98 ₽</title></circle><text x="435.4" y="11" text-anchor="middle" class="lb w">эта строка</text></svg><div class='legend2'><span class="lg"><i class="d"></i>цена договора</span><span class="lg"><i class="d own"></i>этот же договор</span><span class="lg"><i class="u"></i>обычная — середина договоров</span><span class="lg"><i class="d me"></i>эта строка</span><span class="lg"><i class="bd"></i>разброс других договоров</span></div></div></div><span class='fact2'>Обычная цена «Устройства плитной теплоизоляции» — <b class='mono'>1 929,93 ₽</b> за м²: середина цен 7 договоров. Эта строка — <b class='mono'>20 550,98 ₽</b>.</span><details><summary>Строки рядом в смете</summary><div class='in nb'><table><tr><th>п.</th><th>Наименование</th><th>Ед.</th><th class='r'>Кол-во</th><th class='r'>Цена за ед.</th><th class='r'>Материалы за ед.</th><th class='r'>Работы за ед.</th><th class='r'>Сумма</th></tr><tr><td class='n mono'>116</td><td class='t'>Монтаж шпонки «Аквастоп» ДЗ-140/50-4/35</td><td>м</td><td class='r mono'>1 253,30</td><td class='r mono'>2 113,12</td><td class='r mono'>1 145,83</td><td class='r mono'>166,67</td><td class='r mono'>2 648 382,98</td></tr><tr><td class='n mono'>117</td><td class='t'>Устройство выравнивающего слоя</td><td>м²</td><td class='r mono'>3 885,68</td><td class='r mono'>1 512,73</td><td class='r mono'>412,50</td><td class='r mono'>527,08</td><td class='r mono'>5 877 999,20</td></tr><tr><td class='n mono'>118</td><td class='t'>Устройство проф мембрана Planter Extra Geo</td><td>м²</td><td class='r mono'>3 885,68</td><td class='r mono'>1 133,71</td><td class='r mono'>412,50</td><td class='r mono'>291,67</td><td class='r mono'>4 405 228,95</td></tr><tr class='me'><td class='n mono'>119</td><td class='t'>Утепление стен - пеноплэкс t-100 мм, h- 1500 м</td><td>м²</td><td class='r mono'>582,85</td><td class='r mono'>20 550,98</td><td class='r mono'>8 181,25</td><td class='r mono'>4 583,33</td><td class='r mono'>11 978 184,88</td></tr><tr><td class='n mono'>120</td><td class='t'>Гидроизоляция отверстий от стяжных болтов в наружных стенах (Урбан блок)</td><td>шт</td><td class='r mono'>3 885,68</td><td class='r mono'>919,04</td><td class='r mono'>320,83</td><td class='r mono'>250,00</td><td class='r mono'>3 571 102,76</td></tr><tr><td class='n mono'>122</td><td class='t'>Устройство виброзащиты Урбанблок Ub1A, Ub1В согласно разделов документации</td><td>м²</td><td class='r mono'>10 805,00</td><td class='r mono'>51 819,03</td><td class='r mono'>46 274,88</td><td class='r mono'>833,33</td><td class='r mono'>559 904 565,12</td></tr><tr><td class='n mono'>125</td><td class='t'>Планировка основания под пластовый дренаж</td><td>м²</td><td class='r mono'>10,89</td><td class='r mono'>350,00</td><td class='r mono'>0,00</td><td class='r mono'>291,67</td><td class='r mono'>3 811,50</td></tr></table><span class='xs fg3'>По 3 строки сметы до и после, без заголовков разделов; цены без НДС; сумма — как в смете.</span></div></details><details><summary>Цены этой работы в договорах</summary><div class='in nb'><table><tr><th>Договор</th><th class='r'>Строк</th><th class='r'>Цена договора</th><th class='r'>От — до</th></tr><tr class='tw'><td>Тушино 1 оч. Cityzen</td><td class='r mono'>30</td><td class='r mono'>1 190,73</td><td class='r mono'>686,37 — 20 550,98</td></tr><tr><td>VEER 1 оч UB9</td><td class='r mono'>14</td><td class='r mono'>1 740,75</td><td class='r mono'>910,70 — 2 630,80</td></tr><tr><td>Jois 1</td><td class='r mono'>9</td><td class='r mono'>1 815,89</td><td class='r mono'>1 493,48 — 3 311,04</td></tr><tr><td>TOP TOWER</td><td class='r mono'>13</td><td class='r mono'>1 929,93</td><td class='r mono'>695,16 — 4 131,86</td></tr><tr><td>VEER 1 оч UB2</td><td class='r mono'>21</td><td class='r mono'>2 088,90</td><td class='r mono'>950,28 — 3 125,76</td></tr><tr><td>МИРА</td><td class='r mono'>18</td><td class='r mono'>2 720,35</td><td class='r mono'>1 469,84 — 3 041,27</td></tr><tr><td>Cityzen Tr. 1 UB8b</td><td class='r mono'>26</td><td class='r mono'>3 552,09</td><td class='r mono'>881,44 — 5 072,70</td></tr></table><span class='xs fg3'>«Устройство плитной теплоизоляции», за м², без НДС. Цена договора — середина его строк этой работы; обычная цена <b>1 929,93 ₽</b> — середина цен договоров (каждый договор — один голос, сколько бы строк в нём ни было).</span></div></details><div class='acts'><span class='btn'>Ошибка в цене…</span><span class='btn'>Не ошибка…</span></div></div><div class='it out'><span class='kind out'>↕ цена выбивается</span><div class='top'><div><b>Велопарковка МАФ маркет артикул BUS400</b> <span class='xs fg2'>· шт</span></div><div><b class='mono'>239 133,50</b> <span class='xs fg2'>₽ за шт без НДС</span></div></div><div class='xs fg2'>VEER 1 оч UB9 · дог. ВЕР1-ГП · п. 999</div><div class='why2'><div class='big2'><span class='x'>×14,5</span><span class='w'>дороже<br>обычного</span></div><div class='plot'><svg class="strip" viewBox="0 0 560 64" width="100%" role="img" aria-label="цены договоров и эта строка"><rect x="186.0" y="21" width="71.8" height="18" rx="9" style="fill:var(--chip)"/><line x1="8" x2="552" y1="30" y2="30" style="stroke:var(--subtle)"/><line x1="8.0" x2="8.0" y1="42" y2="46" style="stroke:var(--fg3)"/><text x="0" y="57" text-anchor="start" class="tk">1 000 ₽</text><line x1="189.3" x2="189.3" y1="42" y2="46" style="stroke:var(--fg3)"/><text x="189.3" y="57" text-anchor="middle" class="tk">10 000 ₽</text><line x1="370.7" x2="370.7" y1="42" y2="46" style="stroke:var(--fg3)"/><text x="370.7" y="57" text-anchor="middle" class="tk">100 000 ₽</text><line x1="552.0" x2="552.0" y1="42" y2="46" style="stroke:var(--fg3)"/><text x="560" y="57" text-anchor="end" class="tk">1 000 000 ₽</text><line x1="228.8" x2="228.8" y1="14" y2="40" style="stroke:var(--fg);stroke-dasharray:3 2"/><text x="228.8" y="11" text-anchor="middle" class="lb">обычная</text><circle cx="186.0" cy="30" r="4.5" style="fill:var(--fg3)"><title>Jois 1: 9 590,45 ₽</title></circle><circle cx="193.4" cy="30" r="4.5" style="fill:var(--fg3)"><title>Cityzen Tr. 1 UB8b: 10 531,15 ₽</title></circle><circle cx="228.2" cy="30" r="4.5" style="fill:var(--fg3)"><title>МИРА: 16 385,42 ₽</title></circle><circle cx="228.8" cy="30" r="4.5" style="fill:var(--fg3)"><title>TOP TOWER: 16 500,00 ₽</title></circle><circle cx="247.7" cy="30" r="4.5" style="fill:var(--fg3)"><title>Тушино 1 оч. Cityzen: 20 978,78 ₽</title></circle><circle cx="257.8" cy="30" r="4.5" style="fill:var(--fg3)"><title>VEER 1 оч UB2: 23 862,50 ₽</title></circle><circle cx="439.3" cy="30" r="4.5" style="fill:var(--surface);stroke:var(--fg2);stroke-width:1.5"><title>VEER 1 оч UB9: 239 133,50 ₽</title></circle><line x1="228.8" x2="430.3" y1="30" y2="30" style="stroke:var(--warn);stroke-width:2"/><circle cx="439.3" cy="30" r="7.5" style="fill:var(--warn)"><title>эта строка: 239 133,50 ₽</title></circle><text x="447.3" y="11" text-anchor="middle" class="lb w">эта строка</text></svg><div class='legend2'><span class="lg"><i class="d"></i>цена договора</span><span class="lg"><i class="d own"></i>этот же договор</span><span class="lg"><i class="u"></i>обычная — середина договоров</span><span class="lg"><i class="d me"></i>эта строка</span><span class="lg"><i class="bd"></i>разброс других договоров</span></div></div></div><span class='fact2'>Обычная цена «Велопарковок» — <b class='mono'>16 500,00 ₽</b> за шт: середина цен 7 договоров. Эта строка — <b class='mono'>239 133,50 ₽</b>.</span><details><summary>Строки рядом в смете</summary><div class='in nb'><table><tr><th>п.</th><th>Наименование</th><th>Ед.</th><th class='r'>Кол-во</th><th class='r'>Цена за ед.</th><th class='r'>Материалы за ед.</th><th class='r'>Работы за ед.</th><th class='r'>Сумма</th></tr><tr><td class='n mono'>996</td><td class='t'>Камни-сидения с деревянными сидушками, индивидуальное изготовление Ø1200 мм</td><td>шт</td><td class='r mono'>10,00</td><td class='r mono'>81 484,72</td><td class='r mono'>52 500,00</td><td class='r mono'>21 000,00</td><td class='r mono'>814 847,17</td></tr><tr><td class='n mono'>997</td><td class='t'>Урна МАФ маркет артикул MIU205</td><td>шт</td><td class='r mono'>11,00</td><td class='r mono'>164 104,89</td><td class='r mono'>118 419,36</td><td class='r mono'>29 604,84</td><td class='r mono'>1 805 153,81</td></tr><tr><td class='n mono'>998</td><td class='t'>Урна тройная МАФ маркет артикул CS330x</td><td>шт</td><td class='r mono'>7,00</td><td class='r mono'>140 985,54</td><td class='r mono'>90 835,95</td><td class='r mono'>36 334,38</td><td class='r mono'>986 898,79</td></tr><tr class='me'><td class='n mono'>999</td><td class='t'>Велопарковка МАФ маркет артикул BUS400</td><td>шт</td><td class='r mono'>4,00</td><td class='r mono'>239 133,50</td><td class='r mono'>154 071,95</td><td class='r mono'>61 628,78</td><td class='r mono'>956 534,00</td></tr><tr><td class='n mono'>1000</td><td class='t'>Стул Glyni Филдс артикул 077809 коллекция Nina</td><td>шт</td><td class='r mono'>6,00</td><td class='r mono'>66 532,27</td><td class='r mono'>42 866,25</td><td class='r mono'>17 146,50</td><td class='r mono'>399 193,60</td></tr><tr><td class='n mono'>1001</td><td class='t'>Кресло Grignoo Филас артикул 0684355 коллекция Rigono</td><td>шт</td><td class='r mono'>4,00</td><td class='r mono'>83 801,21</td><td class='r mono'>53 992,50</td><td class='r mono'>21 597,00</td><td class='r mono'>335 204,83</td></tr><tr><td class='n mono'>1002</td><td class='t'>Стол журнальный B LAGOON yachtine артикул LG.12.29.02.00</td><td>шт</td><td class='r mono'>1,00</td><td class='r mono'>128 532,43</td><td class='r mono'>92 750,00</td><td class='r mono'>23 187,50</td><td class='r mono'>128 532,43</td></tr></table><span class='xs fg3'>По 3 строки сметы до и после, без заголовков разделов; цены без НДС; сумма — как в смете.</span></div></details><details><summary>Цены этой работы в договорах</summary><div class='in nb'><table><tr><th>Договор</th><th class='r'>Строк</th><th class='r'>Цена договора</th><th class='r'>От — до</th></tr><tr><td>Jois 1</td><td class='r mono'>2</td><td class='r mono'>9 590,45</td><td class='r mono'>7 090,91 — 12 089,99</td></tr><tr><td>Cityzen Tr. 1 UB8b</td><td class='r mono'>1</td><td class='r mono'>10 531,15</td><td class='r mono'>10 531,15 — 10 531,15</td></tr><tr><td>МИРА</td><td class='r mono'>2</td><td class='r mono'>16 385,42</td><td class='r mono'>13 750,00 — 19 020,83</td></tr><tr><td>TOP TOWER</td><td class='r mono'>3</td><td class='r mono'>16 500,00</td><td class='r mono'>16 500,00 — 24 462,10</td></tr><tr><td>Тушино 1 оч. Cityzen</td><td class='r mono'>1</td><td class='r mono'>20 978,78</td><td class='r mono'>20 978,78 — 20 978,78</td></tr><tr><td>VEER 1 оч UB2</td><td class='r mono'>1</td><td class='r mono'>23 862,50</td><td class='r mono'>23 862,50 — 23 862,50</td></tr><tr class='tw'><td>VEER 1 оч UB9</td><td class='r mono'>1</td><td class='r mono'>239 133,50</td><td class='r mono'>239 133,50 — 239 133,50</td></tr></table><span class='xs fg3'>«Велопарковки», за шт, без НДС. Цена договора — середина его строк этой работы; обычная цена <b>16 500,00 ₽</b> — середина цен договоров (каждый договор — один голос, сколько бы строк в нём ни было).</span></div></details><div class='acts'><span class='btn'>Ошибка в цене…</span><span class='btn'>Не ошибка…</span></div></div>
+      <details open style="background:transparent;border:0"><summary class="grp" style="padding-left:0">Разобраны · 3</summary><div class='xs fg2' style='margin:2px 0 4px'>Все решения по ценам строк договоров — и те, что правило сейчас не ловит: такая строка остаётся здесь с пометкой «правило сейчас её не ловит».</div>
+      <div class='it done'><div class='top'><div><b>М/к для технического балкона</b> <span class='xs fg2'>· т</span></div><div><b class='mono'>3 698,75</b> <span class='xs fg2'>₽ за т без НДС</span></div></div><div class='xs fg2'>Тушино 1 оч. Cityzen · дог. ТУШ-1-СМР</div><div class='xs fg2'>Правило сейчас: в 88 раз дешевле обычного «Монтажа металлоконструкций» (325 868 ₽ за т, 6 договоров)</div><div><span class='b sec'>ошибка в цене · во всех тендерах</span> <span class='xs fg2'>«4 438 ₽ за тонну — строка-сумма с единицей «т»» · not-analog-stand@example.com · 24.11.2026</span> <span class='link'>Снять во всех тендерах…</span></div></div><div class='it done'><div class='top'><div><b>М/к для технического балкона</b> <span class='xs fg2'>· т</span></div><div><b class='mono'>3 698,75</b> <span class='xs fg2'>₽ за т без НДС</span></div></div><div class='xs fg2'>Тушино 1 оч. Cityzen · дог. ТУШ-1-СМР</div><div class='xs fg2'>Правило сейчас: в 88 раз дешевле обычного «Монтажа металлоконструкций» (325 868 ₽ за т, 6 договоров)</div><div><span class='b sec'>ошибка в цене · во всех тендерах</span> <span class='xs fg2'>«4 438 ₽ за тонну — строка-сумма с единицей «т»» · not-analog-stand@example.com · 24.11.2026</span> <span class='link'>Снять во всех тендерах…</span></div></div><div class='it done'><div class='top'><div><b>Двери тамбура раздвижные автоматические</b> <span class='xs fg2'>· шт</span></div><div><b class='mono'>1 575 000,00</b> <span class='xs fg2'>₽ за шт без НДС</span></div></div><div class='xs fg2'>Тушино 1 оч. Cityzen · дог. ТУШ-1-СМР</div><div class='xs fg2'>Проверено: выброс в «Дверях», ×19,6 дороже обычного (80 208 ₽ за шт). Правило сейчас: то же.</div><div><span class='b out'>не ошибка</span> <span class='xs fg2'>«автоматические раздвижные двери — другое изделие, цена верная» · admin@… · 24.11.2026</span> <span class='link'>Вернуть</span></div></div>
+      </details>
+    </div>
+  </div>
+</div>
+
+<div class="state">
+  <h2>2. Карточка договора → счётчик в блоке реквизитов (только администратор)</h2>
+  <p class="sub">Новое — строка «Подозрительные строки: 2 →», остальная карточка как сегодня. Считает неразобранные строки этого договора; ссылка — на вкладку списка с фильтром по договору. При нуле строки нет.</p>
+  <div class="page" style="max-width:1120px">
+    <div class="ph"><div><h1>ТУШ-1-СМР</h1><div class="small fg2">Тушино 1 оч. Cityzen · …</div></div></div>
+    <div class="req">
+      <div><p class="lbl">класс</p><span class="b sec">Комфорт</span></div><div><p class="lbl">подписант</p>…</div><div><p class="lbl">дата</p>…</div>
+      <div class="susp"><span class="link">Подозрительные строки: 2 →</span> <span class="xs fg3">не разобраны</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="state">
+  <h2>3. Панель строки КП → карточка аналога (по ходу торга)</h2>
+  <p class="sub">Новое — подсказка с множителем и полосой цен, ссылка «Разобрать в списке», кнопка «Не ошибка…» и серая строка после неё. Сверху карточки цена — в режиме панели (здесь «с НДС»; бывает и с индексацией), в подсказке — всегда номинальная без НДС, поэтому подпись у неё своя; остальная карточка аналога как сегодня. Строка КП об утеплении стен, среди аналогов — строка Тушино за 20 551 ₽/м². Кнопки — только у администратора;
+  «Ошибка в цене…» и «Не аналог в этом тендере…» открывают окна фичи «Не аналог».</p>
+  <div class="pair">
+    <div><span class="tag after">администратор · не разобрано</span>
+      <div class="sheet"><div class="sh-body" style="padding-top:16px"><div class="sec"><h4>Аналоги · 3</h4>
+        <div class="analog"><div class="top"><div><b>Тушино 1 оч. Cityzen</b> <span class="xs fg2">· ТУШ-1-СМР · 2025</span></div><div><b class="mono">24 661,18</b> <span class="xs fg2">₽/м² с НДС</span> <span class="b out" style="margin-left:6px">⋯</span></div></div>
+          <div class="fg2">Утепление стен - пеноплэкс t-100 мм, h- 1500 м</div>
+          <div class="hint"><div class='ph2'><span class='x sm'>×10,6</span><span><b>Подозрительная цена</b> — в 10,6 раза дороже обычного: эта строка <b class='mono'>20 550,98 ₽</b> за м², обычная цена «Устройства плитной теплоизоляции» — <b class='mono'>1 929,93 ₽</b>, середина цен 7 договоров.</span></div><div class='plot'><svg class="strip" viewBox="0 0 520 56" width="100%" role="img" aria-label="цены договоров и эта строка"><rect x="216.4" y="21" width="52.0" height="18" rx="9" style="fill:var(--chip)"/><line x1="8" x2="512" y1="30" y2="30" style="stroke:var(--subtle)"/><line x1="8.0" x2="8.0" y1="42" y2="46" style="stroke:var(--fg3)"/><text x="0" y="57" text-anchor="start" class="tk">100 ₽</text><line x1="176.0" x2="176.0" y1="42" y2="46" style="stroke:var(--fg3)"/><text x="176.0" y="57" text-anchor="middle" class="tk">1 000 ₽</text><line x1="344.0" x2="344.0" y1="42" y2="46" style="stroke:var(--fg3)"/><text x="344.0" y="57" text-anchor="middle" class="tk">10 000 ₽</text><line x1="512.0" x2="512.0" y1="42" y2="46" style="stroke:var(--fg3)"/><text x="520" y="57" text-anchor="end" class="tk">100 000 ₽</text><line x1="224.0" x2="224.0" y1="14" y2="40" style="stroke:var(--fg);stroke-dasharray:3 2"/><text x="224.0" y="11" text-anchor="middle" class="lb">обычная</text><circle cx="188.7" cy="30" r="4.5" style="fill:var(--surface);stroke:var(--fg2);stroke-width:1.5"><title>Тушино 1 оч. Cityzen: 1 190,73 ₽</title></circle><circle cx="216.4" cy="30" r="4.5" style="fill:var(--fg3)"><title>VEER 1 оч UB9: 1 740,75 ₽</title></circle><circle cx="219.5" cy="30" r="4.5" style="fill:var(--fg3)"><title>Jois 1: 1 815,89 ₽</title></circle><circle cx="224.0" cy="30" r="4.5" style="fill:var(--fg3)"><title>TOP TOWER: 1 929,93 ₽</title></circle><circle cx="229.7" cy="30" r="4.5" style="fill:var(--fg3)"><title>VEER 1 оч UB2: 2 088,90 ₽</title></circle><circle cx="249.0" cy="30" r="4.5" style="fill:var(--fg3)"><title>МИРА: 2 720,35 ₽</title></circle><circle cx="268.5" cy="30" r="4.5" style="fill:var(--fg3)"><title>Cityzen Tr. 1 UB8b: 3 552,09 ₽</title></circle><line x1="224.0" x2="387.6" y1="30" y2="30" style="stroke:var(--warn);stroke-width:2"/><circle cx="396.6" cy="30" r="7.5" style="fill:var(--warn)"><title>эта строка: 20 550,98 ₽</title></circle><text x="404.6" y="11" text-anchor="middle" class="lb w">эта строка</text></svg></div><div class='xs fg2'>Цены подсказки — номинальные, без НДС, без индексации.</div><div><span class='link'>Разобрать в списке ↗</span> <span class='xs fg3'>новая вкладка: строки рядом в смете и цены по договорам; панель КП остаётся открытой</span></div>
+            <div class="acts"><span class="btn">Ошибка в цене…</span><span class="btn">Не аналог в этом тендере…</span><span class="btn">Не ошибка…</span></div></div>
+        </div></div></div></div>
+    </div>
+    <div><span class="tag after">участник · тот же аналог</span>
+      <div class="sheet"><div class="sh-body" style="padding-top:16px"><div class="sec"><h4>Аналоги · 3</h4>
+        <div class="analog"><div class="top"><div><b>Тушино 1 оч. Cityzen</b> <span class="xs fg2">· ТУШ-1-СМР · 2025</span></div><div><b class="mono">24 661,18</b> <span class="xs fg2">₽/м² с НДС</span></div></div>
+          <div class="fg2">Утепление стен - пеноплэкс t-100 мм, h- 1500 м</div>
+          <div class="hint"><div class='ph2'><span class='x sm'>×10,6</span><span><b>Подозрительная цена</b> — в 10,6 раза дороже обычного: эта строка <b class='mono'>20 550,98 ₽</b> за м², обычная цена «Устройства плитной теплоизоляции» — <b class='mono'>1 929,93 ₽</b>, середина цен 7 договоров.</span></div><div class='plot'><svg class="strip" viewBox="0 0 520 56" width="100%" role="img" aria-label="цены договоров и эта строка"><rect x="216.4" y="21" width="52.0" height="18" rx="9" style="fill:var(--chip)"/><line x1="8" x2="512" y1="30" y2="30" style="stroke:var(--subtle)"/><line x1="8.0" x2="8.0" y1="42" y2="46" style="stroke:var(--fg3)"/><text x="0" y="57" text-anchor="start" class="tk">100 ₽</text><line x1="176.0" x2="176.0" y1="42" y2="46" style="stroke:var(--fg3)"/><text x="176.0" y="57" text-anchor="middle" class="tk">1 000 ₽</text><line x1="344.0" x2="344.0" y1="42" y2="46" style="stroke:var(--fg3)"/><text x="344.0" y="57" text-anchor="middle" class="tk">10 000 ₽</text><line x1="512.0" x2="512.0" y1="42" y2="46" style="stroke:var(--fg3)"/><text x="520" y="57" text-anchor="end" class="tk">100 000 ₽</text><line x1="224.0" x2="224.0" y1="14" y2="40" style="stroke:var(--fg);stroke-dasharray:3 2"/><text x="224.0" y="11" text-anchor="middle" class="lb">обычная</text><circle cx="188.7" cy="30" r="4.5" style="fill:var(--surface);stroke:var(--fg2);stroke-width:1.5"><title>Тушино 1 оч. Cityzen: 1 190,73 ₽</title></circle><circle cx="216.4" cy="30" r="4.5" style="fill:var(--fg3)"><title>VEER 1 оч UB9: 1 740,75 ₽</title></circle><circle cx="219.5" cy="30" r="4.5" style="fill:var(--fg3)"><title>Jois 1: 1 815,89 ₽</title></circle><circle cx="224.0" cy="30" r="4.5" style="fill:var(--fg3)"><title>TOP TOWER: 1 929,93 ₽</title></circle><circle cx="229.7" cy="30" r="4.5" style="fill:var(--fg3)"><title>VEER 1 оч UB2: 2 088,90 ₽</title></circle><circle cx="249.0" cy="30" r="4.5" style="fill:var(--fg3)"><title>МИРА: 2 720,35 ₽</title></circle><circle cx="268.5" cy="30" r="4.5" style="fill:var(--fg3)"><title>Cityzen Tr. 1 UB8b: 3 552,09 ₽</title></circle><line x1="224.0" x2="387.6" y1="30" y2="30" style="stroke:var(--warn);stroke-width:2"/><circle cx="396.6" cy="30" r="7.5" style="fill:var(--warn)"><title>эта строка: 20 550,98 ₽</title></circle><text x="404.6" y="11" text-anchor="middle" class="lb w">эта строка</text></svg></div><div class='xs fg2'>Цены подсказки — номинальные, без НДС, без индексации.</div></div>
+        </div></div></div></div>
+    </div>
+    <div><span class="tag after">после «не ошибка»</span>
+      <div class="sheet"><div class="sh-body" style="padding-top:16px"><div class="sec"><h4>Аналоги · 3</h4>
+        <div class="analog"><div class="top"><div><b>Тушино 1 оч. Cityzen</b> <span class="xs fg2">· ТУШ-1-СМР · 2025</span></div><div><b class="mono">24 661,18</b> <span class="xs fg2">₽/м² с НДС</span> <span class="b out" style="margin-left:6px">⋯</span></div></div>
+          <div class="fg2">Утепление стен - пеноплэкс t-100 мм, h- 1500 м</div>
+          <div class="xs fg3">проверено, не ошибка — выброс в «Устройстве плитной теплоизоляции», ×10,6 дороже: «…» · admin@… · дата</div>
+        </div></div></div></div>
+    </div>
+  </div>
+</div>
+
+<div class="state">
+  <h2>4. Окно «Не ошибка»</h2>
+  <div class="surface" style="max-width:460px">
+    <h3>Не ошибка</h3>
+    <div class="small fg2">Строка «Велопарковка МАФ маркет артикул BUS400» договора VEER 1 оч UB9 уйдёт из подозрительных по
+    проверенному основанию — <b>выброс в «Велопарковках», ×14,5 дороже</b> — и перестанет показывать подсказку.
+    Если строку поймает другое правило или она окажется в другой семье, она вернётся в «Не разобраны».
+    Аналогом она остаётся, как сейчас. Решение можно вернуть.</div>
+    <div class="fld"><label>Причина</label><div class="inp" style="min-height:52px">дизайнерская велопарковка МАФ, рядом урны и мебель того же уровня цен</div><span class="xs fg3">70 / 300</span></div>
+    <div class="row" style="justify-content:flex-end"><span class="btn">Отмена</span><span class="btn" style="background:var(--action);color:var(--action-text)">Сохранить</span></div>
+  </div>
+</div>
+</div>
+</body>
+</html>
