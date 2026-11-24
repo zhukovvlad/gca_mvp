@@ -19,6 +19,7 @@ from models import (
     Lot,
     LumpSumOverride,
     PositionItem,
+    PriceErrorMark,
     Proposal,
     UnitOfMeasure,
     User,
@@ -49,7 +50,8 @@ def load_typical_rates(db: Session) -> TypicalRates:
     `SYSTEM`, с семьёй (членство — без фильтра `membership_state`, как у загрузчиков сравнения);
     у каталожной позиции есть единица; цена `is_price`, вес (`coalesce(suggested_quantity,
     quantity)`) `is_weight` и не равен 1; база НДС известна, нетто не меньше `MIN_NOMINAL`;
-    поправки «это комплект» нет. Обычная ставка — медиана нетто (`price_basis.median`, точная
+    поправки «это комплект» нет; отметки «ошибка в цене» нет (спека «Не аналог» §5 п. 4; тендерные
+    отметки ставку не трогают). Обычная ставка — медиана нетто (`price_basis.median`, точная
     десятичная); пул меньше `TYPICAL_MIN_LINES` ставки не даёт."""
     weight_column = sa.func.coalesce(PositionItem.suggested_quantity, PositionItem.quantity)
     rows = db.execute(
@@ -80,6 +82,7 @@ def load_typical_rates(db: Session) -> TypicalRates:
                 LumpSumOverride.position_item_id == PositionItem.id,
                 LumpSumOverride.verdict == "lump",
             ),
+            ~sa.exists().where(PriceErrorMark.position_item_id == PositionItem.id),
         )
     ).all()
     pools: dict[tuple[int, int], list[Decimal]] = defaultdict(list)

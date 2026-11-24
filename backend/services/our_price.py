@@ -53,6 +53,7 @@ from services.reference_math import price_in_kp_unit
 from services.zone_rules import Zone
 
 if TYPE_CHECKING:  # crud.reference_lines читает модели и импортирует этот модуль цепочкой загрузчиков
+    from crud.not_analog import FormKey
     from crud.reference_lines import ReferenceLine
     from services.kp_comment import ReferenceSource
 
@@ -176,6 +177,9 @@ class KpLine:
     #: Единица каталожной позиции строки (`position_items.catalog_position_id -> catalog_positions.unit_id`);
     #: единица обычной ставки. Не путать со старым `KpLineRow.unit_id` (через корзину контекста).
     catalog_unit_id: int | None = None
+    #: Ключ строки формы (спека «Не аналог» §1 п. 2): нормализованное наименование строки КП и её единица;
+    #: `None` — не проставлен. Проставляет загрузчик.
+    form_key: FormKey | None = None
 
     @property
     def is_lump(self) -> bool:
@@ -241,6 +245,7 @@ TargetKind = Literal["freshest", "analog", "contractor", "reference"]
 TargetResetReason = Literal[
     "kind_changed",
     "lump_sum",
+    "excluded",
     "not_comparable",
     "analog_unavailable",
     "no_freshest",
@@ -290,6 +295,7 @@ def resolve_target(
     is_system: bool,
     reference_available: bool = False,
     target_lump: bool = False,
+    target_excluded: bool,
 ) -> TargetChoice | None:
     """Статус выбора по сохранённой записи `(вид, аналог)` и расчёту строки.
 
@@ -299,7 +305,9 @@ def resolve_target(
     (`reference_available` — строка есть среди справочных строк сцены чтения). Комплект (спека строк-сумм
     §5 п. 2): строка КП `lump_sum` сбрасывает цель любого вида, в том числе справочную; цель `analog` и
     `reference` на строку договора с `is_lump` (`target_lump` — признак считает вызывающий) — тоже, раньше
-    `analog_unavailable` и `reference_unavailable`.
+    `analog_unavailable` и `reference_unavailable`. «Не аналог» (спека §6 п. 2): цель `analog`/`reference` на строку
+    договора с «ошибкой в цене» или из `excluded` строки КП (`target_excluded` — признак считает вызывающий) —
+    `excluded`, после `lump_sum` и раньше остальных причин. Признак обязателен: вызов без него не собирается.
     """
     if saved is None:
         return None
@@ -309,6 +317,8 @@ def resolve_target(
         reason = "kind_changed"
     elif result.state is LineState.lump_sum or (target_lump and kind in ("analog", "reference")):
         reason = "lump_sum"
+    elif target_excluded and kind in ("analog", "reference"):
+        reason = "excluded"
     elif kind == "reference":
         if not reference_available:
             reason = "reference_unavailable"
@@ -745,8 +755,9 @@ def _compare(
     )
 
 
-def kp_work_of(line: KpLine, net: Decimal) -> KpWork:
-    """Строка КП-работа для лестницы: `net` — нетто цены за единицу."""
+def kp_work_of(line: KpLine, net: Decimal, *, excluded: frozenset[int]) -> KpWork:
+    """Строка КП-работа для лестницы: `net` — нетто цены за единицу, `excluded` — строки договоров с
+    тендерной отметкой «не аналог» у этой формы (спека «Не аналог» §3 п. 2)."""
     key = line.key
     assert key is not None
     return KpWork(
@@ -761,6 +772,7 @@ def kp_work_of(line: KpLine, net: Decimal) -> KpWork:
         net=net,
         conflicted=line.conflicted,
         forms=line.forms,
+        excluded=excluded,
     )
 
 
@@ -772,6 +784,7 @@ def work_ladder_of(
     tender_class_id: int,
     tender_contractor_id: int,
     target_month: YearMonth | None,
+    not_analog: Mapping[FormKey, frozenset[int]],
 ) -> tuple[Decimal | None, WorkLadder | None]:
     """Нетто цены за единицу строки КП и её лестница — те, что считает `evaluate_offer`; лестницы
     нет (`None`), если строка до неё не доходит: в работе, без базы НДС, система, без цены или веса,
@@ -789,7 +802,7 @@ def work_ladder_of(
         return kp_unit_net, None
     assert kp_unit_net is not None
     ladder = ladder_for(
-        kp_work_of(line, kp_unit_net),
+        kp_work_of(line, kp_unit_net, excluded=not_analog.get(line.form_key, frozenset())),
         work_history,
         tender_class_id=tender_class_id,
         tender_contractor_id=tender_contractor_id,
@@ -807,12 +820,13 @@ def _evaluate_work(
     tender_class_id: int,
     tender_contractor_id: int,
     target_month: YearMonth | None,
+    not_analog: Mapping[FormKey, frozenset[int]],
 ) -> LineResult:
     """Работа через лестницу аналогов (спека §2.8, §2.9). Ступеней 4а у неё нет."""
     key = line.key
     assert key is not None and line.weight is not None
     ladder = ladder_for(
-        kp_work_of(line, kp_unit_net),
+        kp_work_of(line, kp_unit_net, excluded=not_analog.get(line.form_key, frozenset())),
         work_history,
         tender_class_id=tender_class_id,
         tender_contractor_id=tender_contractor_id,
@@ -1066,6 +1080,7 @@ def evaluate_offer(
     tender_contractor_id: int,
     target_month: YearMonth | None,
     factors: Mapping[int, Decimal] | None,
+    not_analog: Mapping[FormKey, frozenset[int]],
     choice: RungChoice | None = None,
     saved: SavedRungs | None = None,
 ) -> OfferEvaluation:
@@ -1074,7 +1089,8 @@ def evaluate_offer(
     Работы идут через лестницу аналогов (`work_history`, `families`), системы — через ступени 4а
     (`history`). `target_month` — месяц этапа: к нему ближе всего самая свежая расценка. `factors`
     — множитель ИПЦ по смете аналога; `None` — без приведения. `choice` — ступень системы из
-    предпросмотра, она побеждает сохранённую `saved` на своей семье; у работы ступеней нет.
+    предпросмотра, она побеждает сохранённую `saved` на своей семье; у работы ступеней нет. `not_analog` —
+    тендерные отметки: ключ формы -> строки договоров, которые строка с этим ключом не берёт.
     `work_history` — строки истории либо уже разложенная по семьям `WorkHistory` сцены (тогда она
     обязана быть собрана из тех же `families`, договоров `history` и `factors`).
     """
@@ -1132,6 +1148,7 @@ def evaluate_offer(
                 tender_class_id=tender_class_id,
                 tender_contractor_id=tender_contractor_id,
                 target_month=target_month,
+                not_analog=not_analog,
             )
 
     groups: list[GroupResult] = []

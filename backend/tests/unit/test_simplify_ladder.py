@@ -548,14 +548,14 @@ class TestResolveContractorTarget:
     def test_it_acts_while_the_ladder_has_the_figure(self):
         res = with_figure(Figure(D("120"), 102, 2))
 
-        assert resolve_target(("contractor", None), res, is_system=False) == TargetChoice(
+        assert resolve_target(("contractor", None), res, is_system=False, target_excluded=False) == TargetChoice(
             "contractor", None, True, None
         )
 
     def test_it_resets_with_no_contractor_when_the_figure_left(self):
         res = with_figure(None)
 
-        assert resolve_target(("contractor", None), res, is_system=False) == TargetChoice(
+        assert resolve_target(("contractor", None), res, is_system=False, target_excluded=False) == TargetChoice(
             "contractor", None, False, "no_contractor"
         )
 
@@ -565,7 +565,7 @@ class TestResolveContractorTarget:
             ladder=dataclasses.replace(comment_ladder(freshest=None), contractor=Figure(D("120"), 102, 2)),
         )
 
-        assert resolve_target(("freshest", None), res, is_system=False).reset_reason == "no_freshest"
+        assert resolve_target(("freshest", None), res, is_system=False, target_excluded=False).reset_reason == "no_freshest"
 
     def test_the_missing_freshest_does_not_reset_a_contractor_choice(self):
         res = comparable(
@@ -573,24 +573,24 @@ class TestResolveContractorTarget:
             ladder=dataclasses.replace(comment_ladder(freshest=None), contractor=Figure(D("120"), 102, 2)),
         )
 
-        assert resolve_target(("contractor", None), res, is_system=False).active is True
+        assert resolve_target(("contractor", None), res, is_system=False, target_excluded=False).active is True
 
     def test_a_system_and_a_not_comparable_work_go_before_the_figure(self):
         res = with_figure(None)
         not_comparable = dataclasses.replace(res, state=LineState.no_history, ladder=None)
 
-        assert resolve_target(("contractor", None), res, is_system=True).reset_reason == "kind_changed"
-        assert resolve_target(("contractor", None), not_comparable, is_system=False).reset_reason == "not_comparable"
+        assert resolve_target(("contractor", None), res, is_system=True, target_excluded=False).reset_reason == "kind_changed"
+        assert resolve_target(("contractor", None), not_comparable, is_system=False, target_excluded=False).reset_reason == "not_comparable"
 
     def test_the_target_analog_of_an_acting_choice_is_the_figure_analog(self):
         res = with_figure(Figure(D("120"), 102, 2))
-        choice = resolve_target(("contractor", None), res, is_system=False)
+        choice = resolve_target(("contractor", None), res, is_system=False, target_excluded=False)
 
         assert target_analog(res, choice) == MID
 
     def test_a_reset_contractor_choice_leaves_the_lowest(self):
         res = with_figure(None)
-        choice = resolve_target(("contractor", None), res, is_system=False)
+        choice = resolve_target(("contractor", None), res, is_system=False, target_excluded=False)
 
         assert target_analog(res, choice) == LOW
 

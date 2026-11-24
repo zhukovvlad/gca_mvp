@@ -81,6 +81,9 @@ CODE_NO_CONTRACTOR_ANALOG = "no_contractor_analog"
 #: Коды отказов справочной цели (спека справочных аналогов §2.13).
 CODE_REFERENCE_UNAVAILABLE = "reference_unavailable"
 CODE_REFERENCE_IS_LUMP_SUM = "reference_is_lump_sum"
+#: Строка договора исключена из аналогов строки КП: «ошибка в цене» или тендерная отметка её ключа формы
+#: (спека «Не аналог» §6 п. 3).
+CODE_REFERENCE_IS_EXCLUDED = "reference_is_excluded"
 CODE_CONVERSION_NOT_NEEDED = "conversion_not_needed"
 CODE_CONVERSION_REQUIRED = "conversion_required"
 CODE_LINK_NOT_APPLICABLE = "link_not_applicable"
@@ -645,7 +648,8 @@ def put_reference_target(
     Строка проверяется той же сценой и с тем же рядом ИПЦ, что чтение. Отказы по таблице спеки
     справочных аналогов §2.13, по порядку: система (`target_not_applicable`); строка договора не
     справочная (`reference_unavailable`); строка КП — комплект (`target_not_applicable`, сразу после системы),
-    строка договора — комплект (`reference_is_lump_sum`) — оба раньше проверок пересчёта; пересчёт при равных единицах (`conversion_not_needed`); различны
+    строка договора — комплект (`reference_is_lump_sum`), затем строка договора исключена из аналогов этой строки КП
+    («ошибка в цене» или тендерная отметка её ключа формы; `reference_is_excluded`) — все раньше проверок пересчёта; пересчёт при равных единицах (`conversion_not_needed`); различны
     единицы, а пересчёта нет (`conversion_required`); связь не годится (`link_not_applicable`); `N` или
     основание по связи сменились (`409 conversion_stale`); ручной пересчёт неверен
     (`manual_conversion_invalid`); пара помечена выбросом без подтверждения
@@ -676,6 +680,12 @@ def put_reference_target(
             422,
             "Строка договора похожа на комплект: ставкой для сравнения она быть не может.",
             code=CODE_REFERENCE_IS_LUMP_SUM,
+        )
+    if line.marks or body.analog_id in scene.not_analog.get(row.line.form_key, {}):
+        raise DomainError(
+            422,
+            "Строка договора исключена из аналогов этой строки: ставкой для сравнения она быть не может.",
+            code=CODE_REFERENCE_IS_EXCLUDED,
         )
 
     same_unit = units_equal(line.unit_id, row.unit_id)

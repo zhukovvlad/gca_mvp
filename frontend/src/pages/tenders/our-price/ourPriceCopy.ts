@@ -2,6 +2,7 @@ import { formatDate, formatDecimalMoney, formatNumber, pluralRu, roundDecimal } 
 import type {
   Decimal,
   LumpView,
+  MarkKind,
   NoHistoryReason,
   OurPriceAnalog,
   OurPriceLine,
@@ -349,6 +350,7 @@ export const NO_HISTORY_REASON_LABEL: Record<Exclude<NoHistoryReason, "no_zone_m
   no_family: "в договорах нет работ этой семьи",
   path_conflict: "нет аналога: параметры расходятся по разделам сметы",
   no_params: "нет аналога с этими параметрами",
+  excluded: "Аналоги исключены вручную",
 };
 
 /** Сборная строка без сборных аналогов (спека упрощения каталога §2.8): имя параметра — из ответа строки. */
@@ -458,9 +460,92 @@ export function lumpAnalogConfirm(title: string): string {
 export const LUMP_ANALOG_CONFIRM_TITLE = "Убрать строку из сравнения?";
 export const LUMP_ANALOG_CONFIRM_CANCEL = "Отмена";
 
+/** Отметки «не аналог» (спека «Не аналог» §8, макет разделы 1-4): меню аналога, окна, метки, пары, причина. */
+export const MARK_MENU_LABEL = "Строка договора";
+export const MARK_MENU_TRIGGER = "Действия со строкой договора";
+export const MARK_ACTION: Record<MarkKind, string> = {
+  tender: "Не аналог в этом тендере…",
+  price_error: "Ошибка в цене — не аналог нигде…",
+};
+export const MARK_DIALOG_TITLE: Record<MarkKind, string> = {
+  tender: "Не аналог в этом тендере",
+  price_error: "Ошибка в цене — не аналог нигде",
+};
+export const MARK_REASON_LABEL = "Причина";
+export const MARK_REASON_MAX = 300;
+export const MARK_SUBMIT = "Исключить";
+export const MARK_CANCEL = "Отмена";
+export const MARK_KIND_LABEL: Record<MarkKind, string> = {
+  price_error: "ошибка в цене · во всех тендерах",
+  tender: "не аналог в этом тендере",
+};
+export const MARK_CLEAR: Record<MarkKind, string> = {
+  tender: "Снять в этом тендере",
+  price_error: "Снять во всех тендерах…",
+};
+export const MARK_CLEAR_CONFIRM_TITLE = "Снять «ошибку в цене»?";
+export const MARK_CLEAR_CONFIRM_OK = "Снять везде";
+export function markReasonCounter(length: number): string {
+  return `${length} / ${MARK_REASON_MAX}`;
+}
+/** Подпись строки формы в окне отметки (макет, раздел 2): наименование в кавычках, единица — после них. */
+export function markFormLabel(title: string, unit: string | null): string {
+  return unit === null ? `«${title}»` : `«${title}», ${unit}`;
+}
+/** Область действия окна отметки (макет, разделы 1-2): строка договора, кого и где она перестаёт быть аналогом. */
+export function markScopeText(
+  kind: MarkKind,
+  row: { title: string; objectTitle: string },
+  form: string,
+  tenderId: number
+): string {
+  if (kind === "price_error") {
+    return `Строка «${row.title}» договора ${row.objectTitle} перестанет быть аналогом во всех тендерах и выпадет из обычной ставки семьи. Отметку можно снять.`;
+  }
+  return `Строка «${row.title}» договора ${row.objectTitle} не будет аналогом для строки формы ${form} у всех участников и во всех этапах тендера ${tenderId}. В других тендерах она остаётся аналогом.`;
+}
+/** Подтверждение снятия «ошибки в цене» (макет, раздел 4): действует во всех тендерах. */
+export function markClearConfirmText(
+  row: { title: string; objectTitle: string },
+  family: string | null,
+  tenderId: number | null
+): string {
+  const tender = tenderId === null ? "" : `, кроме тех, где на ней стоит отметка «не аналог в этом тендере» (здесь — тендер ${tenderId})`;
+  const rates = family === null ? "в обычную ставку семьи" : `в обычную ставку семьи «${family}»`;
+  return `Строка «${row.title}» договора ${row.objectTitle} вернётся в аналоги во всех тендерах${tender}, и снова войдёт ${rates}.`;
+}
+export const EXCLUDED_HINT = "не входят в вилку и медиану";
+export function excludedTitle(count: number): string {
+  return `Исключены (${count})`;
+}
+export const EXCLUDED_NO_COMPARE = "Найденные строки договоров отмечены «не аналог». Сравнить не с чем.";
+export const ZONE_SCOPE_AREA: Record<ZoneScope, string> = { own: "своя зона", other: "другие зоны", any: "любые зоны" };
+/** Область в предложном падеже: «на ступени 4 своей зоны». */
+const ZONE_SCOPE_OF: Record<ZoneScope, string> = { own: "своей зоны", other: "других зон", any: "любых зон" };
+/** Подпись пары следа над карточками: «ступень 4 · своя зона». */
+export function excludedPairLabel(step: { rung: number; zone_scope: ZoneScope }): string {
+  return `ступень ${step.rung} · ${ZONE_SCOPE_AREA[step.zone_scope]}`;
+}
+/** Метка карточки, стоявшей не на паре, где подбор остановился. */
+export function excludedWouldBe(step: { rung: number; zone_scope: ZoneScope }): string {
+  return `был бы на ступени ${step.rung} · ${ZONE_SCOPE_AREA[step.zone_scope]}`;
+}
+/** «Ступень 4, другие зоны: на ступени 4 своей зоны аналоги исключены вручную (1)»; пары — через «;». */
+export function excludedMovedOn(
+  work: { rung: number; zone_scope: ZoneScope },
+  skipped: Array<{ step: { rung: number; zone_scope: ZoneScope }; count: number }>
+): string {
+  const parts = skipped.map(
+    (s) => `на ступени ${s.step.rung} ${ZONE_SCOPE_OF[s.step.zone_scope]} аналоги исключены вручную (${s.count})`
+  );
+  return `Ступень ${work.rung}, ${ZONE_SCOPE_AREA[work.zone_scope]}: ${parts.join("; ")}`;
+}
+
 /** «Найти в договорах» (спека комплектов §8 п. 5): метка, пометка поправки, подсказка у «сделать целью». */
 export const LUMP_SEARCH_MARK = "похоже на комплект";
 export const LUMP_SEARCH_OVERRIDE = "поправлено вручную";
+/** Подсказка недоступного «сделать целью» у отмеченной строки поиска (спека «Не аналог» §8 п. 5). */
+export const EXCLUDED_NOT_TARGET = "Исключена из аналогов";
 export const LUMP_NOT_TARGET = "Похоже на комплект — не цель для ставки";
 export const LUMP_ROW_MENU = "Комплект или ставка";
 
@@ -626,6 +711,7 @@ export const TARGET_RESET_REASON: Record<TargetResetReason, string> = {
   no_contractor: "среди аналогов больше нет договора с этим подрядчиком",
   reference_unavailable: "строка договора больше не годится как справочная",
   lump_sum: "комплект вместо ставки",
+  excluded: "строка исключена из аналогов",
 };
 export function targetInactiveNote(reason: TargetResetReason | null): string {
   const why = reason === null ? "" : `: ${TARGET_RESET_REASON[reason]}`;

@@ -91,7 +91,7 @@ def source_line(kp="160"):
 
 class TestResolveTarget:
     def test_no_record_is_no_choice(self):
-        assert resolve_target(None, comparable(), is_system=False) is None
+        assert resolve_target(None, comparable(), is_system=False, target_excluded=False) is None
 
     @pytest.mark.parametrize(
         ("saved", "expected_reason"),
@@ -103,21 +103,21 @@ class TestResolveTarget:
         ],
     )
     def test_a_comparable_work_acts_or_names_the_analog_condition(self, saved, expected_reason):
-        choice = resolve_target(saved, comparable(), is_system=False)
+        choice = resolve_target(saved, comparable(), is_system=False, target_excluded=False)
 
         assert choice == TargetChoice(saved[0], saved[1], expected_reason is None, expected_reason)
 
     def test_freshest_without_a_freshest_figure_is_no_freshest(self):
         res = comparable(freshest=None)
 
-        assert resolve_target(("freshest", None), res, is_system=False) == TargetChoice(
+        assert resolve_target(("freshest", None), res, is_system=False, target_excluded=False) == TargetChoice(
             "freshest", None, False, "no_freshest"
         )
 
     def test_the_record_survives_a_reset_with_its_own_kind_and_analog(self):
         res = comparable(freshest=None)
 
-        choice = resolve_target(("analog", 999), res, is_system=False)
+        choice = resolve_target(("analog", 999), res, is_system=False, target_excluded=False)
 
         assert (choice.kind, choice.analog_id, choice.active) == ("analog", 999, False)
 
@@ -127,30 +127,30 @@ class TestResolveTarget:
     def test_a_work_that_is_not_comparable_does_not_act(self, state):
         res = result(state=state, mismatch=None, ladder=None)
 
-        assert resolve_target(("freshest", None), res, is_system=False).reset_reason == "not_comparable"
+        assert resolve_target(("freshest", None), res, is_system=False, target_excluded=False).reset_reason == "not_comparable"
 
     def test_a_system_is_kind_changed_even_when_it_is_not_comparable_either(self):
         res = result(state=LineState.no_price, ladder=None)
 
-        assert resolve_target(("analog", 101), res, is_system=True).reset_reason == "kind_changed"
+        assert resolve_target(("analog", 101), res, is_system=True, target_excluded=False).reset_reason == "kind_changed"
 
     def test_kind_changed_goes_before_not_comparable_and_not_comparable_before_the_analog(self):
         not_comparable_with_missing_analog = result(state=LineState.no_history, ladder=None)
 
         assert (
-            resolve_target(("analog", 999), not_comparable_with_missing_analog, is_system=True).reset_reason
+            resolve_target(("analog", 999), not_comparable_with_missing_analog, is_system=True, target_excluded=False).reset_reason
             == "kind_changed"
         )
         assert (
-            resolve_target(("analog", 999), not_comparable_with_missing_analog, is_system=False).reset_reason
+            resolve_target(("analog", 999), not_comparable_with_missing_analog, is_system=False, target_excluded=False).reset_reason
             == "not_comparable"
         )
-        assert resolve_target(("analog", 999), comparable(), is_system=False).reset_reason == "analog_unavailable"
+        assert resolve_target(("analog", 999), comparable(), is_system=False, target_excluded=False).reset_reason == "analog_unavailable"
 
     def test_unit_mismatch_work_is_not_comparable(self):
         res = comparable(state=LineState.unit_mismatch, mismatch=Mismatch(kp_ratio=D(10), contracts=()))
 
-        assert resolve_target(("analog", 102), res, is_system=False).reset_reason == "not_comparable"
+        assert resolve_target(("analog", 102), res, is_system=False, target_excluded=False).reset_reason == "not_comparable"
 
 
 # ---------------------------------------------------------------------------
@@ -164,19 +164,19 @@ class TestTargetAnalog:
 
     def test_an_acting_analog_choice_picks_that_analog(self):
         res = comparable()
-        choice = resolve_target(("analog", 102), res, is_system=False)
+        choice = resolve_target(("analog", 102), res, is_system=False, target_excluded=False)
 
         assert target_analog(res, choice) == MID
 
     def test_an_acting_freshest_choice_picks_the_freshest_analog(self):
         res = comparable()
-        choice = resolve_target(("freshest", None), res, is_system=False)
+        choice = resolve_target(("freshest", None), res, is_system=False, target_excluded=False)
 
         assert target_analog(res, choice) == FRESH
 
     def test_a_reset_choice_leaves_the_lowest(self):
         res = comparable()
-        choice = resolve_target(("analog", 104), res, is_system=False)
+        choice = resolve_target(("analog", 104), res, is_system=False, target_excluded=False)
 
         assert not choice.active
         assert target_analog(res, choice) == LOW
@@ -414,17 +414,17 @@ class TestResolveTargetLump:
         ],
     )
     def test_a_lump_sum_row_resets_every_kind_of_target_even_the_reference_one(self, saved):
-        choice = resolve_target(saved, self.LUMP_ROW(), is_system=False, reference_available=True)
+        choice = resolve_target(saved, self.LUMP_ROW(), is_system=False, reference_available=True, target_excluded=False)
 
         assert choice == TargetChoice(saved[0], saved[1], False, "lump_sum")
 
     def test_a_system_is_kind_changed_before_a_lump_sum_row(self):
         res = self.LUMP_ROW()
 
-        assert resolve_target(("analog", 102), res, is_system=True, target_lump=True).reset_reason == "kind_changed"
+        assert resolve_target(("analog", 102), res, is_system=True, target_lump=True, target_excluded=False).reset_reason == "kind_changed"
 
     def test_a_lump_sum_row_beats_reference_unavailable(self):
-        choice = resolve_target(("reference", 555), self.LUMP_ROW(), is_system=False, reference_available=False)
+        choice = resolve_target(("reference", 555), self.LUMP_ROW(), is_system=False, reference_available=False, target_excluded=False)
 
         assert choice.reset_reason == "lump_sum"
 
@@ -438,7 +438,7 @@ class TestResolveTargetLump:
         ],
     )
     def test_a_target_on_a_lump_contract_row_is_lump_sum_before_the_unavailable_reasons(self, saved, available):
-        choice = resolve_target(saved, comparable(), is_system=False, reference_available=available, target_lump=True)
+        choice = resolve_target(saved, comparable(), is_system=False, reference_available=available, target_lump=True, target_excluded=False)
 
         assert choice == TargetChoice(saved[0], saved[1], False, "lump_sum")
 
@@ -446,15 +446,88 @@ class TestResolveTargetLump:
         ("saved", "reason"), [(("freshest", None), None), (("contractor", None), "no_contractor")]
     )
     def test_the_lump_flag_of_a_target_row_does_not_touch_targets_without_a_contract_row(self, saved, reason):
-        choice = resolve_target(saved, comparable(), is_system=False, target_lump=True)
+        choice = resolve_target(saved, comparable(), is_system=False, target_lump=True, target_excluded=False)
 
         assert choice.reset_reason == reason
 
     def test_without_the_flag_a_comparable_row_and_its_analog_act_as_before(self):
-        assert resolve_target(("analog", 102), comparable(), is_system=False, target_lump=False).active is True
-        assert resolve_target(("analog", 999), comparable(), is_system=False).reset_reason == "analog_unavailable"
+        assert resolve_target(("analog", 102), comparable(), is_system=False, target_lump=False, target_excluded=False).active is True
+        assert resolve_target(("analog", 999), comparable(), is_system=False, target_excluded=False).reset_reason == "analog_unavailable"
         assert (
-            resolve_target(("reference", 555), comparable(), is_system=False, reference_available=False).reset_reason
+            resolve_target(("reference", 555), comparable(), is_system=False, reference_available=False, target_excluded=False).reset_reason
             == "reference_unavailable"
         )
 
+
+
+# ---------------------------------------------------------------------------
+#  «Не аналог»: причина `excluded` (спека «Не аналог» §6 п. 2)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveTargetExcluded:
+    LUMP_ROW = staticmethod(lambda: result(state=LineState.lump_sum, mismatch=None, ladder=None))
+
+    @pytest.mark.parametrize(
+        ("saved", "available"),
+        [
+            pytest.param(("analog", 102), False, id="analog-in-the-remainder"),
+            pytest.param(("analog", 999), False, id="analog-gone-from-the-remainder"),
+            pytest.param(("reference", 555), True, id="reference-available"),
+            pytest.param(("reference", 555), False, id="reference-unavailable"),
+        ],
+    )
+    def test_a_target_on_an_excluded_row_is_excluded_before_the_unavailable_reasons(self, saved, available):
+        choice = resolve_target(
+            saved, comparable(), is_system=False, reference_available=available, target_excluded=True
+        )
+
+        assert choice == TargetChoice(saved[0], saved[1], False, "excluded")
+
+    @pytest.mark.parametrize("saved", [("analog", 102), ("reference", 555)])
+    def test_excluded_goes_before_not_comparable(self, saved):
+        res = result(state=LineState.no_history, mismatch=None, ladder=None)
+
+        choice = resolve_target(saved, res, is_system=False, reference_available=True, target_excluded=True)
+
+        assert choice.reset_reason == "excluded"
+
+    def test_a_system_and_a_lump_sum_go_before_excluded(self):
+        assert (
+            resolve_target(("analog", 102), comparable(), is_system=True, target_excluded=True).reset_reason
+            == "kind_changed"
+        )
+        assert (
+            resolve_target(("analog", 102), comparable(), is_system=False, target_lump=True, target_excluded=True)
+            .reset_reason
+            == "lump_sum"
+        )
+        assert (
+            resolve_target(("reference", 555), self.LUMP_ROW(), is_system=False, target_excluded=True).reset_reason
+            == "lump_sum"
+        )
+
+    @pytest.mark.parametrize(
+        ("saved", "reason"), [(("freshest", None), None), (("contractor", None), "no_contractor")]
+    )
+    def test_the_flag_does_not_touch_targets_without_a_contract_row(self, saved, reason):
+        choice = resolve_target(saved, comparable(), is_system=False, target_excluded=True)
+
+        assert choice.reset_reason == reason
+
+    def test_without_the_flag_the_targets_act_as_before(self):
+        assert resolve_target(("analog", 102), comparable(), is_system=False, target_excluded=False).active is True
+        assert (
+            resolve_target(("analog", 999), comparable(), is_system=False, target_excluded=False).reset_reason
+            == "analog_unavailable"
+        )
+        assert (
+            resolve_target(
+                ("reference", 555), comparable(), is_system=False, reference_available=False, target_excluded=False
+            ).reset_reason
+            == "reference_unavailable"
+        )
+
+    def test_the_flag_is_a_required_keyword(self):
+        with pytest.raises(TypeError):
+            resolve_target(("analog", 102), comparable(), is_system=False)

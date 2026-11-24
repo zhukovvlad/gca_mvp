@@ -23,7 +23,9 @@ from models import (
     CatalogContext,
     CatalogPosition,
     LumpSumOverride,
+    NotAnalogMark,
     PositionItem,
+    PriceErrorMark,
     User,
 )
 from money.vat import gross_to_net
@@ -534,3 +536,46 @@ class TestMigrationRoundtrip:
                 assert table_exists() is False
             finally:
                 engine.dispose()
+
+
+class TestPriceErrorLeavesTheTypicalRatePool:
+    """Спека «Не аналог» §5 п. 4: строка с «ошибкой в цене» ставку не образует; тендерная отметка не трогает."""
+
+    def _mark(self, scene, item):
+        scene.db.add(PriceErrorMark(position_item_id=item.id, reason="опечатка", set_by=scene.admin.id))
+        scene.db.flush()
+
+    def test_a_pool_of_three_with_one_marked_line_has_no_rate(self, scene):
+        _, proposal = scene.contract_estimate()
+        items = scene.good_pool(proposal)
+        self._mark(scene, items[0])
+        assert _rate(scene) is None
+
+    def test_a_marked_extreme_line_does_not_move_the_rate_of_four(self, scene):
+        _, proposal = scene.contract_estimate()
+        scene.good_pool(proposal)
+        extreme = scene.line(proposal, price=EXTREME)
+        assert _rate(scene).lines == 4
+        self._mark(scene, extreme)
+        rate = _rate(scene)
+        assert rate.net == D("200") and rate.lines == 3
+
+    def test_unmarking_returns_the_line_to_the_pool(self, scene):
+        _, proposal = scene.contract_estimate()
+        items = scene.good_pool(proposal)
+        self._mark(scene, items[0])
+        assert _rate(scene) is None
+        scene.db.execute(sa.delete(PriceErrorMark))
+        assert _rate(scene).lines == 3
+
+    def test_a_tender_mark_leaves_the_pool_as_is(self, scene):
+        _, proposal = scene.contract_estimate()
+        items = scene.good_pool(proposal)
+        tender = scene.f.TenderFactory.create()
+        scene.db.add(NotAnalogMark(
+            tender_id=tender.id, form_title="работа 1", form_unit_id=None,
+            position_item_id=items[0].id, reason="другая работа", set_by=scene.admin.id,
+        ))
+        scene.db.flush()
+        rate = _rate(scene)
+        assert rate.net == D("200") and rate.lines == 3

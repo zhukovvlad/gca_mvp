@@ -7,7 +7,7 @@ import { qk } from "@/services/queryKeys";
 import { ourPriceAnalogFixture } from "@/test/fixtures";
 import { server } from "@/test/server";
 import { createTestQueryClient, renderWithProviders } from "@/test/utils";
-import type { OurPriceAnalog, ZoneScope } from "@/types/domain";
+import type { LineIds, OurPriceAnalog, ZoneScope } from "@/types/domain";
 
 import { AnalogsTable, type AnalogsTableProps } from "./AnalogsTable";
 
@@ -21,6 +21,9 @@ const many = (n: number): OurPriceAnalog[] =>
       price: { net: String(1000 + i), shown: String(1220 + i) },
     })
   );
+
+const IDS: LineIds = { tenderId: 6, roundId: 2, offerId: 64, kpItemId: 5001 };
+const FORM = "«Двутавр 20Б1», т";
 
 function renderTable(props: Partial<AnalogsTableProps> = {}) {
   return renderWithProviders(
@@ -36,6 +39,8 @@ function renderTable(props: Partial<AnalogsTableProps> = {}) {
       onChoose={props.onChoose ?? (() => undefined)}
       columns={props.columns ?? []}
       zoneScope={props.zoneScope ?? "own"}
+      ids={IDS}
+      formLabel={FORM}
     />
   );
 }
@@ -100,18 +105,23 @@ describe("справка аналогов", () => {
       return asked;
     }
 
-    it("admin: действие у каждого аналога; у member его нет", () => {
+    it("admin: меню у каждого аналога, в нём три пункта; у member меню нет", async () => {
       const admin = renderTable({ canLump: true });
-      expect(screen.getAllByRole("button", { name: ACTION })).toHaveLength(2);
+      expect(screen.getAllByRole("button", { name: "Действия со строкой договора" })).toHaveLength(2);
+      await userEvent.click(screen.getByTestId("analog-menu-9000"));
+      const items = (await screen.findAllByRole("menuitem")).map((i) => i.textContent);
+      expect(items).toEqual([ACTION, "Не аналог в этом тендере…", "Ошибка в цене — не аналог нигде…"]);
       admin.unmount();
       renderTable({ canLump: false });
-      expect(screen.queryByRole("button", { name: ACTION })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Действия со строкой договора" })).not.toBeInTheDocument();
+      expect(screen.queryByTestId("analog-menu-9000")).not.toBeInTheDocument();
     });
 
     it("подтверждение называет строку договора и не шлёт запрос до «да»; «Отмена» ничего не шлёт", async () => {
       const asked = serveLump();
       renderTable({ canLump: true, analogs: [ourPriceAnalogFixture({ analog_id: 9100, title: "Монтаж вентиляции" })] });
-      await userEvent.click(screen.getByTestId("analog-lump-9100"));
+      await userEvent.click(screen.getByTestId("analog-menu-9100"));
+      await userEvent.click(await screen.findByTestId("analog-lump-9100"));
       expect(await screen.findByTestId("analog-lump-confirm")).toHaveTextContent(
         "Строка договора «Монтаж вентиляции» перестанет служить аналогом во всех КП. Вернуть — в «Найти в договорах»."
       );
@@ -138,10 +148,13 @@ describe("справка аналогов", () => {
           onChoose={() => undefined}
           columns={[]}
           zoneScope="own"
+          ids={IDS}
+          formLabel={FORM}
         />,
         { queryClient }
       );
-      await userEvent.click(screen.getByTestId("analog-lump-9101"));
+      await userEvent.click(screen.getByTestId("analog-menu-9101"));
+      await userEvent.click(await screen.findByTestId("analog-lump-9101"));
       await userEvent.click(await screen.findByTestId("analog-lump-confirm-ok"));
       await waitFor(() => expect(asked).toHaveLength(1));
       expect(asked[0]).toEqual({ method: "PUT", id: "9101", body: { verdict: "lump" } });
@@ -149,6 +162,109 @@ describe("справка аналогов", () => {
         const keys = spy.mock.calls.map((call) => JSON.stringify((call[0] as { queryKey: unknown }).queryKey));
         expect(keys).toContain(JSON.stringify(qk.tenders.ourPriceAll));
       });
+    });
+  });
+
+  describe("отметки «не аналог»", () => {
+    const NOT_ANALOG = "/api/v1/tenders/6/rounds/2/our-price/offers/64/lines/5001/not-analog/:positionItemId";
+    const PRICE_ERROR = "/api/v1/position-items/:id/price-error";
+    const row = ourPriceAnalogFixture({ analog_id: 9200, title: "Монтаж кровли", object_title: "TOP TOWER" });
+
+    function serveMarks(delay?: Promise<void>) {
+      const asked: Array<{ url: string; body: unknown }> = [];
+      const handler = (path: string) =>
+        http.put(path, async ({ request }) => {
+          asked.push({ url: new URL(request.url).pathname, body: await request.json() });
+          if (delay) await delay;
+          return HttpResponse.json({});
+        });
+      server.use(handler(NOT_ANALOG), handler(PRICE_ERROR));
+      return asked;
+    }
+
+    async function openItem(testId: string) {
+      await userEvent.click(screen.getByTestId("analog-menu-9200"));
+      await userEvent.click(await screen.findByTestId(testId));
+    }
+
+    it("тендерная: окно называет строку договора, строку формы и тендер; причина обязательна; PUT по строке КП", async () => {
+      const asked = serveMarks();
+      const queryClient = createTestQueryClient();
+      const spy = vi.spyOn(queryClient, "invalidateQueries");
+      renderWithProviders(
+        <AnalogsTable
+          analogs={[row]}
+          vat="net"
+          canChoose={false}
+          canLump
+          targetAnalogId={null}
+          pinnedAnalogId={null}
+          contractorAnalogId={null}
+          busy={false}
+          onChoose={() => undefined}
+          columns={[]}
+          zoneScope="own"
+          ids={IDS}
+          formLabel={FORM}
+        />,
+        { queryClient }
+      );
+      await openItem("analog-mark-tender-9200");
+      expect(await screen.findByTestId("mark-scope")).toHaveTextContent(
+        "Строка «Монтаж кровли» договора TOP TOWER не будет аналогом для строки формы «Двутавр 20Б1», т у всех участников и во всех этапах тендера 6. В других тендерах она остаётся аналогом."
+      );
+      expect(screen.getByRole("button", { name: "Исключить" })).toBeDisabled();
+      expect(asked).toHaveLength(0);
+      await userEvent.type(screen.getByLabelText("Причина"), "в цене огнезащита");
+      await userEvent.click(screen.getByRole("button", { name: "Исключить" }));
+      await waitFor(() => expect(asked).toHaveLength(1));
+      expect(asked[0]).toEqual({
+        url: "/api/v1/tenders/6/rounds/2/our-price/offers/64/lines/5001/not-analog/9200",
+        body: { reason: "в цене огнезащита" },
+      });
+      await waitFor(() => expect(screen.queryByTestId("mark-scope")).not.toBeInTheDocument());
+      const keys = spy.mock.calls.map((c) => JSON.stringify((c[0] as { queryKey: unknown }).queryKey));
+      expect(keys).toContain(JSON.stringify(qk.tenders.ourPriceAll));
+      expect(keys).toContain(JSON.stringify(qk.tenders.kpFilePreviewsAll));
+    });
+
+    it("«ошибка в цене»: окно про все тендеры и обычную ставку; PUT по самой строке договора", async () => {
+      const asked = serveMarks();
+      renderTable({ canLump: true, analogs: [row] });
+      await openItem("analog-mark-price-error-9200");
+      expect(await screen.findByTestId("mark-scope")).toHaveTextContent(
+        "Строка «Монтаж кровли» договора TOP TOWER перестанет быть аналогом во всех тендерах и выпадет из обычной ставки семьи. Отметку можно снять."
+      );
+      await userEvent.type(screen.getByLabelText("Причина"), "цена за м²");
+      await userEvent.click(screen.getByRole("button", { name: "Исключить" }));
+      await waitFor(() => expect(asked).toHaveLength(1));
+      expect(asked[0]).toEqual({ url: "/api/v1/position-items/9200/price-error", body: { reason: "цена за м²" } });
+    });
+
+    it("занято до ответа: пока запрос не вернулся, «Исключить» погашено", async () => {
+      let release: () => void = () => undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const asked = serveMarks(gate);
+      renderTable({ canLump: true, analogs: [row] });
+      await openItem("analog-mark-price-error-9200");
+      await userEvent.type(await screen.findByLabelText("Причина"), "причина");
+      await userEvent.click(screen.getByRole("button", { name: "Исключить" }));
+      await waitFor(() => expect(asked).toHaveLength(1));
+      expect(screen.getByRole("button", { name: "Исключить" })).toBeDisabled();
+      release();
+      await waitFor(() => expect(screen.queryByTestId("mark-scope")).not.toBeInTheDocument());
+    });
+
+    it("«Отмена» в окне отметки ничего не шлёт", async () => {
+      const asked = serveMarks();
+      renderTable({ canLump: true, analogs: [row] });
+      await openItem("analog-mark-tender-9200");
+      await userEvent.type(await screen.findByLabelText("Причина"), "причина");
+      await userEvent.click(screen.getByRole("button", { name: "Отмена" }));
+      await waitFor(() => expect(screen.queryByTestId("mark-scope")).not.toBeInTheDocument());
+      expect(asked).toHaveLength(0);
     });
   });
 

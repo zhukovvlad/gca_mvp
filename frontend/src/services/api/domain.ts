@@ -110,6 +110,7 @@ import type {
   AgreedBasis,
   KpFilePreview,
   KpSentFileItem,
+  LineIds,
   LumpVerdict,
   OurPriceLineView,
   ReferenceSearchResult,
@@ -359,7 +360,15 @@ const offerUrl = (tenderId: number, roundId: number, offerId: number) =>
 const lineDecisionUrl = (tenderId: number, roundId: number, offerId: number, positionItemId: number) =>
   `${offerUrl(tenderId, roundId, offerId)}/lines/${positionItemId}`;
 
+const notAnalogUrl = (ids: LineIds, positionItemId: number) =>
+  `${lineDecisionUrl(ids.tenderId, ids.roundId, ids.offerId, ids.kpItemId)}/not-analog/${positionItemId}`;
+
 export const tendersApi = {
+  /** Тендерная отметка «не аналог» (спека «Не аналог» §2 п. 2): ключ формы берётся со строки КП. */
+  putNotAnalog: (ids: LineIds, positionItemId: number, reason: string): Promise<void> =>
+    api.put(`${notAnalogUrl(ids, positionItemId)}`, { reason }).then(() => undefined),
+  deleteNotAnalog: (ids: LineIds, positionItemId: number): Promise<void> =>
+    api.delete(notAnalogUrl(ids, positionItemId)).then(() => undefined),
   list: (params?: { q?: string; page?: number; page_size?: number }): Promise<Paginated<TenderRow>> =>
     api.get<Paginated<TenderRow>>("/v1/tenders", { params }).then((r) => r.data),
   get: (id: number): Promise<TenderCard> =>
@@ -615,7 +624,13 @@ export const positionItemsApi = {
     api.put(`/v1/position-items/${id}/lump-sum`, { verdict }).then(() => undefined),
 
   deleteLumpSum: (id: number): Promise<void> =>
-    api.delete(`/v1/position-items/${id}/lump-sum`).then(() => undefined),
+    api.delete(`/v1/position-items/${id}/lump-sum`).then(() => undefined),
+  /** «Ошибка в цене» (спека «Не аналог» §2 п. 1): строка перестаёт быть аналогом во всех тендерах. */
+  putPriceError: (id: number, reason: string): Promise<void> =>
+    api.put(`/v1/position-items/${id}/price-error`, { reason }).then(() => undefined),
+
+  deletePriceError: (id: number): Promise<void> =>
+    api.delete(`/v1/position-items/${id}/price-error`).then(() => undefined),
 };
 
 // ---------------------------------------------------------------------------

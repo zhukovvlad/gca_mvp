@@ -215,6 +215,16 @@ describe("карточки цели: что нажато", () => {
     expect(screen.getByTestId("target-inactive")).toHaveTextContent("Выбор не действует: комплект вместо ставки");
   });
 
+  it("цель сброшена причиной excluded: «строка исключена из аналогов»", () => {
+    renderCards(
+      workLineFixture({
+        target_kind: "lowest",
+        choice: choice({ kind: "analog", analog_id: 8001, active: false, reset_reason: "excluded" }),
+      })
+    );
+    expect(screen.getByTestId("target-inactive")).toHaveTextContent("Выбор не действует: строка исключена из аналогов");
+  });
+
   it("строка не сравнима (цели нет): карточки видны, но ни одна не нажата и нажать нельзя", () => {
     renderCards(workLineFixture({ state: "unit_mismatch", target_kind: null, position: null }));
     expect(card("lowest")).toHaveAttribute("data-selected", "false");

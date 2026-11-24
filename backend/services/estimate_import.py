@@ -39,7 +39,9 @@ from models import (
     EstimateRawData,
     Lot,
     LumpSumOverride,
+    NotAnalogMark,
     PositionItem,
+    PriceErrorMark,
     Proposal,
     ProposalAdditionalInfo,
     ProposalSummaryLine,
@@ -830,6 +832,24 @@ def _replace_existing(
         warnings.append(
             f"Поправки «комплект или ставка» по строкам прежней сметы ({lump_overrides}) "
             "не перенесены — правило решит заново"
+        )
+
+    # Отметки «не аналог» и «ошибка в цене» (спека «Не аналог» §2 п. 5) уходят каскадом со строками и
+    # не переносятся. Счёт обоих видов — ДО `delete`, по тому же замку строки сметы.
+    old_items = (
+        select(PositionItem.id)
+        .join(Proposal, Proposal.id == PositionItem.proposal_id)
+        .join(Lot, Lot.id == Proposal.lot_id)
+        .where(Lot.estimate_id == old_id)
+    )
+    marks = db.execute(
+        select(func.count()).select_from(PriceErrorMark).where(PriceErrorMark.position_item_id.in_(old_items))
+    ).scalar_one() + db.execute(
+        select(func.count()).select_from(NotAnalogMark).where(NotAnalogMark.position_item_id.in_(old_items))
+    ).scalar_one()
+    if marks:
+        warnings.append(
+            f"Отметки «не аналог» по строкам прежней сметы ({marks}) не перенесены — поставьте заново"
         )
 
     db.execute(delete(Estimate).where(Estimate.id == old_id))

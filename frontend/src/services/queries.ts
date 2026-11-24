@@ -36,7 +36,9 @@ import type {
   ActivateDiscoveryInput,
   AgreedBasis,
   KpFilePreview,
+  LineIds,
   LumpVerdict,
+  MarkKind,
   OurPriceLineView,
   ReferenceConversionBody,
   ReferenceOrigin,
@@ -3149,6 +3151,7 @@ const REFERENCE_DRIFT_CODES: ReadonlySet<string> = new Set([
   "conversion_required",
   "link_not_applicable",
   "reference_is_lump_sum",
+  "reference_is_excluded",
 ]);
 
 export interface PutReferenceTargetInput {
@@ -3431,6 +3434,45 @@ export function useSetLumpSum() {
     mutationFn: ({ id, verdict }: { id: number; verdict: LumpVerdict | null }) =>
       verdict === null ? positionItemsApi.deleteLumpSum(id) : positionItemsApi.putLumpSum(id, verdict),
     onSuccess: () => invalidateAfterLadderDecision(qc),
+    onError: toastApiError,
+  });
+}
+
+export type SetMarkVars = LineIds & { kind: MarkKind; positionItemId: number; reason: string };
+export type ClearMarkVars = LineIds & { kind: MarkKind; positionItemId: number };
+
+/** Отметки меняют аналоги и цену на всех экранах «Против нашей цены» и файл подрядчику (спека «Не аналог» §8 п. 7). */
+function invalidateAfterMark(qc: ReturnType<typeof useQueryClient>) {
+  return Promise.all([
+    qc.invalidateQueries({ queryKey: qk.tenders.ourPriceAll }),
+    qc.invalidateQueries({ queryKey: qk.tenders.kpFilePreviewsAll }),
+  ]);
+}
+
+/**
+ * Поставить отметку на строку договора: «ошибка в цене» — на саму строку, «не аналог в этом тендере» —
+ * от строки КП. Мутация держится до перечитывания экранов («Исключить» занято до ответа).
+ */
+export function useSetMark() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: SetMarkVars): Promise<void> =>
+      v.kind === "price_error"
+        ? positionItemsApi.putPriceError(v.positionItemId, v.reason)
+        : tendersApi.putNotAnalog(v, v.positionItemId, v.reason),
+    onSuccess: () => invalidateAfterMark(qc),
+    onError: toastApiError,
+  });
+}
+
+export function useClearMark() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: ClearMarkVars): Promise<void> =>
+      v.kind === "price_error"
+        ? positionItemsApi.deletePriceError(v.positionItemId)
+        : tendersApi.deleteNotAnalog(v, v.positionItemId),
+    onSuccess: () => invalidateAfterMark(qc),
     onError: toastApiError,
   });
 }

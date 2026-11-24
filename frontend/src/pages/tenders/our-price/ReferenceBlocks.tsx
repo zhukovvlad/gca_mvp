@@ -25,6 +25,7 @@ import {
   refLinkTitle,
   refZoneBadge,
   workRungLabel,
+  markFormLabel,
 } from "./ourPriceCopy";
 import { ReferenceRows } from "./ReferenceRows";
 import { ReferenceSearch } from "./ReferenceSearch";
@@ -130,6 +131,8 @@ export function ReferencePanel({ tenderId, roundId, offerId, seriesId, data, vat
           canChoose={canEdit}
           busy={put.isPending}
           onChoose={(row) => choose(row, "search")}
+          ids={{ tenderId, roundId, offerId, kpItemId: line.position_item_id }}
+          formLabel={markFormLabel(line.title, kpUnit)}
         />
       </RefSection>
       {canEdit && (

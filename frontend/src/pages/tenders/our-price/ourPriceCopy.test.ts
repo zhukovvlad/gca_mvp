@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { lumpFixture, lumpLineFixture, ourPriceLineFixture } from "@/test/fixtures";
 import type { WorkRung } from "@/types/domain";
 
-import { formatRatio, linesCount, offerSubtitle, progressCaption, roundSubtitle, priceBasisLabel,VAT_NET_LABEL, VAT_UNKNOWN_LABEL, inflationCaptionOf, KP_NOT_ADJUSTED_NOTE, groupLinesCaption, ratioNote, unitWarnContracts, unitWarnKp, isWaitingAdminLine, LINE_STATE_LABEL, lineStateLabel, periodRu, targetInactiveNote, WAITING_ADMIN_LABEL, workRungCaption, workRungLabel, analogsMore, COMPOSITE_NO_TARGET, EXPORT_SOURCE, TARGET_CARD, TARGET_MARK, targetSameContract, otherZonesLabel, zoneScopeMark, otherZonesWhy, ANY_ZONE_WHY, analogZoneBadge, zoneRequiredNote, zoneRequiredNoZonePrefix, refLinkTitle, refSections, refTruncated, FILTER_HINT, lumpCaption, lumpOverrideNote, lumpUnitGenitive, lumpWhy } from "./ourPriceCopy";
+import { formatRatio, linesCount, offerSubtitle, progressCaption, roundSubtitle, priceBasisLabel,VAT_NET_LABEL, VAT_UNKNOWN_LABEL, inflationCaptionOf, KP_NOT_ADJUSTED_NOTE, groupLinesCaption, ratioNote, unitWarnContracts, unitWarnKp, isWaitingAdminLine, LINE_STATE_LABEL, lineStateLabel, periodRu, targetInactiveNote, WAITING_ADMIN_LABEL, workRungCaption, workRungLabel, analogsMore, COMPOSITE_NO_TARGET, EXPORT_SOURCE, TARGET_CARD, TARGET_MARK, targetSameContract, otherZonesLabel, zoneScopeMark, otherZonesWhy, ANY_ZONE_WHY, analogZoneBadge, zoneRequiredNote, zoneRequiredNoZonePrefix, refLinkTitle, refSections, refTruncated, FILTER_HINT, lumpCaption, lumpOverrideNote, lumpUnitGenitive, lumpWhy, NO_HISTORY_REASON_LABEL, TARGET_RESET_REASON, MARK_ACTION, MARK_DIALOG_TITLE, MARK_KIND_LABEL, MARK_CLEAR, markFormLabel, markScopeText, excludedPairLabel, excludedWouldBe, excludedTitle, excludedMovedOn } from "./ourPriceCopy";
 
 describe("groupLinesCaption", () => {
   it.each([
@@ -456,5 +456,48 @@ describe("строка, похожая на комплект (спека ком�
     it("без поправки подписи нет", () => {
       expect(lumpOverrideNote(lumpFixture())).toBeNull();
     });
+  });
+});
+
+describe("отметки «не аналог»: тексты", () => {
+  it("причина excluded: подпись строки и причина сброса цели", () => {
+    expect(NO_HISTORY_REASON_LABEL.excluded).toBe("Аналоги исключены вручную");
+    expect(TARGET_RESET_REASON.excluded).toBe("строка исключена из аналогов");
+    expect(targetInactiveNote("excluded")).toBe("Выбор не действует: строка исключена из аналогов — цель: самая низкая");
+    expect(lineStateLabel(ourPriceLineFixture({ state: "no_history", no_history_reason: "excluded" }))).toBe(
+      "Аналоги исключены вручную"
+    );
+  });
+
+  it("окна: название, область действия, метки отметок, кнопки «Снять»", () => {
+    expect(MARK_ACTION).toEqual({
+      tender: "Не аналог в этом тендере…",
+      price_error: "Ошибка в цене — не аналог нигде…",
+    });
+    expect(MARK_DIALOG_TITLE.price_error).toBe("Ошибка в цене — не аналог нигде");
+    expect(MARK_KIND_LABEL).toEqual({
+      price_error: "ошибка в цене · во всех тендерах",
+      tender: "не аналог в этом тендере",
+    });
+    expect(MARK_CLEAR).toEqual({ tender: "Снять в этом тендере", price_error: "Снять во всех тендерах…" });
+    expect(markFormLabel("Двутавр", "т")).toBe("«Двутавр», т");
+    expect(markFormLabel("Двутавр", null)).toBe("«Двутавр»");
+    expect(markScopeText("tender", { title: "Монтаж", objectTitle: "TOP" }, markFormLabel("Двутавр", "т"), 6)).toBe(
+      "Строка «Монтаж» договора TOP не будет аналогом для строки формы «Двутавр», т у всех участников и во всех этапах тендера 6. В других тендерах она остаётся аналогом."
+    );
+  });
+
+  it("пары: подпись, метка «был бы на ступени», пояснение «ушёл дальше»", () => {
+    expect(excludedPairLabel({ rung: 4, zone_scope: "other" })).toBe("ступень 4 · другие зоны");
+    expect(excludedWouldBe({ rung: 4, zone_scope: "own" })).toBe("был бы на ступени 4 · своя зона");
+    expect(excludedTitle(3)).toBe("Исключены (3)");
+    expect(
+      excludedMovedOn({ rung: 4, zone_scope: "other" }, [
+        { step: { rung: 4, zone_scope: "own" }, count: 1 },
+        { step: { rung: 2, zone_scope: "own" }, count: 2 },
+      ])
+    ).toBe(
+      "Ступень 4, другие зоны: на ступени 4 своей зоны аналоги исключены вручную (1); на ступени 2 своей зоны аналоги исключены вручную (2)"
+    );
   });
 });

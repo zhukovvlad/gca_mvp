@@ -36,6 +36,7 @@ from models import (
     FamilyParameterSchema,
     LumpSumOverride,
     PositionItem,
+    PriceErrorMark,
     SectionChain,
     UnitOfMeasure,
     ValueOrigin,
@@ -1860,6 +1861,7 @@ class TestLumpFlagInLoaders:
                 tender_contractor_id=-1,
                 target_month=None,
                 factors=None,
+                not_analog={},
             )
             result = evaluation.lines[row.line.position_item_id]
             return {a.position_item_id for a in result.ladder.analogs}
@@ -1956,3 +1958,69 @@ def _repoint_item_position(world, item, unit_id):
         sa.update(PositionItem).where(PositionItem.id == item.id).values(catalog_position_id=position.id)
     )
     world.db.flush()
+
+
+class TestFormKeyOfKpLine:
+    """Спека «Не аналог» §1 п. 2: ключ формы — нормализованное наименование строки КП и её единица."""
+
+    def _set_item_unit(self, db, item, unit_id):
+        db.execute(sa.update(PositionItem).where(PositionItem.id == item.id).values(unit_id=unit_id))
+        db.flush()
+
+    def test_title_is_normalized_and_unit_is_the_row_unit(self, world, db_session):
+        estimate, proposal, *_ = _kp_scene(world)
+        item = world.line(proposal, title="Монтаж  Ёмкости")
+        m3 = _unit_id(db_session, "M3")
+        self._set_item_unit(db_session, item, m3)
+
+        rows = _kp(db_session, estimate)
+
+        assert [r.line.form_key for r in rows] == [("монтаж емкости", m3)]
+
+    def test_a_line_without_a_unit_has_a_none_unit(self, world, db_session):
+        estimate, proposal, *_ = _kp_scene(world)
+        item = world.line(proposal, title="Окраска стен")
+        self._set_item_unit(db_session, item, None)
+
+        rows = _kp(db_session, estimate)
+
+        assert [r.line.form_key for r in rows] == [("окраска стен", None)]
+
+    def test_only_one_line_load_gives_the_same_key(self, world, db_session):
+        estimate, proposal, *_ = _kp_scene(world)
+        item = world.line(proposal, title="Работа  А")
+        db_session.flush()
+
+        one = load_kp_lines(db_session, [estimate.id], only_position_item_id=item.id)[estimate.id]
+
+        assert [r.line.form_key for r in one] == [("работа а", world.unit_id)]
+
+
+class TestPriceErrorInWorkHistory:
+    def test_marked_line_is_flagged_and_the_rest_are_not(self, world, db_session, admin_user):
+        contract, estimate, family, variant = _lump_world(world, db_session)
+        lines = _history_lines(db_session, contract, estimate)
+        marked_id = sorted(lines)[0]
+        db_session.add(PriceErrorMark(position_item_id=marked_id, reason="опечатка", set_by=admin_user.id))
+        db_session.flush()
+
+        after = _history_lines(db_session, contract, estimate)
+
+        assert {i: ln.price_error for i, ln in after.items()} == {
+            i: i == marked_id for i in after
+        }
+        assert not any(ln.price_error for ln in lines.values())
+
+    def test_statement_count_is_the_same_with_and_without_marks(self, world, db_session, admin_user):
+        contract, estimate, family, variant = _lump_world(world, db_session)
+        lines = _history_lines(db_session, contract, estimate)  # прогрев кэша обычных ставок
+        with count_statements(db_session) as plain:
+            _history_lines(db_session, contract, estimate)
+        for item_id in lines:
+            db_session.add(PriceErrorMark(position_item_id=item_id, reason="опечатка", set_by=admin_user.id))
+        db_session.flush()
+        with count_statements(db_session) as marked:
+            after = _history_lines(db_session, contract, estimate)
+
+        assert all(ln.price_error for ln in after.values())
+        assert marked[0] == plain[0]

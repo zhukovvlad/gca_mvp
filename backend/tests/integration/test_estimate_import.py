@@ -15,7 +15,9 @@ from models import (
     EstimateRawData,
     Lot,
     LumpSumOverride,
+    NotAnalogMark,
     PositionItem,
+    PriceErrorMark,
     Proposal,
     ProposalAdditionalInfo,
     ProposalSummaryLine,
@@ -2110,3 +2112,36 @@ def test_replace_says_nothing_about_lump_sum_overrides_when_there_were_none(
 ):
     job = replace_upload(imported_estimate.contract_id)
     assert not any("комплект или ставка" in w for w in job.warnings)
+
+
+def test_replace_warns_about_dropped_not_analog_marks(
+    db_session, imported_estimate, admin_user, replace_upload, factories
+):
+    """Спека «Не аналог» §2 п. 5: отметки обоих видов на строках прежней сметы уходят каскадом, число
+    — в предупреждении."""
+    ids = _item_ids(db_session, imported_estimate.id, 2)
+    assert len(ids) == 2
+    tender = factories.TenderFactory.create()
+    db_session.add(PriceErrorMark(position_item_id=ids[0], reason="опечатка", set_by=admin_user.id))
+    db_session.add(
+        NotAnalogMark(
+            tender_id=tender.id, form_title="стяжка", form_unit_id=None,
+            position_item_id=ids[1], reason="другой материал", set_by=admin_user.id,
+        )
+    )
+    db_session.commit()
+
+    job = replace_upload(imported_estimate.contract_id)
+    assert any(
+        "Отметки «не аналог» по строкам прежней сметы (2) не перенесены — поставьте заново" in w
+        for w in job.warnings
+    )
+    for model in (PriceErrorMark, NotAnalogMark):
+        assert db_session.execute(sa.select(sa.func.count()).select_from(model)).scalar_one() == 0
+
+
+def test_replace_says_nothing_about_not_analog_marks_when_there_were_none(
+    db_session, imported_estimate, replace_upload
+):
+    job = replace_upload(imported_estimate.contract_id)
+    assert not any("Отметки «не аналог»" in w for w in job.warnings)

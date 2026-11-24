@@ -26,6 +26,7 @@ from routers import estimates as estimates_router
 from routers import import_jobs as import_jobs_router
 from routers import inflation_series as inflation_series_router
 from routers import lump_sum as lump_sum_router
+from routers import not_analog as not_analog_router
 from routers import rate_standards as rate_standards_router
 from routers import references as references_router
 from routers import reports as reports_router
@@ -246,6 +247,8 @@ app.include_router(reports_router.router, dependencies=_auth_dep)
 app.include_router(semantic_router.router, dependencies=_auth_dep)
 # Поправка «комплект или ставка» у строки сметы — только admin (спека строк-сумм §3).
 app.include_router(lump_sum_router.router, dependencies=_auth_dep)
+# Отметки «не аналог» и «ошибка в цене» — только admin (спека «Не аналог» §2).
+app.include_router(not_analog_router.router, dependencies=_auth_dep)
 
 
 @app.get("/api/health")

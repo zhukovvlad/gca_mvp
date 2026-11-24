@@ -157,6 +157,7 @@ def evaluate(
         tender_contractor_id=99,
         target_month=target,
         factors=None,
+        not_analog={},
     )
 
 
@@ -689,6 +690,7 @@ def test_work_ladder_of_a_lump_line_is_none_and_the_net_is_kept():
         "tender_class_id": CLASS_A,
         "tender_contractor_id": 99,
         "target_month": TARGET,
+        "not_analog": {},
     }
     net, ladder = core.work_ladder_of(lumpy(work(1, "150")), **kwargs)
     assert (net, ladder) == (D(150), None)

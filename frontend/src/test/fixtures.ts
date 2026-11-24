@@ -1,6 +1,8 @@
 import type { AdminUser } from "@/types/admin";
 import type {
   AppSettings,
+  ExcludedAnalog,
+  MarkView,
   InflationSeries,
   InflationSeriesValue,
   Comparison,
@@ -3269,6 +3271,7 @@ export function ourPriceLineViewFixture(
       },
     ],
     analogs: [],
+    excluded: [],
     analog_columns: [],
     parts_reference: [],
     reference_zones: [],
@@ -3349,6 +3352,33 @@ export function ourPriceAnalogFixture(overrides: Partial<OurPriceAnalog> = {}): 
     chapter_path: chapterPathFixture("Корпус 1", "Надземная часть"),
     zone: null,
     released_values: [],
+    ...overrides,
+  };
+}
+
+/** Отметка строки договора (спека «Не аналог» §7 п. 1): по умолчанию «ошибка в цене» от admin. */
+export function markViewFixture(overrides: Partial<MarkView> = {}): MarkView {
+  return {
+    kind: "price_error",
+    reason: "цена м² плитки на погонном метре плинтуса",
+    set_by: { id: 1, email: "admin@example.com" },
+    set_at: "2026-11-23T09:30:00+00:00",
+    ...overrides,
+  };
+}
+
+/** Исключённая строка договора панели: поля аналога без меток цели, пара следа и отметки. */
+export function excludedAnalogFixture(overrides: Partial<ExcludedAnalog> = {}): ExcludedAnalog {
+  const { outlier_ratio, is_lowest, is_freshest, selectable, ...fields } = ourPriceAnalogFixture();
+  void outlier_ratio;
+  void is_lowest;
+  void is_freshest;
+  void selectable;
+  return {
+    ...fields,
+    analog_id: 8101,
+    step: { rung: 1, zone_scope: "own" },
+    marks: [markViewFixture()],
     ...overrides,
   };
 }
@@ -3657,6 +3687,7 @@ export function refRowFixture(overrides: Partial<RefRow> = {}): RefRow {
     param_value: null,
     family_id: 72,
     lump: null,
+    marks: [],
     ...overrides,
   };
 }

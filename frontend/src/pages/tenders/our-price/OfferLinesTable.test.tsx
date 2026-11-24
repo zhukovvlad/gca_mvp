@@ -6,6 +6,7 @@ import { agreedFixture, lumpLineFixture, ourPriceLineFixture, ourPriceParamFixtu
 import type { MoneyPair, OurPriceLine } from "@/types/domain";
 
 import { OfferLinesTable } from "./OfferLinesTable";
+import { matchesFilter } from "./offerFilter";
 import { LINE_STATE_LABEL, POSITION_LABEL, WAITING_ADMIN_LABEL } from "./ourPriceCopy";
 
 const pair = (net: string, shown: string | null): MoneyPair => ({ net, shown });
@@ -728,6 +729,14 @@ describe("лестница аналогов: колонки и подписи с
   it("без other_zones подпись прежняя", () => {
     renderTable([line(1, { state: "no_history", no_history_reason: "no_zone_match", zone: "aboveground" })]);
     expect(screen.getByTestId("to-ours-1")).toHaveTextContent("нет аналога в зоне «надземная часть»");
+  });
+
+  it("причина excluded — «Аналоги исключены вручную» в колонке разницы; строка в «не разобраны»", () => {
+    const excludedLine = line(1, { state: "no_history", no_history_reason: "excluded", work_rung: null });
+    renderTable([excludedLine]);
+    expect(screen.getByTestId("to-ours-1")).toHaveTextContent("Аналоги исключены вручную");
+    expect(matchesFilter(excludedLine, "not_comparable")).toBe(true);
+    expect(matchesFilter(excludedLine, "above_lowest")).toBe(false);
   });
 
   it("метка цели «справочная»", () => {
