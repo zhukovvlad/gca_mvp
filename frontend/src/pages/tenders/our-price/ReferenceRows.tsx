@@ -14,11 +14,12 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { useSetLumpSum } from "@/services/queries";
-import type { LumpVerdict, LumpView, RefRow } from "@/types/domain";
+import type { LineIds, LumpVerdict, LumpView, RefRow } from "@/types/domain";
 
 import { formatUnitPrice, pick, priceUnitLabel, type VatView } from "./money";
 import {
   analogOutlierNote,
+  EXCLUDED_NOT_TARGET,
   LUMP_CHOICE_LABEL,
   LUMP_NOT_TARGET,
   LUMP_ROW_MENU,
@@ -35,6 +36,7 @@ import {
   refMore,
   refSections,
 } from "./ourPriceCopy";
+import { RowMarkMenu } from "./RowMarkMenu";
 
 const DASH = "—";
 
@@ -47,6 +49,8 @@ export interface ReferenceRowsProps<R extends RefRow> {
   canChoose: boolean;
   /** Меню поправки «комплект или ставка» у строки с `lump` — только `admin` (спека комплектов §8 п. 5). */
   canLump?: boolean;
+  /** Меню отметок «не аналог» у строки — только `admin` и только в поиске: нужна строка КП панели (спека «Не аналог» §8 п. 5). */
+  markMenu?: { ids: LineIds; formLabel: string };
   /** Цель сохраняется: кнопки выбора погашены. */
   busy: boolean;
   /** Приставка `data-testid` строк: блок или поиск. */
@@ -71,6 +75,7 @@ export function ReferenceRows<R extends RefRow>({
   kpUnit,
   canChoose,
   canLump = false,
+  markMenu,
   busy,
   testPrefix,
   fold = true,
@@ -90,6 +95,7 @@ export function ReferenceRows<R extends RefRow>({
           kpUnit={kpUnit}
           canChoose={canChoose}
           lumpMenu={canLump}
+          markMenu={markMenu}
           busy={busy}
           testId={`ref-row-${testPrefix}-${row.analog_id}`}
           extra={extra?.(row)}
@@ -118,6 +124,7 @@ function ReferenceRowCard({
   kpUnit,
   canChoose,
   lumpMenu,
+  markMenu,
   busy,
   testId,
   extra,
@@ -128,6 +135,7 @@ function ReferenceRowCard({
   kpUnit: string | null;
   canChoose: boolean;
   lumpMenu: boolean;
+  markMenu?: { ids: LineIds; formLabel: string };
   busy: boolean;
   testId: string;
   extra: ReactNode;
@@ -148,6 +156,8 @@ function ReferenceRowCard({
         : "";
   const contract = row.contract;
   const isLump = row.lump?.is_lump === true;
+  const isExcluded = row.marks.length > 0;
+  const notTarget = isLump ? LUMP_NOT_TARGET : isExcluded ? EXCLUDED_NOT_TARGET : undefined;
   return (
     <div
       data-testid={testId}
@@ -236,17 +246,18 @@ function ReferenceRowCard({
         </div>
       )}
       {extra}
-      {(canChoose || lumpMenu) && (
+      {(canChoose || lumpMenu || markMenu !== undefined) && (
         <div className="flex flex-wrap items-center gap-2">
           {canChoose && (
-            <span title={isLump ? LUMP_NOT_TARGET : undefined} data-testid={isLump ? `${testId}-not-target` : undefined}>
-              <Button type="button" size="sm" variant="outline" disabled={busy || isLump} onClick={onChoose}>
+            <span title={notTarget} data-testid={notTarget !== undefined ? `${testId}-not-target` : undefined}>
+              <Button type="button" size="sm" variant="outline" disabled={busy || notTarget !== undefined} onClick={onChoose}>
                 <span aria-hidden="true">◎</span>
                 {REF_MAKE_TARGET}
               </Button>
             </span>
           )}
           {lumpMenu && row.lump !== null && <LumpRowMenu id={row.analog_id} lump={row.lump} testId={testId} />}
+          {markMenu !== undefined && <RowMarkMenu row={row} ids={markMenu.ids} formLabel={markMenu.formLabel} testId={testId} />}
         </div>
       )}
     </div>

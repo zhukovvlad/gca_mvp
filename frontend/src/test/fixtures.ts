@@ -3687,6 +3687,7 @@ export function refRowFixture(overrides: Partial<RefRow> = {}): RefRow {
     param_value: null,
     family_id: 72,
     lump: null,
+    marks: [],
     ...overrides,
   };
 }

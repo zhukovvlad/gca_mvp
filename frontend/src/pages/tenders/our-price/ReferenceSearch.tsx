@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { apiErrorCode, REFERENCE_QUERY_MIN } from "@/services/queries";
-import type { ReferenceSearchResult, ReferenceSearchRow, ReferenceUnits } from "@/types/domain";
+import type { LineIds, ReferenceSearchResult, ReferenceSearchRow, ReferenceUnits } from "@/types/domain";
 import { ZONE_LABEL } from "@/pages/families/labels";
 
 import type { VatView } from "./money";
@@ -14,6 +14,7 @@ import {
   LUMP_SEARCH_MARK,
   LUMP_SEARCH_OVERRIDE,
   lumpCaption,
+  MARK_KIND_LABEL,
   REF_SEARCH,
   refSearchFound,
   refTruncated,
@@ -35,6 +36,9 @@ export interface ReferenceSearchProps {
   canChoose: boolean;
   busy: boolean;
   onChoose: (row: ReferenceSearchRow) => void;
+  /** Строка КП панели и её форма словами: для меню отметок у `admin` (спека «Не аналог» §8 п. 5). */
+  ids: LineIds;
+  formLabel: string;
 }
 
 /**
@@ -53,6 +57,8 @@ export function ReferenceSearch({
   canChoose,
   busy,
   onChoose,
+  ids,
+  formLabel,
 }: ReferenceSearchProps) {
   const [draft, setDraft] = useState(committed);
   const text = draft.trim();
@@ -126,6 +132,7 @@ export function ReferenceSearch({
                 kpUnit={kpUnit}
                 canChoose={canChoose}
                 canLump={canChoose}
+                markMenu={canChoose ? { ids, formLabel } : undefined}
                 busy={busy}
                 testPrefix="search"
                 fold={false}
@@ -167,6 +174,17 @@ function SearchMarks({ row }: { row: ReferenceSearchRow }) {
           {REF_SEARCH.manualNeeded}
         </Badge>
       )}
+      {row.marks.map((mark) => (
+        <Badge
+          key={mark.kind}
+          variant="secondary"
+          data-testid="search-mark"
+          title={mark.reason}
+          className="h-auto whitespace-normal py-0.5 text-left"
+        >
+          {MARK_KIND_LABEL[mark.kind]}
+        </Badge>
+      ))}
       {row.lump?.is_lump === true && (
         <Badge
           variant="secondary"

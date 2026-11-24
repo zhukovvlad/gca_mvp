@@ -130,6 +130,8 @@ export function ReferencePanel({ tenderId, roundId, offerId, seriesId, data, vat
           canChoose={canEdit}
           busy={put.isPending}
           onChoose={(row) => choose(row, "search")}
+          ids={{ tenderId, roundId, offerId, kpItemId: line.position_item_id }}
+          formLabel={kpUnit === null ? line.title : `${line.title}, ${kpUnit}`}
         />
       </RefSection>
       {canEdit && (

@@ -540,6 +540,8 @@ export function excludedMovedOn(
 /** «Найти в договорах» (спека комплектов §8 п. 5): метка, пометка поправки, подсказка у «сделать целью». */
 export const LUMP_SEARCH_MARK = "похоже на комплект";
 export const LUMP_SEARCH_OVERRIDE = "поправлено вручную";
+/** Подсказка недоступного «сделать целью» у отмеченной строки поиска (спека «Не аналог» §8 п. 5). */
+export const EXCLUDED_NOT_TARGET = "Исключена из аналогов";
 export const LUMP_NOT_TARGET = "Похоже на комплект — не цель для ставки";
 export const LUMP_ROW_MENU = "Комплект или ставка";
 

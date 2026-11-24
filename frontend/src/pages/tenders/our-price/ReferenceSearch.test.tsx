@@ -10,6 +10,7 @@ import {
   OUR_PRICE_ROUND_ID,
   OUR_PRICE_TENDER_ID,
   lumpFixture,
+  markViewFixture,
   refLinkRowFixture,
   referenceLineViewFixture,
   referenceSearchFixture,
@@ -410,6 +411,146 @@ describe("поиск по договорам: «похоже на комплек
       }),
       http.put(`${LINE_PATH}/target`, () =>
         HttpResponse.json({ detail: { code: "reference_is_lump_sum", message: "Комплект." } }, { status: 422 })
+      )
+    );
+    handlerState.referenceSearchResult = referenceSearchFixture([referenceSearchRowFixture()]);
+    renderSheet();
+    await search("подготовка");
+    const button = within(await screen.findByTestId("ref-row-search-9001")).getByRole("button", { name: /сделать целью/ });
+    const before = lineReads;
+    await userEvent.click(button);
+    await waitFor(() => expect(lineReads).toBeGreaterThan(before));
+  });
+});
+
+describe("поиск по договорам: отметки «не аналог»", () => {
+  const MARKED = 9703;
+  const NOT_ANALOG = `/api/v1/tenders/${OUR_PRICE_TENDER_ID}/rounds/${OUR_PRICE_ROUND_ID}/our-price/offers/${OUR_PRICE_OFFER_ID}/lines/${OUR_PRICE_LINE_ID}/not-analog/:positionItemId`;
+  const PRICE_ERROR = "/api/v1/position-items/:id/price-error";
+
+  function markedRow(marks = [markViewFixture()]) {
+    return referenceSearchRowFixture({ analog_id: MARKED, ids: [MARKED], title: "Плинтус VEER", marks });
+  }
+
+  it("у строки с отметками: метка вида, причина в подсказке; «сделать целью» недоступно с подсказкой", async () => {
+    serve();
+    handlerState.referenceSearchResult = referenceSearchFixture([
+      markedRow([markViewFixture(), markViewFixture({ kind: "tender", reason: "огнезащита в цене" })]),
+    ]);
+    renderSheet();
+    await search("плинтус");
+    const row = await screen.findByTestId(`ref-row-search-${MARKED}`);
+    const marks = within(row).getAllByTestId("search-mark");
+    expect(marks.map((m) => m.textContent)).toEqual(["ошибка в цене · во всех тендерах", "не аналог в этом тендере"]);
+    expect(marks[0]).toHaveAttribute("title", "цена м² плитки на погонном метре плинтуса");
+    expect(marks[1]).toHaveAttribute("title", "огнезащита в цене");
+    expect(within(row).getByRole("button", { name: /сделать целью/ })).toBeDisabled();
+    expect(within(row).getByTestId(`ref-row-search-${MARKED}-not-target`)).toHaveAttribute("title", "Исключена из аналогов");
+  });
+
+  it("у строки без отметок: меток нет, «сделать целью» доступно", async () => {
+    serve();
+    handlerState.referenceSearchResult = referenceSearchFixture([referenceSearchRowFixture()]);
+    renderSheet();
+    await search("подготовка");
+    const row = await screen.findByTestId("ref-row-search-9001");
+    expect(within(row).queryByTestId("search-mark")).not.toBeInTheDocument();
+    expect(within(row).getByRole("button", { name: /сделать целью/ })).toBeEnabled();
+  });
+
+  it("меню отметок только у admin", async () => {
+    serve();
+    handlerState.referenceSearchResult = referenceSearchFixture([markedRow([])]);
+    renderSheet(MEMBER);
+    await search("плинтус");
+    await screen.findByTestId(`ref-row-search-${MARKED}`);
+    expect(screen.queryByTestId(`ref-row-search-${MARKED}-mark-menu`)).not.toBeInTheDocument();
+  });
+
+  it("admin: тендерная отметка из поиска — PUT по строке КП панели", async () => {
+    serve();
+    const asked: Array<{ url: string; body: unknown }> = [];
+    server.use(
+      http.put(NOT_ANALOG, async ({ request }) => {
+        asked.push({ url: new URL(request.url).pathname, body: await request.json() });
+        return HttpResponse.json({});
+      })
+    );
+    handlerState.referenceSearchResult = referenceSearchFixture([markedRow([])]);
+    renderSheet(ADMIN);
+    await search("плинтус");
+    await userEvent.click(await screen.findByTestId(`ref-row-search-${MARKED}-mark-menu`));
+    await userEvent.click(await screen.findByTestId(`ref-row-search-${MARKED}-mark-tender`));
+    expect(await screen.findByTestId("mark-scope")).toHaveTextContent("Строка «Плинтус VEER»");
+    await userEvent.type(screen.getByLabelText("Причина"), "другая отделка");
+    await userEvent.click(screen.getByRole("button", { name: "Исключить" }));
+    await waitFor(() => expect(asked).toHaveLength(1));
+    expect(asked[0].url).toBe(
+      `/api/v1/tenders/${OUR_PRICE_TENDER_ID}/rounds/${OUR_PRICE_ROUND_ID}/our-price/offers/${OUR_PRICE_OFFER_ID}/lines/${OUR_PRICE_LINE_ID}/not-analog/${MARKED}`
+    );
+    expect(asked[0].body).toEqual({ reason: "другая отделка" });
+  });
+
+  it("admin: «ошибка в цене» из поиска — PUT по самой строке договора", async () => {
+    serve();
+    const asked: Array<{ url: string; body: unknown }> = [];
+    server.use(
+      http.put(PRICE_ERROR, async ({ request }) => {
+        asked.push({ url: new URL(request.url).pathname, body: await request.json() });
+        return HttpResponse.json({});
+      })
+    );
+    handlerState.referenceSearchResult = referenceSearchFixture([markedRow([])]);
+    renderSheet(ADMIN);
+    await search("плинтус");
+    await userEvent.click(await screen.findByTestId(`ref-row-search-${MARKED}-mark-menu`));
+    await userEvent.click(await screen.findByTestId(`ref-row-search-${MARKED}-mark-price-error`));
+    await userEvent.type(await screen.findByLabelText("Причина"), "цена за м²");
+    await userEvent.click(screen.getByRole("button", { name: "Исключить" }));
+    await waitFor(() => expect(asked).toHaveLength(1));
+    expect(asked[0]).toEqual({ url: `/api/v1/position-items/${MARKED}/price-error`, body: { reason: "цена за м²" } });
+  });
+
+  it("admin: «Снять в этом тендере» — сразу DELETE; «Снять во всех тендерах…» — через подтверждение", async () => {
+    serve();
+    const deleted: string[] = [];
+    server.use(
+      http.delete(NOT_ANALOG, ({ request }) => {
+        deleted.push(new URL(request.url).pathname);
+        return new HttpResponse(null, { status: 204 });
+      }),
+      http.delete(PRICE_ERROR, ({ request }) => {
+        deleted.push(new URL(request.url).pathname);
+        return new HttpResponse(null, { status: 204 });
+      })
+    );
+    handlerState.referenceSearchResult = referenceSearchFixture([
+      markedRow([markViewFixture(), markViewFixture({ kind: "tender", reason: "огнезащита" })]),
+    ]);
+    renderSheet(ADMIN);
+    await search("плинтус");
+    await userEvent.click(await screen.findByTestId(`ref-row-search-${MARKED}-mark-menu`));
+    await userEvent.click(await screen.findByTestId(`ref-row-search-${MARKED}-clear-tender`));
+    await waitFor(() => expect(deleted).toHaveLength(1));
+    expect(deleted[0]).toContain(`/lines/${OUR_PRICE_LINE_ID}/not-analog/${MARKED}`);
+    await userEvent.click(await screen.findByTestId(`ref-row-search-${MARKED}-mark-menu`));
+    await userEvent.click(await screen.findByTestId(`ref-row-search-${MARKED}-clear-price-error`));
+    expect(deleted).toHaveLength(1);
+    expect(await screen.findByTestId("excluded-clear-confirm")).toHaveTextContent("Строка «Плинтус VEER»");
+    await userEvent.click(screen.getByRole("button", { name: "Снять везде" }));
+    await waitFor(() => expect(deleted).toHaveLength(2));
+    expect(deleted[1]).toBe(`/api/v1/position-items/${MARKED}/price-error`);
+  });
+
+  it("422 reference_is_excluded при выборе цели: панель перечитывается", async () => {
+    let lineReads = 0;
+    server.use(
+      http.get(LINE_PATH, () => {
+        lineReads += 1;
+        return HttpResponse.json(referenceLineViewFixture({ zones: [] }));
+      }),
+      http.put(`${LINE_PATH}/target`, () =>
+        HttpResponse.json({ detail: { code: "reference_is_excluded", message: "Исключена." } }, { status: 422 })
       )
     );
     handlerState.referenceSearchResult = referenceSearchFixture([referenceSearchRowFixture()]);

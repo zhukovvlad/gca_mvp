@@ -3916,6 +3916,8 @@ export interface RefRow {
   family_id: number | null;
   /** Правило «похоже на комплект» для строки договора (спека комплектов §7 п. 3); `null` — правило неприменимо. */
   lump: LumpView | null;
+  /** Отметки «не аналог» строки договора (спека «Не аналог» §7 п. 4): пусто — отметок нет; в справочных блоках всегда пусто. */
+  marks: MarkView[];
 }
 
 export type LinkKind = "thickness" | "width" | "density" | "constant";

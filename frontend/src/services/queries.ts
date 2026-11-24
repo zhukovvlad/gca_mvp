@@ -3151,6 +3151,7 @@ const REFERENCE_DRIFT_CODES: ReadonlySet<string> = new Set([
   "conversion_required",
   "link_not_applicable",
   "reference_is_lump_sum",
+  "reference_is_excluded",
 ]);
 
 export interface PutReferenceTargetInput {
