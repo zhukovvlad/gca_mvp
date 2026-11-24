@@ -327,7 +327,9 @@ class TestSuspicionCache:
     def test_is_a_separate_instance_with_its_own_ttl_setting(self):
         assert isinstance(suspicion_cache, StatusCache)
         assert suspicion_cache is not typical_rates_cache
-        assert settings.SUSPICION_CACHE_TTL_S == 300
+        from config import Settings
+
+        assert Settings.model_fields["SUSPICION_CACHE_TTL_S"].default == 300
 
     def test_ttl_is_read_from_the_setting(self, monkeypatch):
         calls = []

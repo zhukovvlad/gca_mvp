@@ -259,6 +259,32 @@ describe("адрес: tab, contract, line", () => {
     scroll.mockRestore();
   });
 
+  it("line из «Разобраны»: блок раскрыт и пункт прокручен в вид", async () => {
+    installServer();
+    const scroll = vi.spyOn(Element.prototype, "scrollIntoView");
+    renderTab("/contracts?tab=suspicious&line=7002");
+    const item = await screen.findByTestId("resolved-7002");
+
+    expect(scroll.mock.contexts.some((node) => node === item)).toBe(true);
+    scroll.mockRestore();
+  });
+
+  it("строка с выбросом и двойниками считается в каждом из счётчиков по одному разу", async () => {
+    const outlier = suspectOutlierFixture();
+    const twin = suspectTwinFixture();
+    const both = suspectOutlierFixture({ facts: [...outlier.facts, ...twin.facts, ...twin.facts] });
+    server.use(
+      http.get(LIST, () => HttpResponse.json({ ...structuredClone(suspiciousListFixture), unresolved: [both] })),
+      http.get(`${LIST}/counts`, () => HttpResponse.json({ total: 1, by_contract: {} }))
+    );
+    renderTab("/contracts?tab=suspicious");
+    await screen.findByTestId("suspect-5001");
+
+    expect(screen.getByTestId("sum-unresolved")).toHaveTextContent("1");
+    expect(screen.getByTestId("sum-outlier")).toHaveTextContent("1");
+    expect(screen.getByTestId("sum-twin")).toHaveTextContent("1");
+  });
+
   it("выбор договора в фильтре перечитывает список с contract_id", async () => {
     const { calls } = installServer();
     renderTab();

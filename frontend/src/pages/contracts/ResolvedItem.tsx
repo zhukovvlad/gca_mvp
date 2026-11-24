@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   AlertDialog,
@@ -59,14 +59,20 @@ function ResolvedPrice({ item }: { item: ResolvedView }) {
 }
 
 /** Пункт «Разобраны»: решение, его основание, причина, автор, дата и что правило говорит сейчас. */
-export function ResolvedItem({ item }: { item: ResolvedView }) {
+export function ResolvedItem({ item, focused }: { item: ResolvedView; focused: boolean }) {
+  const ref = useRef<HTMLDivElement>(null);
   const [confirming, setConfirming] = useState(false);
   const clearNotError = useClearNotError();
   const clearPriceError = useClearPriceErrorFromList();
   const familyTitle = item.facts.find((fact) => fact.kind === "outlier");
 
+  useEffect(() => {
+    if (focused) ref.current?.scrollIntoView({ block: "start" });
+  }, [focused]);
+
   return (
     <div
+      ref={ref}
       id={`suspicious-line-${item.position_item_id}`}
       data-testid={`resolved-${item.position_item_id}`}
       className="grid min-w-0 gap-1.5 rounded-[10px] border border-border-subtle border-l-4 border-l-fg-muted p-3 text-[13px]"

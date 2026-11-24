@@ -34,8 +34,8 @@ function positiveInt(raw: string | null): number | null {
 }
 
 function Summary({ data }: { data: SuspiciousLinesResponse }) {
-  const outliers = data.unresolved.filter((item) => item.facts[0]?.kind === "outlier").length;
-  const twins = data.unresolved.filter((item) => item.facts[0]?.kind === "twin").length;
+  const outliers = data.unresolved.filter((item) => item.facts.some((f) => f.kind === "outlier")).length;
+  const twins = data.unresolved.filter((item) => item.facts.some((f) => f.kind === "twin")).length;
   const cell = "inline-flex items-center gap-2 rounded-[10px] border border-border-subtle bg-surface-sunken px-3 py-1.5 text-[12.5px] text-fg-secondary";
   const num = "text-xl leading-none font-semibold text-fg tabular-nums";
   return (
@@ -154,7 +154,7 @@ export function SuspiciousTab() {
             <CollapsibleContent className="mt-1 grid min-w-0 gap-3">
               <p className="text-xs text-fg-secondary">{RESOLVED_HINT}</p>
               {data.resolved.map((item) => (
-                <ResolvedItem key={item.position_item_id} item={item} />
+                <ResolvedItem key={item.position_item_id} item={item} focused={item.position_item_id === lineId} />
               ))}
             </CollapsibleContent>
           </Collapsible>

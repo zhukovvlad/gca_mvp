@@ -275,7 +275,8 @@ def build_suspicion_index(lines: Sequence[WorkHistoryLine], neighbors: Sequence[
     twin_facts: dict[int, list[TwinFact]] = defaultdict(list)
     for estimate_rows in rows.values():
         for i, left in enumerate(estimate_rows):
-            for right in estimate_rows[i + 1 :]:
+            for j in range(i + 1, len(estimate_rows)):
+                right = estimate_rows[j]
                 if right.place - left.place > TWIN_WINDOW:
                     break
                 a, b = left.position_item_id, right.position_item_id

@@ -3428,14 +3428,17 @@ function invalidateAfterLadderDecision(
  * Поправка «комплект или ставка» к строке сметы: `verdict = null` снимает её («как решило правило»).
  * Поправка живёт у строки сметы и меняет сравнение на всех экранах «Против нашей цены» и файл
  * подрядчику (спека комплектов §8 п. 7), поэтому перечитывается тот же префикс, что после
- * решения по зоне; мутация держится до перечитывания, а группа переключателя занята.
+ * решения по зоне; мутация держится до перечитывания, а группа переключателя занята. Поправка
+ * меняет пул кандидатов, сервер сбрасывает индекс подозрений, поэтому сбрасывается и префикс
+ * `qk.suspicious.all` (список и счётчики) — но не для остальных решений торга.
  */
 export function useSetLumpSum() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, verdict }: { id: number; verdict: LumpVerdict | null }) =>
       verdict === null ? positionItemsApi.deleteLumpSum(id) : positionItemsApi.putLumpSum(id, verdict),
-    onSuccess: () => invalidateAfterLadderDecision(qc),
+    onSuccess: () =>
+      Promise.all([invalidateAfterLadderDecision(qc), qc.invalidateQueries({ queryKey: qk.suspicious.all })]),
     onError: toastApiError,
   });
 }
@@ -3443,9 +3446,13 @@ export function useSetLumpSum() {
 export type SetMarkVars = LineIds & { kind: MarkKind; positionItemId: number; reason: string };
 export type ClearMarkVars = LineIds & { kind: MarkKind; positionItemId: number };
 
-/** Отметки меняют аналоги и цену на всех экранах «Против нашей цены» и файл подрядчику (спека «Не аналог» §8 п. 7). */
+/**
+ * Отметки меняют аналоги и цену на всех экранах «Против нашей цены» и файл подрядчику (спека «Не аналог» §8 п. 7);
+ * «ошибка в цене» из панели строки КП меняет и список подозрений со счётчиками, поэтому сбрасывается `qk.suspicious.all`.
+ */
 function invalidateAfterMark(qc: ReturnType<typeof useQueryClient>) {
   return Promise.all([
+    qc.invalidateQueries({ queryKey: qk.suspicious.all }),
     qc.invalidateQueries({ queryKey: qk.tenders.ourPriceAll }),
     qc.invalidateQueries({ queryKey: qk.tenders.kpFilePreviewsAll }),
   ]);
