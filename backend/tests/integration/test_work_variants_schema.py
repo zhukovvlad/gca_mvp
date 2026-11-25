@@ -536,6 +536,60 @@ class TestParameterValues:
             row.merged_into_id = row.id
 
 
+class TestSchemaAnswerScale:
+    """Признак шкалы в ответе схемы семьи: та же `scale_numbers` по тем же значениям (спека
+    ближайшего значения §1)."""
+
+    def _scale_flags(self, db_session, factories, build):
+        from crud.work_variants import schema_out
+
+        family = _family(db_session)
+        schema = _schema(db_session, factories, family)
+        build(schema)
+        return {p["name"]: p["scale"] for p in schema_out(db_session, family.id)["parameters"]}
+
+    def test_a_main_exact_parameter_with_numbers_is_a_scale_and_a_non_numeric_one_is_not(
+        self, db_session, factories
+    ):
+        def build(schema):
+            for ordinal, name, texts in ((1, "Класс", ("B25", "B30")), (2, "Размер", ("600×600", "800×800"))):
+                parameter = _param(db_session, schema, ordinal, name)
+                for text in texts:
+                    _value(db_session, parameter, text)
+
+        assert self._scale_flags(db_session, factories, build) == {"Класс": True, "Размер": False}
+
+    def test_a_composite_value_does_not_break_the_flag_and_a_retired_one_does_not_count(
+        self, db_session, factories
+    ):
+        def build(schema):
+            parameter = _param(db_session, schema, 1, "Класс")
+            first, second = _value(db_session, parameter, "B25"), _value(db_session, parameter, "B30")
+            _value(
+                db_session, parameter, "B25 или B30",
+                composite_kind="any", composite_key=f"any:{first.id},{second.id}",
+            )
+            single = _param(db_session, schema, 2, "Толщина")
+            _value(db_session, single, "50 мм")
+            _value(db_session, single, "60 мм", retired_at=_now())
+
+        assert self._scale_flags(db_session, factories, build) == {"Класс": True, "Толщина": False}
+
+    def test_a_secondary_parameter_and_a_range_parameter_are_not_a_scale(self, db_session, factories):
+        def build(schema):
+            secondary = _param(db_session, schema, 1, "Марка")
+            secondary.role = "secondary"
+            ranged = _param(db_session, schema, 2, "Диаметр")
+            ranged.value_kind, ranged.closed = "range", True
+            ranged.range_from, ranged.range_to, ranged.range_step = Decimal(100), Decimal(200), Decimal(50)
+            for parameter in (secondary, ranged):
+                _value(db_session, parameter, "100")
+                _value(db_session, parameter, "150")
+            db_session.flush()
+
+        assert self._scale_flags(db_session, factories, build) == {"Марка": False, "Диаметр": False}
+
+
 # ---------------------------------------------------------------------------
 #  5. Вариант
 # ---------------------------------------------------------------------------

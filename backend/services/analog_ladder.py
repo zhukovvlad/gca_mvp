@@ -21,6 +21,7 @@ from money.price import is_price, is_weight
 from money.vat import gross_to_net
 from services.price_basis import _CONTEXT, HistoryContract, median, outside
 from services.reference_math import outlier_ratios_of
+from services.value_scale import Scale
 from services.zone_rules import Zone
 
 #: Нетто за единицу без приведения меньше этого — цена символическая, не аналог (§2.8 п. 4).
@@ -105,6 +106,8 @@ class FamilyLadderInfo:
     main_parameter_ids: tuple[int, ...]
     releasable_ids: frozenset[int]
     names: Mapping[int, str]
+    #: parameter_id -> шкала главного точного параметра; только параметры-шкалы (спека ближайшего значения §1).
+    scales: Mapping[int, Scale] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
