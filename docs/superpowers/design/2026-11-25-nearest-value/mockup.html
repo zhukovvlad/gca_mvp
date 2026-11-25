@@ -129,7 +129,7 @@
   <p><b>Макет к фиче А14 «Ближайшее значение на шкале», вариант B.</b> Разметка повторяет боевые компоненты разбора участника «Против нашей цены»:
   таблица строк (<span class="mono">OfferLinesTable</span>, <span class="mono">LineParamsCell</span>), панель строки
   (<span class="mono">LineSheet</span>, блок «Работа» — <span class="mono">WorkParamsSection</span>, справка аналогов — <span class="mono">AnalogsTable</span>),
-  каталог (<span class="mono">ParameterEditor</span>, <span class="mono">SchemaBlock</span>, <span class="mono">ReleasableQueue</span>). Новое — на голубой подложке.</p>
+  окно правки схемы (<span class="mono">ParameterEditor</span>). Новое — на голубой подложке.</p>
   <p><b>Что меняется.</b> Флажок «Можно отпустить» остаётся единственной настройкой. Если параметр отпущен и он <b>шкала</b> (все его значения — одно число с одной
   и той же приставкой или единицей: B25, B30…; 50, 60, 80 мм), на ступенях 2 и 4 берутся не любые значения, а <b>ближайшие</b> к значению КП — круг за кругом,
   пока аналоги не наберутся хотя бы из 3 договоров; строки истории с неуточнённым значением — последним кругом. Нешкальный отпущенный параметр — как сейчас.</p>
@@ -338,11 +338,10 @@
 
 <!-- 3 -->
 <div class="state">
-  <h2>3. Каталог: тот же флажок «Можно отпустить» и отметка «шкала»</h2>
-  <div class="sub">Разметка повторяет <span class="mono">ParameterEditor</span> (правая колонка окна «Править схему»), <span class="mono">SchemaBlock</span> (блок «Схема и варианты» карточки семьи)
-    и <span class="mono">ReleasableQueue</span> (вкладка «Можно отпустить»); подписи флажка и кнопок — из кода. Новой настройки нет: шкала или нет, система определяет сама по значениям параметра.</div>
+  <h2>3. Каталог: тот же флажок «Можно отпустить» и одна строка о шкале</h2>
+  <div class="sub">Разметка повторяет <span class="mono">ParameterEditor</span> (правая колонка окна «Править схему»); подписи флажка — из кода. Новой настройки нет: шкала или нет, система определяет сама по значениям параметра.</div>
 
-  <span class="tag after">3.1 станет · окно «Править схему», параметр-шкала</span>
+  <span class="tag after">станет · окно «Править схему», параметр-шкала</span>
   <div class="dlg">
     <div class="dlg-head">Править схему · Устройство жб конструкций</div>
     <div class="ed" role="group">
@@ -353,88 +352,15 @@
         <div style="display:grid;gap:4px">
           <div class="chkrow"><span class="chk on">✓</span>Можно отпустить</div>
           <p class="hint">Строку с другим значением этого параметра можно взять аналогом, если с тем же значением аналога нет. Пока не отмечено, параметр обязателен.</p>
-          <p class="hint hint-new" style="color:var(--info-text)">Шкала: B15 … B60. Отпущенному параметру сначала берутся ближайшие значения — пока аналоги не наберутся хотя бы из 3 договоров.</p>
+          <p class="hint hint-new" style="color:var(--info-text)">Шкала: отпущенному параметру сначала берутся ближайшие значения.</p>
         </div>
       </div>
       <div class="ellipsis">Значения · Точные · B15 B25 B30 B35 B40 B45 B50 … · «Только из списка» · «Убрать параметр»</div>
     </div>
   </div>
 
-  <span class="tag after">3.2 станет · параметр — не шкала</span>
-  <div class="dlg">
-    <div class="dlg-head">Править схему · Облицовка керамогранитом</div>
-    <div class="ed" role="group">
-      <div class="fld"><span class="lab">Имя параметра</span><span class="inp">Формат плитки</span></div>
-      <div class="fld"><span class="lab">Роль</span>
-        <span class="toggle"><span class="on">Главный</span><span>Второстепенный</span></span>
-        <div style="display:grid;gap:4px">
-          <div class="chkrow"><span class="chk on">✓</span>Можно отпустить</div>
-          <p class="hint">Строку с другим значением этого параметра можно взять аналогом, если с тем же значением аналога нет. Пока не отмечено, параметр обязателен.</p>
-          <p class="hint hint-new">Не шкала: «600×600» — не одно число. Отпущенному параметру подходит любое значение.</p>
-        </div>
-      </div>
-      <div class="ellipsis">Значения · Точные · 600×600 600×1200 … · «Убрать параметр»</div>
-    </div>
-  </div>
-  <p class="xs fg2" style="max-width:640px">Другие причины «не шкала» — тем же местом, с первым значением, которое мешает: «разные единицы: 50 мм и 5 см», «разные приставки: B30 и М300»,
-    «“до 100”: не одно число», «меньше двух значений». По причине видно, что почистить слиянием значений, чтобы параметр стал шкалой. У обязательного параметра строка тоже видна — подсказка, что отпускать его не страшно.</p>
-
-  <span class="tag after">3.3 станет · карточка семьи, блок «Схема и варианты»</span>
-  <div class="dlg">
-    <div class="ed">
-      <h4 style="margin:0;font-size:16px;font-weight:500">Схема и варианты</h4>
-      <div class="ellipsis">Версия схемы … · Пересобрать… · Править схему… · Слить значения…</div>
-      <h5 class="grp">Главные — определяют вариант</h5>
-      <div style="display:grid;gap:4px">
-        <h5 style="margin:0;font-size:14px;font-weight:500">Класс бетона по прочности</h5>
-        <p class="hint" style="margin:0">точные · модель · только из списка</p>
-        <div class="row xs fg3" style="gap:6px"><span class="b out">можно отпустить</span><span class="b out new">шкала · сначала ближайшие</span></div>
-        <ul class="vals"><li>B15 <span class="xs fg3">· …</span></li><li class="ellipsis">…</li></ul>
-      </div>
-      <div style="display:grid;gap:4px">
-        <h5 style="margin:0;font-size:14px;font-weight:500">Тип конструкции</h5>
-        <p class="hint" style="margin:0">точные · модель · только из списка</p>
-        <div class="row xs fg3" style="gap:6px"><span class="b out">обязателен</span></div>
-        <ul class="vals"><li>перекрытия <span class="xs fg3">· …</span></li><li class="ellipsis">…</li></ul>
-      </div>
-      <div style="display:grid;gap:4px">
-        <h5 style="margin:0;font-size:14px;font-weight:500">Марка по водонепроницаемости</h5>
-        <p class="hint" style="margin:0">точные · модель · только из списка</p>
-        <div class="row xs fg3" style="gap:6px"><span class="b out">можно отпустить</span><span class="b out new">шкала · сначала ближайшие</span></div>
-        <ul class="vals"><li>W8 <span class="xs fg3">· …</span></li><li class="ellipsis">…</li></ul>
-      </div>
-    </div>
-  </div>
-  <p class="xs fg2" style="max-width:640px">Badge «шкала» — у любого главного параметра-шкалы; «· сначала ближайшие» — только когда он отпущен. Почему не шкала — в окне правки (3.2), здесь не повторяется.</p>
-
-  <span class="tag after">3.4 станет · очередь «Можно отпустить»</span>
-  <div class="dlg wide">
-    <div class="ed">
-      <span class="toggle tabs"><span>Семья из списка</span><span>Смена семьи</span><span>Новая</span><span>Зоны</span><span class="on">Можно отпустить</span><span>Ошибки</span></span>
-      <section class="qfam"><h4>Устройство перегородок и коробов</h4>
-        <div class="qrow">
-          <div><span class="pn">Толщина, мм</span><span class="xs fg3" style="display:block">главный</span></div>
-          <div style="display:grid;gap:6px">
-            <div class="row" style="gap:6px"><span class="b out">75</span><span class="b out">100</span><span class="b out">120</span><span class="b out">150</span><span class="b out">200</span><span class="b out">250</span></div>
-            <div class="fg2" style="font-size:13px">Модель: обязателен · 0,80 · толщина меняет цену</div>
-            <div class="hint-new" style="font-size:13px;color:var(--info-text)">Шкала: если отпустить, сначала берутся ближайшие значения</div>
-          </div>
-          <div class="row"><span class="btn">Можно отпустить</span><span class="btn p">Обязателен</span></div>
-        </div>
-      </section>
-      <section class="qfam"><h4>Облицовка керамогранитом</h4>
-        <div class="qrow">
-          <div><span class="pn">Назначение помещения</span><span class="xs fg3" style="display:block">главный</span></div>
-          <div style="display:grid;gap:6px">
-            <div class="row" style="gap:6px"><span class="b out">паркинг</span><span class="b out">МОП</span><span class="b out">холл</span></div>
-            <div class="fg2" style="font-size:13px">Модель: можно отпустить · 0,85</div>
-          </div>
-          <div class="row"><span class="btn p">Можно отпустить</span><span class="btn">Обязателен</span></div>
-        </div>
-      </section>
-    </div>
-  </div>
-  <p class="xs fg2" style="max-width:900px">Кнопки и выделение рекомендации модели — как сегодня. Строка «Шкала…» — только у параметров-шкал. Ответы модели (0,80 и 0,85) и семьи в очереди — условно.</p>
+  <p class="xs fg2" style="max-width:640px">У параметра, который не шкала (формат плитки 600×600, огнестойкость EI60), строки нет — отпущенному подходит любое значение, как сегодня.
+    Значков шкалы в блоке «Схема и варианты» и строк в очереди «Можно отпустить» нет.</p>
 </div>
 
 </div>
