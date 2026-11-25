@@ -249,6 +249,47 @@ class TestRounds:
         assert result.matched == frozenset({CLS})
         assert result.nearest == ()
 
+    # Ревью: тест «по одному договору» с двух сторон не отличает один круг от двух подряд (договоров
+    # меньше трёх, круги кончаются в любом случае). Здесь каждая сторона сама набирает три договора:
+    # разбитый на два круга подбор взял бы только одну сторону.
+    def test_equal_distance_is_one_round_even_when_one_side_alone_has_three_contracts(self):
+        lines = [
+            row(1, 1, "100", V40),
+            row(2, 2, "100", V40),
+            row(3, 3, "100", V40),
+            row(4, 4, "100", V90),
+            row(5, 5, "100", V90),
+            row(6, 6, "100", V90),
+            row(7, 7, "100", V120),
+        ]
+
+        result = ladder(work(V60), lines, info_of({CLS: AROUND_SCALE}))
+
+        assert picked_ids(result) == [1, 2, 3, 4, 5, 6]
+        (param,) = result.nearest
+        assert (param.values, param.direction) == (("40", "90"), "both")
+
+    # Ревью: в шкалах теста id растут вместе с числом, поэтому сортировка только по id проходила бы.
+    # «В30» (id 206) и B60 (id 205): по числу — B30, В30, B60; по id — B30, B60, В30.
+    def test_values_are_ordered_by_number_then_by_value_id(self):
+        lines = [row(1, 1, "100", CYR_B30), row(2, 2, "100", B60), row(3, 3, "100", B30)]
+
+        result = ladder(work(B25), lines, info_of({CLS: CLASS_SCALE}))
+
+        (param,) = result.nearest
+        assert param.values == ("B30", "В30", "B60")
+        assert param.direction == "up"
+
+    # Ревью: `kp_contracts` считает договоры, а не строки.
+    def test_kp_contracts_counts_distinct_contracts(self):
+        lines = [row(1, 1, "100", B25), row(2, 1, "100", B25), row(3, 2, "100", B30), row(4, 3, "100", B35)]
+
+        result = ladder(work(B25), lines, info_of({CLS: CLASS_SCALE}))
+
+        (param,) = result.nearest
+        assert param.kp_contracts == 1
+        assert param.values == ("B25", "B30", "B35")
+
 
 # ---------------------------------------------------------------------------
 #  Пропуск шкалы (спека §2 п. 2)
@@ -366,6 +407,46 @@ class TestTwoScales:
         assert result.matched == frozenset({MARK})
         assert result.released == (CLS_NAME,)
 
+    # Ревью: `after` — только не пропущенные шкалы.
+    def test_a_skipped_scale_is_not_in_after(self):
+        lines = [
+            row(1, 1, "100", B25, W12M),
+            row(2, 2, "100", B40, W12M),
+            row(3, 3, "100", B60, W8M),
+        ]
+        info = info_of({CLS: CLASS_SCALE, MARK: MARK_SCALE}, releasable=(CLS, MARK))
+
+        result = ladder(work(None, W12M), lines, info)
+
+        (mark,) = result.nearest
+        assert mark.name == MARK_NAME
+        assert mark.after == ()
+        assert result.released == (CLS_NAME,)
+
+    # Ревью: шкала без чисел в окончательном наборе идёт в `released`, но на своём шаге набор сузила —
+    # поэтому стоит в `after` следующей (спека §2 п. 7). В имеющемся тесте вторая шкала совпала и в
+    # `nearest` не попадала, так что `after` не проверялся.
+    def test_a_scale_left_without_numbers_still_stands_in_after_of_the_next(self):
+        w16 = 213
+        mark_scale = Scale(numbers={W8M: D(8), W12M: D(12), w16: D(16)}, texts={W8M: "W8", W12M: "W12", w16: "W16"})
+        lines = [
+            row(1, 1, "100", V40, W8M),
+            row(2, 2, "100", None, W12M),
+            row(3, 3, "100", None, W12M),
+            row(4, 4, "100", None, w16),
+        ]
+        info = info_of({CLS: AROUND_SCALE, MARK: mark_scale}, releasable=(CLS, MARK))
+
+        result = ladder(work(V60, W12M), lines, info)
+
+        assert picked_ids(result) == [2, 3, 4]
+        (mark,) = result.nearest
+        assert (mark.name, mark.values, mark.direction, mark.kp_contracts) == (MARK_NAME, ("W12", "W16"), "up", 2)
+        assert mark.after == (CLS_NAME,)
+        assert mark.without_value is False
+        assert result.released == (CLS_NAME,)
+        assert result.matched == frozenset()
+
 
 # ---------------------------------------------------------------------------
 #  released (спека §2 п. 7)
@@ -453,6 +534,32 @@ class TestVatDropped:
 
         assert ladder(work(B25), with_last_round, info).vat_dropped == (3,)
         assert ladder(work(B25), without_last_round, info).vat_dropped == ()
+
+    # Ревью: при двух шкалах строка без НДС должна пройти каждую (спека §2 п. 5). Марка первой берёт
+    # только W12; класс затем берёт B40 и B60. B40 W8 проходит класс, но не марку.
+    def test_with_two_scales_a_row_must_pass_every_narrowed_parameter(self):
+        lines = _slab_lines() + [row(7, 7, "100", B40, W8M, vat=None), row(8, 8, "100", B40, W12M, vat=None)]
+        info = info_of({CLS: CLASS_SCALE, MARK: MARK_SCALE}, releasable=(CLS, MARK), order=(MARK, CLS, REQUIRED))
+
+        result = ladder(work(B35, W12M), lines, info)
+
+        assert result.vat_dropped == (8,)
+        assert ladder(work(B35, W12M), lines, plain(info)).vat_dropped == (7, 8)
+
+    # Ревью: шкала, пропущенная из-за кандидатов без чисел, выпавших не фильтрует.
+    def test_a_scale_skipped_for_lack_of_numbers_does_not_filter_the_dropped(self):
+        lines = [
+            row(1, 1, "100", None),
+            row(2, 2, "100", MERGED),
+            row(3, 3, "100", None),
+            row(4, 4, "100", B60, vat=None),
+        ]
+        info = info_of({CLS: CLASS_SCALE})
+
+        result = ladder(work(B25), lines, info)
+
+        assert result.vat_dropped == (4,)
+        assert result == ladder(work(B25), lines, plain(info))
 
 
 # ---------------------------------------------------------------------------
@@ -656,6 +763,30 @@ def test_the_trace_of_the_excluded_does_not_change() -> None:
 
     assert with_scales
     assert with_scales == without
+
+
+# Ревью: в тесте выше сужение набора с отмеченной строкой ничего не убирает (B25 в двух договорах и B30
+# в третьем — круги берут всех), поэтому сужение внутри `_Search.picked_in` его не роняло. Здесь
+# отмеченная строка — далёкое значение B60 при трёх договорах с B40 у КП B35: суженный след её бы потерял.
+@pytest.mark.parametrize("mark", ["kp-excluded", "price-error"])
+def test_the_trace_keeps_a_far_marked_candidate_that_narrowing_would_drop(mark: str) -> None:
+    far = row(4, 4, "100", B60)
+    lines = [row(1, 1, "100", B40), row(2, 2, "100", B40), row(3, 3, "100", B40)]
+    own = work(B35)
+    if mark == "kp-excluded":
+        lines.append(far)
+        own = dataclasses.replace(own, excluded=frozenset({4}))
+    else:
+        lines.append(dataclasses.replace(far, price_error=True))
+    info = info_of({CLS: CLASS_SCALE})
+
+    with_scales = excluded_trace(own, history_of(lines, info), tender_class_id=CLASS_A)
+    without = excluded_trace(own, history_of(lines, plain(info)), tender_class_id=CLASS_A)
+
+    assert [(cand.line.position_item_id, step) for cand, step in with_scales] == [(4, ("own", 2))]
+    assert with_scales == without
+    # Сам подбор строку 4 не берёт ни с шкалами, ни без: она отмечена.
+    assert 4 not in picked_ids(ladder(own, lines, info))
 
 
 @pytest.mark.parametrize("name", sorted(SCENARIOS))
