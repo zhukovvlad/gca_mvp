@@ -42,7 +42,7 @@
   .b { display: inline-flex; align-items: center; gap: 4px; border-radius: 999px; font-size: 12px; padding: 1px 8px; white-space: nowrap; }
   .b.sec { background: var(--chip); color: var(--fg); }
   .b.state { display: block; white-space: normal; border-radius: 8px; text-align: left; margin-top: 2px; padding: 2px 8px; border: 1px solid var(--border); font-size: 12px; }
-  .b.new { outline: 2px solid var(--new); outline-offset: 1px; }
+  .b.new { background: var(--new-soft); color: var(--new); }
   .b.mk { color: var(--m-on); font-weight: 600; padding: 3px 8px; border-radius: 6px; }
   .b.low { background: var(--m-low); } .b.fresh { background: var(--m-fresh); }
   /* таблица строк */
@@ -74,7 +74,7 @@
   .ptable td { white-space: normal; }
   .ptable .dot { text-decoration: underline dotted; text-underline-offset: 2px; }
   .why { font-size: 12.5px; border: 1px solid var(--border); background: var(--sunken); border-radius: 8px; padding: 6px 10px; }
-  .why.new { border-color: var(--new); }
+  .why.new { background: var(--new-soft); border-color: transparent; }
   .row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; }
   .analog { border-top: 1px solid var(--border); padding-top: 10px; font-size: 13px; display: grid; gap: 5px; }
   .analog .top { display: flex; justify-content: space-between; gap: 10px; }
@@ -84,7 +84,7 @@
   .rel dt { color: var(--fg2); }
   .rel .differs { background: var(--warn-soft); color: var(--warn-text); border-radius: 3px; padding: 0 4px; }
   .ellipsis { color: var(--fg3); font-size: 12px; }
-  .hint-new { outline: 2px solid var(--new); outline-offset: 2px; border-radius: 4px; }
+  .hint-new { background: var(--new-soft); color: var(--new); border-radius: 4px; padding: 0 4px; }
   .legend { font-size: 12.5px; color: var(--fg2); max-width: 1000px; }
   .legend li { margin: 3px 0; }
   @media (max-width: 680px) { .wrap { padding: 12px; } }
@@ -129,7 +129,7 @@
   <p><b>Макет к фиче А14 «Ближайшее значение на шкале», вариант B.</b> Разметка повторяет боевые компоненты разбора участника «Против нашей цены»:
   таблица строк (<span class="mono">OfferLinesTable</span>, <span class="mono">LineParamsCell</span>), панель строки
   (<span class="mono">LineSheet</span>, блок «Работа» — <span class="mono">WorkParamsSection</span>, справка аналогов — <span class="mono">AnalogsTable</span>),
-  каталог (<span class="mono">ParameterEditor</span>, <span class="mono">SchemaBlock</span>, <span class="mono">ReleasableQueue</span>). Новое выделено синим.</p>
+  каталог (<span class="mono">ParameterEditor</span>, <span class="mono">SchemaBlock</span>, <span class="mono">ReleasableQueue</span>). Новое — на голубой подложке.</p>
   <p><b>Что меняется.</b> Флажок «Можно отпустить» остаётся единственной настройкой. Если параметр отпущен и он <b>шкала</b> (все его значения — одно число с одной
   и той же приставкой или единицей: B25, B30…; 50, 60, 80 мм), на ступенях 2 и 4 берутся не любые значения, а <b>ближайшие</b> к значению КП — круг за кругом,
   пока аналоги не наберутся хотя бы из 3 договоров; строки истории с неуточнённым значением — последним кругом. Нешкальный отпущенный параметр — как сейчас.</p>
