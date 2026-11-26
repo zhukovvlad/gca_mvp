@@ -51,6 +51,7 @@ from services.semantic_cost import (
 )
 from services.semantic_reconcile import BuildWait, schema_build_wait
 from services.semantic_request import RenderedRequest
+from services.value_scale import scale_numbers
 from services.variant_request import (
     load_schema_material,
     load_values_material,
@@ -121,7 +122,9 @@ class ParameterOut(TypedDict):
     """Активный параметр версии. `refreshing` — число живых контекстов, у которых
     строка параметра помечена «уточняется». `releasable` — признак «можно отпустить»
     (`None` — не размечен), `releasable_proposal` — действующее предложение модели
-    (по повторному рендеру, не по наличию строки)."""
+    (по повторному рендеру, не по наличию строки). `scale` — главный точный параметр,
+    значения которого образуют шкалу (спека ближайшего значения §1); второстепенный и
+    диапазон — `false`."""
 
     id: int
     ordinal: int
@@ -136,6 +139,7 @@ class ParameterOut(TypedDict):
     refreshing: int
     releasable: bool | None
     releasable_proposal: ReleasableProposalOut | None
+    scale: bool
 
 
 class SchemaOut(TypedDict):
@@ -361,6 +365,7 @@ def _parameters_of(db: Session, schema_id: int) -> list[ParameterOut]:
             FamilyParameterValue.value,
             FamilyParameterValue.origin,
             FamilyParameterValue.merged_into_id,
+            FamilyParameterValue.composite_kind,
             FamilyParameterValue.range_lo,
             FamilyParameterValue.range_hi,
         )
@@ -378,6 +383,7 @@ def _parameters_of(db: Session, schema_id: int) -> list[ParameterOut]:
     by_value, off_list, refreshing = _row_statistics(db, schema_id)
     composites = composite_parts(db, [row.value_id for row in rows if row.value_id is not None])
     parameters: dict[int, ParameterOut] = {}
+    composite_ids = {row.value_id for row in rows if row.composite_kind is not None}
     for row in rows:
         parameter = parameters.setdefault(
             row.parameter_id,
@@ -401,6 +407,7 @@ def _parameters_of(db: Session, schema_id: int) -> list[ParameterOut]:
                 refreshing=refreshing.get(row.parameter_id, 0),
                 releasable=row.releasable,
                 releasable_proposal=None,
+                scale=False,
             ),
         )
         if row.value_id is not None:
@@ -425,6 +432,18 @@ def _parameters_of(db: Session, schema_id: int) -> list[ParameterOut]:
                         )
                     ),
                 )
+            )
+    for parameter in parameters.values():
+        if parameter["role"] == "main" and parameter["value_kind"] == "exact":
+            parameter["scale"] = (
+                scale_numbers(
+                    [
+                        (value["id"], value["value"])
+                        for value in parameter["values"]
+                        if value["merged_into_id"] is None and value["id"] not in composite_ids
+                    ]
+                )
+                is not None
             )
     return list(parameters.values())
 

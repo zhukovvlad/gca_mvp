@@ -678,7 +678,7 @@ describe("подсказка «подозрительная цена» у ана
 
 describe("колонки отпущенных параметров", () => {
   const columns = [{ name: "Марка W" }, { name: "Толщина" }];
-  const released = (value: string | null, differs = false, conflict = false) => ({ value, conflict, differs });
+  const released = (value: string | null, differs = false, conflict = false) => ({ value, conflict, differs, side: null });
 
   it("колонка на каждый элемент columns: имя и значение у каждого аналога, в порядке columns", () => {
     renderTable({
@@ -715,6 +715,42 @@ describe("колонки отпущенных параметров", () => {
     expect(differs.className).toContain("text-warning-text");
     expect(same).not.toHaveAttribute("data-differs");
     expect(same.className).not.toContain("text-warning-text");
+  });
+
+  it("side = up: после значения «↑» и скрытый текст «выше, чем в КП»; подсветка differs прежняя", () => {
+    renderTable({
+      columns,
+      analogs: [
+        ourPriceAnalogFixture({
+          analog_id: 1,
+          released_values: [{ value: "B40", conflict: false, differs: true, side: "up" }, released("200", false)],
+        }),
+      ],
+    });
+    const [first, second] = within(screen.getByTestId("analog-released-1")).getAllByTestId("analog-released-value");
+    expect(first).toHaveTextContent("B40 ↑");
+    expect(first).toHaveAttribute("data-differs", "true");
+    expect(first.className).toContain("text-warning-text");
+    const hidden = within(first).getByText("выше, чем в КП");
+    expect(hidden.className).toContain("sr-only");
+    expect(second.textContent).toBe("200");
+  });
+
+  it("side = down: «↓» и «ниже, чем в КП»; side = null: ни стрелки, ни скрытого текста", () => {
+    renderTable({
+      columns,
+      analogs: [
+        ourPriceAnalogFixture({
+          analog_id: 1,
+          released_values: [{ value: "B25", conflict: false, differs: true, side: "down" }, released("W8", true)],
+        }),
+      ],
+    });
+    const [down, none] = within(screen.getByTestId("analog-released-1")).getAllByTestId("analog-released-value");
+    expect(down).toHaveTextContent("B25 ↓");
+    expect(within(down).getByText("ниже, чем в КП").className).toContain("sr-only");
+    expect(none.textContent).toBe("W8");
+    expect(none.querySelector(".sr-only")).toBeNull();
   });
 
   it("columns пуст — колонок нет, даже если у аналога есть значения", () => {

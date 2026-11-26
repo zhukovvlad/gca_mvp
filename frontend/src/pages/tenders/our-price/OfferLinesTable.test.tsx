@@ -650,18 +650,39 @@ describe("лестница аналогов: колонки и подписи с
 
   it("подпись под ценой: ступень §2.8 и «N аналогов»", () => {
     renderTable([
-      workRow(1, { work_rung: { no: 1, released: [], other_class: false, zone_scope: "own" }, analogs_count: 7 }),
-      workRow(2, { work_rung: { no: 4, released: ["Марка W"], other_class: true, zone_scope: "own" }, analogs_count: 1 }),
-      workRow(3, { work_rung: { no: 2, released: ["Толщина"], other_class: false, zone_scope: "own" }, analogs_count: 2 }),
+      workRow(1, { work_rung: { no: 1, released: [], nearest: [], other_class: false, zone_scope: "own" }, analogs_count: 7, contracts_count: 0 }),
+      workRow(2, { work_rung: { no: 4, released: ["Марка W"], nearest: [], other_class: true, zone_scope: "own" }, analogs_count: 1, contracts_count: 0 }),
+      workRow(3, { work_rung: { no: 2, released: ["Толщина"], nearest: [], other_class: false, zone_scope: "own" }, analogs_count: 2, contracts_count: 0 }),
     ]);
     expect(screen.getByTestId("rung-1")).toHaveTextContent("тот же вариант · 7 аналогов");
     expect(screen.getByTestId("rung-2")).toHaveTextContent("без учёта: марка W · другой класс · 1 аналог");
     expect(screen.getByTestId("rung-3")).toHaveTextContent("без учёта: толщина · 2 аналога");
   });
 
+  it("подпись под ценой: при nearest — «ближайшее: …» и «N аналогов в M договорах»", () => {
+    renderTable([
+      workRow(1, {
+        work_rung: {
+          no: 4,
+          released: [],
+          nearest: [
+            { name: "Класс бетона по прочности", kp_value: "B35", values: ["B35", "B40"], kp_contracts: 1, direction: "up", without_value: false, after: [] },
+          ],
+          other_class: false,
+          zone_scope: "own",
+        },
+        analogs_count: 5,
+        contracts_count: 3,
+      }),
+    ]);
+    expect(screen.getByTestId("rung-1")).toHaveTextContent(
+      "ближайшее: класс бетона по прочности B35–B40 ↑ · 5 аналогов в 3 договорах"
+    );
+  });
+
   it("подпись под ценой: «другая зона» и «зона не определена» — по области, у own меток нет", () => {
     const scoped = (zone_scope: "own" | "other" | "any") => ({
-      work_rung: { no: 1 as const, released: [], other_class: false, zone_scope },
+      work_rung: { no: 1 as const, released: [], nearest: [], other_class: false, zone_scope },
       analogs_count: 3,
     });
     renderTable([workRow(1, scoped("own")), workRow(2, scoped("other")), workRow(3, scoped("any"))]);

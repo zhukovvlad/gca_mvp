@@ -160,6 +160,11 @@ export function ParameterEditor({ schema, draft, saved, edited, moves, onChange,
               Строку с другим значением этого параметра можно взять аналогом, если с тем же значением
               аналога нет. Пока не отмечено, параметр обязателен.
             </p>
+            {saved?.scale === true && (
+              <p data-testid="schema-edit-scale" className="text-xs text-fg-tertiary">
+                Шкала: отпущенному параметру сначала берутся ближайшие значения.
+              </p>
+            )}
           </div>
         )}
       </div>

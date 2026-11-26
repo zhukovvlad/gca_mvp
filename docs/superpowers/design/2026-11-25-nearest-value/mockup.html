@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ближайшее значение на шкале</title>
+<style>
+  /* Цвета — токены приложения (frontend/src/index.css), светлая и тёмная тема. */
+  :root {
+    --page: #F4F2EC; --surface: #FFFFFF; --sunken: #F7F6F2; --fg: #1F2128; --fg2: #5A5D66; --fg3: #8E8B82; --muted: #B5B2A8;
+    --border: rgba(0,0,0,.14); --subtle: rgba(0,0,0,.08);
+    --warn: #B5642E; --warn-soft: #FAF1E1; --warn-border: #E8C8A8; --warn-text: #6B3915; --info-text: #2C4A60;
+    --action: #2D3A30; --action-text: #F7F6F2;
+    --m-low: #2563A8; --m-fresh: #0E7C7B; --m-on: #FFFFFF;
+    --chip: #EFEDE7; --new: #2563A8; --new-soft: #E6EEF8;
+  }
+  :root[data-theme="dark"] {
+    --page: #1A1D24; --surface: #232730; --sunken: #1F232B; --fg: #EDEAE0; --fg2: #B5B2A8; --fg3: #8E8B82; --muted: #6E6B65;
+    --border: #3A4148; --subtle: #2D323D;
+    --warn: #D49A6E; --warn-soft: #353027; --warn-border: #4A3D2E; --warn-text: #D49A6E; --info-text: #A5C0D6;
+    --action: #B8C4BB; --action-text: #1A1D24;
+    --m-low: #6DA7EC; --m-fresh: #4FC3C1; --m-on: #1A1D24;
+    --chip: #2D323D; --new: #6DA7EC; --new-soft: #1E2A3A;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--fg); font: 14px/1.45 "Inter", "Segoe UI", system-ui, sans-serif; }
+  .mono { font-family: "JetBrains Mono", Consolas, monospace; font-variant-numeric: tabular-nums; }
+  .wrap { max-width: 1560px; margin: 0 auto; padding: 16px; overflow-wrap: anywhere; }
+  .note { border: 1px dashed var(--fg3); border-radius: 10px; padding: 10px 14px; color: var(--fg2); font-size: 13px; margin-bottom: 14px; max-width: 1000px; }
+  .note b { color: var(--fg); }
+  .note p { margin: 0 0 6px; } .note p:last-child { margin: 0; }
+  .bar button { font: inherit; font-size: 13px; padding: 5px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); color: var(--fg); cursor: pointer; margin-bottom: 18px; }
+  .state { margin-bottom: 34px; }
+  .state > h2 { font-size: 15px; margin: 0 0 6px; }
+  .state > .sub { font-size: 12.5px; color: var(--fg2); margin: 0 0 12px; max-width: 1000px; }
+  .tag { display: inline-block; font-size: 11px; letter-spacing: .05em; text-transform: uppercase; border-radius: 5px; padding: 1px 7px; margin: 10px 0 8px; }
+  .tag.before { background: var(--chip); color: var(--fg2); }
+  .tag.after { background: var(--new-soft); color: var(--new); }
+  .xs { font-size: 11px; line-height: 1.35; }
+  .fg2 { color: var(--fg2); } .fg3 { color: var(--fg3); }
+  /* shadcn Badge */
+  .b { display: inline-flex; align-items: center; gap: 4px; border-radius: 999px; font-size: 12px; padding: 1px 8px; white-space: nowrap; }
+  .b.sec { background: var(--chip); color: var(--fg); }
+  .b.state { display: block; white-space: normal; border-radius: 8px; text-align: left; margin-top: 2px; padding: 2px 8px; border: 1px solid var(--border); font-size: 12px; }
+  .b.new { background: var(--new-soft); color: var(--new); }
+  .b.mk { color: var(--m-on); font-weight: 600; padding: 3px 8px; border-radius: 6px; }
+  .b.low { background: var(--m-low); } .b.fresh { background: var(--m-fresh); }
+  /* таблица строк */
+  .tablecard { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th { text-align: left; font-weight: 500; color: var(--fg2); font-size: 12px; padding: 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  td { padding: 8px; border-bottom: 1px solid var(--subtle); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  .r { text-align: right; }
+  .work { min-width: 260px; max-width: 330px; white-space: normal; }
+  .fork { min-width: 190px; max-width: 260px; }
+  .cap { display: block; font-size: 11px; line-height: 1.35; color: var(--fg2); white-space: normal; }
+  .params { font-size: 11px; line-height: 1.35; color: var(--fg2); }
+  .params .v { color: var(--fg); } .params .v.w { color: var(--warn); } .params .n { color: var(--muted); }
+  .params .more { color: var(--info-text); text-decoration: underline; text-underline-offset: 2px; }
+  .hl { background: var(--new-soft); color: var(--new); border-radius: 3px; padding: 0 3px; }
+  .up { color: var(--warn-text); }
+  /* панель строки (Sheet) */
+  .sheet { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; max-width: 680px; box-shadow: 0 6px 20px rgba(0,0,0,.08); }
+  .sh-head { padding: 16px 16px 10px; }
+  .sh-title { font-weight: 600; font-size: 16px; }
+  .sh-desc { font-size: 13px; color: var(--fg2); margin-top: 2px; }
+  .sh-body { padding: 0 16px 20px; display: grid; gap: 20px; }
+  .sec { display: grid; gap: 8px; }
+  .sec h4 { margin: 0; font-size: 12px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--fg2); }
+  dl.prices { display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; margin: 0; font-size: 13px; }
+  dl.prices dt { color: var(--fg2); } dl.prices dd { margin: 0; }
+  .ptable th { white-space: normal; padding: 6px 8px; }
+  .ptable td { white-space: normal; }
+  .ptable .dot { text-decoration: underline dotted; text-underline-offset: 2px; }
+  .why { font-size: 12.5px; border: 1px solid var(--border); background: var(--sunken); border-radius: 8px; padding: 6px 10px; }
+  .why.new { background: var(--new-soft); border-color: transparent; }
+  .row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; }
+  .analog { border-top: 1px solid var(--border); padding-top: 10px; font-size: 13px; display: grid; gap: 5px; }
+  .analog .top { display: flex; justify-content: space-between; gap: 10px; }
+  .rel { display: flex; flex-wrap: wrap; gap: 2px 16px; font-size: 12px; }
+  .rel > div { display: flex; gap: 4px; }
+  .rel dd { margin: 0; }
+  .rel dt { color: var(--fg2); }
+  .rel .differs { background: var(--warn-soft); color: var(--warn-text); border-radius: 3px; padding: 0 4px; }
+  .ellipsis { color: var(--fg3); font-size: 12px; }
+  .hint-new { background: var(--new-soft); color: var(--new); border-radius: 4px; padding: 0 4px; }
+  .legend { font-size: 12.5px; color: var(--fg2); max-width: 1000px; }
+  .legend li { margin: 3px 0; }
+  @media (max-width: 680px) { .wrap { padding: 12px; } }
+  .b.sec.new { white-space: normal; }
+  .sh-body > *, .sec > * { min-width: 0; }
+  .pwrap { overflow-x: auto; }
+  /* раздел 3: каталог */
+  .b.out { border: 1px solid var(--border); color: var(--fg); }
+  .toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; font-size: 12.5px; background: var(--surface); align-self: start; flex-wrap: wrap; }
+  .toggle span { padding: 4px 10px; border-right: 1px solid var(--border); }
+  .toggle span:last-child { border-right: 0; }
+  .toggle span.on { background: var(--action); color: var(--action-text); }
+  .toggle.tabs span { padding: 6px 12px; }
+  .toggle span.dis { opacity: .45; }
+  .dlg { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; max-width: 640px; box-shadow: 0 6px 20px rgba(0,0,0,.08); margin-bottom: 8px; }
+  .dlg.wide { max-width: 980px; }
+  .dlg-head { padding: 12px 16px; border-bottom: 1px solid var(--subtle); font-weight: 500; font-size: 15px; }
+  .ed { padding: 16px; display: grid; gap: 14px; }
+  .fld { display: grid; gap: 6px; }
+  .lab { font-size: 13px; font-weight: 500; }
+  .inp { border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; background: var(--surface); font-size: 13.5px; }
+  .hint { margin: 0; font-size: 12px; color: var(--fg3); }
+  .chkrow { display: flex; align-items: center; gap: 8px; font-size: 13.5px; }
+  .chk { width: 16px; height: 16px; border: 1px solid var(--border); border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; background: var(--surface); flex: none; }
+  .chk.on { background: var(--action); color: var(--action-text); border-color: var(--action); }
+  .chkrow.dis { opacity: .5; }
+  .grp { margin: 0; font-size: 12px; font-weight: 400; letter-spacing: .05em; text-transform: uppercase; color: var(--fg3); }
+  .vals { margin: 0; padding-left: 18px; font-size: 13.5px; color: var(--fg2); }
+  .sect { margin: 4px 0 0; font-size: 15px; font-weight: 500; width: max-content; }
+  .qfam { border: 1px solid var(--subtle); border-radius: 10px; overflow: hidden; background: var(--surface); }
+  .qfam h4 { margin: 0; padding: 8px 16px; background: var(--sunken); font-size: 14px; font-weight: 500; }
+  .qrow { display: grid; grid-template-columns: 180px minmax(0, 1fr) auto; gap: 16px; align-items: start; padding: 12px 16px; border-top: 1px solid var(--subtle); }
+  .qrow .pn { font-weight: 500; }
+  .btn { font-size: 13px; border-radius: 8px; padding: 4px 12px; border: 1px solid var(--border); background: var(--surface); color: var(--fg); white-space: nowrap; }
+  .btn.p { background: var(--action); color: var(--action-text); border-color: var(--action); }
+  @media (max-width: 680px) { .qrow { grid-template-columns: 1fr; } }
+</style>
+<body>
+<div class="wrap">
+
+<div class="note">
+  <p><b>Макет к фиче А14 «Ближайшее значение на шкале», вариант B.</b> Разметка повторяет боевые компоненты разбора участника «Против нашей цены»:
+  таблица строк (<span class="mono">OfferLinesTable</span>, <span class="mono">LineParamsCell</span>), панель строки
+  (<span class="mono">LineSheet</span>, блок «Работа» — <span class="mono">WorkParamsSection</span>, справка аналогов — <span class="mono">AnalogsTable</span>),
+  окно правки схемы (<span class="mono">ParameterEditor</span>). Новое — на голубой подложке.</p>
+  <p><b>Что меняется.</b> Флажок «Можно отпустить» остаётся единственной настройкой. Если параметр отпущен и он <b>шкала</b> (все его значения — одно число с одной
+  и той же приставкой или единицей: B25, B30…; 50, 60, 80 мм), на ступенях 2 и 4 берутся не любые значения, а <b>ближайшие</b> к значению КП — круг за кругом,
+  пока аналоги не наберутся хотя бы из 3 договоров; строки истории с неуточнённым значением — последним кругом. Нешкальный отпущенный параметр — как сейчас.</p>
+  <p><b>Цена аналога не пересчитывается</b> — только пометка: какие значения взяты, в скольких договорах и куда сдвинут параметр (↑ выше, ↓ ниже, чем в КП).
+  О направлении цены пометка ничего не утверждает. «Ближайшее» — ближайшее из того, что есть в истории, а не «достаточно похожее»: предела расстояния нет.</p>
+  <p><b>Откуда данные.</b> Прогон варианта B на стенде 25.11.2026 (подмена в памяти, <span class="mono">tasks/nearest-value/</span>), цены нетто, объёмы — со стенда.
+  Плита и марш — оффер тендера 6, класс бетона считается отпущенным (решение администратора после фичи); плитка — оффер другого тендера, толщина отпущена уже сейчас.
+  Плита: 10 аналогов из 3 договоров, все B40 (объект A — 7 строк по 40 587, B — 45 711, C — 53 787 и 55 115). Объекты обезличены.</p>
+  <p><b>Условно:</b> какая карточка «самая свежая», подрядчик и номер договора в карточках, источник «из наименования», перечень параметров в «Работе». Для марша и плитки панель не рисовалась.</p>
+</div>
+<div class="bar"><button onclick="document.documentElement.dataset.theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'">Светлая / тёмная тема</button></div>
+
+<!-- 1 -->
+<div class="state">
+  <h2>1. Таблица строк КП: было / станет</h2>
+  <div class="sub">Колонки и их порядок — как в <span class="mono">OfferLinesTable</span>. Под наименованием — семья и параметры строки; у главного параметра приписка правила подбора.
+    Под вилкой — подпись ступени (<span class="mono">workRungCaption</span>) и число аналогов; справа от разницы — положение в вилке.</div>
+
+  <span class="tag before">сегодня · класс бетона обязателен, B35 и B25 в договорах нет</span>
+  <div class="tablecard">
+    <table>
+      <tr><th>Работа в КП · вариант</th><th>Ед.</th><th class="r">Объём</th><th class="r">Цена КП</th><th>Наши договоры: вилка, ₽</th><th class="r">Самая низкая</th><th class="r">К самой низкой</th></tr>
+      <tr>
+        <td class="work">Плита перекрытия/покрытия. В35;F150;W12 коэф. армир. 132,23кг/м3
+          <div class="params"><span class="cap" style="display:block">Плита перекрытия</span>
+            <div>Класс бетона по прочности: <span class="v">B35</span></div>
+            <div>Тип конструкции: <span class="v">перекрытия</span></div>
+            <div>Марка по водонепроницаемости: <span class="v">W12</span> <span class="n">— не учитывается при подборе</span></div></div></td>
+        <td>м³</td><td class="r mono">100,3</td>
+        <td class="r mono">35 295<span class="cap">₽/м³</span></td>
+        <td class="fork mono">—</td>
+        <td class="r mono">—</td>
+        <td class="r"><span class="mono">—</span><span class="b state">нет аналога с этими параметрами</span></td>
+      </tr>
+      <tr>
+        <td class="work">Лестничный марш В25;F150;W8 коэф. армир.132,23 кг/м3
+          <div class="params"><span class="cap" style="display:block">Лестничный марш</span>
+            <div>Класс бетона по прочности: <span class="v">B25</span></div>
+            <div>Тип конструкции: <span class="v">лестничные марши</span></div>
+            <div>Марка по водонепроницаемости: <span class="v">W8</span> <span class="n">— не учитывается при подборе</span></div></div></td>
+        <td>м³</td><td class="r mono">2,7</td>
+        <td class="r mono">41 039<span class="cap">₽/м³</span></td>
+        <td class="fork mono">—</td>
+        <td class="r mono">—</td>
+        <td class="r"><span class="mono">—</span><span class="b state">нет аналога с этими параметрами</span></td>
+      </tr>
+    </table>
+  </div>
+
+  <span class="tag after">станет · администратор отпустил класс бетона</span>
+  <div class="tablecard">
+    <table>
+      <tr><th>Работа в КП · вариант</th><th>Ед.</th><th class="r">Объём</th><th class="r">Цена КП</th><th>Наши договоры: вилка, ₽</th><th class="r">Самая низкая</th><th class="r">К самой низкой</th></tr>
+      <tr>
+        <td class="work">Плита перекрытия/покрытия. В35;F150;W12 коэф. армир. 132,23кг/м3
+          <div class="params"><span class="cap" style="display:block">Плита перекрытия</span>
+            <div>Класс бетона по прочности: <span class="v">B35</span> <span class="n"><span class="hl">— при подборе ближайшее: B40</span></span></div>
+            <div>Тип конструкции: <span class="v">перекрытия</span></div>
+            <div>Марка по водонепроницаемости: <span class="v">W12</span> <span class="n"><span class="hl">— при подборе ближайшие: W8, W12</span></span></div></div></td>
+        <td>м³</td><td class="r mono">100,3</td>
+        <td class="r mono">35 295<span class="cap">₽/м³</span></td>
+        <td class="fork"><span class="mono">40 587 – 55 115</span>
+          <span class="cap"><span class="hl">ближайшее: класс бетона по прочности B40 ↑, марка по водонепроницаемости W8–W12 ↓</span> · другой класс · 10 аналогов в 3 договорах</span></td>
+        <td class="r mono">40 587</td>
+        <td class="r"><span class="mono">−5 292 ₽</span><span class="b state">ниже всего, что платили</span></td>
+      </tr>
+      <tr>
+        <td class="work">Лестничный марш В25;F150;W8 коэф. армир.132,23 кг/м3
+          <div class="params"><span class="cap" style="display:block">Лестничный марш</span>
+            <div>Класс бетона по прочности: <span class="v">B25</span> <span class="n"><span class="hl">— при подборе ближайшее: B30</span></span></div>
+            <div>Тип конструкции: <span class="v">лестничные марши</span></div>
+            <div>Марка по водонепроницаемости: <span class="v">W8</span> <span class="n">— не учитывается при подборе</span></div></div></td>
+        <td>м³</td><td class="r mono">2,7</td>
+        <td class="r mono">41 039<span class="cap">₽/м³</span></td>
+        <td class="fork"><span class="mono">57 326 – 106 450</span>
+          <span class="cap"><span class="hl">ближайшее: класс бетона по прочности B30 ↑</span> · без учёта: марка по водонепроницаемости · другой класс · 5 аналогов в 2 договорах</span></td>
+        <td class="r mono">57 326</td>
+        <td class="r"><span class="mono">−16 287 ₽</span><span class="b state">ниже всего, что платили</span></td>
+      </tr>
+    </table>
+  </div>
+  <p class="xs fg2" style="max-width:1000px">У плиты W12 нашлась только в 2 договорах — круг расширен до W8. У марша B30 нашёлся только в 2 договорах, других классов у маршей в истории нет — круги исчерпаны, взято что есть; марка W у маршей в договорах не уточнена, поэтому она «без учёта».</p>
+
+  <span class="tag before">сегодня · толщина уже отпущена — берётся любая</span>
+  <div class="tablecard">
+    <table>
+      <tr><th>Работа в КП · вариант</th><th>Ед.</th><th class="r">Объём</th><th class="r">Цена КП</th><th>Наши договоры: вилка, ₽</th><th class="r">Самая низкая</th><th class="r">К самой низкой</th></tr>
+      <tr>
+        <td class="work">Тротуарная плитка - 60мм
+          <div class="params"><span class="cap" style="display:block">Устройство покрытия из бетонной плитки/плит</span>
+            <div>Толщина, мм: <span class="v">60</span> <span class="n">— не учитывается при подборе</span></div></div></td>
+        <td>м²</td><td class="r mono">341,3</td>
+        <td class="r mono">3 751<span class="cap">₽/м²</span></td>
+        <td class="fork"><span class="mono">1 516 – 7 561</span>
+          <span class="cap">без учёта: толщина, мм, размер в плане, мм, цвет · 20 аналогов</span></td>
+        <td class="r mono">1 516<span class="cap">плитка 40 мм</span></td>
+        <td class="r"><span class="mono">+2 235 ₽</span><span class="b state">в нашей вилке</span></td>
+      </tr>
+    </table>
+  </div>
+  <span class="tag after">станет</span>
+  <div class="tablecard">
+    <table>
+      <tr><th>Работа в КП · вариант</th><th>Ед.</th><th class="r">Объём</th><th class="r">Цена КП</th><th>Наши договоры: вилка, ₽</th><th class="r">Самая низкая</th><th class="r">К самой низкой</th></tr>
+      <tr>
+        <td class="work">Тротуарная плитка - 60мм
+          <div class="params"><span class="cap" style="display:block">Устройство покрытия из бетонной плитки/плит</span>
+            <div>Толщина, мм: <span class="v">60</span> <span class="n"><span class="hl">— при подборе ближайшее: 50</span></span></div></div></td>
+        <td>м²</td><td class="r mono">341,3</td>
+        <td class="r mono">3 751<span class="cap">₽/м²</span></td>
+        <td class="fork"><span class="mono">5 476 – 7 561</span>
+          <span class="cap"><span class="hl">ближайшее: толщина, мм 50 ↓</span> · без учёта: размер в плане, мм, цвет · 15 аналогов в 4 договорах</span></td>
+        <td class="r mono">5 476<span class="cap">плитка 50 мм</span></td>
+        <td class="r"><span class="mono">−1 725 ₽</span><span class="b state">ниже всего, что платили</span></td>
+      </tr>
+    </table>
+  </div>
+  <p class="xs fg2" style="max-width:1000px">60 и 70 мм в своей зоне нет; 50 мм — 15 строк из 4 договоров, дальше круг не расширяется. Сегодня КП сравнивали с плиткой 40 мм за 1 516.
+    Подписи «плитка 40 мм» под самой низкой в коде нет — здесь только для пояснения макета.</p>
+</div>
+
+<!-- 2 -->
+<div class="state">
+  <h2>2. Панель строки: плита перекрытия B35</h2>
+  <div class="sub">Порядок секций — как в <span class="mono">LineSheet</span>: состояние, «Где строка», «Цены», «Работа», «Сравнение» (Badge ступени, число аналогов, справка аналогов).
+    Остальное (цели, лестница ступеней, «В файл подрядчику») не меняется и здесь свёрнуто.</div>
+  <span class="tag after">станет</span>
+  <div class="sheet">
+    <div class="sh-head"><div class="sh-title">Плита перекрытия/покрытия. В35;F150;W12 коэф. армир. 132,23кг/м3</div><div class="sh-desc">Плита перекрытия</div></div>
+    <div class="sh-body">
+      <p style="margin:0;font-size:13.5px" class="fg2">ниже всего, что платили</p>
+      <div class="ellipsis">Где строка · статья классификатора · в смете КП · зона места …</div>
+
+      <div class="sec"><h4>Цены</h4>
+        <p style="margin:0;font-size:13.5px;font-weight:500">без НДС</p>
+        <dl class="prices"><dt>Цена КП</dt><dd class="mono">35 295 ₽/м³</dd><dt>Объём</dt><dd class="mono">100,3 м³</dd></dl>
+      </div>
+
+      <div class="sec"><h4>Работа</h4>
+        <div class="pwrap"><table class="ptable">
+          <tr><th>Параметр</th><th>В строке КП</th><th>Откуда</th><th><span class="dot">При подборе</span></th></tr>
+          <tr><td>Класс бетона по прочности</td><td>B35</td><td class="fg2">из наименования</td><td><span class="hl">ближайшее: B40</span></td></tr>
+          <tr><td>Тип конструкции</td><td>перекрытия</td><td class="fg2">из наименования</td><td>должен совпасть</td></tr>
+          <tr><td>Марка по водонепроницаемости</td><td>W12</td><td class="fg2">из наименования</td><td><span class="hl">ближайшие: W8, W12</span></td></tr>
+        </table></div>
+      </div>
+
+      <div class="sec"><h4>Сравнение</h4>
+        <div class="row">
+          <span class="b sec new">ближайшее: класс бетона по прочности B40, марка по водонепроницаемости W8–W12 · другой класс</span>
+          <span class="fg2">10 аналогов в 3 договорах</span>
+        </div>
+        <p class="why new" style="margin:0">Аналогов с классом бетона B35 в договорах нет — взят ближайший: B40, выше, чем в КП. Марка W12 нашлась только в 2 договорах — добавлена ближайшая W8, ниже, чем в КП. Цены аналогов не пересчитаны.</p>
+        <div class="ellipsis">Карточки цели: самая низкая · самая свежая — без изменений</div>
+        <h4 style="padding-top:2px">Аналоги</h4>
+
+        <div class="analog">
+          <div class="top"><div><b>Объект A</b> <span class="xs fg2">· дог. … · подрядчик 1</span></div><div><b class="mono">40 587</b> <span class="xs fg2 mono">08.2024</span></div></div>
+          <div class="row"><span class="b mk low">↓ самая низкая</span></div>
+          <p class="fg2" style="margin:0">Перекрытия Бетон В40 F150 W12</p>
+          <dl class="rel" style="margin:0">
+            <div><dt>Класс бетона по прочности</dt><dd class="differs">B40 <span class="hint-new">↑ выше, чем в КП</span></dd></div>
+            <div><dt>Марка по водонепроницаемости</dt><dd>W12</dd></div>
+          </dl>
+        </div>
+        <div class="analog">
+          <div class="top"><div><b>Объект C</b> <span class="xs fg2">· дог. … · подрядчик 3</span></div><div><b class="mono">53 787</b> <span class="xs fg2 mono">11.2024</span></div></div>
+          <div class="row"><span class="b mk fresh">самая свежая</span></div>
+          <p class="fg2" style="margin:0">Перекрытия и покрытия стилобата B40 W8 F150</p>
+          <dl class="rel" style="margin:0">
+            <div><dt>Класс бетона по прочности</dt><dd class="differs">B40 <span class="hint-new">↑ выше, чем в КП</span></dd></div>
+            <div><dt>Марка по водонепроницаемости</dt><dd class="differs">W8 <span class="hint-new">↓ ниже, чем в КП</span></dd></div>
+          </dl>
+        </div>
+        <div class="analog">
+          <div class="top"><div><b>Объект A</b> <span class="xs fg2">· дог. … · подрядчик 1</span></div><div><b class="mono">40 587</b> <span class="xs fg2 mono">08.2024</span></div></div>
+          <p class="fg2" style="margin:0">Перекрытия Бетон В40 F150 W12</p>
+          <dl class="rel" style="margin:0">
+            <div><dt>Класс бетона по прочности</dt><dd class="differs">B40 <span class="hint-new">↑ выше, чем в КП</span></dd></div>
+            <div><dt>Марка по водонепроницаемости</dt><dd>W12</dd></div>
+          </dl>
+        </div>
+        <div class="analog">
+          <div class="top"><div><b>Объект A</b> <span class="xs fg2">· дог. … · подрядчик 1</span></div><div><b class="mono">40 587</b> <span class="xs fg2 mono">08.2024</span></div></div>
+          <p class="fg2" style="margin:0">Перекрытия Бетон В40 F150 W12</p>
+          <dl class="rel" style="margin:0">
+            <div><dt>Класс бетона по прочности</dt><dd class="differs">B40 <span class="hint-new">↑ выше, чем в КП</span></dd></div>
+            <div><dt>Марка по водонепроницаемости</dt><dd>W12</dd></div>
+          </dl>
+        </div>
+        <div class="analog">
+          <div class="top"><div><b>Объект B</b> <span class="xs fg2">· дог. … · подрядчик 2</span></div><div><b class="mono">45 711</b> <span class="xs fg2 mono">07.2024</span></div></div>
+          <p class="fg2" style="margin:0">Плиты перекрытия B40 W12 F150</p>
+          <dl class="rel" style="margin:0">
+            <div><dt>Класс бетона по прочности</dt><dd class="differs">B40 <span class="hint-new">↑ выше, чем в КП</span></dd></div>
+            <div><dt>Марка по водонепроницаемости</dt><dd>W12</dd></div>
+          </dl>
+        </div>
+        <div style="border:1px dashed var(--border);border-radius:8px;text-align:center;padding:5px;font-size:13px;margin-top:2px">ещё 5 аналогов из 10</div>
+      </div>
+      <div class="ellipsis">Лестница сравнения · В файл подрядчику …</div>
+    </div>
+  </div>
+  <p class="xs fg2" style="max-width:680px">Значения в подписи — от меньшего к большему, без пропусков: «W8–W12». Стрелка — куда сдвинуты взятые значения, кроме совпавшего с КП: ↑ выше, ↓ ниже, ↕ по обе стороны. В карточке у каждого аналога своя стрелка.</p>
+</div>
+
+<!-- 3 -->
+<div class="state">
+  <h2>3. Каталог: тот же флажок «Можно отпустить» и одна строка о шкале</h2>
+  <div class="sub">Разметка повторяет <span class="mono">ParameterEditor</span> (правая колонка окна «Править схему»); подписи флажка — из кода. Новой настройки нет: шкала или нет, система определяет сама по значениям параметра.</div>
+
+  <span class="tag after">станет · окно «Править схему», параметр-шкала</span>
+  <div class="dlg">
+    <div class="dlg-head">Править схему · Устройство жб конструкций</div>
+    <div class="ed" role="group">
+      <div class="fld"><span class="lab">Имя параметра</span><span class="inp">Класс бетона по прочности</span></div>
+      <div class="fld"><span class="lab">Роль</span>
+        <span class="toggle"><span class="on">Главный</span><span>Второстепенный</span></span>
+        <p class="hint">Главный параметр делит семью на варианты, и у каждого варианта свой норматив. Второстепенный записывается у строки и виден рядом с ценой, но вариант не делит.</p>
+        <div style="display:grid;gap:4px">
+          <div class="chkrow"><span class="chk on">✓</span>Можно отпустить</div>
+          <p class="hint">Строку с другим значением этого параметра можно взять аналогом, если с тем же значением аналога нет. Пока не отмечено, параметр обязателен.</p>
+          <p class="hint hint-new" style="color:var(--info-text)">Шкала: отпущенному параметру сначала берутся ближайшие значения.</p>
+        </div>
+      </div>
+      <div class="ellipsis">Значения · Точные · B15 B25 B30 B35 B40 B45 B50 … · «Только из списка» · «Убрать параметр»</div>
+    </div>
+  </div>
+
+  <p class="xs fg2" style="max-width:640px">У параметра, который не шкала (формат плитки 600×600, класс пожарной опасности КМ0/КМ1), строки нет — отпущенному подходит любое значение, как сегодня.
+    Значков шкалы в блоке «Схема и варианты» и строк в очереди «Можно отпустить» нет.</p>
+</div>
+
+</div>
+</body>
+</html>

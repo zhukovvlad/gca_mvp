@@ -49,7 +49,7 @@ export function WorkParamsSection({ params, basis, kind }: WorkParamsSectionProp
                 {paramText(param)}
               </TableCell>
               <TableCell className="whitespace-normal align-top text-fg-secondary">{paramSourceText(param)}</TableCell>
-              <TableCell className="whitespace-normal align-top">{matchText(param.match, basis)}</TableCell>
+              <TableCell className="whitespace-normal align-top">{matchText(param.match, basis, param.nearest)}</TableCell>
             </TableRow>
           ))}
         </TableBody>

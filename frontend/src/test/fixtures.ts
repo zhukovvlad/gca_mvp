@@ -2932,6 +2932,7 @@ export function ourPriceParamFixture(overrides: Partial<LineParam> = {}): LinePa
     refreshing: false,
     catalog_value: null,
     match: "required",
+    nearest: null,
     ...overrides,
   };
 }
@@ -3027,6 +3028,7 @@ export function ourPriceLineFixture(overrides: Partial<OurPriceLine> = {}): OurP
     over_freshest: null,
     below: null,
     analogs_count: 0,
+    contracts_count: 0,
     no_history_reason: null,
     composite_parameter: null,
     group: null,
@@ -3428,7 +3430,7 @@ export function excludedAnalogFixture(overrides: Partial<ExcludedAnalog> = {}): 
 /** Строка-работа лестницы аналогов: ступень 1, зона, самая низкая и самая свежая от аналогов. */
 export function workLineFixture(overrides: Partial<OurPriceLine> = {}): OurPriceLine {
   return ourPriceLineFixture({
-    work_rung: { no: 1, released: [], other_class: false, zone_scope: "own" },
+    work_rung: { no: 1, released: [], nearest: [], other_class: false, zone_scope: "own" },
     rung: null,
     rungs: [],
     zone: "aboveground",
@@ -3760,6 +3762,7 @@ export function referenceZoneGroupFixture(overrides: Partial<ReferenceZoneGroup>
     zone: "territory",
     rung_no: 1,
     released: [],
+    nearest: [],
     other_class: false,
     rows: [refRowFixture()],
     ...overrides,

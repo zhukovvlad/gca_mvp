@@ -6,7 +6,7 @@ import itertools
 
 import pytest
 
-from services.analog_ladder import FamilyLadderInfo, _form, _values_key, params_rule
+from services.analog_ladder import FamilyLadderInfo, NearestParam, _form, _values_key, params_rule
 
 # Главные: 10 — неотпускаемый, 11 и 12 — отпускаемые. Схема семьи — 7.
 INFO = FamilyLadderInfo(
@@ -230,3 +230,60 @@ def test_variant_params_agrees_with_values_key(role_names):
             changed = {**values_a, p: 99}
             simple_forms = {q: f for q, f in forms_a.items() if q != p}
             assert _values_key(changed, simple_forms, conflicted, required, rel) == key_a
+
+
+# ---------------------------------------------------------------------------
+#  Ближайшее и совпавшее (спека ближайшего значения §3 п. 3)
+# ---------------------------------------------------------------------------
+
+_NEAREST = {
+    11: NearestParam(
+        parameter_id=11,
+        name="B",
+        kp_value="B35",
+        values=("B40",),
+        kp_contracts=0,
+        direction="up",
+        without_value=False,
+        after=(),
+    )
+}
+
+
+@pytest.mark.parametrize("rung", [2, 4])
+def test_variant_params_nearest_and_matched_replace_the_rule_on_rung_2_4(rung):
+    r = rule(work_rung=rung, forms={}, nearest=_NEAREST, matched=frozenset({12}))
+    assert r.basis == "rung"
+    assert dict(r.main) == {10: "required", 11: "nearest", 12: "matched"}
+    assert r.secondary == "ignored"
+
+
+@pytest.mark.parametrize("rung", [2, 4])
+def test_variant_params_other_releasable_keep_the_old_rule_next_to_nearest(rung):
+    r = rule(work_rung=rung, forms={12: 502}, nearest=_NEAREST)
+    assert dict(r.main) == {10: "required", 11: "nearest", 12: "same_set"}
+
+
+@pytest.mark.parametrize("rung", [1, 3, None])
+def test_variant_params_nearest_does_not_apply_to_rungs_1_3_or_catalog(rung):
+    plain = rule(work_rung=rung)
+    with_new = rule(work_rung=rung, nearest=_NEAREST, matched=frozenset({12}))
+    assert with_new == plain
+
+
+@pytest.mark.parametrize("level", ["v", "p", "f"])
+def test_variant_params_nearest_does_not_apply_to_systems(level):
+    plain = rule(is_system=True, system_level=level, work_rung=2)
+    assert rule(is_system=True, system_level=level, work_rung=2, nearest=_NEAREST, matched=frozenset({12})) == plain
+
+
+def test_variant_params_nearest_does_not_change_the_catalog_rule_of_a_scale():
+    plain = rule(forms={})
+    assert dict(plain.main) == {10: "required", 11: "ignored", 12: "ignored"}
+    assert rule(nearest=_NEAREST, matched=frozenset({12})) == plain
+
+
+def test_variant_params_without_new_arguments_matches_the_old_result():
+    assert rule(work_rung=2, forms={11: 501}) == rule(
+        work_rung=2, forms={11: 501}, nearest={}, matched=frozenset()
+    )

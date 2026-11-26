@@ -19,6 +19,7 @@ from crud.reference_lines import ParamText
 from money.inflation import YearMonth
 from services.analog_ladder import (
     KpWork,
+    NearestParam,
     RungNo,
     WorkHistory,
     WorkLadder,
@@ -82,6 +83,8 @@ class ZoneGroup:
     released: tuple[str, ...]
     other_class: bool
     rows: tuple[RefRow, ...]
+    #: Шкалы, по которым набор группы сужен до ближайших значений (как у `WorkLadder`).
+    nearest: tuple[NearestParam, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -155,7 +158,14 @@ def zone_groups(
             for analog in ladder.analogs
         )
         groups.append(
-            ZoneGroup(zone=zone, rung_no=ladder.rung_no, released=ladder.released, other_class=ladder.other_class, rows=rows)
+            ZoneGroup(
+                zone=zone,
+                rung_no=ladder.rung_no,
+                released=ladder.released,
+                other_class=ladder.other_class,
+                rows=rows,
+                nearest=ladder.nearest,
+            )
         )
     return tuple(groups)
 

@@ -1,5 +1,6 @@
 import { formatDate, formatDecimalMoney, formatNumber, pluralRu, roundDecimal } from "@/lib/format";
 import type {
+  NearestParam,
   Decimal,
   LumpView,
   MarkKind,
@@ -562,17 +563,73 @@ function analogsCount(n: number): string {
  * Подпись ступени работы (спека лестницы аналогов §2.8, спека параметров варианта §2.6):
  * «тот же вариант», «без учёта: …», «… · другой класс».
  */
-export function workRungLabel(rung: Pick<WorkRung, "no" | "released" | "other_class">): string {
-  const base =
-    rung.no === 1 || rung.no === 3 ? "тот же вариант" : `без учёта: ${rung.released.map(lowerFirst).join(", ")}`;
+export function workRungLabel(rung: Pick<WorkRung, "no" | "released" | "other_class" | "nearest">): string {
+  const base = rung.no === 1 || rung.no === 3 ? "тот же вариант" : releasedPart(rung);
   return rung.other_class ? `${base} · другой класс` : base;
 }
 
+/** Части подписи ступени 2 и 4 (спека А14 §4 п. 1): «ближайшее: …» и «без учёта: …» через « · ». */
+function releasedPart(rung: Pick<WorkRung, "released" | "nearest">): string {
+  const parts: string[] = [];
+  if (rung.nearest.length > 0) parts.push(`ближайшее: ${rung.nearest.map(nearestItem).join(", ")}`);
+  if (rung.released.length > 0) parts.push(`без учёта: ${rung.released.map(lowerFirst).join(", ")}`);
+  return parts.length === 0 ? "те же значения параметров" : parts.join(" · ");
+}
+
+const NEAREST_ARROW = { up: " ↑", down: " ↓", both: " ↕" } as const;
+
+/** «класс бетона по прочности B40 ↑»: значения — одно само, несколько «первое–последнее». */
+function nearestItem(n: NearestParam): string {
+  const first = n.values[0];
+  const last = n.values[n.values.length - 1];
+  const values = n.values.length === 0 ? "" : ` ${n.values.length === 1 ? first : `${first}–${last}`}`;
+  const arrow = n.direction === null ? "" : NEAREST_ARROW[n.direction];
+  return `${lowerFirst(n.name)}${values}${n.without_value ? " и без значения" : ""}${arrow}`;
+}
+
+const SHIFT_TEXT = { up: "выше, чем в КП", down: "ниже, чем в КП", both: "выше и ниже, чем в КП" } as const;
+
+/** Сторона ближайшего значения у аналога: скрытый текст для читалок (спека А14 §4 п. 5). */
+export function sideText(side: "up" | "down"): string {
+  return SHIFT_TEXT[side];
+}
+
+/** Абзац «почему» панели строки (спека А14 §4 п. 3); `null` — ближайших нет. */
+export function nearestWhy(nearest: NearestParam[]): string | null {
+  if (nearest.length === 0) return null;
+  const sentences = nearest.map(nearestSentence);
+  return `${sentences.join(" ")} Цены аналогов не пересчитаны.`;
+}
+
+function nearestSentence(n: NearestParam): string {
+  const quoted = n.after.map((a) => `«${lowerFirst(a)}»`).join(", ");
+  const after =
+    n.after.length === 0 ? "" : ` после отбора по ${n.after.length === 1 ? "параметру" : "параметрам"} ${quoted}`;
+  const added = n.values.filter((v) => v !== n.kp_value);
+  if (n.without_value) added.push("");
+  const addedText = n.without_value
+    ? added.length === 1
+      ? "строки без значения"
+      : `${added.slice(0, -1).join(", ")} и строки без значения`
+    : added.join(", ");
+  const shift = n.direction === null ? "" : `, ${SHIFT_TEXT[n.direction]}`;
+  const head = `${n.name} ${n.kp_value} на этой ступени${after}`;
+  if (n.kp_contracts === 0) return `${head} нет — взято ${addedText}${shift}.`;
+  const contracts = `${formatNumber(n.kp_contracts)} ${pluralForm(n.kp_contracts, "договоре", "договорах", "договорах")}`;
+  return `${head} — только в ${contracts}, добавлено ${addedText}${shift}.`;
+}
+
 /** Подпись под ценой в таблице строк: ступень и число аналогов; без ступени подписи нет. */
-export function workRungCaption(line: Pick<OurPriceLine, "work_rung" | "analogs_count">): string | null {
+export function workRungCaption(
+  line: Pick<OurPriceLine, "work_rung" | "analogs_count" | "contracts_count">
+): string | null {
   if (line.work_rung === null) return null;
   const mark = zoneScopeMark(line.work_rung.zone_scope);
-  return `${workRungLabel(line.work_rung)} · ${analogsCount(line.analogs_count)}${mark === null ? "" : ` · ${mark}`}`;
+  const count =
+    line.work_rung.nearest.length > 0
+      ? analogsInContracts(line.analogs_count, line.contracts_count)
+      : analogsCount(line.analogs_count);
+  return `${workRungLabel(line.work_rung)} · ${count}${mark === null ? "" : ` · ${mark}`}`;
 }
 
 /** Метка области подбора по зоне (спека зоны как предпочтения §5 п. 1-2): у своей зоны её нет. */

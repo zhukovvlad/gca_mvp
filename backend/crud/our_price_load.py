@@ -65,6 +65,7 @@ from services.composite_values import composite_parts
 from services.lump_sum import lump_check
 from services.our_price import HistoryContract, HistoryLine, KpLine, LineKey
 from services.our_price_money import CategoryRow
+from services.value_scale import Scale, scale_numbers
 from services.zone_rules import Zone, normalize_title
 
 #: Задание разбирается прямо сейчас (спека 4а §2.11).
@@ -631,15 +632,43 @@ def _family_ladder_infos(db: Session) -> dict[int, FamilyLadderInfo]:
         _, parameters = ordered.setdefault(family_id, (schema_id, []))
         if parameter_id is not None:
             parameters.append((parameter_id, name, releasable is True))
+    scales = _family_scales(db)
     return {
         family_id: FamilyLadderInfo(
             schema_id=schema_id,
             main_parameter_ids=tuple(pid for pid, _, _ in parameters),
             releasable_ids=frozenset(pid for pid, _, releasable in parameters if releasable),
             names={pid: name for pid, name, _ in parameters},
+            scales={pid: scales[pid] for pid, _, _ in parameters if pid in scales},
         )
         for family_id, (schema_id, parameters) in ordered.items()
     }
+
+
+def _family_scales(db: Session) -> dict[int, Scale]:
+    """Шкалы главных точных параметров действующих версий всех семей: parameter_id -> шкала
+    (спека ближайшего значения §1 п. 2). Значения без `retired_at`, `merged_into_id` и
+    `composite_kind`; один запрос на все семьи."""
+    texts: dict[int, list[tuple[int, str]]] = defaultdict(list)
+    for parameter_id, value_id, text in db.execute(
+        sa.select(FamilyParameter.id, FamilyParameterValue.id, FamilyParameterValue.value)
+        .select_from(FamilyParameterSchema)
+        .join(FamilyParameter, FamilyParameter.schema_id == FamilyParameterSchema.id)
+        .join(FamilyParameterValue, FamilyParameterValue.parameter_id == FamilyParameter.id)
+        .where(
+            FamilyParameterSchema.status == SchemaStatus.frozen.value,
+            FamilyParameter.role == ParameterRole.main.value,
+            FamilyParameter.archived_at.is_(None),
+            FamilyParameter.value_kind == "exact",
+            FamilyParameterValue.retired_at.is_(None),
+            FamilyParameterValue.merged_into_id.is_(None),
+            FamilyParameterValue.composite_kind.is_(None),
+        )
+        .order_by(FamilyParameter.id, FamilyParameterValue.id)
+    ).all():
+        texts[parameter_id].append((value_id, text))
+    found = ((parameter_id, scale_numbers(values)) for parameter_id, values in texts.items())
+    return {parameter_id: scale for parameter_id, scale in found if scale is not None}
 
 
 def _conflicted_parameters(db: Session, context_ids: Sequence[int]) -> dict[int, dict[int, frozenset[int]]]:

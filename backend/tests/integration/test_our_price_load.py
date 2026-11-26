@@ -34,6 +34,7 @@ from models import (
     ContextParameterValue,
     FamilyParameter,
     FamilyParameterSchema,
+    FamilyParameterValue,
     LumpSumOverride,
     PositionItem,
     PriceErrorMark,
@@ -2042,3 +2043,116 @@ class TestPriceErrorInWorkHistory:
 
         assert all(ln.price_error for ln in after.values())
         assert marked[0] == plain[0]
+
+
+class TestFamilyScales:
+    """Шкалы главных параметров в сведениях семей для лестницы (спека ближайшего значения §1)."""
+
+    def _scales(self, world, family):
+        return load._family_ladder_infos(world.db)[family.id].scales
+
+    def _mark(self, world, value_id, **columns):
+        world.db.execute(
+            sa.update(FamilyParameterValue).where(FamilyParameterValue.id == value_id).values(**columns)
+        )
+        world.db.flush()
+
+    def test_a_main_exact_parameter_with_numbers_is_a_scale(self, world):
+        family, schema = world.family()
+        parameter = world.param(schema, 1, "Класс бетона")
+        b25, b30 = world.value(parameter, "B25"), world.value(parameter, "B30")
+
+        scales = self._scales(world, family)
+
+        assert set(scales) == {parameter.id}
+        assert dict(scales[parameter.id].numbers) == {b25: D("25"), b30: D("30")}
+        assert dict(scales[parameter.id].texts) == {b25: "B25", b30: "B30"}
+
+    def test_a_composite_value_does_not_take_part_and_does_not_break_the_scale(self, world):
+        family, schema = world.family()
+        parameter = world.param(schema, 1, "Класс бетона")
+        b25, b30 = world.value(parameter, "B25"), world.value(parameter, "B30")
+        either = world.value(parameter, "B25 или B30")
+        self._mark(world, either, composite_kind="any", composite_key=f"any:{b25},{b30}")
+
+        scales = self._scales(world, family)
+
+        assert dict(scales[parameter.id].numbers) == {b25: D("25"), b30: D("30")}
+
+    def test_a_retired_or_merged_value_does_not_take_part(self, world):
+        family, schema = world.family()
+        parameter = world.param(schema, 1, "Толщина")
+        a, b = world.value(parameter, "50 мм"), world.value(parameter, "60 мм")
+        retired, merged = world.value(parameter, "70 мм"), world.value(parameter, "65 мм")
+        self._mark(world, retired, retired_at=NOW)
+        self._mark(world, merged, merged_into_id=b)
+
+        scales = self._scales(world, family)
+
+        assert dict(scales[parameter.id].numbers) == {a: D("50"), b: D("60")}
+
+    def test_after_the_other_values_are_gone_one_value_is_not_a_scale(self, world):
+        family, schema = world.family()
+        parameter = world.param(schema, 1, "Толщина")
+        world.value(parameter, "50 мм")
+        retired = world.value(parameter, "60 мм")
+        self._mark(world, retired, retired_at=NOW)
+
+        assert self._scales(world, family) == {}
+
+    def test_a_non_numeric_parameter_is_not_in_the_scales(self, world):
+        family, schema = world.family()
+        scale = world.param(schema, 1, "Толщина")
+        size = world.param(schema, 2, "Размер")
+        world.value(scale, "50 мм")
+        world.value(scale, "60 мм")
+        world.value(size, "600×600")
+        world.value(size, "800×800")
+
+        assert set(self._scales(world, family)) == {scale.id}
+
+    def test_secondary_archived_and_range_parameters_are_not_in_the_scales(self, world):
+        family, schema = world.family()
+        main = world.param(schema, 1, "Класс")
+        secondary = world.param(schema, 2, "Марка", role="secondary")
+        archived = world.param(schema, 3, "Старый", archived=True)
+        ranged = world.param(schema, 4, "Диаметр")
+        ranged.value_kind, ranged.closed = "range", True
+        ranged.range_from, ranged.range_to, ranged.range_step = D("100"), D("200"), D("50")
+        for parameter in (main, secondary, archived, ranged):
+            world.value(parameter, "100")
+            world.value(parameter, "150")
+        world.db.flush()
+
+        assert set(self._scales(world, family)) == {main.id}
+
+    def test_a_parameter_of_a_version_that_is_not_current_is_not_in_the_scales(self, world):
+        family, schema = world.family()
+        old = world.param(schema, 1, "Класс")
+        world.value(old, "B25")
+        world.value(old, "B30")
+        current = world.supersede(family, schema)
+        fresh = world.param(current, 1, "Класс")
+        world.value(fresh, "B25")
+        world.value(fresh, "B30")
+
+        scales = self._scales(world, family)
+
+        assert set(scales) == {fresh.id}
+
+    def test_scales_are_read_with_one_extra_statement_for_any_number_of_families(self, world, db_session):
+        family, schema = world.family()
+        world.value(world.param(schema, 1, "Класс"), "B25")
+        with count_statements(db_session) as few:
+            load._family_ladder_infos(db_session)
+        for index in range(5):
+            other, other_schema = world.family(f"Семья {index}")
+            parameter = world.param(other_schema, 1, "Класс")
+            world.value(parameter, "B25")
+            world.value(parameter, "B30")
+        with count_statements(db_session) as many:
+            infos = load._family_ladder_infos(db_session)
+
+        assert len(infos) == 6
+        assert many[0] == few[0]
+        assert sum(1 for info in infos.values() if info.scales) == 5

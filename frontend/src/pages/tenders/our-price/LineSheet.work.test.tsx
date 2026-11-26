@@ -99,7 +99,7 @@ describe("панель строки-работы: сравнение", () => {
         line: {
           zone: "underground",
           analogs_count: analogs.length,
-          work_rung: { no: 1, released: [], other_class: false, zone_scope },
+          work_rung: { no: 1, released: [], nearest: [], other_class: false, zone_scope },
         },
         analogs,
       });
@@ -185,10 +185,65 @@ describe("панель строки-работы: сравнение", () => {
 
   it("ступень 2 с другим классом: «без …» и «другой класс»", async () => {
     serve(() =>
-      workLineViewFixture({ line: { work_rung: { no: 4, released: ["Марка W", "Толщина"], other_class: true, zone_scope: "own" } } })
+      workLineViewFixture({ line: { work_rung: { no: 4, released: ["Марка W", "Толщина"], nearest: [], other_class: true, zone_scope: "own" } } })
     );
     renderSheet();
     expect(await screen.findByTestId("sheet-comparison")).toHaveTextContent("без учёта: марка W, толщина · другой класс");
+  });
+
+  describe("ближайшее значение шкалы (А14)", () => {
+    const near = {
+      name: "Класс бетона по прочности",
+      kp_value: "B35",
+      values: ["B35", "B40"],
+      kp_contracts: 1,
+      direction: "up" as const,
+      without_value: false,
+      after: [],
+    };
+
+    it("с nearest: подпись ступени с «ближайшее: …» и абзац nearest-why рядом с абзацем зоны", async () => {
+      serve(() =>
+        workLineViewFixture({
+          line: { work_rung: { no: 4, released: [], nearest: [near], other_class: false, zone_scope: "any" } },
+        })
+      );
+      renderSheet();
+      const comparison = await screen.findByTestId("sheet-comparison");
+      expect(comparison).toHaveTextContent("ближайшее: класс бетона по прочности B35–B40 ↑");
+      expect(screen.getByTestId("nearest-why")).toHaveTextContent(
+        "Класс бетона по прочности B35 на этой ступени — только в 1 договоре, добавлено B40, выше, чем в КП. Цены аналогов не пересчитаны."
+      );
+      expect(screen.getByTestId("zone-scope-why")).toBeInTheDocument();
+    });
+
+    it("без nearest абзаца нет", async () => {
+      serve(() => workLineViewFixture());
+      renderSheet();
+      await screen.findByTestId("sheet-comparison");
+      expect(screen.queryByTestId("nearest-why")).not.toBeInTheDocument();
+    });
+
+    it("колонка «При подборе»: «ближайшее: B40» у параметра с nearest", async () => {
+      serve(() =>
+        workLineViewFixture({
+          line: {
+            work_rung: { no: 4, released: [], nearest: [near], other_class: false, zone_scope: "own" },
+            params: [
+              ourPriceParamFixture({
+                name: "Класс бетона по прочности",
+                value: "B35",
+                match: "nearest",
+                nearest: { values: ["B40"], without_value: false },
+              }),
+            ],
+          },
+        })
+      );
+      renderSheet();
+      const section = await screen.findByTestId("sheet-work-params");
+      expect(within(section).getByTestId("work-param-row")).toHaveTextContent("ближайшее: B40");
+    });
   });
 
   it("две карточки: цена, объект и договор, дата цены, разница КП к ней со знаком", async () => {
@@ -838,11 +893,11 @@ describe("панель строки: параметры варианта", () =>
   it("колонки аналогов: имя из analog_columns, значение и подсветка у аналога", async () => {
     serve(() => {
       const view = workLineViewFixture({
-        line: { work_rung: { no: 2, released: ["Марка W"], other_class: false, zone_scope: "own" } },
+        line: { work_rung: { no: 2, released: ["Марка W"], nearest: [], other_class: false, zone_scope: "own" } },
         analogs: [
           ourPriceAnalogFixture({
             analog_id: 8001,
-            released_values: [{ value: "W8", conflict: false, differs: true }],
+            released_values: [{ value: "W8", conflict: false, differs: true, side: null }],
           }),
         ],
       });
@@ -1026,7 +1081,7 @@ describe("панель строки-работы: исключённые из а
   it("строка «почему ушёл дальше» стоит над карточками «Сравнения», когда пара следа раньше пары work_rung", async () => {
     serve(() =>
       withExcluded([excluded(1, { step: { rung: 4, zone_scope: "own" } })], {
-        work_rung: { no: 4, released: ["Марка"], other_class: false, zone_scope: "other" },
+        work_rung: { no: 4, released: ["Марка"], nearest: [], other_class: false, zone_scope: "other" },
       })
     );
     renderSheet();

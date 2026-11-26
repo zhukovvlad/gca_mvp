@@ -11,9 +11,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal, localcontext
+from types import MappingProxyType
 from typing import Literal
 
 from money.inflation import YearMonth, adjust_amount
@@ -21,10 +22,15 @@ from money.price import is_price, is_weight
 from money.vat import gross_to_net
 from services.price_basis import _CONTEXT, HistoryContract, median, outside
 from services.reference_math import outlier_ratios_of
+from services.value_scale import Scale
 from services.zone_rules import Zone
 
 #: Нетто за единицу без приведения меньше этого — цена символическая, не аналог (§2.8 п. 4).
 MIN_NOMINAL: Decimal = Decimal(1)
+
+#: Сколько различных договоров должно набраться у сужения по шкале, прежде чем круги кончатся
+#: (спека ближайшего значения §2 п. 4); без настройки.
+MIN_CONTRACTS = 3
 
 RungNo = Literal[1, 2, 3, 4]
 NoHistoryReason = Literal["excluded", "no_family", "path_conflict", "composite", "no_params", "no_zone_match"]
@@ -105,6 +111,8 @@ class FamilyLadderInfo:
     main_parameter_ids: tuple[int, ...]
     releasable_ids: frozenset[int]
     names: Mapping[int, str]
+    #: parameter_id -> шкала главного точного параметра; только параметры-шкалы (спека ближайшего значения §1).
+    scales: Mapping[int, Scale] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -128,6 +136,29 @@ class Figure:
     value: Decimal
     analog_id: int | None
     contract_id: int | None
+
+
+#: Куда сдвинуты числа взятого набора относительно числа КП (спека ближайшего значения §2 п. 7).
+Direction = Literal["up", "down", "both"]
+
+
+@dataclass(frozen=True)
+class NearestParam:
+    """Итог сужения по одному параметру-шкале (спека ближайшего значения §2 п. 7)."""
+
+    parameter_id: int
+    name: str
+    kp_value: str
+    #: Тексты значений с числом в окончательном наборе, по возрастанию числа, затем по id значения.
+    values: tuple[str, ...]
+    #: Договоров с числом, равным числу КП, среди кандидатов шага этого параметра (до его сужения).
+    kp_contracts: int
+    #: Куда сдвинуты числа окончательного набора, отличные от числа КП; `None` — таких нет.
+    direction: Direction | None
+    #: В окончательном наборе есть кандидаты без числа этого параметра.
+    without_value: bool
+    #: Имена шкал, сузивших набор раньше этого параметра (не пропущенных), по порядку.
+    after: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -154,6 +185,10 @@ class WorkLadder:
     #: выходит; спека «Не аналог» §3 п. 6): у строки без ступени равна `no_history_reason`, а у причины
     #: `excluded` показывает, что было бы без следа; у строки со ступенью — `None`.
     base_reason: NoHistoryReason | None = None
+    #: Шкалы, по которым набор сужен до ближайших значений, по порядку параметров (спека ближайшего значения §2).
+    nearest: tuple[NearestParam, ...] = ()
+    #: Шкалы, у которых в окончательном наборе все числа равны числу КП и нет кандидатов без числа.
+    matched: frozenset[int] = frozenset()
 
 
 #: Пара «область, ступень» подбора.
@@ -249,7 +284,7 @@ def _values_key(
     )
 
 
-MatchRule = Literal["required", "ignored", "same_set"]
+MatchRule = Literal["required", "ignored", "same_set", "nearest", "matched"]
 ParamsBasis = Literal["rung", "catalog"]
 
 
@@ -287,6 +322,10 @@ def _rung_two_rules(
     return rules
 
 
+#: Пустое отображение для значения по умолчанию: изменяемое `{}` в сигнатуре запрещено.
+_NO_NEAREST: Mapping[int, NearestParam] = MappingProxyType({})
+
+
 def params_rule(
     *,
     main_ids: Sequence[int],
@@ -298,10 +337,15 @@ def params_rule(
     info: FamilyLadderInfo | None,
     work_rung: RungNo | None,
     system_level: Literal["v", "p", "f"] | None,
+    nearest: Mapping[int, NearestParam] = _NO_NEAREST,
+    matched: frozenset[int] = frozenset(),
 ) -> ParamsRule:
     """Правило «при подборе» для главных параметров варианта строки (спека параметров варианта §2.3).
 
     `main_ids` — главные параметры схемы варианта по `ordinal`; `info` — семья на действующей схеме.
+    `nearest` и `matched` — шкалы, сужённые до ближайших значений и совпавшие (спека ближайшего значения §3
+    п. 3): они подменяют правило отпускаемого параметра только при фактическом подборе на ступенях 2 и 4;
+    у систем, ступеней 1 и 3 и основания `catalog` правило прежнее.
     """
     if not has_variant:
         return ParamsRule(basis=None, main={}, secondary=None)
@@ -318,7 +362,13 @@ def params_rule(
     if work_rung in (1, 3):
         return ParamsRule(basis="rung", main={p: "required" for p in main_ids}, secondary="ignored")
     if work_rung in (2, 4):
-        return ParamsRule(basis="rung", main=_rung_two_rules(main_ids, forms, conflicted, info), secondary="ignored")
+        rules = _rung_two_rules(main_ids, forms, conflicted, info)
+        for parameter_id in main_ids:
+            if parameter_id in nearest:
+                rules[parameter_id] = "nearest"
+            elif parameter_id in matched:
+                rules[parameter_id] = "matched"
+        return ParamsRule(basis="rung", main=rules, secondary="ignored")
     if info is not None and schema_id == info.schema_id:
         return ParamsRule(basis="catalog", main=_rung_two_rules(main_ids, forms, conflicted, info), secondary="ignored")
     return ParamsRule(basis="catalog", main={p: "required" for p in main_ids}, secondary="ignored")
@@ -595,6 +645,11 @@ def ladder_for(
         )
     assert chosen_scope is not None
 
+    narrowed: _Narrowed | None = None
+    if chosen in (2, 4):
+        narrowed = _narrow_scales(kp, info, picked)
+        picked = narrowed.picked
+
     outlier_ratio = _outlier_ratios(picked)
     remainder = [c for c in picked if outlier_ratio[c.line.position_item_id] is None]
     all_outliers = not remainder
@@ -640,11 +695,18 @@ def ladder_for(
         for c in reference
     )
 
-    dropped = dropped_on(chosen_scope, chosen, {c.contract.contract_id for c in picked})
+    dropped = dropped_on(
+        chosen_scope,
+        chosen,
+        {c.contract.contract_id for c in picked},
+        accepts=narrowed.accepts if narrowed is not None and narrowed.accepts else None,
+    )
+    nearest = narrowed.nearest if narrowed is not None else ()
+    matched = narrowed.matched if narrowed is not None else frozenset()
 
     return WorkLadder(
         rung_no=chosen,
-        released=_released_names(chosen, info),
+        released=_released_names(chosen, info, skip={n.parameter_id for n in nearest} | matched),
         other_class=chosen in (3, 4),
         zone=kp.zone,
         analogs=analogs,
@@ -657,6 +719,8 @@ def ladder_for(
         vat_dropped=tuple(sorted(dropped)),
         contractor=contractor,
         zone_scope=chosen_scope,
+        nearest=nearest,
+        matched=matched,
     )
 
 
@@ -690,6 +754,7 @@ class _Search:
         # зоны — вся история; иначе своя зона, а если в ней ни одна ступень ничего не нашла — все остальные.
         self.strict = kp.zone_required or kp.family_id in history.zone_required
         self.scopes = _scopes(kp.zone, strict=self.strict)
+        self.scales: Mapping[int, Scale] = {} if info is None else info.scales
 
     # Ступень берёт строки области: ступени 1 и 3 — с вариантом строки КП, ступени 2 и 4 — с её значениями
     # неотпускаемых параметров на действующей версии схемы, и только если у строки КП доступна лестница
@@ -719,13 +784,31 @@ class _Search:
     def class_fits(self, rung_no: RungNo, contract: HistoryContract) -> bool:
         return (contract.rate_class_id == self.tender_class_id) == (rung_no in (1, 2))
 
-    def dropped_on(self, scope: ZoneScope, rung_no: RungNo, picked_ids: set[int]) -> set[int]:
+    def dropped_on(
+        self,
+        scope: ZoneScope,
+        rung_no: RungNo,
+        picked_ids: set[int],
+        accepts: Mapping[int, tuple[frozenset[int], bool]] | None = None,
+    ) -> set[int]:
+        """Договоры без НДС той же пары, не попавшие в набор. С `accepts` (сужение по шкалам, спека ближайшего
+        значения §2 п. 5) строка проходит, только если по каждому суженному параметру у неё число из взятых
+        кругов либо числа нет и круг без числа остался."""
         unknown = self.rung_slice(scope, rung_no, *_unknown_maps(rung_no, self.pool))
         return {
             contract.contract_id
-            for _line, contract in unknown
-            if self.class_fits(rung_no, contract) and contract.contract_id not in picked_ids
+            for line, contract in unknown
+            if self.class_fits(rung_no, contract)
+            and contract.contract_id not in picked_ids
+            and (accepts is None or self._accepted(line, accepts))
         }
+
+    def _accepted(self, line: WorkHistoryLine, accepts: Mapping[int, tuple[frozenset[int], bool]]) -> bool:
+        for p, (value_ids, without_kept) in accepts.items():
+            value_id = _number_value(line, p, self.scales[p])
+            if not (value_id in value_ids if value_id is not None else without_kept):
+                return False
+        return True
 
     def pairs(self) -> list[ExcludedStep]:
         return [(scope, rung_no) for scope in self.scopes for rung_no in _RUNGS]
@@ -934,10 +1017,161 @@ def _part_scope(
     return other, "other" if other else None
 
 
-def _released_names(rung_no: RungNo, info: FamilyLadderInfo | None) -> tuple[str, ...]:
+def _released_names(
+    rung_no: RungNo, info: FamilyLadderInfo | None, skip: Collection[int] = ()
+) -> tuple[str, ...]:
+    """Имена отпускаемых параметров, кроме `skip` — шкал, по которым набор сужен или совпал."""
     if rung_no in (1, 3) or info is None:
         return ()
-    return tuple(info.names[p] for p in info.main_parameter_ids if p in info.releasable_ids)
+    return tuple(info.names[p] for p in info.main_parameter_ids if p in info.releasable_ids and p not in skip)
+
+
+def _number_value(line: WorkHistoryLine, parameter_id: int, scale: Scale) -> int | None:
+    """value_id строки, если у неё есть число шкалы (спека ближайшего значения §2 п. 3), иначе `None`:
+    значение не уточнено, конфликт, снято или слито и ещё не пересвязано."""
+    if parameter_id in line.conflicted:
+        return None
+    value_id = line.main_values.get(parameter_id)
+    return value_id if value_id in scale.numbers else None
+
+
+def _distance(value: Decimal, target: Decimal) -> Decimal:
+    """Расстояние до числа КП — отношение большего числа к меньшему (спека ближайшего значения §2 п. 4)."""
+    with localcontext(_CONTEXT):
+        return max(value, target) / min(value, target)
+
+
+@dataclass(frozen=True)
+class _Narrowed:
+    picked: list[_Candidate]
+    nearest: tuple[NearestParam, ...]
+    matched: frozenset[int]
+    #: parameter_id не пропущенной шкалы -> (value_id взятых кругов, остался ли круг без числа).
+    accepts: Mapping[int, tuple[frozenset[int], bool]]
+    #: Пропущенные шкалы и шкалы без чисел в окончательном наборе.
+    released_scales: frozenset[int]
+
+
+@dataclass(frozen=True)
+class _Step:
+    parameter_id: int
+    target: Decimal
+    kp_contracts: int
+    after: tuple[str, ...]
+
+
+def _narrow_scales(kp: KpWork, info: FamilyLadderInfo | None, picked: Sequence[_Candidate]) -> _Narrowed:
+    """Сужение набора ступени 2 или 4 до ближайших значений шкал (спека ближайшего значения §2 п. 2–7).
+
+    Шкалы идут по порядку параметров, каждая работает на наборе предыдущей. Первый круг берётся всегда,
+    поэтому набор не пустеет. Пометки по параметрам строятся по окончательному набору, после всех шкал."""
+    current = list(picked)
+    if info is None or not info.scales:
+        return _Narrowed(current, (), frozenset(), {}, frozenset())
+    skipped: set[int] = set()
+    accepts: dict[int, tuple[frozenset[int], bool]] = {}
+    steps: list[_Step] = []
+    earlier: list[str] = []
+    for p in _releasable_ids(info):
+        scale = info.scales.get(p)
+        if scale is None:
+            continue
+        kp_value = kp.main_values.get(p)
+        if (
+            p in kp.conflicted
+            or _form(kp.forms, kp.conflicted, p) != "simple"
+            or kp_value is None
+            or kp_value not in scale.numbers
+        ):
+            skipped.add(p)
+            continue
+        target = scale.numbers[kp_value]
+        by_distance: dict[Decimal, list[_Candidate]] = {}
+        without: list[_Candidate] = []
+        kp_contracts: set[int] = set()
+        for cand in current:
+            value_id = _number_value(cand.line, p, scale)
+            if value_id is None:
+                without.append(cand)
+                continue
+            number = scale.numbers[value_id]
+            if number == target:
+                kp_contracts.add(cand.contract.contract_id)
+            by_distance.setdefault(_distance(number, target), []).append(cand)
+        if not by_distance:
+            skipped.add(p)
+            continue
+        # Круги по возрастанию расстояния; круг без числа последний и только когда числовые кончились при
+        # договорах < MIN_CONTRACTS. Круг: (расстояние или None для круга без числа, кандидаты, добавил ли
+        # он новый договор). Хвост без нового договора отбрасывается (спека ред. 5, §2 п. 4).
+        rounds: list[tuple[Decimal | None, list[_Candidate], bool]] = []
+        contracts: set[int] = set()
+        for distance in sorted(by_distance):
+            before = len(contracts)
+            contracts.update(c.contract.contract_id for c in by_distance[distance])
+            rounds.append((distance, by_distance[distance], len(contracts) > before))
+            if len(contracts) >= MIN_CONTRACTS:
+                break
+        if len(contracts) < MIN_CONTRACTS:
+            before = len(contracts)
+            contracts.update(c.contract.contract_id for c in without)
+            rounds.append((None, without, len(contracts) > before))
+        while len(rounds) > 1 and not rounds[-1][2]:
+            rounds.pop()
+        without_kept = rounds[-1][0] is None
+        reach = [d for d, _, _ in rounds if d is not None][-1]
+        taken = [c for _, group, _ in rounds for c in group]
+        accepts[p] = (
+            frozenset(vid for vid, number in scale.numbers.items() if _distance(number, target) <= reach),
+            without_kept,
+        )
+        steps.append(_Step(p, target, len(kp_contracts), tuple(earlier)))
+        earlier.append(info.names[p])
+        keep = {c.line.position_item_id for c in taken}
+        current = [c for c in current if c.line.position_item_id in keep]
+
+    nearest: list[NearestParam] = []
+    matched: set[int] = set()
+    released = set(skipped)
+    for step in steps:
+        p = step.parameter_id
+        scale = info.scales[p]
+        found: dict[int, Decimal] = {}
+        without_value = False
+        for cand in current:
+            value_id = _number_value(cand.line, p, scale)
+            if value_id is None:
+                without_value = True
+            else:
+                found[value_id] = scale.numbers[value_id]
+        if not found:
+            released.add(p)
+            continue
+        others = [n for n in found.values() if n != step.target]
+        if not others and not without_value:
+            matched.add(p)
+            continue
+        higher = any(n > step.target for n in others)
+        lower = any(n < step.target for n in others)
+        direction: Direction | None = None
+        if others:
+            direction = "both" if higher and lower else "up" if higher else "down"
+        ordered = sorted(found, key=lambda vid: (found[vid], vid))
+        kp_value_id = kp.main_values[p]
+        assert kp_value_id is not None
+        nearest.append(
+            NearestParam(
+                parameter_id=p,
+                name=info.names[p],
+                kp_value=scale.texts[kp_value_id],
+                values=tuple(scale.texts[vid] for vid in ordered),
+                kp_contracts=step.kp_contracts,
+                direction=direction,
+                without_value=without_value,
+                after=step.after,
+            )
+        )
+    return _Narrowed(current, tuple(nearest), frozenset(matched), accepts, frozenset(released))
 
 
 def _no_history_reason(

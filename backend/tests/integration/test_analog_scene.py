@@ -706,7 +706,7 @@ class TestAnalogs:
         line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
 
         assert line["state"] == "comparable"
-        assert line["work_rung"] == {"no": 2, "released": ["Марка"], "other_class": False, "zone_scope": "own"}
+        assert line["work_rung"] == {"no": 2, "released": ["Марка"], "nearest": [], "other_class": False, "zone_scope": "own"}
 
     def test_rung_four_is_the_other_class_with_the_released_parameter(
         self, member_client, stage, world, db_session, factories
@@ -715,7 +715,7 @@ class TestAnalogs:
 
         line = _line_of(_ok(member_client, stage.tender, rnd, part), item)
 
-        assert line["work_rung"] == {"no": 4, "released": ["Марка"], "other_class": True, "zone_scope": "own"}
+        assert line["work_rung"] == {"no": 4, "released": ["Марка"], "nearest": [], "other_class": True, "zone_scope": "own"}
         assert line["lowest"]["from_all_classes"] is True
 
     def test_without_a_released_parameter_the_other_variant_is_not_an_analog(

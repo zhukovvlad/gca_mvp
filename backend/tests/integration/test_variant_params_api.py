@@ -42,6 +42,7 @@ PARAM_KEYS = {
     "refreshing",
     "catalog_value",
     "match",
+    "nearest",
 }
 
 
@@ -256,18 +257,18 @@ class TestReleasedColumns:
 
         panel = _panel(member_client, stage.tender, rnd, part, item)
 
-        assert panel["line"]["work_rung"] == {"no": 2, "released": ["Марка", "Отделка"], "other_class": False, "zone_scope": "own"}
+        assert panel["line"]["work_rung"] == {"no": 2, "released": ["Марка", "Отделка"], "nearest": [], "other_class": False, "zone_scope": "own"}
         assert panel["analog_columns"] == [{"name": "Марка"}, {"name": "Отделка"}]
         by_value = {
             a["released_values"][0]["value"] + "/" + a["released_values"][1]["value"]: a for a in panel["analogs"]
         }
         assert by_value["Б/Икс"]["released_values"] == [
-            {"value": "Б", "conflict": False, "differs": True},
-            {"value": "Икс", "conflict": False, "differs": False},
+            {"value": "Б", "conflict": False, "differs": True, "side": None},
+            {"value": "Икс", "conflict": False, "differs": False, "side": None},
         ]
         assert by_value["А/Игрек"]["released_values"] == [
-            {"value": "А", "conflict": False, "differs": False},
-            {"value": "Игрек", "conflict": False, "differs": True},
+            {"value": "А", "conflict": False, "differs": False, "side": None},
+            {"value": "Игрек", "conflict": False, "differs": True, "side": None},
         ]
 
     def test_a_composite_value_is_shown_by_its_text(self, member_client, stage, world, db_session):
@@ -278,7 +279,7 @@ class TestReleasedColumns:
         panel = _panel(member_client, stage.tender, rnd, part, item)
 
         (analog,) = panel["analogs"]
-        assert analog["released_values"][0] == {"value": "А + Б", "conflict": False, "differs": False}
+        assert analog["released_values"][0] == {"value": "А + Б", "conflict": False, "differs": False, "side": None}
 
     @pytest.mark.parametrize(
         ("own_class", "history", "expected_rung"),
@@ -344,7 +345,7 @@ class TestReleasedColumns:
         (found,) = panel["analogs"]
         assert found["released_values"][0]["conflict"] is True
         assert found["released_values"][0]["differs"] is True
-        assert found["released_values"][1] == {"value": "Икс", "conflict": False, "differs": False}
+        assert found["released_values"][1] == {"value": "Икс", "conflict": False, "differs": False, "side": None}
 
     def test_a_conflict_of_the_kp_row_differs_even_with_the_same_value_id(
         self, member_client, stage, world, db_session
@@ -366,8 +367,8 @@ class TestReleasedColumns:
         assert panel["line"]["work_rung"]["no"] == 2
         (found,) = panel["analogs"]
         assert found["released_values"] == [
-            {"value": "А", "conflict": False, "differs": True},
-            {"value": "Икс", "conflict": False, "differs": False},
+            {"value": "А", "conflict": False, "differs": True, "side": None},
+            {"value": "Икс", "conflict": False, "differs": False, "side": None},
         ]
 
     def test_two_empty_values_without_a_conflict_do_not_differ(self, member_client, stage, world, db_session):
@@ -378,7 +379,7 @@ class TestReleasedColumns:
         panel = _panel(member_client, stage.tender, rnd, part, item)
 
         (analog,) = panel["analogs"]
-        assert analog["released_values"][0] == {"value": None, "conflict": False, "differs": False}
+        assert analog["released_values"][0] == {"value": None, "conflict": False, "differs": False, "side": None}
         assert analog["released_values"][1]["differs"] is True
 
     def test_an_empty_analog_value_against_a_filled_one_differs(self, member_client, stage, world, db_session):
@@ -387,7 +388,7 @@ class TestReleasedColumns:
         panel = _panel(member_client, stage.tender, rnd, part, item)
 
         (analog,) = panel["analogs"]
-        assert analog["released_values"][0] == {"value": None, "conflict": False, "differs": True}
+        assert analog["released_values"][0] == {"value": None, "conflict": False, "differs": True, "side": None}
 
 
 class TestEveryAnalogMatchesTheRow:

@@ -74,6 +74,24 @@ describe("блок А: та же работа в другой зоне", () => {
     expect(row).toHaveTextContent("КП +182 %");
   });
 
+  it("группа с nearest: подпись группы с «ближайшее: …»", async () => {
+    serve(() =>
+      referenceLineViewFixture({
+        zones: [
+          referenceZoneGroupFixture({
+            rung_no: 4,
+            nearest: [
+              { name: "Класс бетона по прочности", kp_value: "B35", values: ["B40"], kp_contracts: 0, direction: "up", without_value: false, after: [] },
+            ],
+          }),
+        ],
+      })
+    );
+    renderSheet();
+    const group = await screen.findByTestId("reference-zone-territory");
+    expect(group).toHaveTextContent("ближайшее: класс бетона по прочности B40 ↑");
+  });
+
   it("подпись панели у строки: нет аналога в своей зоне и где он есть", async () => {
     serve(() => referenceLineViewFixture({ zones: [referenceZoneGroupFixture({ rows: sevenRows() })] }));
     renderSheet();

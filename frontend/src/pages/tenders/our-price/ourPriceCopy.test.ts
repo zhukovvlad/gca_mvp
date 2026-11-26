@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import { lumpFixture, lumpLineFixture, ourPriceLineFixture } from "@/test/fixtures";
-import type { WorkRung } from "@/types/domain";
+import type { NearestParam, WorkRung } from "@/types/domain";
 
-import { formatRatio, linesCount, offerSubtitle, progressCaption, roundSubtitle, priceBasisLabel,VAT_NET_LABEL, VAT_UNKNOWN_LABEL, inflationCaptionOf, KP_NOT_ADJUSTED_NOTE, groupLinesCaption, ratioNote, unitWarnContracts, unitWarnKp, isWaitingAdminLine, LINE_STATE_LABEL, lineStateLabel, periodRu, targetInactiveNote, WAITING_ADMIN_LABEL, workRungCaption, workRungLabel, analogsMore, COMPOSITE_NO_TARGET, EXPORT_SOURCE, TARGET_CARD, TARGET_MARK, targetSameContract, otherZonesLabel, zoneScopeMark, otherZonesWhy, ANY_ZONE_WHY, analogZoneBadge, zoneRequiredNote, zoneRequiredNoZonePrefix, refLinkTitle, refSections, refTruncated, FILTER_HINT, lumpCaption, lumpOverrideNote, lumpUnitGenitive, lumpWhy, NO_HISTORY_REASON_LABEL, TARGET_RESET_REASON, MARK_ACTION, MARK_DIALOG_TITLE, MARK_KIND_LABEL, MARK_CLEAR, markFormLabel, markScopeText, excludedPairLabel, excludedWouldBe, excludedTitle, excludedMovedOn } from "./ourPriceCopy";
+import { formatRatio, linesCount, offerSubtitle, progressCaption, roundSubtitle, priceBasisLabel,VAT_NET_LABEL, VAT_UNKNOWN_LABEL, inflationCaptionOf, KP_NOT_ADJUSTED_NOTE, groupLinesCaption, ratioNote, unitWarnContracts, unitWarnKp, isWaitingAdminLine, LINE_STATE_LABEL, lineStateLabel, periodRu, targetInactiveNote, WAITING_ADMIN_LABEL, workRungCaption, workRungLabel, analogsMore, COMPOSITE_NO_TARGET, EXPORT_SOURCE, TARGET_CARD, TARGET_MARK, targetSameContract, otherZonesLabel, zoneScopeMark, otherZonesWhy, ANY_ZONE_WHY, analogZoneBadge, zoneRequiredNote, zoneRequiredNoZonePrefix, refLinkTitle, refSections, refTruncated, FILTER_HINT, lumpCaption, lumpOverrideNote, lumpUnitGenitive, lumpWhy, NO_HISTORY_REASON_LABEL, TARGET_RESET_REASON, MARK_ACTION, MARK_DIALOG_TITLE, MARK_KIND_LABEL, MARK_CLEAR, markFormLabel, markScopeText, excludedPairLabel, excludedWouldBe, excludedTitle, excludedMovedOn, nearestWhy, sideText } from "./ourPriceCopy";
 
 describe("groupLinesCaption", () => {
   it.each([
@@ -130,15 +130,15 @@ describe("priceBasisLabel", () => {
 
 describe("лестница аналогов: подписи", () => {
   it("подпись ступени работы: 1-2 по классу объекта, 3-4 с «другой класс»; 2 и 4 называют отпущенные параметры", () => {
-    expect(workRungLabel({ no: 1, released: [], other_class: false })).toBe("тот же вариант");
-    expect(workRungLabel({ no: 2, released: ["Марка W", "Толщина"], other_class: false })).toBe("без учёта: марка W, толщина");
-    expect(workRungLabel({ no: 2, released: ["МАФ"], other_class: false })).toBe("без учёта: МАФ");
-    expect(workRungLabel({ no: 3, released: [], other_class: true })).toBe("тот же вариант · другой класс");
-    expect(workRungLabel({ no: 4, released: ["Марка W"], other_class: true })).toBe("без учёта: марка W · другой класс");
+    expect(workRungLabel({ no: 1, released: [], nearest: [], other_class: false })).toBe("тот же вариант");
+    expect(workRungLabel({ no: 2, released: ["Марка W", "Толщина"], nearest: [], other_class: false })).toBe("без учёта: марка W, толщина");
+    expect(workRungLabel({ no: 2, released: ["МАФ"], nearest: [], other_class: false })).toBe("без учёта: МАФ");
+    expect(workRungLabel({ no: 3, released: [], nearest: [], other_class: true })).toBe("тот же вариант · другой класс");
+    expect(workRungLabel({ no: 4, released: ["Марка W"], nearest: [], other_class: true })).toBe("без учёта: марка W · другой класс");
   });
 
   it("«N аналогов»: склонение 1, 2-4, 5, 11, 21", () => {
-    const caption = (n: number) => workRungCaption({ work_rung: { no: 1, released: [], other_class: false, zone_scope: "own" }, analogs_count: n });
+    const caption = (n: number) => workRungCaption({ work_rung: { no: 1, released: [], nearest: [], other_class: false, zone_scope: "own" }, analogs_count: n, contracts_count: 0 });
     expect(caption(1)).toBe("тот же вариант · 1 аналог");
     expect(caption(3)).toBe("тот же вариант · 3 аналога");
     expect(caption(5)).toBe("тот же вариант · 5 аналогов");
@@ -147,7 +147,7 @@ describe("лестница аналогов: подписи", () => {
   });
 
   it("строка без ступени подписи не имеет", () => {
-    expect(workRungCaption({ work_rung: null, analogs_count: 0 })).toBeNull();
+    expect(workRungCaption({ work_rung: null, analogs_count: 0, contracts_count: 0 })).toBeNull();
   });
 
   it("причины no_history: no_family, no_params, no_zone_match с зоной; отдельный код — своя подпись", () => {
@@ -308,8 +308,9 @@ describe("зона как предпочтение: подписи (спека �
 
   it("подпись под вилкой: к ступени добавляется метка области", () => {
     const rung = (zone_scope: "own" | "other" | "any") => ({
-      work_rung: { no: 1 as const, released: [], other_class: false, zone_scope },
+      work_rung: { no: 1 as const, released: [], nearest: [], other_class: false, zone_scope },
       analogs_count: 3,
+      contracts_count: 0,
     });
     expect(workRungCaption(rung("own"))).toBe("тот же вариант · 3 аналога");
     expect(workRungCaption(rung("other"))).toBe("тот же вариант · 3 аналога · другая зона");
@@ -317,7 +318,7 @@ describe("зона как предпочтение: подписи (спека �
   });
 
   it("workRungLabel не меняется от области (им подписаны группы справки А)", () => {
-    const rung: WorkRung = { no: 1, released: [], other_class: false, zone_scope: "other" };
+    const rung: WorkRung = { no: 1, released: [], nearest: [], other_class: false, zone_scope: "other" };
     expect(workRungLabel(rung)).toBe("тот же вариант");
   });
 
@@ -499,5 +500,155 @@ describe("отметки «не аналог»: тексты", () => {
     ).toBe(
       "Ступень 4, другие зоны: на ступени 4 своей зоны аналоги исключены вручную (1); на ступени 2 своей зоны аналоги исключены вручную (2)"
     );
+  });
+});
+
+const nearestParam = (over: Partial<NearestParam> = {}): NearestParam => ({
+  name: "Класс бетона по прочности",
+  kp_value: "B35",
+  values: ["B40"],
+  kp_contracts: 0,
+  direction: "up",
+  without_value: false,
+  after: [],
+  ...over,
+});
+
+describe("А14: подпись ступени с ближайшими значениями", () => {
+  const rung = (over: Partial<Pick<WorkRung, "no" | "released" | "nearest" | "other_class">>) => ({
+    no: 2 as const,
+    released: [] as string[],
+    nearest: [] as NearestParam[],
+    other_class: false,
+    ...over,
+  });
+
+  it("ступень 4: ближайшие со стрелками и диапазоном, затем «другой класс»", () => {
+    const label = workRungLabel(
+      rung({
+        no: 4,
+        other_class: true,
+        nearest: [
+          nearestParam({ values: ["B40"], direction: "up" }),
+          nearestParam({ name: "Марка по водонепроницаемости", kp_value: "W10", values: ["W8", "W12"], direction: "down" }),
+        ],
+      })
+    );
+    expect(label).toBe("ближайшее: класс бетона по прочности B40 ↑, марка по водонепроницаемости W8–W12 ↓ · другой класс");
+  });
+
+  it("«и без значения» стоит перед стрелкой; «both» — ↕; без направления стрелки нет", () => {
+    expect(workRungLabel(rung({ nearest: [nearestParam({ values: ["B40"], without_value: true, direction: "up" })] }))).toBe(
+      "ближайшее: класс бетона по прочности B40 и без значения ↑"
+    );
+    expect(workRungLabel(rung({ nearest: [nearestParam({ direction: "both" })] }))).toBe(
+      "ближайшее: класс бетона по прочности B40 ↕"
+    );
+    expect(workRungLabel(rung({ nearest: [nearestParam({ direction: null })] }))).toBe(
+      "ближайшее: класс бетона по прочности B40"
+    );
+  });
+
+  it("nearest и released вместе: «ближайшее: … · без учёта: …»", () => {
+    expect(workRungLabel(rung({ released: ["Толщина"], nearest: [nearestParam()] }))).toBe(
+      "ближайшее: класс бетона по прочности B40 ↑ · без учёта: толщина"
+    );
+  });
+
+  it("оба пусты на ступени 2 и 4 — «те же значения параметров»", () => {
+    expect(workRungLabel(rung({}))).toBe("те же значения параметров");
+    expect(workRungLabel(rung({ no: 4, other_class: true }))).toBe("те же значения параметров · другой класс");
+  });
+
+  it("ступени 1 и 3 — «тот же вариант»", () => {
+    expect(workRungLabel(rung({ no: 1 }))).toBe("тот же вариант");
+    expect(workRungLabel(rung({ no: 3, other_class: true }))).toBe("тот же вариант · другой класс");
+  });
+});
+
+describe("А14: подпись под вилкой с договорами", () => {
+  const line = (nearest: NearestParam[], analogs: number, contracts: number) => ({
+    work_rung: { no: 2 as const, released: [], nearest, other_class: false, zone_scope: "own" as const },
+    analogs_count: analogs,
+    contracts_count: contracts,
+  });
+
+  it("при непустом nearest — «N аналогов в M договорах», склонение договоров", () => {
+    const np = [nearestParam()];
+    expect(workRungCaption(line(np, 10, 3))).toBe("ближайшее: класс бетона по прочности B40 ↑ · 10 аналогов в 3 договорах");
+    expect(workRungCaption(line(np, 1, 1))).toBe("ближайшее: класс бетона по прочности B40 ↑ · 1 аналог в 1 договоре");
+    expect(workRungCaption(line(np, 2, 2))).toContain("2 аналога в 2 договорах");
+    expect(workRungCaption(line(np, 25, 21))).toContain("25 аналогов в 21 договоре");
+  });
+
+  it("при пустом nearest — прежнее «N аналогов»", () => {
+    expect(workRungCaption(line([], 10, 3))).toBe("те же значения параметров · 10 аналогов");
+  });
+});
+
+describe("А14: nearestWhy", () => {
+  it("пустой список — null", () => {
+    expect(nearestWhy([])).toBeNull();
+  });
+
+  it("kp_contracts = 0: «на этой ступени нет — взято …, выше, чем в КП»", () => {
+    expect(nearestWhy([nearestParam()])).toBe(
+      "Класс бетона по прочности B35 на этой ступени нет — взято B40, выше, чем в КП. Цены аналогов не пересчитаны."
+    );
+  });
+
+  it("kp_contracts = 2 с after: «после отбора по …, только в 2 договорах, добавлено W8»", () => {
+    const text = nearestWhy([
+      nearestParam({
+        name: "Марка по водонепроницаемости",
+        kp_value: "W12",
+        values: ["W12", "W8"],
+        kp_contracts: 2,
+        direction: "down",
+        after: ["Класс бетона по прочности"],
+      }),
+    ]);
+    expect(text).toBe(
+      "Марка по водонепроницаемости W12 на этой ступени после отбора по параметру «класс бетона по прочности» — только в 2 договорах, добавлено W8, ниже, чем в КП. Цены аналогов не пересчитаны."
+    );
+  });
+
+  it("два имени в after — «по параметрам «a», «b»»", () => {
+    const text = nearestWhy([
+      nearestParam({ name: "Марка", kp_value: "W12", values: ["W8"], kp_contracts: 2, after: ["Класс бетона по прочности", "Толщина"] }),
+    ]);
+    expect(text).toContain("после отбора по параметрам «класс бетона по прочности», «толщина» — только в 2 договорах");
+  });
+
+  it("kp_contracts = 1 — «в 1 договоре»", () => {
+    expect(nearestWhy([nearestParam({ values: ["B35", "B40"], kp_contracts: 1 })])).toContain("— только в 1 договоре, добавлено B40");
+  });
+
+  it("without_value: «добавлено W8 и строки без значения» / «добавлено строки без значения»", () => {
+    expect(nearestWhy([nearestParam({ values: ["B35", "B40"], kp_contracts: 2, without_value: true })])).toContain(
+      "добавлено B40 и строки без значения"
+    );
+    expect(nearestWhy([nearestParam({ values: ["B35"], kp_contracts: 2, without_value: true, direction: null })])).toContain(
+      "добавлено строки без значения"
+    );
+  });
+
+  it("направление both — «выше и ниже, чем в КП»; без направления сдвига нет", () => {
+    expect(nearestWhy([nearestParam({ direction: "both" })])).toContain("взято B40, выше и ниже, чем в КП.");
+    expect(nearestWhy([nearestParam({ direction: null })])).toContain("взято B40. Цены");
+  });
+
+  it("несколько параметров — по предложению на каждый, одна финальная фраза; «в истории» нет", () => {
+    const text = nearestWhy([nearestParam(), nearestParam({ name: "Толщина", kp_value: "100", values: ["120"] })]) ?? "";
+    expect(text.match(/Цены аналогов не пересчитаны\./g)).toHaveLength(1);
+    expect(text).toContain("Толщина 100 на этой ступени нет");
+    expect(text).not.toContain("в истории");
+  });
+});
+
+describe("А14: sideText", () => {
+  it("выше / ниже, чем в КП", () => {
+    expect(sideText("up")).toBe("выше, чем в КП");
+    expect(sideText("down")).toBe("ниже, чем в КП");
   });
 });
