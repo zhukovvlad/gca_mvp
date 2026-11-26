@@ -14,6 +14,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, localcontext
+from typing import Literal, TypedDict
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
@@ -72,7 +73,9 @@ from services.analog_ladder import (
     FamilyLadderInfo,
     Figure,
     KpWork,
+    NearestParam,
     WorkHistory,
+    WorkLadder,
     _releasable_ids,
     excluded_trace,
     params_rule,
@@ -136,6 +139,7 @@ from services.reference_blocks import (
     zone_groups,
 )
 from services.reference_math import Conversion, factor_shown, price_in_kp_unit, units_equal
+from services.value_scale import Scale
 
 #: Подпись строки «Итого на м² объекта» в форме статьи.
 TOTAL_ROW_TITLE = "Итого на м² объекта"
@@ -853,6 +857,34 @@ def _composite_parameter(line: KpLine, families: Mapping[int, FamilyLadderInfo])
     return None
 
 
+class NearestView(TypedDict):
+    """Сужение одной шкалы в ответе (спека ближайшего значения §3 п. 1)."""
+
+    name: str
+    kp_value: str
+    values: list[str]
+    kp_contracts: int
+    direction: Literal["up", "down", "both"] | None
+    without_value: bool
+    after: list[str]
+
+
+def nearest_view(params: Sequence[NearestParam]) -> list[NearestView]:
+    """`NearestView` по порядку параметров лестницы (общий для строки и групп справочного блока)."""
+    return [
+        {
+            "name": p.name,
+            "kp_value": p.kp_value,
+            "values": list(p.values),
+            "kp_contracts": p.kp_contracts,
+            "direction": p.direction,
+            "without_value": p.without_value,
+            "after": list(p.after),
+        }
+        for p in params
+    ]
+
+
 def _params_view(
     row: KpLineRow, result: LineResult, families: Mapping[int, FamilyLadderInfo]
 ) -> tuple[str | None, list[dict]]:
@@ -861,6 +893,8 @@ def _params_view(
     у всех параметров `match` — `None`."""
     line = row.line
     ladder = result.ladder
+    nearest = {p.parameter_id: p for p in ladder.nearest} if ladder is not None else {}
+    matched = ladder.matched if ladder is not None else frozenset()
     rule = params_rule(
         main_ids=[p.parameter_id for p in row.params if p.role == "main"],
         has_variant=line.key is not None,
@@ -871,6 +905,8 @@ def _params_view(
         info=None if line.key is None else families.get(line.key.family_id),
         work_rung=None if ladder is None else ladder.rung_no,
         system_level=None if result.rung is None else result.rung.level,
+        nearest=nearest,
+        matched=matched,
     )
     params = [
         {
@@ -883,10 +919,18 @@ def _params_view(
             "refreshing": p.refreshing,
             "catalog_value": p.catalog_value,
             "match": rule.main.get(p.parameter_id) if p.role == "main" else rule.secondary,
+            "nearest": _param_nearest(nearest.get(p.parameter_id)) if rule.main.get(p.parameter_id) == "nearest" else None,
         }
         for p in row.params
     ]
     return rule.basis, params
+
+
+def _param_nearest(param: NearestParam | None) -> dict | None:
+    """Поле `nearest` параметра строки: значения окончательного набора и признак строк без значения."""
+    if param is None:
+        return None
+    return {"values": list(param.values), "without_value": param.without_value}
 
 
 def lump_view(check: LumpCheck, *, rate: Decimal | None, family: str, unit_label: str) -> dict:
@@ -920,6 +964,11 @@ def lump_view(check: LumpCheck, *, rate: Decimal | None, family: str, unit_label
             }
         ),
     }
+
+
+def _contracts_count(ladder: WorkLadder | None) -> int:
+    """Число различных договоров среди аналогов ступени; `0` без ступени (спека ближайшего значения §3 п. 2)."""
+    return 0 if ladder is None else len({analog.contract_id for analog in ladder.analogs})
 
 
 def _line_view(
@@ -982,6 +1031,7 @@ def _line_view(
             else {
                 "no": ladder.rung_no,
                 "released": list(ladder.released),
+                "nearest": nearest_view(ladder.nearest),
                 "other_class": ladder.other_class,
                 "zone_scope": ladder.zone_scope,
             }
@@ -1022,6 +1072,7 @@ def _line_view(
         "over_freshest": money_pair(over_freshest, rate, unit=False),
         "below": money_pair(result.below, rate, unit=False),
         "analogs_count": len(ladder.analogs) if ladder is not None else 0,
+        "contracts_count": _contracts_count(ladder),
         "no_history_reason": ladder.no_history_reason if ladder is not None else None,
         "composite_parameter": _composite_parameter(line, families),
         "group": group,
@@ -1708,6 +1759,18 @@ def _analog_ids(result: LineResult) -> list[int]:
     return [analog.position_item_id for analog in ladder.analogs]
 
 
+def _cell_side(scale: Scale | None, *, analog: int | None, kp: int | None) -> Literal["up", "down"] | None:
+    """Сторона числа аналога относительно числа КП в колонке шкалы (спека ближайшего значения §3 п. 4):
+    `up`/`down`, когда у обоих есть числа и они различаются; иначе `None` (не шкала, нет числа, числа равны —
+    в том числе «B30» и «В30»)."""
+    if scale is None or analog is None or kp is None:
+        return None
+    analog_number, kp_number = scale.numbers.get(analog), scale.numbers.get(kp)
+    if analog_number is None or kp_number is None or analog_number == kp_number:
+        return None
+    return "up" if analog_number > kp_number else "down"
+
+
 def _released_view(
     db: Session, scene: _Scene, row: KpLineRow, result: LineResult
 ) -> tuple[list[dict], dict[int, list[dict]]]:
@@ -1745,6 +1808,11 @@ def _released_view(
                     "value": None if value_id is None else texts[value_id],
                     "conflict": conflict,
                     "differs": conflict or parameter_id in kp_conflicted or value_id != kp_values.get(parameter_id),
+                    "side": _cell_side(
+                        info.scales.get(parameter_id),
+                        analog=None if conflict else value_id,
+                        kp=None if parameter_id in kp_conflicted else kp_values.get(parameter_id),
+                    ),
                 }
             )
         values[analog.position_item_id] = cells
@@ -2124,6 +2192,7 @@ def _reference_zones_view(
             "zone": group.zone,
             "rung_no": group.rung_no,
             "released": list(group.released),
+            "nearest": nearest_view(group.nearest),
             "other_class": group.other_class,
             "rows": _reference_rows_view(scene, participant, result, kp_unit_id, group.rows, details, steps),
         }

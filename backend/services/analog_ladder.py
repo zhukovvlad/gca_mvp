@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal, localcontext
+from types import MappingProxyType
 from typing import Literal
 
 from money.inflation import YearMonth, adjust_amount
@@ -283,7 +284,7 @@ def _values_key(
     )
 
 
-MatchRule = Literal["required", "ignored", "same_set"]
+MatchRule = Literal["required", "ignored", "same_set", "nearest", "matched"]
 ParamsBasis = Literal["rung", "catalog"]
 
 
@@ -321,6 +322,10 @@ def _rung_two_rules(
     return rules
 
 
+#: Пустое отображение для значения по умолчанию: изменяемое `{}` в сигнатуре запрещено.
+_NO_NEAREST: Mapping[int, NearestParam] = MappingProxyType({})
+
+
 def params_rule(
     *,
     main_ids: Sequence[int],
@@ -332,10 +337,15 @@ def params_rule(
     info: FamilyLadderInfo | None,
     work_rung: RungNo | None,
     system_level: Literal["v", "p", "f"] | None,
+    nearest: Mapping[int, NearestParam] = _NO_NEAREST,
+    matched: frozenset[int] = frozenset(),
 ) -> ParamsRule:
     """Правило «при подборе» для главных параметров варианта строки (спека параметров варианта §2.3).
 
     `main_ids` — главные параметры схемы варианта по `ordinal`; `info` — семья на действующей схеме.
+    `nearest` и `matched` — шкалы, сужённые до ближайших значений и совпавшие (спека ближайшего значения §3
+    п. 3): они подменяют правило отпускаемого параметра только при фактическом подборе на ступенях 2 и 4;
+    у систем, ступеней 1 и 3 и основания `catalog` правило прежнее.
     """
     if not has_variant:
         return ParamsRule(basis=None, main={}, secondary=None)
@@ -352,7 +362,13 @@ def params_rule(
     if work_rung in (1, 3):
         return ParamsRule(basis="rung", main={p: "required" for p in main_ids}, secondary="ignored")
     if work_rung in (2, 4):
-        return ParamsRule(basis="rung", main=_rung_two_rules(main_ids, forms, conflicted, info), secondary="ignored")
+        rules = _rung_two_rules(main_ids, forms, conflicted, info)
+        for parameter_id in main_ids:
+            if parameter_id in nearest:
+                rules[parameter_id] = "nearest"
+            elif parameter_id in matched:
+                rules[parameter_id] = "matched"
+        return ParamsRule(basis="rung", main=rules, secondary="ignored")
     if info is not None and schema_id == info.schema_id:
         return ParamsRule(basis="catalog", main=_rung_two_rules(main_ids, forms, conflicted, info), secondary="ignored")
     return ParamsRule(basis="catalog", main={p: "required" for p in main_ids}, secondary="ignored")
