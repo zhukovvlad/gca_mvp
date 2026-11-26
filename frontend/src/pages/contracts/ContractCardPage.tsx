@@ -21,7 +21,7 @@ import { Skeleton } from "@/components/ui-domain/Skeleton";
 import { StatusPill } from "@/components/ui-domain/StatusPill";
 import { Surface } from "@/components/ui-domain/Surface";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import {
   Table,
   TableBody,
@@ -105,7 +105,9 @@ export default function ContractCardPage() {
           title="Договор не найден"
           description="Возможно, он удалён."
           action={
-            <Button variant="outline" render={<Link to="/contracts">К списку договоров</Link>} />
+            <Link to="/contracts" className={buttonVariants({ variant: "outline" })}>
+              К списку договоров
+            </Link>
           }
         />
       </div>
@@ -133,10 +135,9 @@ export default function ContractCardPage() {
                 договору, и пункт меню без выбранного договора вёл бы в никуда (§7.4).
                 Доступен и `member`: это чтение и печать (§3).
               */}
-              <Button
-                variant="outline"
-                render={<Link to={`/contracts/${contract.id}/passport`}>Паспорт объекта</Link>}
-              />
+              <Link to={`/contracts/${contract.id}/passport`} className={buttonVariants({ variant: "outline" })}>
+                Паспорт объекта
+              </Link>
               {isAdmin && (
                 <Button variant="outline" onClick={() => setEditOpen(true)}>
                   <Pencil className="size-4" /> Правка

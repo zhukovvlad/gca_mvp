@@ -7,7 +7,7 @@ import { Breadcrumbs } from "@/components/ui-domain/Breadcrumbs";
 import { EmptyState } from "@/components/ui-domain/EmptyState";
 import { Skeleton } from "@/components/ui-domain/Skeleton";
 import { Alert } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { useCurrentUser } from "@/hooks/useAuth";
 import {
   apiErrorDetail,
@@ -68,7 +68,7 @@ function KpFileScreen({ tenderId, roundId, offerId }: { tenderId: number; roundI
   const refetching = previewQ.isFetching || nominalQ.isFetching;
   const busy = current === undefined || refetching || decisionsRunning;
 
-  const backLink = <Button render={<Link to={`/tenders/${tenderId}`} />}>{BACK_LABEL}</Button>;
+  const backLink = <Link to={`/tenders/${tenderId}`} className={buttonVariants()}>{BACK_LABEL}</Link>;
 
   if (failure !== null) {
     const status = isAxiosError(failure) ? failure.response?.status : undefined;

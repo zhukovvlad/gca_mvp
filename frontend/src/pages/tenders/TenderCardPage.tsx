@@ -26,7 +26,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -242,7 +242,11 @@ export default function TenderCardPage() {
         <EmptyState
           title="Тендер не найден"
           description="Возможно, он удалён."
-          action={<Button variant="outline" render={<Link to="/tenders">К списку тендеров</Link>} />}
+          action={
+            <Link to="/tenders" className={buttonVariants({ variant: "outline" })}>
+              К списку тендеров
+            </Link>
+          }
         />
       </div>
     );
@@ -325,9 +329,9 @@ export default function TenderCardPage() {
         </p>
         <div className="flex flex-wrap items-center gap-2">
           {selectedOfferIds.size >= 2 ? (
-            <Button variant="outline" render={<Link to={summaryHref} />}>
+            <Link to={summaryHref} className={buttonVariants({ variant: "outline" })}>
               Свод по этапам ({selectedOfferIds.size})
-            </Button>
+            </Link>
           ) : (
             <Button variant="outline" disabled title="выберите хотя бы два этапа">
               Свод по этапам ({selectedOfferIds.size})
@@ -365,13 +369,12 @@ export default function TenderCardPage() {
             </h2>
             <div className="flex flex-wrap items-center gap-2">
               {hasEstimates ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  render={<Link to={`/tenders/${card.id}/rounds/${selected.id}/our-price`} />}
+                <Link
+                  to={`/tenders/${card.id}/rounds/${selected.id}/our-price`}
+                  className={buttonVariants({ variant: "outline", size: "sm" })}
                 >
                   {OUR_PRICE_ENTRY_LABEL}
-                </Button>
+                </Link>
               ) : (
                 // Недоступность — `aria-disabled`, а не `disabled`: у нативно
                 // отключённой кнопки нет наведения; причина — ещё и скрытым
