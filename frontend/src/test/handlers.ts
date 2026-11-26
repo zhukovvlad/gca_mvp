@@ -2285,6 +2285,7 @@ export function schemaParameter(
     refreshing: 0,
     releasable: null,
     releasable_proposal: null,
+    scale: false,
     ...extra,
   };
 }

@@ -678,7 +678,7 @@ describe("подсказка «подозрительная цена» у ана
 
 describe("колонки отпущенных параметров", () => {
   const columns = [{ name: "Марка W" }, { name: "Толщина" }];
-  const released = (value: string | null, differs = false, conflict = false) => ({ value, conflict, differs });
+  const released = (value: string | null, differs = false, conflict = false) => ({ value, conflict, differs, side: null });
 
   it("колонка на каждый элемент columns: имя и значение у каждого аналога, в порядке columns", () => {
     renderTable({

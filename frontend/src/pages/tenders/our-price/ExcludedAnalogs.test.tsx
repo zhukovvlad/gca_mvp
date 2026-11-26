@@ -18,6 +18,7 @@ const PRICE_ERROR = "/api/v1/position-items/:id/price-error";
 const work = (no: 1 | 2 | 3 | 4, zone_scope: WorkRung["zone_scope"]): WorkRung => ({
   no,
   released: [],
+  nearest: [],
   other_class: false,
   zone_scope,
 });

@@ -51,23 +51,43 @@ export function paramSourceText(p: Pick<LineParam, "source" | "refreshing" | "ca
 }
 
 /** Колонка «При подборе»: подпись правила по основанию строки (спека §2.3). */
-export function matchText(match: ParamMatch | null, basis: ParamsBasis | null): string {
+export function matchText(
+  match: ParamMatch | null,
+  basis: ParamsBasis | null,
+  nearest?: LineParam["nearest"]
+): string {
   if (match === null) return NO_MATCH;
   if (match === "required") return "должен совпасть";
   if (match === "same_set") return "нужен такой же набор";
+  if (match === "matched") return "совпал";
+  if (match === "nearest") return nearestMatchText(nearest ?? null);
   return basis === "catalog" ? "можно не учитывать" : "не учитывается";
+}
+
+/** «ближайшее: B40» / «ближайшие: W8, W12 и без значения» (спека А14 §4 п. 4). */
+function nearestMatchText(nearest: LineParam["nearest"]): string {
+  if (nearest === null) return "ближайшее";
+  const { values, without_value } = nearest;
+  const word = values.length > 1 ? "ближайшие" : "ближайшее";
+  const list = values.join(", ");
+  if (!without_value) return values.length === 0 ? word : `${word}: ${list}`;
+  return values.length === 0 ? `${word}: без значения` : `${word}: ${list} и без значения`;
 }
 
 /**
  * Приписка к значению в таблице (спека §2.7): правило подбора у главного параметра - только при
  * основании `rung`; «(из разделов)» у значения из разделов смет. Обе - одной строкой, источник первым.
  */
-export function tableNote(p: Pick<LineParam, "role" | "match" | "source">, basis: ParamsBasis | null): string | null {
+export function tableNote(
+  p: Pick<LineParam, "role" | "match" | "source"> & { nearest?: LineParam["nearest"] },
+  basis: ParamsBasis | null
+): string | null {
   const parts: string[] = [];
   if (p.source === "path") parts.push("(из разделов)");
   if (basis === "rung" && p.role === "main") {
     if (p.match === "ignored") parts.push("— не учитывается при подборе");
     if (p.match === "same_set") parts.push("— при подборе нужен такой же набор");
+    if (p.match === "nearest") parts.push(`— при подборе ${nearestMatchText(p.nearest ?? null)}`);
   }
   return parts.length === 0 ? null : parts.join(" ");
 }

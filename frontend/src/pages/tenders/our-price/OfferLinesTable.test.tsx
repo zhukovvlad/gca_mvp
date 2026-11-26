@@ -650,9 +650,9 @@ describe("лестница аналогов: колонки и подписи с
 
   it("подпись под ценой: ступень §2.8 и «N аналогов»", () => {
     renderTable([
-      workRow(1, { work_rung: { no: 1, released: [], other_class: false, zone_scope: "own" }, analogs_count: 7 }),
-      workRow(2, { work_rung: { no: 4, released: ["Марка W"], other_class: true, zone_scope: "own" }, analogs_count: 1 }),
-      workRow(3, { work_rung: { no: 2, released: ["Толщина"], other_class: false, zone_scope: "own" }, analogs_count: 2 }),
+      workRow(1, { work_rung: { no: 1, released: [], nearest: [], other_class: false, zone_scope: "own" }, analogs_count: 7, contracts_count: 0 }),
+      workRow(2, { work_rung: { no: 4, released: ["Марка W"], nearest: [], other_class: true, zone_scope: "own" }, analogs_count: 1, contracts_count: 0 }),
+      workRow(3, { work_rung: { no: 2, released: ["Толщина"], nearest: [], other_class: false, zone_scope: "own" }, analogs_count: 2, contracts_count: 0 }),
     ]);
     expect(screen.getByTestId("rung-1")).toHaveTextContent("тот же вариант · 7 аналогов");
     expect(screen.getByTestId("rung-2")).toHaveTextContent("без учёта: марка W · другой класс · 1 аналог");
@@ -661,7 +661,7 @@ describe("лестница аналогов: колонки и подписи с
 
   it("подпись под ценой: «другая зона» и «зона не определена» — по области, у own меток нет", () => {
     const scoped = (zone_scope: "own" | "other" | "any") => ({
-      work_rung: { no: 1 as const, released: [], other_class: false, zone_scope },
+      work_rung: { no: 1 as const, released: [], nearest: [], other_class: false, zone_scope },
       analogs_count: 3,
     });
     renderTable([workRow(1, scoped("own")), workRow(2, scoped("other")), workRow(3, scoped("any"))]);

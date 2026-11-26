@@ -2979,6 +2979,8 @@ export interface FamilySchemaParameter {
   releasable: boolean | null;
   /** Действующее предложение модели по параметру; `null` — предложения нет. */
   releasable_proposal: ReleasableProposal | null;
+  /** Шкала значений (А14): значения параметра упорядочены, можно взять ближайшее. */
+  scale: boolean;
 }
 
 /** Предложение модели «можно отпустить» (уверенность — строка Decimal). */
@@ -3504,9 +3506,22 @@ export interface OurPriceOfferArticle extends OurPriceArticleHead, OurPriceCell 
 export interface WorkRung {
   no: 1 | 2 | 3 | 4;
   released: string[];
+  /** Параметры шкалы, по которым взято ближайшее значение (А14). */
+  nearest: NearestParam[];
   other_class: boolean;
   /** Из каких зон взяты аналоги ступени (спека зоны как предпочтения §3): своя, другие, любые. */
   zone_scope: ZoneScope;
+}
+
+/** Параметр шкалы, по которому аналоги взяты по ближайшему значению (А14 §3). */
+export interface NearestParam {
+  name: string;
+  kp_value: string;
+  values: string[];
+  kp_contracts: number;
+  direction: "up" | "down" | "both" | null;
+  without_value: boolean;
+  after: string[];
 }
 
 /** Область подбора аналогов по зоне: `own` - зона строки КП, `other` - остальные зоны и строки без зоны, `any` - все. */
@@ -3606,7 +3621,13 @@ export interface OurPriceAnalog {
   /** Зона строки ДОГОВОРА; `null` - зона раздела не определена. */
   zone: SectionZone | null;
   /** Значения отпущенных параметров в порядке `analog_columns` панели (спека параметров варианта §2.5). */
-  released_values: Array<{ value: string | null; conflict: boolean; differs: boolean }>;
+  released_values: Array<{
+    value: string | null;
+    conflict: boolean;
+    differs: boolean;
+    /** Сторона относительно значения КП у ближайшего значения (А14); `null` - не ближайшее. */
+    side: "up" | "down" | null;
+  }>;
   /** Подсказка «подозрительная цена» (спека подозрительных строк §4 п. 3): только факты без решения; `null` - подозрения нет. */
   suspicion: AnalogSuspicion | null;
   /** Решения «не ошибка» по строке, новые сверху (приходят и когда `suspicion` равен `null`). */
@@ -3664,7 +3685,7 @@ export type ParamSource =
   | "stale";
 
 /** Как параметр учитывается при подборе аналогов (спека параметров варианта §2.3). */
-export type ParamMatch = "required" | "ignored" | "same_set";
+export type ParamMatch = "required" | "ignored" | "same_set" | "nearest" | "matched";
 
 /** Основание правил подбора: фактическая ступень или настройка каталога. */
 export type ParamsBasis = "rung" | "catalog";
@@ -3680,6 +3701,8 @@ export interface LineParam {
   refreshing: boolean;
   catalog_value: string | null;
   match: ParamMatch | null;
+  /** Ближайшие значения при `match = nearest` (А14); иначе `null`. */
+  nearest: { values: string[]; without_value: boolean } | null;
 }
 
 /** Статья со своей цепочкой от корня классификатора; `chain` кончается самой статьёй. */
@@ -3836,6 +3859,8 @@ export interface OurPriceLine {
   below: MoneyPair | null;
   /** Аналогов на ступени, с выбросами; у системы 0. */
   analogs_count: number;
+  /** Договоров среди аналогов ступени (А14); 0 без ступени. */
+  contracts_count: number;
   no_history_reason: NoHistoryReason | null;
   /** Первый главный параметр строки с составным значением; `null` - строка не сборная. */
   composite_parameter: { id: number; name: string } | null;
@@ -3940,6 +3965,7 @@ export interface ReferenceZoneGroup {
   zone: Zone;
   rung_no: number;
   released: string[];
+  nearest: NearestParam[];
   other_class: boolean;
   rows: RefRow[];
 }

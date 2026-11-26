@@ -185,7 +185,7 @@ interface GroupProps<G> {
 }
 
 function ZoneGroup({ group, vat, kpUnit, canChoose, busy, onChoose }: GroupProps<ReferenceZoneGroup>) {
-  const rung = workRungLabel({ no: group.rung_no as 1 | 2 | 3 | 4, released: group.released, other_class: group.other_class });
+  const rung = workRungLabel({ no: group.rung_no as 1 | 2 | 3 | 4, released: group.released, nearest: group.nearest, other_class: group.other_class });
   return (
     <div
       data-testid={`reference-zone-${group.zone}`}

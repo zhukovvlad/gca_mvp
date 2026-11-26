@@ -336,3 +336,43 @@ describe("PARAMS_COPY: тексты раздела", () => {
     );
   });
 });
+
+describe("А14: matchText и tableNote с ближайшими", () => {
+  it("одно значение — «ближайшее: B40»; два — «ближайшие: W8, W12»", () => {
+    expect(matchText("nearest", "rung", { values: ["B40"], without_value: false })).toBe("ближайшее: B40");
+    expect(matchText("nearest", "rung", { values: ["W8", "W12"], without_value: false })).toBe("ближайшие: W8, W12");
+  });
+
+  it("«и без значения»", () => {
+    expect(matchText("nearest", "rung", { values: ["B40"], without_value: true })).toBe("ближайшее: B40 и без значения");
+    expect(matchText("nearest", "rung", { values: ["W8", "W12"], without_value: true })).toBe(
+      "ближайшие: W8, W12 и без значения"
+    );
+  });
+
+  it("matched — «совпал»", () => {
+    expect(matchText("matched", "rung")).toBe("совпал");
+    expect(matchText("matched", "catalog")).toBe("совпал");
+  });
+
+  it("nearest без данных не падает", () => {
+    expect(matchText("nearest", "rung")).toBe("ближайшее");
+  });
+
+  it("прежние значения — прежние тексты при третьем аргументе", () => {
+    expect(matchText("required", "rung", null)).toBe("должен совпасть");
+    expect(matchText(null, "rung", null)).toBe("—");
+  });
+
+  it("tableNote: nearest при rung — «— при подборе ближайшее: B40»; matched — без приписки", () => {
+    const base = { role: "main" as const, source: "name" as const };
+    expect(tableNote({ ...base, match: "nearest", nearest: { values: ["B40"], without_value: false } }, "rung")).toBe(
+      "— при подборе ближайшее: B40"
+    );
+    expect(tableNote({ ...base, match: "nearest", nearest: { values: ["W8", "W12"], without_value: true } }, "rung")).toBe(
+      "— при подборе ближайшие: W8, W12 и без значения"
+    );
+    expect(tableNote({ ...base, match: "nearest", nearest: { values: ["B40"], without_value: false } }, "catalog")).toBeNull();
+    expect(tableNote({ ...base, match: "matched" }, "rung")).toBeNull();
+  });
+});
