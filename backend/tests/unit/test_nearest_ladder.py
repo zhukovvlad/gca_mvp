@@ -65,6 +65,18 @@ AROUND_SCALE = Scale(
     texts={V40: "40", V60: "60", V90: "90", V120: "120"},
 )
 
+#: Шкала «60, 70, 80, 100» для случаев хвоста кругов (спека ред. 5) и шкала грузоподъёмности лифта, кг.
+N60, N70, N80, N100 = 311, 312, 313, 314
+TAIL_SCALE = Scale(
+    numbers={N60: D(60), N70: D(70), N80: D(80), N100: D(100)},
+    texts={N60: "60", N70: "70", N80: "80", N100: "100"},
+)
+K800, K1000, K1150, K1600 = 321, 322, 323, 324
+LIFT_SCALE = Scale(
+    numbers={K800: D(800), K1000: D(1000), K1150: D(1150), K1600: D(1600)},
+    texts={K800: "800", K1000: "1000", K1150: "1150", K1600: "1600"},
+)
+
 NAMES = {CLS: CLS_NAME, MARK: MARK_NAME, REQUIRED: "Прочее"}
 
 
@@ -289,6 +301,69 @@ class TestRounds:
         (param,) = result.nearest
         assert param.kp_contracts == 1
         assert param.values == ("B25", "B30", "B35")
+
+    # Спека ред. 5: хвостовые круги без нового договора отбрасываются.
+    def test_one_contract_with_a_scale_of_values_keeps_only_the_kp_value_and_matches(self):
+        lines = [row(1, 1, "100", K1000), row(2, 1, "100", K1150), row(3, 1, "100", K1600)]
+
+        result = ladder(work(K1600), lines, info_of({CLS: LIFT_SCALE}))
+
+        assert picked_ids(result) == [3]
+        assert result.matched == frozenset({CLS})
+        assert result.nearest == ()
+
+    def test_one_contract_keeps_only_the_first_round_when_the_kp_value_is_absent(self):
+        lines = [row(1, 1, "100", K1000), row(2, 1, "100", K1150), row(3, 1, "100", K1600)]
+
+        result = ladder(work(K800), lines, info_of({CLS: LIFT_SCALE}))
+
+        assert picked_ids(result) == [1]
+        (param,) = result.nearest
+        assert param.values == ("1000",)
+        assert param.direction == "up"
+        assert param.kp_contracts == 0
+
+    def test_an_intermediate_round_without_a_new_contract_stays_when_a_later_round_adds_one(self):
+        lines = [
+            row(1, 1, "100", N60),
+            row(2, 1, "100", N70),  # круг без нового договора, но дальше есть новый
+            row(3, 2, "100", N80),
+            row(4, 3, "100", N100),
+        ]
+
+        result = ladder(work(N60), lines, info_of({CLS: TAIL_SCALE}))
+
+        assert picked_ids(result) == [1, 2, 3, 4]
+        (param,) = result.nearest
+        assert param.values == ("60", "70", "80", "100")
+
+    def test_the_tail_after_the_last_new_contract_is_dropped(self):
+        lines = [
+            row(1, 1, "100", N60),
+            row(2, 2, "100", N70),
+            row(3, 2, "100", N80),  # хвост: договор 2 уже взят
+            row(4, 1, "100", N100),  # хвост: договор 1 уже взят
+        ]
+
+        result = ladder(work(N60), lines, info_of({CLS: TAIL_SCALE}))
+
+        assert picked_ids(result) == [1, 2]
+        (param,) = result.nearest
+        assert param.values == ("60", "70")
+        assert param.direction == "up"
+
+    def test_the_round_without_a_number_stays_only_with_a_new_contract(self):
+        info = info_of({CLS: CLASS_SCALE})
+        old_contracts = [row(1, 1, "100", B30), row(2, 2, "100", B30), row(3, 1, "100", None)]
+        new_contract = [row(1, 1, "100", B30), row(2, 2, "100", B30), row(3, 3, "100", None)]
+
+        dropped = ladder(work(B25), old_contracts, info)
+        added = ladder(work(B25), new_contract, info)
+
+        assert picked_ids(dropped) == [1, 2]
+        assert dropped.nearest[0].without_value is False
+        assert picked_ids(added) == [1, 2, 3]
+        assert added.nearest[0].without_value is True
 
 
 # ---------------------------------------------------------------------------
@@ -524,7 +599,12 @@ class TestVatDropped:
 
     def test_a_row_without_a_number_passes_only_after_the_last_round(self):
         info = info_of({CLS: CLASS_SCALE})
-        with_last_round = [row(1, 1, "100", B30), row(2, 2, "100", B30), row(3, 3, "100", None, vat=None)]
+        with_last_round = [
+            row(1, 1, "100", B30),
+            row(2, 2, "100", B30),
+            row(3, 3, "100", None),  # круг без числа остался: его договор новый
+            row(4, 4, "100", None, vat=None),
+        ]
         without_last_round = [
             row(1, 1, "100", B30),
             row(2, 2, "100", B30),
@@ -532,8 +612,23 @@ class TestVatDropped:
             row(4, 4, "100", None, vat=None),
         ]
 
-        assert ladder(work(B25), with_last_round, info).vat_dropped == (3,)
+        assert ladder(work(B25), with_last_round, info).vat_dropped == (4,)
         assert ladder(work(B25), without_last_round, info).vat_dropped == ()
+
+    # Спека ред. 5: значение отброшенного хвостового круга выпавшую не пропускает.
+    def test_a_value_of_a_dropped_tail_round_is_not_dropped_and_a_value_of_a_kept_round_is(self):
+        lines = [
+            row(1, 1, "100", N60),
+            row(2, 2, "100", N70),
+            row(3, 2, "100", N80),  # хвост без нового договора
+            row(4, 5, "100", N80, vat=None),  # значение хвоста: не выпавший
+            row(5, 6, "100", N70, vat=None),  # значение оставшегося круга: выпавший
+        ]
+
+        result = ladder(work(N60), lines, info_of({CLS: TAIL_SCALE}))
+
+        assert picked_ids(result) == [1, 2]
+        assert result.vat_dropped == (6,)
 
     # Ревью: при двух шкалах строка без НДС должна пройти каждую (спека §2 п. 5). Марка первой берёт
     # только W12; класс затем берёт B40 и B60. B40 W8 проходит класс, но не марку.

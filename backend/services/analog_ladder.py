@@ -793,7 +793,7 @@ class _Search:
     ) -> set[int]:
         """Договоры без НДС той же пары, не попавшие в набор. С `accepts` (сужение по шкалам, спека ближайшего
         значения §2 п. 5) строка проходит, только если по каждому суженному параметру у неё число из взятых
-        кругов либо числа нет и последний круг был."""
+        кругов либо числа нет и круг без числа остался."""
         unknown = self.rung_slice(scope, rung_no, *_unknown_maps(rung_no, self.pool))
         return {
             contract.contract_id
@@ -804,9 +804,9 @@ class _Search:
         }
 
     def _accepted(self, line: WorkHistoryLine, accepts: Mapping[int, tuple[frozenset[int], bool]]) -> bool:
-        for p, (value_ids, last_round) in accepts.items():
+        for p, (value_ids, without_kept) in accepts.items():
             value_id = _number_value(line, p, self.scales[p])
-            if not (value_id in value_ids if value_id is not None else last_round):
+            if not (value_id in value_ids if value_id is not None else without_kept):
                 return False
         return True
 
@@ -1046,7 +1046,7 @@ class _Narrowed:
     picked: list[_Candidate]
     nearest: tuple[NearestParam, ...]
     matched: frozenset[int]
-    #: parameter_id не пропущенной шкалы -> (value_id взятых кругов, был ли последний круг).
+    #: parameter_id не пропущенной шкалы -> (value_id взятых кругов, остался ли круг без числа).
     accepts: Mapping[int, tuple[frozenset[int], bool]]
     #: Пропущенные шкалы и шкалы без чисел в окончательном наборе.
     released_scales: frozenset[int]
@@ -1101,20 +1101,29 @@ def _narrow_scales(kp: KpWork, info: FamilyLadderInfo | None, picked: Sequence[_
         if not by_distance:
             skipped.add(p)
             continue
-        taken: list[_Candidate] = []
+        # Круги по возрастанию расстояния; круг без числа последний и только когда числовые кончились при
+        # договорах < MIN_CONTRACTS. Круг: (расстояние или None для круга без числа, кандидаты, добавил ли
+        # он новый договор). Хвост без нового договора отбрасывается (спека ред. 5, §2 п. 4).
+        rounds: list[tuple[Decimal | None, list[_Candidate], bool]] = []
         contracts: set[int] = set()
-        reach = Decimal(1)
-        for reach in sorted(by_distance):
-            taken.extend(by_distance[reach])
-            contracts.update(c.contract.contract_id for c in by_distance[reach])
+        for distance in sorted(by_distance):
+            before = len(contracts)
+            contracts.update(c.contract.contract_id for c in by_distance[distance])
+            rounds.append((distance, by_distance[distance], len(contracts) > before))
             if len(contracts) >= MIN_CONTRACTS:
                 break
-        last_round = len(contracts) < MIN_CONTRACTS
-        if last_round:
-            taken.extend(without)
+        if len(contracts) < MIN_CONTRACTS:
+            before = len(contracts)
+            contracts.update(c.contract.contract_id for c in without)
+            rounds.append((None, without, len(contracts) > before))
+        while len(rounds) > 1 and not rounds[-1][2]:
+            rounds.pop()
+        without_kept = rounds[-1][0] is None
+        reach = [d for d, _, _ in rounds if d is not None][-1]
+        taken = [c for _, group, _ in rounds for c in group]
         accepts[p] = (
             frozenset(vid for vid, number in scale.numbers.items() if _distance(number, target) <= reach),
-            last_round,
+            without_kept,
         )
         steps.append(_Step(p, target, len(kp_contracts), tuple(earlier)))
         earlier.append(info.names[p])
