@@ -386,7 +386,7 @@ class TestWorkLineHasNoManualRung:
 
         # у работы ступеней 4а нет: она стоит на лестнице аналогов (спека лестницы аналогов §2.9)
         assert (line["rung"], line["rungs"]) == (None, [])
-        assert line["work_rung"] == {"no": 1, "released": [], "other_class": False, "zone_scope": "own"}
+        assert line["work_rung"] == {"no": 1, "released": [], "nearest": [], "other_class": False, "zone_scope": "own"}
         assert (line["state"], _pair(line["over_lowest"])) == ("comparable", (D("500"), D("500")))
         assert (line["manual_rung"], line["target_kind"], line["choice"]) == (None, "lowest", None)
 
@@ -695,7 +695,7 @@ class TestSelectable:
         panel = _panel(member_client, stage.tender, rnd, part, item)
 
         assert line["rungs"] == []
-        assert line["work_rung"] == {"no": 3, "released": [], "other_class": True, "zone_scope": "own"}
+        assert line["work_rung"] == {"no": 3, "released": [], "nearest": [], "other_class": True, "zone_scope": "own"}
         assert [a["selectable"] for a in panel["analogs"]] == [True]
 
     def test_system_rung_is_selectable_by_every_group_of_the_family(self, member_client, stage):
