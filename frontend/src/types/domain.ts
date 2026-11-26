@@ -3703,6 +3703,8 @@ export interface LineParam {
   match: ParamMatch | null;
   /** Ближайшие значения при `match = nearest` (А14); иначе `null`. */
   nearest: { values: string[]; without_value: boolean } | null;
+  /** Главный параметр работы, который схема семьи отпускает на ступенях 2 и 4 (спека параметров варианта, ред. 4). */
+  releasable: boolean;
 }
 
 /** Статья со своей цепочкой от корня классификатора; `chain` кончается самой статьёй. */

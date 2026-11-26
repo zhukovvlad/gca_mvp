@@ -80,6 +80,19 @@ describe("WorkParamsSection: состав раздела", () => {
     expect(within(matched).getAllByRole("cell")[3]).toHaveTextContent("совпал");
   });
 
+  it("отпускаемый главный при rung: «совпал — отпускается, только когда точных нет»; неотпускаемый — «должен совпасть»", () => {
+    renderSection(
+      [
+        ourPriceParamFixture({ name: "Марка", match: "required", releasable: true }),
+        ourPriceParamFixture({ name: "Толщина", match: "required", releasable: false }),
+      ],
+      { basis: "rung" }
+    );
+    const [released, plain] = rows();
+    expect(within(released).getAllByRole("cell")[3]).toHaveTextContent("совпал — отпускается, только когда точных нет");
+    expect(within(plain).getAllByRole("cell")[3]).toHaveTextContent("должен совпасть");
+  });
+
   it("значение — по общим текстам: не уточнено, расходится по разделам, прежнее", () => {
     renderSection([
       ourPriceParamFixture({ name: "П1", value: null, source: "none", match: null }),

@@ -207,6 +207,16 @@ describe("matchText: подписи по основанию", () => {
     expect(matchText(match, basis)).toBe(expected);
   });
 
+  it("required у отпускаемого при rung: «совпал — отпускается, только когда точных нет»", () => {
+    expect(matchText("required", "rung", null, true)).toBe("совпал — отпускается, только когда точных нет");
+  });
+
+  it("required у неотпускаемого при rung и у любого при catalog — прежнее «должен совпасть»", () => {
+    expect(matchText("required", "rung", null, false)).toBe("должен совпасть");
+    expect(matchText("required", "rung")).toBe("должен совпасть");
+    expect(matchText("required", "catalog", null, true)).toBe("должен совпасть");
+  });
+
   it("match = null - прочерк при любом основании", () => {
     expect(matchText(null, "rung")).toBe("—");
     expect(matchText(null, "catalog")).toBe("—");
