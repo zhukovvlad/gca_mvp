@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import type { Decimal, MoneyPair, OurPriceParticipant } from "@/types/domain";
@@ -153,20 +153,19 @@ export function ParticipantCard({ participant, view, cheapest, href, tenderId, r
         )}
         {participant.state === "no_estimate" && participant.sent_files_count > 0 && (
           <div>
-            <Button
-              variant="outline"
-              size="sm"
-              render={<Link to={`/tenders/${tenderId}/rounds/${roundId}/our-price/offers/${participant.offer_id}/file`} />}
+            <Link
+              to={`/tenders/${tenderId}/rounds/${roundId}/our-price/offers/${participant.offer_id}/file`}
+              className={buttonVariants({ variant: "outline", size: "sm" })}
             >
               {kpFileSentLink(participant.sent_files_count)}
-            </Button>
+            </Link>
           </div>
         )}
         {href !== null && (
           <div>
-            <Button variant="outline" size="sm" render={<Link to={href} />}>
+            <Link to={href} className={buttonVariants({ variant: "outline", size: "sm" })}>
               {DETAIL_LINK_LABEL}
-            </Button>
+            </Link>
           </div>
         )}
       </CardContent>

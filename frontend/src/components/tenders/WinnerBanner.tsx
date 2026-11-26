@@ -5,7 +5,7 @@ import { ContractFormDialog } from "@/components/contracts/ContractFormDialog";
 import { LinkContractDialog } from "@/components/tenders/LinkContractDialog";
 import { NotConcludedDialog } from "@/components/tenders/NotConcludedDialog";
 import { RemoveAwardDialog } from "@/components/tenders/RemoveAwardDialog";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { useCurrentUser } from "@/hooks/useAuth";
 import { formatDate, formatMillionsVat } from "@/lib/format";
 import type { TenderAward, TenderAwardEvent, TenderCard } from "@/types/domain";
@@ -43,9 +43,9 @@ export function WinnerBanner({ card }: { card: TenderCard }) {
               <div className="mt-0.5 text-sm text-fg-secondary">{details(award)}</div>
             </div>
             {award.contract !== null ? (
-              <Button variant="outline" render={<Link to={`/contracts/${award.contract.id}`} />}>
+              <Link to={`/contracts/${award.contract.id}`} className={buttonVariants({ variant: "outline" })}>
                 Открыть договор
-              </Button>
+              </Link>
             ) : (
               isAdmin && (
                 <div className="flex flex-wrap items-center gap-2">

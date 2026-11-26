@@ -11,7 +11,7 @@ import { MoneyCell } from "@/components/ui-domain/MoneyCell";
 import { PageHeader } from "@/components/ui-domain/PageHeader";
 import { Skeleton } from "@/components/ui-domain/Skeleton";
 import { Surface } from "@/components/ui-domain/Surface";
-import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -320,7 +320,9 @@ export default function MatrixPage() {
           description={emptyReason(matrix, q)}
           action={
             matrix !== undefined && matrix.positions_pending_review > 0 ? (
-              <Button variant="outline" render={<Link to="/review">Разобрать очередь</Link>} />
+              <Link to="/review" className={buttonVariants({ variant: "outline" })}>
+                Разобрать очередь
+              </Link>
             ) : undefined
           }
         />

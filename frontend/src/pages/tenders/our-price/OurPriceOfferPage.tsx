@@ -6,7 +6,7 @@ import { Link, useParams } from "react-router-dom";
 import { Breadcrumbs } from "@/components/ui-domain/Breadcrumbs";
 import { EmptyState } from "@/components/ui-domain/EmptyState";
 import { Skeleton } from "@/components/ui-domain/Skeleton";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { useCurrentUser } from "@/hooks/useAuth";
 import { apiErrorDetail, useOurPriceOffer, useTender } from "@/services/queries";
 import { qk } from "@/services/queryKeys";
@@ -84,7 +84,7 @@ export default function OurPriceOfferPage() {
     setOpenLine(null);
   }
 
-  const backLink = <Button render={<Link to={`/tenders/${tenderId}`} />}>{BACK_LABEL}</Button>;
+  const backLink = <Link to={`/tenders/${tenderId}`} className={buttonVariants()}>{BACK_LABEL}</Link>;
 
   if (failure !== null) {
     const status = isAxiosError(failure) ? failure.response?.status : undefined;
@@ -171,9 +171,13 @@ export default function OurPriceOfferPage() {
                 {item.title}
               </Button>
             ) : (
-              <Button key={item.offerId} variant="outline" size="sm" render={<Link to={offerHref(item.offerId)} />}>
+              <Link
+                key={item.offerId}
+                to={offerHref(item.offerId)}
+                className={buttonVariants({ variant: "outline", size: "sm" })}
+              >
                 {item.title}
-              </Button>
+              </Link>
             )
           )}
         </div>
@@ -208,9 +212,9 @@ export default function OurPriceOfferPage() {
               )}
             </div>
           ) : (
-            <Button variant="outline" size="sm" render={<Link to={fileHref} />}>
+            <Link to={fileHref} className={buttonVariants({ variant: "outline", size: "sm" })}>
               {KP_FILE_EXPORT_LABEL}
-            </Button>
+            </Link>
           )
         }
       />

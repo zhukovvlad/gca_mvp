@@ -5,7 +5,7 @@ import { EmptyState } from "@/components/ui-domain/EmptyState";
 import { KpiCard } from "@/components/ui-domain/KpiCard";
 import { PageHeader } from "@/components/ui-domain/PageHeader";
 import { Skeleton } from "@/components/ui-domain/Skeleton";
-import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
 import { apiErrorCode, useStageSummary } from "@/services/queries";
 import type { StageSummary, StageSummaryErrorCode } from "@/types/domain";
 
@@ -97,7 +97,7 @@ export default function StageSummaryPage() {
   // дальше NaN-запросом.
   const offerIds = params.getAll("offers").map(Number).filter(Number.isFinite);
 
-  const backLink = <Button render={<Link to={`/tenders/${id}`} />}>К решётке тендера</Button>;
+  const backLink = <Link to={`/tenders/${id}`} className={buttonVariants()}>К решётке тендера</Link>;
 
   const summaryQ = useStageSummary(id, offerIds);
 

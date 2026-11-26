@@ -5,7 +5,7 @@ import { Link, useParams } from "react-router-dom";
 import { Breadcrumbs } from "@/components/ui-domain/Breadcrumbs";
 import { EmptyState } from "@/components/ui-domain/EmptyState";
 import { Skeleton } from "@/components/ui-domain/Skeleton";
-import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
 import { compareDecimalStrings } from "@/lib/decimal";
 import { useCurrentUser } from "@/hooks/useAuth";
 import { apiErrorDetail, useOurPriceRound } from "@/services/queries";
@@ -80,7 +80,7 @@ export default function OurPriceRoundPage() {
     return `/tenders/${tenderId}/rounds/${roundId}/our-price/offers/${offerId}${query ? `?${query}` : ""}`;
   }
 
-  const backLink = <Button render={<Link to={`/tenders/${tenderId}`} />}>{BACK_LABEL}</Button>;
+  const backLink = <Link to={`/tenders/${tenderId}`} className={buttonVariants()}>{BACK_LABEL}</Link>;
 
   if (failure !== null) {
     const status = isAxiosError(failure) ? failure.response?.status : undefined;

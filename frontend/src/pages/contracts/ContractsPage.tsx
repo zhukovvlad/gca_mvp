@@ -11,7 +11,7 @@ import { PageHeader } from "@/components/ui-domain/PageHeader";
 import { Skeleton } from "@/components/ui-domain/Skeleton";
 import { Surface } from "@/components/ui-domain/Surface";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   DropdownMenu,
@@ -174,17 +174,17 @@ export default function ContractsPage() {
 
       <div className="mt-4 flex flex-wrap items-center gap-3">
         {selectedIds.size > 0 ? (
-          <Button variant="outline" render={<Link to={compareSelectedHref} />}>
+          <Link to={compareSelectedHref} className={buttonVariants({ variant: "outline" })}>
             Сравнить выбранные ({selectedIds.size})
-          </Button>
+          </Link>
         ) : (
           <Button variant="outline" disabled>
             Сравнить выбранные (0)
           </Button>
         )}
-        <Button variant="outline" render={<Link to={compareAllHref} />}>
+        <Link to={compareAllHref} className={buttonVariants({ variant: "outline" })}>
           Сравнить всё по фильтру
-        </Button>
+        </Link>
       </div>
 
       <div className="mt-4">
