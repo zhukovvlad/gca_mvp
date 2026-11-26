@@ -70,6 +70,16 @@ describe("WorkParamsSection: состав раздела", () => {
     expect(within(secondary).getByText("второстепенный")).toBeInTheDocument();
   });
 
+  it("колонка «При подборе»: «ближайшее: B40» и «совпал»", () => {
+    renderSection([
+      ourPriceParamFixture({ name: "Класс", match: "nearest", nearest: { values: ["B40"], without_value: false } }),
+      ourPriceParamFixture({ name: "Марка", match: "matched" }),
+    ]);
+    const [near, matched] = rows();
+    expect(within(near).getAllByRole("cell")[3]).toHaveTextContent("ближайшее: B40");
+    expect(within(matched).getAllByRole("cell")[3]).toHaveTextContent("совпал");
+  });
+
   it("значение — по общим текстам: не уточнено, расходится по разделам, прежнее", () => {
     renderSection([
       ourPriceParamFixture({ name: "П1", value: null, source: "none", match: null }),

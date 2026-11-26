@@ -68,6 +68,7 @@ import {
   MARK_MENU_TRIGGER,
   markScopeText,
   periodRu,
+  sideText,
 } from "./ourPriceCopy";
 import { releasedValueText } from "./paramsCopy";
 import { TargetMark, type TargetMarkKind } from "./TargetCards";
@@ -407,6 +408,12 @@ export function AnalogsTable({
                           className={cn(released.differs && "rounded-sm bg-warning-soft px-1 text-warning-text")}
                         >
                           {releasedValueText(released)}
+                          {released.side !== null && (
+                            <>
+                              <span aria-hidden="true">{released.side === "up" ? " ↑" : " ↓"}</span>
+                              <span className="sr-only">{sideText(released.side)}</span>
+                            </>
+                          )}
                         </dd>
                       </div>
                     );

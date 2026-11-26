@@ -191,6 +191,61 @@ describe("панель строки-работы: сравнение", () => {
     expect(await screen.findByTestId("sheet-comparison")).toHaveTextContent("без учёта: марка W, толщина · другой класс");
   });
 
+  describe("ближайшее значение шкалы (А14)", () => {
+    const near = {
+      name: "Класс бетона по прочности",
+      kp_value: "B35",
+      values: ["B35", "B40"],
+      kp_contracts: 1,
+      direction: "up" as const,
+      without_value: false,
+      after: [],
+    };
+
+    it("с nearest: подпись ступени с «ближайшее: …» и абзац nearest-why рядом с абзацем зоны", async () => {
+      serve(() =>
+        workLineViewFixture({
+          line: { work_rung: { no: 4, released: [], nearest: [near], other_class: false, zone_scope: "any" } },
+        })
+      );
+      renderSheet();
+      const comparison = await screen.findByTestId("sheet-comparison");
+      expect(comparison).toHaveTextContent("ближайшее: класс бетона по прочности B35–B40 ↑");
+      expect(screen.getByTestId("nearest-why")).toHaveTextContent(
+        "Класс бетона по прочности B35 на этой ступени — только в 1 договоре, добавлено B40, выше, чем в КП. Цены аналогов не пересчитаны."
+      );
+      expect(screen.getByTestId("zone-scope-why")).toBeInTheDocument();
+    });
+
+    it("без nearest абзаца нет", async () => {
+      serve(() => workLineViewFixture());
+      renderSheet();
+      await screen.findByTestId("sheet-comparison");
+      expect(screen.queryByTestId("nearest-why")).not.toBeInTheDocument();
+    });
+
+    it("колонка «При подборе»: «ближайшее: B40» у параметра с nearest", async () => {
+      serve(() =>
+        workLineViewFixture({
+          line: {
+            work_rung: { no: 4, released: [], nearest: [near], other_class: false, zone_scope: "own" },
+            params: [
+              ourPriceParamFixture({
+                name: "Класс бетона по прочности",
+                value: "B35",
+                match: "nearest",
+                nearest: { values: ["B40"], without_value: false },
+              }),
+            ],
+          },
+        })
+      );
+      renderSheet();
+      const section = await screen.findByTestId("sheet-work-params");
+      expect(within(section).getByTestId("work-param-row")).toHaveTextContent("ближайшее: B40");
+    });
+  });
+
   it("две карточки: цена, объект и договор, дата цены, разница КП к ней со знаком", async () => {
     serve(() => workLineViewFixture());
     renderSheet();

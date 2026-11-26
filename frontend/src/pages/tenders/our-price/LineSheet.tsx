@@ -70,6 +70,7 @@ import {
   unitWarnKp,
   VAT_DROPPED_NOTE,
   markFormLabel,
+  nearestWhy,
 } from "./ourPriceCopy";
 import { ExportBlock } from "./ExportBlock";
 import { LineStateText } from "./LineStateText";
@@ -537,6 +538,7 @@ function WorkComparison({ tenderId, roundId, offerId, seriesId, line, data, vat,
   const scopeWhy =
     scope === "any" ? ANY_ZONE_WHY : scope === "other" && line.zone !== null ? otherZonesWhy(line.zone, data.analogs) : null;
   const contracts = new Set(data.analogs.map((a) => a.contract_id)).size;
+  const nearest = nearestWhy(rungNo.nearest);
   const choice = line.choice;
   const pinnedAnalogId = choice !== null && choice.active && choice.kind === "analog" ? choice.analog_id : null;
   const canChoose = canEdit && line.state === "comparable";
@@ -568,6 +570,14 @@ function WorkComparison({ tenderId, roundId, offerId, seriesId, line, data, vat,
           className="rounded-md border border-border bg-surface-sunken px-2.5 py-1.5 text-[12.5px] text-fg"
         >
           {scopeWhy}
+        </p>
+      )}
+      {nearest !== null && (
+        <p
+          data-testid="nearest-why"
+          className="rounded-md border border-border bg-surface-sunken px-2.5 py-1.5 text-[12.5px] text-fg"
+        >
+          {nearest}
         </p>
       )}
       {movedOn !== null && (

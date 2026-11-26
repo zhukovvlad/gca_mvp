@@ -659,6 +659,27 @@ describe("лестница аналогов: колонки и подписи с
     expect(screen.getByTestId("rung-3")).toHaveTextContent("без учёта: толщина · 2 аналога");
   });
 
+  it("подпись под ценой: при nearest — «ближайшее: …» и «N аналогов в M договорах»", () => {
+    renderTable([
+      workRow(1, {
+        work_rung: {
+          no: 4,
+          released: [],
+          nearest: [
+            { name: "Класс бетона по прочности", kp_value: "B35", values: ["B35", "B40"], kp_contracts: 1, direction: "up", without_value: false, after: [] },
+          ],
+          other_class: false,
+          zone_scope: "own",
+        },
+        analogs_count: 5,
+        contracts_count: 3,
+      }),
+    ]);
+    expect(screen.getByTestId("rung-1")).toHaveTextContent(
+      "ближайшее: класс бетона по прочности B35–B40 ↑ · 5 аналогов в 3 договорах"
+    );
+  });
+
   it("подпись под ценой: «другая зона» и «зона не определена» — по области, у own меток нет", () => {
     const scoped = (zone_scope: "own" | "other" | "any") => ({
       work_rung: { no: 1 as const, released: [], nearest: [], other_class: false, zone_scope },

@@ -75,6 +75,43 @@ describe("ParameterEditor: «Можно отпустить»", () => {
     expect(within(dialog).getByRole("checkbox", FLAG)).not.toBeChecked();
   });
 
+  describe("строка про шкалу", () => {
+    const SCALE = "Шкала: отпущенному параметру сначала берутся ближайшие значения.";
+
+    it("сохранённый главный со scale = true: строка под подсказкой флажка", async () => {
+      handlerState.familySchemas[SCHEMA_FAMILY_ID].parameters[0].scale = true;
+      const dialog = await opened();
+
+      expect(within(dialog).getByTestId("schema-edit-scale")).toHaveTextContent(SCALE);
+    });
+
+    it("scale = false: строки нет", async () => {
+      handlerState.familySchemas[SCHEMA_FAMILY_ID].parameters[0].scale = false;
+      const dialog = await opened();
+
+      expect(within(dialog).queryByTestId("schema-edit-scale")).not.toBeInTheDocument();
+    });
+
+    it("новый параметр: строки нет", async () => {
+      const user = userEvent.setup();
+      handlerState.familySchemas[SCHEMA_FAMILY_ID].parameters[0].scale = true;
+      const dialog = await opened();
+
+      await user.click(within(dialog).getByRole("button", { name: "Добавить параметр" }));
+      expect(within(dialog).queryByTestId("schema-edit-scale")).not.toBeInTheDocument();
+    });
+
+    it("роль «второстепенный» в черновике: строки нет", async () => {
+      const user = userEvent.setup();
+      handlerState.familySchemas[SCHEMA_FAMILY_ID].parameters[0].scale = true;
+      const dialog = await opened();
+      expect(within(dialog).getByTestId("schema-edit-scale")).toBeInTheDocument();
+
+      await user.click(within(dialog).getByRole("button", { name: "Второстепенный" }));
+      expect(within(dialog).queryByTestId("schema-edit-scale")).not.toBeInTheDocument();
+    });
+  });
+
   it("правка другого поля без касания флажка не шлёт releasable", async () => {
     const user = userEvent.setup();
     handlerState.familySchemas[SCHEMA_FAMILY_ID].parameters[0].releasable = true;
