@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.orm import Session
 
 from crud.lump_sum import typical_rates
 from crud.our_price_load import load_history
@@ -332,6 +333,9 @@ class TestQueryShape:
         contracts = _history(world.db)
 
         ids = [i.id for i in items]
+        # Записи фикстур закрепляются: в «грязной» транзакции `typical_rates` кэш обходит (спека стадийного
+        # кэша §5), а здесь нужен тёплый кэш.
+        Session.commit(world.db)
         typical_rates(world.db)  # ставки — кэш: холодный набор читает их отдельно (пул и единицы)
         with count_statements(world.db) as box:
             found = load_reference_lines(world.db, contracts, ids, factors=None)

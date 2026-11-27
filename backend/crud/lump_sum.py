@@ -35,6 +35,7 @@ from services.lump_sum import (
     TypicalRates,
 )
 from services.price_basis import median
+from services.stage_cache import is_dirty
 from services.status_cache import typical_rates_cache
 
 CODE_POSITION_ITEM_NOT_FOUND = "position_item_not_found"
@@ -108,7 +109,14 @@ def load_typical_rates(db: Session) -> TypicalRates:
 
 
 def typical_rates(db: Session) -> TypicalRates:
-    """Обычные ставки через кэш (`typical_rates_cache`, срок `TYPICAL_RATES_CACHE_TTL_S`)."""
+    """Обычные ставки через кэш (`typical_rates_cache`, срок `TYPICAL_RATES_CACHE_TTL_S`).
+
+    В «грязной» транзакции (записано вне закрытого списка кэша сцен, `is_dirty`) ставки считаются
+    напрямую, а общий кэш не читается и не заполняется (спека стадийного кэша §5): тёплый кэш не
+    видел бы собственной правки цены или состава транзакции, а пустой запомнил бы ставки по данным,
+    которые откатятся, — сброса на откате нет."""
+    if is_dirty(db):
+        return load_typical_rates(db)
     return typical_rates_cache.get(lambda: load_typical_rates(db))
 
 

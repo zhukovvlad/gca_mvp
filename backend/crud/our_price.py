@@ -218,9 +218,11 @@ class _Scene:
     history: _HistorySums
     #: Вилка ₽/м² договоров класса по итогу сметы.
     total_fork: tuple[Decimal, Decimal] | None
-    #: Решения по строкам каждой сметы КП этапа (спека 4б §2.13).
+    #: Решения по строкам каждой сметы КП этапа (спека 4б §2.13). В сцене из кэша поле устарело:
+    #: `_scene_for` читает его заново при каждом попадании и подставляет через `replace`.
     decisions: dict[int, EstimateDecisions]
-    #: Число отправленных файлов по офферам этапа: у оффера без сметы они остаются.
+    #: Число отправленных файлов по офферам этапа: у оффера без сметы они остаются. Как и `decisions`,
+    #: в сцене из кэша устарело и перечитывается `_scene_for` при каждом попадании.
     sent_files: dict[int, int]
     #: Тендерные отметки «не аналог» сцены: ключ формы -> строка договора -> отметка (один запрос на сцену).
     not_analog: Mapping[FormKey, Mapping[int, Mark]] = field(default_factory=dict)
@@ -402,6 +404,11 @@ def _sent_files_counts(db: Session, offer_ids: Sequence[int]) -> dict[int, int]:
     return {offer_id: count for offer_id, count in rows}
 
 
+def _line_not_in_kp(line_id: int, offer_id: int | None) -> DomainError:
+    """Один текст 404 для холодного пути и попадания в кэш: они не должны разойтись."""
+    return DomainError(404, f"Строка {line_id} не найдена в КП оффера {offer_id}.")
+
+
 def _build_scene(
     db: Session,
     head: _Head,
@@ -424,7 +431,7 @@ def _build_scene(
     if require_line is not None and not any(
         row.line.position_item_id == require_line for rows in kp_lines.values() for row in rows
     ):
-        raise DomainError(404, f"Строка {require_line} не найдена в КП оффера {participants_raw[0][0]}.")
+        raise _line_not_in_kp(require_line, participants_raw[0][0])
 
     contracts, history_lines = load_history(db, exclude_object_id=head.object_id)
     work_history, families = load_work_history(
@@ -508,7 +515,7 @@ def _scene_for(
         if require_line is not None and not any(
             row.line.position_item_id == require_line for rows in cached.kp_lines.values() for row in rows
         ):
-            raise DomainError(404, f"Строка {require_line} не найдена в КП оффера {offer_id}.")
+            raise _line_not_in_kp(require_line, offer_id)
         return replace(
             cached,
             decisions=load_decisions(db, cached.kp_ids),
