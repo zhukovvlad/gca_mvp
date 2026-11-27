@@ -71,7 +71,12 @@
 `SessionLocal` приложения, и фабрики тестов (`tests/conftest.py`), и сессии потоков
 опросчика. Записей мимо сессии в коде приложения нет (проверено `grep` 27.11.2026: ни
 `.connection().execute`, ни `exec_driver_sql`, ни сырых курсоров; `create_engine` — только в
-`database.py`, тестах и `scripts/`). Подписка — при импорте `services/stage_cache.py`;
+`database.py`, тестах и `scripts/`). Отслеживание не видит также массовых
+`Session.bulk_insert_mappings` / `bulk_save_objects` / `bulk_update_mappings` и DML внутри CTE
+выборки (`select(update(…).returning(…).cte())`): обход каждой выборки ради них дорог на сборке
+сцены. Таких путей в коде приложения нет и быть не должно — страж
+`tests/unit/test_stage_cache_guard.py` падает на первом (ревью задачи 2 реализации).
+Подписка — при импорте `services/stage_cache.py`;
 его импортирует `crud/our_price.py`, так что подписка есть везде, где есть кэш.
 
 ### 4.2. Что считается записью
