@@ -66,6 +66,7 @@ from models import (
 from parser.sanitize_text import normalize_job_title_with_lemmatization
 from services.semantic_events import EVENT_ENUM_VALUES, record_event
 from services.semantic_rules import PLACE_DICTIONARY_VERSION, classify_kind, classify_name_role
+from services.stage_cache import READ_OPTION
 from services.unit_resolution import NO_UNIT_NORM
 
 
@@ -342,7 +343,10 @@ def _chapter_chain_rows(db: Session, chapter_item_ids: Collection[int]):
             FROM chain
             ORDER BY start_id, depth
             """
-        ).bindparams(sa.bindparam("ids", value=ids, type_=sa.ARRAY(sa.BigInteger)))
+        )
+        .bindparams(sa.bindparam("ids", value=ids, type_=sa.ARRAY(sa.BigInteger)))
+        # Чтение: без пометки кэш сцен счёл бы запрос записью (services/stage_cache.py).
+        .execution_options(**{READ_OPTION: True})
     ).all()
     for row in rows:
         if row.is_cycle:
