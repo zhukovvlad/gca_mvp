@@ -202,6 +202,36 @@ class TestRawSql:
         committing_db.commit()
         assert not watch.scene_reset
 
+    def test_textual_select_with_update_returning_resets(self, committing_db, world):
+        watch = _Watch()
+        stmt = sa.text("UPDATE contractors SET title = title WHERE false RETURNING id").columns(
+            sa.column("id", sa.BigInteger)
+        )
+        committing_db.execute(stmt)
+
+        assert is_dirty(committing_db)
+        committing_db.commit()
+        assert watch.scene_reset
+
+    def test_textual_select_with_select_text_does_not_reset(self, committing_db, world):
+        watch = _Watch()
+        committing_db.execute(sa.text("SELECT id FROM contractors").columns(sa.column("id", sa.BigInteger)))
+
+        assert not is_dirty(committing_db)
+        committing_db.commit()
+        assert not watch.scene_reset
+
+    def test_textual_select_with_cte_needs_read_option(self, committing_db, world):
+        watch = _Watch()
+        text = "WITH c AS (SELECT 1 AS x) SELECT x FROM c"
+        columns = sa.column("x", sa.Integer)
+        committing_db.execute(sa.text(text).columns(columns).execution_options(**{READ_OPTION: True}))
+        assert not is_dirty(committing_db)
+        committing_db.execute(sa.text(text).columns(columns))
+        committing_db.commit()
+
+        assert watch.scene_reset
+
 
 class TestOrderAndVisibility:
     def test_rates_cache_is_reset_before_scene_cache(self, committing_db, world, rates_warm, monkeypatch):
@@ -254,6 +284,22 @@ class TestRollbackAndSavepoints:
         assert not watch.scene_reset
         assert not is_dirty(committing_db)
         # Пометка снята: следующая транзакция чистая, непомеченная запись в список сбрасывает.
+        committing_db.execute(sa.delete(KpLineAgreement))
+        committing_db.commit()
+        assert watch.scene_reset
+
+    def test_close_forgets_writes_and_mark(self, committing_db, world):
+        watch = _Watch()
+        mark_decision_write(committing_db)
+        committing_db.add(_contractor("7700000012"))
+        committing_db.flush()
+        assert is_dirty(committing_db)
+
+        committing_db.close()
+
+        assert not watch.scene_reset
+        assert not is_dirty(committing_db)
+        # Пометка снята: непомеченная запись в список на той же сессии сбрасывает.
         committing_db.execute(sa.delete(KpLineAgreement))
         committing_db.commit()
         assert watch.scene_reset
