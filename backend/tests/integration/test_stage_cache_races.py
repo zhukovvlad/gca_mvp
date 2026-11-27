@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from decimal import Decimal
@@ -59,9 +60,16 @@ class Gate:
         if not self.go.wait(WAIT_S):
             raise AssertionError(f"{self.name}: тест не отпустил поток с паузы")
 
-    def wait_reached(self, message: str) -> None:
-        if not self.reached.wait(WAIT_S):
-            pytest.fail(message)
+    def wait_reached(self, message: str, worker: Worker) -> None:
+        """Ждать, пока `worker` встанет на паузу. Умер раньше — всплывает его исключение, а не
+        таймаут: иначе продуктовое падение в потоке выглядело бы сломанным предусловием."""
+        deadline = time.monotonic() + WAIT_S
+        while not self.reached.wait(0.05):
+            if not worker.is_alive():
+                worker.finish()
+                pytest.fail(f"{message}: поток {worker.name} завершился, не дойдя до паузы")
+            if time.monotonic() > deadline:
+                pytest.fail(message)
 
     def release(self) -> None:
         self.go.set()
@@ -250,12 +258,13 @@ def _fresh(factory, fn):
 
 
 def _rates_cache_is_empty() -> bool:
-    """Пуст ли кэш ставок: пробный вызов считает сам; пробное значение сразу стирается."""
+    """Пуст ли кэш ставок: пробный вызов считает сам. Пробное значение стирается, а заполненный кэш
+    проба не трогает, иначе следующая сборка после отката не увидела бы того, что в нём осталось."""
     marker = object()
-    try:
-        return typical_rates_cache.get(lambda: marker) is marker
-    finally:
+    empty = typical_rates_cache.get(lambda: marker) is marker
+    if empty:
         typical_rates_cache.invalidate()
+    return empty
 
 
 def test_races_fixture_scene_is_a_lump_until_the_contract_prices_rise(committing_session_factory, fx, caches) -> None:
@@ -289,7 +298,7 @@ def test_build_that_overlaps_a_commit_outside_the_list_is_not_stored(
     monkeypatch.setattr(our_price, "_build_scene", build_then_pause)
     worker = Worker("assembler", committing_session_factory, lambda s: _scene(s, fx))
     worker.start()
-    paused.wait_reached("поток сборки не дошёл до паузы после _build_scene")
+    paused.wait_reached("поток сборки не дошёл до паузы после _build_scene", worker)
     with committing_session_factory() as other:
         _change_area(other, fx)
         other.commit()
@@ -300,6 +309,8 @@ def test_build_that_overlaps_a_commit_outside_the_list_is_not_stored(
     before = builds.n
     _fresh(committing_session_factory, lambda s: _scene(s, fx))
     assert builds.n == before + 1
+    _fresh(committing_session_factory, lambda s: _scene(s, fx))
+    assert builds.n == before + 1, "кэш сцен не сохраняет и чистую сборку: проверка выше пуста"
 
 
 def test_pause_after_the_head_while_another_thread_changes_the_area_gives_the_uncached_answer(
@@ -318,7 +329,7 @@ def test_pause_after_the_head_while_another_thread_changes_the_area_gives_the_un
     monkeypatch.setattr(our_price, "_load_head", head_then_pause)
     worker = Worker("assembler", committing_session_factory, lambda s: _view(s, fx))
     worker.start()
-    paused.wait_reached("поток сборки не дошёл до паузы после _load_head")
+    paused.wait_reached("поток сборки не дошёл до паузы после _load_head", worker)
     with committing_session_factory() as other:
         _change_area(other, fx)
         other.commit()
@@ -391,21 +402,24 @@ def test_pause_between_the_rates_reset_and_the_scene_reset_does_not_store_the_ov
 
     committer = Worker("committer", committing_session_factory, commit_prices)
     committer.start()
-    between.wait_reached("поток коммита не дошёл до паузы между двумя сбросами")
+    between.wait_reached("поток коммита не дошёл до паузы между двумя сбросами", committer)
     assembler = Worker("assembler", committing_session_factory, lambda s: _scene(s, fx))
     assembler.start()
-    built.wait_reached("поток сборки не дошёл до паузы после _build_scene")
+    built.wait_reached("поток сборки не дошёл до паузы после _build_scene", assembler)
     between.release()
     committer.finish()
     built.release()
     assembler.finish()
 
-    assert order == ["rates", "scene"], "порядок сбросов нарушен: ставки обязаны сбрасываться раньше сцен"
+    resets = list(order)  # снимок до `caches.off()`: он тоже вызывает оба сброса
+    # Сначала смысл, потом список вызовов: обращённый порядок или пропущенный сброс ставок обязаны
+    # уронить тест сохранённой сценой со старыми ставками, а не только записью в `order`.
     assert stage_scene_cache.get(fx.stage_key) is None, "сборка, начатая между сбросами, сохранена"
     again = _fresh(committing_session_factory, lambda s: _scene(s, fx))
     caches.off()
     expected = _fresh(committing_session_factory, lambda s: _scene(s, fx))
     assert lump_flags(again) == lump_flags(expected) == {fx.kp_item_id: False}
+    assert resets == ["rates", "scene"], "порядок сбросов нарушен: ставки обязаны сбрасываться раньше сцен"
 
 
 # ---------------------------------------------------------------------------

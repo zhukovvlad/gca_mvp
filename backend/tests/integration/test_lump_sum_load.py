@@ -31,6 +31,7 @@ from models import (
 )
 from money.vat import gross_to_net
 from services.context_routing import route_position
+from services.stage_cache import is_dirty
 from services.work_families import assign_family
 from tests.integration.test_catalog_discovery_schema import rejected_by
 from tests.integration.test_semantic_queue_api import _active_family, _unit_id
@@ -372,8 +373,11 @@ def loads(monkeypatch):
 
 def _settle(scene) -> None:
     """Закрепить записи фикстур: в «грязной» транзакции (записано вне закрытого списка кэша сцен)
-    `typical_rates` кэш обходит (спека стадийного кэша §5), а тесты кэша проверяют попадание."""
+    `typical_rates` кэш обходит (спека стадийного кэша §5) и грузит ставки на каждом вызове. Тогда
+    тест «повторная загрузка после сброса или срока» прошёл бы и без сброса — поэтому закрепляют
+    все тесты кэша, а не только тесты попадания."""
     Session.commit(scene.db)
+    assert not is_dirty(scene.db), "после коммита транзакция всё ещё грязная: кэш ставок обойдён"
 
 
 class TestCache:
@@ -384,6 +388,7 @@ class TestCache:
         assert len(loads) == 1 and first is second
 
     def test_call_after_the_ttl_loads_again(self, scene, cache_on, loads):
+        _settle(scene)
         typical_rates(scene.db)
         cache_on.now += 300
         typical_rates(scene.db)
@@ -396,6 +401,7 @@ class TestCache:
 
     @pytest.mark.parametrize("method", ["put", "post", "patch", "delete"])
     def test_any_write_request_resets(self, admin_client, scene, cache_on, loads, method):
+        _settle(scene)
         typical_rates(scene.db)
         getattr(admin_client, method)("/api/v1/no-such-route-for-the-cache-test")
         typical_rates(scene.db)
@@ -417,6 +423,7 @@ class TestCache:
                 raise RuntimeError("импорт упал")
 
         monkeypatch.setattr(pipeline, "_run_import_job", fake)
+        _settle(scene)
         typical_rates(scene.db)
         assert len(loads) == 1
         if fail:
