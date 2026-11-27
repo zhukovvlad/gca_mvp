@@ -284,6 +284,53 @@ class TestRollbackAndSavepoints:
 
         assert watch.scene_reset
 
+    def test_outer_rollback_with_open_savepoint_forgets_writes_and_mark(self, committing_db, world):
+        """`rollback()` внутри открытой точки сохранения откатывает и внешнюю транзакцию:
+        записанное и пометка забыты, сброса нет, следующая транзакция чистая."""
+        watch = _Watch()
+        mark_decision_write(committing_db)
+        committing_db.begin_nested()
+        committing_db.add(_contractor("7700000012"))
+        committing_db.flush()
+        assert committing_db.in_nested_transaction()
+
+        committing_db.rollback()
+
+        assert not committing_db.in_transaction()
+        assert not watch.scene_reset
+        assert not is_dirty(committing_db)
+        committing_db.execute(sa.delete(KpLineAgreement))
+        committing_db.commit()
+        assert watch.scene_reset
+
+    def test_outer_commit_from_open_savepoint_resets_after_commit(
+        self, committing_db, committing_session_factory, world, monkeypatch
+    ):
+        """`commit()` внутри открытой точки сохранения: RELEASE, затем коммит внешней —
+        сброс ровно один, и в его момент запись видна другой сессии."""
+        seen: list[int] = []
+        real = stage_scene_cache.invalidate
+
+        def spy() -> None:
+            other = committing_session_factory()
+            try:
+                seen.append(
+                    other.scalar(sa.select(sa.func.count()).select_from(Contractor).where(Contractor.inn == "7700000013"))
+                )
+            finally:
+                other.close()
+            real()
+
+        monkeypatch.setattr(stage_scene_cache, "invalidate", spy)
+        committing_db.begin_nested()
+        committing_db.add(_contractor("7700000013"))
+        committing_db.flush()
+
+        committing_db.commit()
+
+        assert seen == [1]
+        assert not is_dirty(committing_db)
+
     def test_decision_failing_with_domain_error_after_list_write_does_not_reset(self, committing_db, world):
         """Шаблон `routers/tenders.py: _write_decision`: пометка, запись, отказ, rollback."""
         watch = _Watch()
@@ -365,13 +412,28 @@ class TestOtherThread:
 
 class TestChapterStepsReadMark:
     def test_chapter_steps_in_marked_transaction_with_sent_file_commit_does_not_reset(
-        self, committing_db, world
+        self, committing_db, committing_factories, world
     ):
+        """Шаблон `export_file`: пометка, чтение пути разделов, `db.add(KpSentFile)`, коммит.
+
+        Файл пишется через unit of work, как в `crud/kp_sent_files.py`, и строка реально
+        закоммичена: проверяется путь `before_flush`, а не только `do_orm_execute`.
+        """
+        offer_id = committing_factories.OfferFactory.create().id
+        committing_db.commit()
         watch = _Watch()
+
         mark_decision_write(committing_db)
         steps = chapter_steps(committing_db, [world["chapter"]])
         assert len(steps[world["chapter"]]) == 2  # непустой путь: рекурсивный запрос выполнен
-        committing_db.execute(sa.update(KpSentFile).where(sa.false()).values(filename="x"))
+        committing_db.add(
+            KpSentFile(
+                offer_id=offer_id, file_key="stage-cache-chapter", filename="КП.xlsx",
+                file_sha256="0" * 64, size_bytes=1, vat_rate=Decimal("20"),
+                level_label="Уровень цен КП", created_by=world["user"],
+            )
+        )
         committing_db.commit()
 
+        assert committing_db.scalar(sa.select(sa.func.count()).select_from(KpSentFile)) == 1
         assert not watch.scene_reset
