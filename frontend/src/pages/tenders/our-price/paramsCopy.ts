@@ -54,10 +54,13 @@ export function paramSourceText(p: Pick<LineParam, "source" | "refreshing" | "ca
 export function matchText(
   match: ParamMatch | null,
   basis: ParamsBasis | null,
-  nearest?: LineParam["nearest"]
+  nearest?: LineParam["nearest"],
+  releasable = false
 ): string {
   if (match === null) return NO_MATCH;
-  if (match === "required") return "должен совпасть";
+  if (match === "required") {
+    return basis === "rung" && releasable ? "совпал — отпускается, только когда точных нет" : "должен совпасть";
+  }
   if (match === "same_set") return "нужен такой же набор";
   if (match === "matched") return "совпал";
   if (match === "nearest") return nearestMatchText(nearest ?? null);

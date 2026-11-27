@@ -890,11 +890,14 @@ def _params_view(
 ) -> tuple[str | None, list[dict]]:
     """Параметры строки с правилом «при подборе» (спека параметров варианта §2.3, §2.4): основание
     правила и параметры в порядке `row.params`. Без основания (нет варианта, система без ступени)
-    у всех параметров `match` — `None`."""
+    у всех параметров `match` — `None`. `releasable` (ред. 4): главный параметр работы с вариантом, отпускаемый
+    на действующей схеме семьи; у второстепенных, систем и строк без варианта — `False`."""
     line = row.line
     ladder = result.ladder
     nearest = {p.parameter_id: p for p in ladder.nearest} if ladder is not None else {}
     matched = ladder.matched if ladder is not None else frozenset()
+    info = None if line.key is None else families.get(line.key.family_id)
+    released = frozenset() if line.is_system else frozenset(_releasable_ids(info))
     rule = params_rule(
         main_ids=[p.parameter_id for p in row.params if p.role == "main"],
         has_variant=line.key is not None,
@@ -902,7 +905,7 @@ def _params_view(
         schema_id=line.schema_id,
         forms=line.forms,
         conflicted=line.conflicted,
-        info=None if line.key is None else families.get(line.key.family_id),
+        info=info,
         work_rung=None if ladder is None else ladder.rung_no,
         system_level=None if result.rung is None else result.rung.level,
         nearest=nearest,
@@ -920,6 +923,7 @@ def _params_view(
             "catalog_value": p.catalog_value,
             "match": rule.main.get(p.parameter_id) if p.role == "main" else rule.secondary,
             "nearest": _param_nearest(nearest.get(p.parameter_id)) if rule.main.get(p.parameter_id) == "nearest" else None,
+            "releasable": p.role == "main" and p.parameter_id in released,
         }
         for p in row.params
     ]

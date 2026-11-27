@@ -2933,6 +2933,7 @@ export function ourPriceParamFixture(overrides: Partial<LineParam> = {}): LinePa
     catalog_value: null,
     match: "required",
     nearest: null,
+    releasable: false,
     ...overrides,
   };
 }

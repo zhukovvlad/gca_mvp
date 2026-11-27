@@ -43,6 +43,7 @@ PARAM_KEYS = {
     "catalog_value",
     "match",
     "nearest",
+    "releasable",
 }
 
 
@@ -230,6 +231,35 @@ class TestParamsOfTheRow:
             ("Цвет", "secondary", "ignored")
         ]
         assert row["params"] == panel["line"]["params"]
+
+    def test_releasable_marks_only_a_released_main_of_a_work_with_a_variant(
+        self, member_client, stage, world, db_session
+    ):
+        world.param(stage.schema, 4, "Цвет", role="secondary")
+        _, rnd, part, item, _ = _released_scene(stage, world, db_session, history=[(("t50", "mA", "fX"), D("100"))])
+
+        row, panel = _kp_and_panel(member_client, stage, rnd, part, item)
+
+        assert row["work_rung"]["no"] == 1
+        by_name = _params(row)
+        assert (by_name["Марка"]["releasable"], by_name["Марка"]["match"]) == (True, "required")
+        assert (by_name["Отделка"]["releasable"], by_name["Отделка"]["match"]) == (True, "required")
+        assert (by_name["Толщина"]["releasable"], by_name["Толщина"]["match"]) == (False, "required")
+        assert by_name["Цвет"]["releasable"] is False
+        assert row["params"] == panel["line"]["params"]
+
+    def test_releasable_is_false_for_a_system_even_with_a_released_main(
+        self, member_client, stage, world, db_session
+    ):
+        db_session.execute(
+            sa.update(FamilyParameter).where(FamilyParameter.schema_id == stage.schema.id).values(releasable=True)
+        )
+        db_session.flush()
+        rnd, part, items = _system_scene(stage)
+
+        row, _ = _kp_and_panel(member_client, stage, rnd, part, items[0])
+
+        assert [(p["match"], p["releasable"]) for p in row["params"]] == [("required", False)]
 
     def test_a_secondary_has_no_match_without_a_basis(self, member_client, stage, world):
         world.param(stage.schema, 2, "Цвет", role="secondary")
