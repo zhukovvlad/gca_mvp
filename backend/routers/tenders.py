@@ -45,6 +45,7 @@ from services import round_category_override as rco
 from services.excel_changes_export import build_changes_export
 from services.import_pipeline import run_import_job
 from services.maintenance import purge_files_best_effort
+from services.stage_cache import mark_decision_write
 from storage import Storage, StorageFileNotFound, StorageKeyError, get_storage
 
 log = logging.getLogger(__name__)
@@ -219,6 +220,7 @@ TargetPut = Annotated[LadderTargetPut | crud_kp_decisions.ReferenceTargetInput, 
 def _write_decision(db: Session, write: Callable[[], None]) -> Response:
     """Транзакцию решения ведёт роутер: commit на успехе, rollback на любом отказе."""
     try:
+        mark_decision_write(db)
         write()
         db.commit()
     except DomainError as e:
