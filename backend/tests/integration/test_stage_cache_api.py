@@ -12,7 +12,7 @@ from __future__ import annotations
 import inspect
 import pathlib
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -118,8 +118,7 @@ class Sc:
     part: object
     item: object
     extra: object = None
-    series: int | None = None
-    ctx: Ctx | None = field(default=None)
+    ctx: Ctx | None = None
 
     @property
     def base(self) -> str:
@@ -448,7 +447,9 @@ def test_stage_cache_api_not_analog_mark_resets(api, stage, world, caches, build
     assert fetch(api, sc) == after
 
 
-def test_stage_cache_api_background_import_job_commit_resets(api, stage, world, caches, builds, db_session, monkeypatch):
+def test_stage_cache_api_background_import_job_commit_resets(
+    api, stage, world, caches, builds, db_session, monkeypatch
+) -> None:
     sc = work_sc(stage, world)
     caches.on()
     before = fetch(api, sc)
