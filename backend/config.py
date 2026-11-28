@@ -92,6 +92,10 @@ class Settings(BaseSettings):
     TYPICAL_RATES_CACHE_TTL_S: int = Field(300, ge=0)
     # Срок кэша индекса подозрительных строк договоров (спека «Подозрительные строки» §1 п. 3); 0 — выключен.
     SUSPICION_CACHE_TTL_S: int = Field(300, ge=0)
+    # Кэш сцен этапа (спека 2026-11-27-stage-cache-design.md §2): срок, с; 0 — выключен.
+    STAGE_SCENE_CACHE_TTL_S: int = Field(600, ge=0)
+    # Сколько сцен держать (вытесняется самая давно использованная).
+    STAGE_SCENE_CACHE_SIZE: int = Field(8, ge=1)
 
     # Варианты работ (спека 2026-10-02-catalog-variants-design.md §2.3, §2.5):
     # профиль модели и тарифы по виду задания. Предложения семей остаются на

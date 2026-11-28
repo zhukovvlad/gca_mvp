@@ -10,8 +10,10 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from decimal import Decimal, localcontext
 from typing import Literal, TypedDict
@@ -139,7 +141,10 @@ from services.reference_blocks import (
     zone_groups,
 )
 from services.reference_math import Conversion, factor_shown, price_in_kp_unit, units_equal
+from services.stage_cache import SceneKey, is_dirty, stage_scene_cache
 from services.value_scale import Scale
+
+logger = logging.getLogger(__name__)
 
 #: Подпись строки «Итого на м² объекта» в форме статьи.
 TOTAL_ROW_TITLE = "Итого на м² объекта"
@@ -213,9 +218,11 @@ class _Scene:
     history: _HistorySums
     #: Вилка ₽/м² договоров класса по итогу сметы.
     total_fork: tuple[Decimal, Decimal] | None
-    #: Решения по строкам каждой сметы КП этапа (спека 4б §2.13).
+    #: Решения по строкам каждой сметы КП этапа (спека 4б §2.13). В сцене из кэша поле устарело:
+    #: `_scene_for` читает его заново при каждом попадании и подставляет через `replace`.
     decisions: dict[int, EstimateDecisions]
-    #: Число отправленных файлов по офферам этапа: у оффера без сметы они остаются.
+    #: Число отправленных файлов по офферам этапа: у оффера без сметы они остаются. Как и `decisions`,
+    #: в сцене из кэша устарело и перечитывается `_scene_for` при каждом попадании.
     sent_files: dict[int, int]
     #: Тендерные отметки «не аналог» сцены: ключ формы -> строка договора -> отметка (один запрос на сцену).
     not_analog: Mapping[FormKey, Mapping[int, Mark]] = field(default_factory=dict)
@@ -397,6 +404,11 @@ def _sent_files_counts(db: Session, offer_ids: Sequence[int]) -> dict[int, int]:
     return {offer_id: count for offer_id, count in rows}
 
 
+def _line_not_in_kp(line_id: int, offer_id: int | None) -> DomainError:
+    """Один текст 404 для холодного пути и попадания в кэш: они не должны разойтись."""
+    return DomainError(404, f"Строка {line_id} не найдена в КП оффера {offer_id}.")
+
+
 def _build_scene(
     db: Session,
     head: _Head,
@@ -419,7 +431,7 @@ def _build_scene(
     if require_line is not None and not any(
         row.line.position_item_id == require_line for rows in kp_lines.values() for row in rows
     ):
-        raise DomainError(404, f"Строка {require_line} не найдена в КП оффера {participants_raw[0][0]}.")
+        raise _line_not_in_kp(require_line, participants_raw[0][0])
 
     contracts, history_lines = load_history(db, exclude_object_id=head.object_id)
     work_history, families = load_work_history(
@@ -467,6 +479,53 @@ def _build_scene(
         not_analog=load_not_analog_marks(db, head.tender_id),
         unit_labels=typical_rates(db).unit_labels,
     )
+
+
+def _scene_for(
+    db: Session,
+    tender_id: int,
+    round_id: int,
+    offer_id: int | None,
+    *,
+    inflation_series_id: int | None,
+    require_line: int | None = None,
+) -> _Scene:
+    """Единственная точка входа за сценой (спека стадийного кэша §3): этап целиком
+    (`offer_id is None`) или один участник. Кэш выключен или транзакция «грязная» —
+    холодный путь без обращения к кэшу; попадание отдаёт сцену с заново прочитанными
+    решениями и отправленными файлами; промах собирает сцену как раньше и сохраняет её
+    по правилу поколений. Исключения уходят вызвавшему, в кэш ничего не попадает."""
+    def cold() -> _Scene:
+        if offer_id is None:
+            head = _load_head(db, tender_id, round_id)
+            participants_raw = _load_participants(db, head.round_id)
+        else:
+            head, raw = _offer_raw(db, tender_id, round_id, offer_id)
+            participants_raw = [raw]
+        return _build_scene(
+            db, head, participants_raw, inflation_series_id=inflation_series_id, require_line=require_line
+        )
+
+    if not stage_scene_cache.enabled() or is_dirty(db):
+        return cold()
+    key: SceneKey = (tender_id, round_id, offer_id, inflation_series_id)
+    generation = stage_scene_cache.generation()
+    cached = stage_scene_cache.get(key)
+    if cached is not None:
+        if require_line is not None and not any(
+            row.line.position_item_id == require_line for rows in cached.kp_lines.values() for row in rows
+        ):
+            raise _line_not_in_kp(require_line, offer_id)
+        return replace(
+            cached,
+            decisions=load_decisions(db, cached.kp_ids),
+            sent_files=_sent_files_counts(db, [p.offer_id for p in cached.participants]),
+        )
+    started = time.perf_counter()
+    scene = cold()
+    logger.info("Сборка сцены %s: %.2f с", key, time.perf_counter() - started)
+    stage_scene_cache.put(key, scene, generation)
+    return scene
 
 
 def _excluded_of(scene: _Scene, line: KpLine) -> frozenset[int]:
@@ -647,8 +706,8 @@ def build_round_view(db: Session, tender_id: int, round_id: int, *, inflation_se
         DomainError 422: отказы приведения по ИПЦ — `inflation_target_missing`,
             `amendment_date_missing`, `missing_inflation_years`, в этом порядке.
     """
-    head = _load_head(db, tender_id, round_id)
-    scene = _build_scene(db, head, _load_participants(db, head.round_id), inflation_series_id=inflation_series_id)
+    scene = _scene_for(db, tender_id, round_id, None, inflation_series_id=inflation_series_id)
+    head = scene.head
     participants = scene.participants
     history_rate = history_shown_rate(p.base for p in participants)
 
@@ -729,8 +788,9 @@ def _offer_context(
             сметы КП (разбирать нечего) или нет ряда ИПЦ.
         DomainError 422: отказы приведения по ИПЦ, как у экрана этапа.
     """
-    head, raw = _offer_raw(db, tender_id, round_id, offer_id)
-    scene = _build_scene(db, head, [raw], inflation_series_id=inflation_series_id, require_line=require_line)
+    scene = _scene_for(
+        db, tender_id, round_id, offer_id, inflation_series_id=inflation_series_id, require_line=require_line
+    )
     participant = scene.participants[0]
     return scene, participant, _evaluate(scene, participant)
 

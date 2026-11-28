@@ -24,6 +24,7 @@ from models import KpSentFile, Offer, Tender, TenderRound, User
 from services.excel_kp_file import build_kp_file, file_columns
 from services.kp_file import FileHeader, FileLine, FileSection, build_file_rows, build_header
 from services.maintenance import purge_files_best_effort
+from services.stage_cache import mark_decision_write
 from storage import Storage
 
 
@@ -160,6 +161,7 @@ def export_file(
     content = build_kp_file(header, rows)
     key = storage.save(content)
     try:
+        mark_decision_write(db)
         db.add(
             KpSentFile(
                 offer_id=offer_id,
