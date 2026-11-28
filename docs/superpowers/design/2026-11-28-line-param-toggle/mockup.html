@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>А12 — макет панели строки</title>
+<style>
+  :root {
+    --bg-page:#F4F2EC; --bg-surface:#FFFFFF; --bg-sunken:#F7F6F2; --border:rgba(0,0,0,.14); --border-subtle:rgba(0,0,0,.08);
+    --fg:#1F2328; --fg-2:#5B6168; --accent:#5F8568; --accent-soft:#E8F0EA; --accent-border:#C9D9CD; --accent-text:#3D5443;
+    --warn:#B5642E; --warn-soft:#FAF1E1; --warn-border:#E8C8A8; --warn-text:#6B3915;
+    --info-soft:#EEF2F8; --info-border:#C8D3E6; --info-text:#2E4166;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg-page); color:var(--fg); font:14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header.page { max-width:1180px; margin:0 auto; padding:24px 16px 8px; }
+  header.page h1 { font-size:20px; margin:0 0 6px; }
+  header.page p { margin:4px 0; color:var(--fg-2); max-width:900px; }
+  .states { max-width:1180px; margin:0 auto; padding:8px 16px 40px; display:grid; grid-template-columns:repeat(auto-fit,minmax(360px,1fr)); gap:20px; align-items:start; }
+  .state h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--fg-2); margin:8px 0; }
+  .state .why { font-size:12.5px; color:var(--fg-2); margin:0 0 8px; }
+  .sheet { background:var(--bg-surface); border:1px solid var(--border); border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,.05); overflow:hidden; }
+  .sheet-head { padding:14px 16px 10px; border-bottom:1px solid var(--border-subtle); }
+  .sheet-head .title { font-weight:600; font-size:14px; }
+  .sheet-head .sub { color:var(--fg-2); font-size:12.5px; }
+  .body { padding:12px 16px 16px; display:flex; flex-direction:column; gap:14px; }
+  h4 { margin:0 0 6px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.05em; color:var(--fg-2); }
+  .muted { color:var(--fg-2); }
+  .state-line { font-size:13px; color:var(--fg-2); }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { text-align:left; font-weight:500; color:var(--fg-2); font-size:12px; padding:4px 6px; border-bottom:1px solid var(--border-subtle); }
+  td { padding:6px; border-bottom:1px solid var(--border-subtle); vertical-align:top; }
+  .warn { color:var(--warn); }
+  .seg { display:inline-flex; border:1px solid var(--border); border-radius:6px; overflow:hidden; font-size:12px; white-space:nowrap; }
+  .seg span { padding:2px 7px; color:var(--fg-2); cursor:pointer; }
+  .seg span.on { background:var(--accent-soft); color:var(--accent-text); font-weight:600; }
+  .seg span.on.off { background:var(--warn-soft); color:var(--warn-text); }
+  .seg span + span { border-left:1px solid var(--border); }
+  tr.changed td { background:#FFFBF3; }
+  .changed-mark { display:block; font-size:11px; color:var(--warn-text); margin-top:2px; }
+  .apply { display:block; font-size:11px; color:var(--fg-2); margin-top:2px; }
+  .preview { border:1px solid var(--info-border); background:var(--info-soft); color:var(--info-text); border-radius:8px; padding:8px 10px; font-size:12.5px; display:flex; gap:10px; align-items:flex-start; justify-content:space-between; }
+  .preview b { display:block; font-size:13px; }
+  .btn { border:1px solid var(--border); background:var(--bg-surface); border-radius:6px; padding:3px 9px; font-size:12px; white-space:nowrap; color:var(--fg); cursor:pointer; }
+  .badge { display:inline-block; background:var(--bg-sunken); border:1px solid var(--border-subtle); border-radius:999px; padding:1px 8px; font-size:12px; }
+  .cards { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .card { border:1px solid var(--border); border-radius:8px; padding:8px 10px; }
+  .card .k { font-size:11.5px; color:var(--fg-2); }
+  .card .v { font-size:16px; font-weight:600; }
+  .card .d { font-size:12px; color:var(--fg-2); }
+  .card .act { margin-top:4px; font-size:11.5px; color:var(--fg-2); }
+  .note { border:1px solid var(--border); background:var(--bg-sunken); border-radius:6px; padding:6px 9px; font-size:12.5px; }
+  .num { text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .small { font-size:12px; }
+  .ghost { opacity:.45; }
+  footer { max-width:1180px; margin:0 auto; padding:0 16px 40px; color:var(--fg-2); font-size:12.5px; }
+  footer li { margin:3px 0; }
+</style>
+</head>
+<body>
+<header class="page">
+  <h1>А12 «Должен совпасть / не учитывается» — панель строки</h1>
+  <p>Строка КП 76 (тендер 7, этап 23): «Прозрачное заполнение фасадных конструкций – стеклопакет СПД 8.8.4ТП-16Ar-8З-16Ar-8З…», семья «Устройство светопрозрачного фасада (витражное остекление)», цена КП 48 469,96 ₽/м² с НДС. Цифры аналогов — расчёт на копии подбора по стенду 28.11.2026 (только чтение), не выдуманы.</p>
+  <p>Выбор вариантов Б: как только пользователь что-то переключил, подбор идёт строго по его правилу — точный вариант первым не ищется. Свой класс и своя зона по-прежнему первыми.</p>
+</header>
+
+<div class="states">
+
+  <!-- 1. Сейчас -->
+  <section class="state">
+    <h2>1. Открыл панель — как считает система</h2>
+    <p class="why">Аналога нет. В колонке «При подборе» вместо подписи — переключатель у каждого главного параметра. Положение по умолчанию — как в каталоге.</p>
+    <div class="sheet">
+      <div class="sheet-head"><div class="title">Прозрачное заполнение фасадных конструкций – стеклопакет СПД 8.8.4ТП-16Ar…</div><div class="sub">Устройство светопрозрачного фасада (витражное остекление)</div></div>
+      <div class="body">
+        <div class="state-line">Нет аналога с этими параметрами</div>
+        <div>
+          <h4>Работа</h4>
+          <table>
+            <thead><tr><th>Параметр</th><th>В строке КП</th><th>Откуда</th><th>При подборе<span class="muted" style="display:block;font-size:11px;font-weight:400">(аналогов нет — настройка каталога)</span></th></tr></thead>
+            <tbody>
+              <tr><td>Тип остекления/заполнения</td><td>трёхкамерный стеклопакет</td><td class="muted">из наименования</td><td><span class="seg"><span class="on">должен совпасть</span><span>не учитывать</span></span></td></tr>
+              <tr><td>Система остекления</td><td class="warn">не уточнено</td><td class="muted">нет ни в наименовании, ни в разделах</td><td><span class="seg"><span class="on">должен совпасть</span><span>не учитывать</span></span></td></tr>
+              <tr><td>Огнестойкость</td><td class="warn">не уточнено</td><td class="muted">нет ни в наименовании, ни в разделах</td><td><span class="seg"><span class="on">должен совпасть</span><span>не учитывать</span></span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="note muted small">Остальные блоки панели — без изменений.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2. Не учитывать тип -->
+  <section class="state">
+    <h2>2. «Тип остекления» → не учитывать</h2>
+    <p class="why">Панель пересчитана по правилу пользователя: 30 аналогов в 2 договорах. Плашка просмотра вверху; выбор цели и кнопки решений в просмотре не показываются. В таблице аналогов — колонка снятого параметра.</p>
+    <div class="sheet">
+      <div class="sheet-head"><div class="title">Прозрачное заполнение фасадных конструкций – стеклопакет СПД 8.8.4ТП-16Ar…</div><div class="sub">Устройство светопрозрачного фасада (витражное остекление)</div></div>
+      <div class="body">
+        <div class="preview"><div><b>Просмотр: ваше правило подбора</b>Не учитывается: тип остекления/заполнения (вы). Цифры строки в таблице, итоги, цель и файл подрядчику не меняются.</div><span class="btn">Как считает система</span></div>
+        <div>
+          <h4>Работа</h4>
+          <table>
+            <thead><tr><th>Параметр</th><th>В строке КП</th><th>Откуда</th><th>При подборе</th></tr></thead>
+            <tbody>
+              <tr class="changed"><td>Тип остекления/заполнения</td><td>трёхкамерный стеклопакет</td><td class="muted">из наименования</td><td><span class="seg"><span>должен совпасть</span><span class="on off">не учитывать</span></span><span class="changed-mark">изменено вами · в каталоге: должен совпасть</span></td></tr>
+              <tr><td>Система остекления</td><td class="warn">не уточнено</td><td class="muted">нет ни в наименовании, ни в разделах</td><td><span class="seg"><span class="on">должен совпасть</span><span>не учитывать</span></span></td></tr>
+              <tr><td>Огнестойкость</td><td class="warn">не уточнено</td><td class="muted">нет ни в наименовании, ни в разделах</td><td><span class="seg"><span class="on">должен совпасть</span><span>не учитывать</span></span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div>
+          <h4>Сравнение</h4>
+          <div style="margin-bottom:8px"><span class="badge">без учёта: тип остекления/заполнения</span> <span class="muted small">30 аналогов в 2 договорах · надземная часть</span></div>
+          <div class="cards">
+            <div class="card"><div class="k">Самая низкая расценка</div><div class="v">50 918 ₽</div><div class="d">МИРА · 2025 · КП ниже на 4,8 %</div><div class="act ghost">выбрать целью — недоступно в просмотре</div></div>
+            <div class="card"><div class="k">Самая свежая расценка</div><div class="v">50 918 ₽</div><div class="d">МИРА · 02.2025</div><div class="act ghost">выбрать целью — недоступно в просмотре</div></div>
+          </div>
+        </div>
+        <div>
+          <h4>Аналоги</h4>
+          <table>
+            <thead><tr><th>Договор</th><th>Наименование</th><th>Тип остекления/заполнения</th><th class="num">₽/м²</th></tr></thead>
+            <tbody>
+              <tr><td class="small">МИРА · 2025<br><span class="muted">ООО «АНТТЕК»</span></td><td class="small">Ограждение стеклянное типа французский балкон</td><td class="warn small">не уточнено</td><td class="num">50 918</td></tr>
+              <tr><td class="small">Тушино 1 оч. · 2024<br><span class="muted">ООО «АНТТЕК»</span></td><td class="small">Однокамерный стеклопакет со сплошной печатью, RAL 7016…</td><td class="small">однокамерный стеклопакет</td><td class="num">54 464</td></tr>
+              <tr><td class="small">Тушино 1 оч. · 2024<br><span class="muted">ООО «АНТТЕК»</span></td><td class="small">Витражи типовых этажей (2 и выше). Двухкамерный стеклопакет, профиль…</td><td class="small">двухкамерный стеклопакет</td><td class="num">67 197</td></tr>
+              <tr><td class="small">Тушино 1 оч. · 2024<br><span class="muted">ООО «АНТТЕК»</span></td><td class="small">Витражи первых этажей. Однокамерный стеклопакет, профиль из…</td><td class="small">однокамерный стеклопакет</td><td class="num">80 967</td></tr>
+              <tr><td class="small">МИРА · 2025<br><span class="muted">ООО «АНТТЕК»</span></td><td class="small">Открывающиеся створки (двери), интегрированные в витражную систему</td><td class="warn small">не уточнено</td><td class="num">113 414</td></tr>
+            </tbody>
+          </table>
+          <div class="muted small" style="margin-top:4px">ещё 25 аналогов из 30 · вилка 50 918 – 135 765, медиана 67 611 ₽/м²</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. Не учитывать систему -->
+  <section class="state">
+    <h2>3. Вместо этого «Система остекления» → не учитывать</h2>
+    <p class="why">Гипотеза с карты не подтверждается: и без системы аналогов нет — мешает тип «трёхкамерный», которого нет ни в одном договоре. Панель говорит это прямо, а не молчит.</p>
+    <div class="sheet">
+      <div class="sheet-head"><div class="title">Прозрачное заполнение фасадных конструкций – стеклопакет СПД 8.8.4ТП-16Ar…</div><div class="sub">Устройство светопрозрачного фасада (витражное остекление)</div></div>
+      <div class="body">
+        <div class="preview"><div><b>Просмотр: ваше правило подбора</b>Не учитывается: система остекления (вы). Цифры строки в таблице, итоги, цель и файл подрядчику не меняются.</div><span class="btn">Как считает система</span></div>
+        <div>
+          <h4>Работа</h4>
+          <table>
+            <thead><tr><th>Параметр</th><th>В строке КП</th><th>Откуда</th><th>При подборе</th></tr></thead>
+            <tbody>
+              <tr><td>Тип остекления/заполнения</td><td>трёхкамерный стеклопакет</td><td class="muted">из наименования</td><td><span class="seg"><span class="on">должен совпасть</span><span>не учитывать</span></span></td></tr>
+              <tr class="changed"><td>Система остекления</td><td class="warn">не уточнено</td><td class="muted">нет ни в наименовании, ни в разделах</td><td><span class="seg"><span>должен совпасть</span><span class="on off">не учитывать</span></span><span class="changed-mark">изменено вами · в каталоге: должен совпасть</span></td></tr>
+              <tr><td>Огнестойкость</td><td class="warn">не уточнено</td><td class="muted">нет ни в наименовании, ни в разделах</td><td><span class="seg"><span class="on">должен совпасть</span><span>не учитывать</span></span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div>
+          <h4>Сравнение</h4>
+          <div class="note">По вашему правилу аналогов тоже нет: в договорах нет строк с «трёхкамерный стеклопакет» и неуточнённой огнестойкостью.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4. Точные аналоги и отпускаемый параметр -->
+  <section class="state">
+    <h2>4. Другая строка: точные аналоги, параметр отпускаемый</h2>
+    <p class="why">КП 76, «Геотекстиль 500 г/м2»: 11 аналогов того же варианта. «Разрывная нагрузка» в каталоге отпускаемая — переключатель стоит на «не учитывать» (настройка), а строка под ним говорит, что сейчас параметр совпал (применение). По ревью Codex. Аналоги в этом состоянии не пересчитывались — иллюстрация подписей.</p>
+    <div class="sheet">
+      <div class="sheet-head"><div class="title">Геотекстиль 500 г/м2</div><div class="sub">Геотекстиль</div></div>
+      <div class="body">
+        <div>
+          <h4>Работа</h4>
+          <table>
+            <thead><tr><th>Параметр</th><th>В строке КП</th><th>Откуда</th><th>При подборе</th></tr></thead>
+            <tbody>
+              <tr><td>Поверхностная плотность, г/м2</td><td>500</td><td class="muted">из наименования</td><td><span class="seg"><span class="on">должен совпасть</span><span>не учитывать</span></span><span class="apply">совпал</span></td></tr>
+              <tr><td>Способ изготовления</td><td class="warn">не уточнено</td><td class="muted">нет ни в наименовании, ни в разделах</td><td><span class="seg"><span class="on">должен совпасть</span><span>не учитывать</span></span><span class="apply">совпал</span></td></tr>
+              <tr><td>Разрывная нагрузка, кН/м</td><td class="warn">не уточнено</td><td class="muted">нет ни в наименовании, ни в разделах</td><td><span class="seg"><span>должен совпасть</span><span class="on">не учитывать</span></span><span class="apply">сейчас совпал: найдены точные аналоги</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div><h4>Сравнение</h4><span class="badge">тот же вариант</span> <span class="muted small">11 аналогов</span></div>
+        <div class="note small">Если пользователь переключит «Способ изготовления» → «не учитывать», плашка просмотра скажет всё правило: <b>«Не учитывается: способ изготовления (вы), разрывная нагрузка (каталог)»</b> — в правиле пользователя отпускаемый параметр уже не совпадает, как совпадал у точных аналогов.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5. Сборное значение -->
+  <section class="state">
+    <h2>5. Сборное значение: «не учитывать» не снимает набор</h2>
+    <p class="why">КП 76, строка 223663 «Корпус 1,2,3,4,5,7,9 В40 W6 F150…»: «Тип конструкции» — сборное значение, в каталоге отпускаемый, аналогов нет. Переключатель на «не учитывать», но строка договора по-прежнему должна быть сборной из тех же частей — это сказано прямо. По ревью Codex.</p>
+    <div class="sheet">
+      <div class="sheet-head"><div class="title">Корпус 1,2,3,4,5,7,9 В40 W6 F150 арматурой класса А500С, А240</div><div class="sub">Устройство жб конструкций</div></div>
+      <div class="body">
+        <div>
+          <h4>Работа</h4>
+          <table>
+            <thead><tr><th>Параметр</th><th>В строке КП</th><th>Откуда</th><th>При подборе</th></tr></thead>
+            <tbody>
+              <tr><td>Класс бетона по прочности</td><td>B40</td><td class="muted">из наименования</td><td><span class="seg"><span class="on">должен совпасть</span><span>не учитывать</span></span></td></tr>
+              <tr><td>Марка по водонепроницаемости</td><td>W6</td><td class="muted">из наименования</td><td><span class="seg"><span>должен совпасть</span><span class="on">не учитывать</span></span></td></tr>
+              <tr><td>Тип конструкции</td><td>трансферные конструкции + балки + капители</td><td class="muted">из разделов смет</td><td><span class="seg"><span>должен совпасть</span><span class="on">не учитывать</span></span><span class="apply" style="color:var(--warn-text)">по-прежнему нужен такой же набор: трансферные конструкции + балки + капители</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div><h4>Сравнение</h4><div class="note">Аналогов нет: сборное значение требует такого же набора частей. Аналоги по частям — в «Как считает система», блок «По частям».</div></div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<footer>
+  <b>Что видно на этой строке</b>
+  <ul>
+    <li>Снятие типа даёт 30 аналогов, но половина — витражи целиком (профиль + стеклопакет) против строки «только заполнение» в КП: это тот самый случай «заполнение против системы» из разбора 25.11. Просмотр показывает это честно — колонка снятого параметра и наименования аналогов видны сразу.</li>
+    <li>Строка с точными аналогами (не на этом примере): в варианте Б переключение показывает пул по правилу пользователя, а не точные аналоги первыми.</li>
+  </ul>
+</footer>
+</body>
+</html>
