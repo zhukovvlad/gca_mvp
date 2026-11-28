@@ -38,6 +38,7 @@
   .seg span + span { border-left:1px solid var(--border); }
   tr.changed td { background:#FFFBF3; }
   .changed-mark { display:block; font-size:11px; color:var(--warn-text); margin-top:2px; }
+  .apply { display:block; font-size:11px; color:var(--fg-2); margin-top:2px; }
   .preview { border:1px solid var(--info-border); background:var(--info-soft); color:var(--info-text); border-radius:8px; padding:8px 10px; font-size:12.5px; display:flex; gap:10px; align-items:flex-start; justify-content:space-between; }
   .preview b { display:block; font-size:13px; }
   .btn { border:1px solid var(--border); background:var(--bg-surface); border-radius:6px; padding:3px 9px; font-size:12px; white-space:nowrap; color:var(--fg); cursor:pointer; }
@@ -96,7 +97,7 @@
     <div class="sheet">
       <div class="sheet-head"><div class="title">Прозрачное заполнение фасадных конструкций – стеклопакет СПД 8.8.4ТП-16Ar…</div><div class="sub">Устройство светопрозрачного фасада (витражное остекление)</div></div>
       <div class="body">
-        <div class="preview"><div><b>Просмотр: ваше правило подбора</b>Не учитывается: тип остекления/заполнения. Цифры строки в таблице, итоги, цель и файл подрядчику не меняются.</div><span class="btn">Как считает система</span></div>
+        <div class="preview"><div><b>Просмотр: ваше правило подбора</b>Не учитывается: тип остекления/заполнения (вы). Цифры строки в таблице, итоги, цель и файл подрядчику не меняются.</div><span class="btn">Как считает система</span></div>
         <div>
           <h4>Работа</h4>
           <table>
@@ -141,7 +142,7 @@
     <div class="sheet">
       <div class="sheet-head"><div class="title">Прозрачное заполнение фасадных конструкций – стеклопакет СПД 8.8.4ТП-16Ar…</div><div class="sub">Устройство светопрозрачного фасада (витражное остекление)</div></div>
       <div class="body">
-        <div class="preview"><div><b>Просмотр: ваше правило подбора</b>Не учитывается: система остекления. Цифры строки в таблице, итоги, цель и файл подрядчику не меняются.</div><span class="btn">Как считает система</span></div>
+        <div class="preview"><div><b>Просмотр: ваше правило подбора</b>Не учитывается: система остекления (вы). Цифры строки в таблице, итоги, цель и файл подрядчику не меняются.</div><span class="btn">Как считает система</span></div>
         <div>
           <h4>Работа</h4>
           <table>
@@ -157,6 +158,53 @@
           <h4>Сравнение</h4>
           <div class="note">По вашему правилу аналогов тоже нет: в договорах нет строк с «трёхкамерный стеклопакет» и неуточнённой огнестойкостью.</div>
         </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4. Точные аналоги и отпускаемый параметр -->
+  <section class="state">
+    <h2>4. Другая строка: точные аналоги, параметр отпускаемый</h2>
+    <p class="why">КП 76, «Геотекстиль 500 г/м2»: 11 аналогов того же варианта. «Разрывная нагрузка» в каталоге отпускаемая — переключатель стоит на «не учитывать» (настройка), а строка под ним говорит, что сейчас параметр совпал (применение). По ревью Codex. Аналоги в этом состоянии не пересчитывались — иллюстрация подписей.</p>
+    <div class="sheet">
+      <div class="sheet-head"><div class="title">Геотекстиль 500 г/м2</div><div class="sub">Геотекстиль</div></div>
+      <div class="body">
+        <div>
+          <h4>Работа</h4>
+          <table>
+            <thead><tr><th>Параметр</th><th>В строке КП</th><th>Откуда</th><th>При подборе</th></tr></thead>
+            <tbody>
+              <tr><td>Поверхностная плотность, г/м2</td><td>500</td><td class="muted">из наименования</td><td><span class="seg"><span class="on">должен совпасть</span><span>не учитывать</span></span><span class="apply">совпал</span></td></tr>
+              <tr><td>Способ изготовления</td><td class="warn">не уточнено</td><td class="muted">нет ни в наименовании, ни в разделах</td><td><span class="seg"><span class="on">должен совпасть</span><span>не учитывать</span></span><span class="apply">совпал</span></td></tr>
+              <tr><td>Разрывная нагрузка, кН/м</td><td class="warn">не уточнено</td><td class="muted">нет ни в наименовании, ни в разделах</td><td><span class="seg"><span>должен совпасть</span><span class="on">не учитывать</span></span><span class="apply">сейчас совпал: найдены точные аналоги</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div><h4>Сравнение</h4><span class="badge">тот же вариант</span> <span class="muted small">11 аналогов</span></div>
+        <div class="note small">Если пользователь переключит «Способ изготовления» → «не учитывать», плашка просмотра скажет всё правило: <b>«Не учитывается: способ изготовления (вы), разрывная нагрузка (каталог)»</b> — в правиле пользователя отпускаемый параметр уже не совпадает, как совпадал у точных аналогов.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5. Сборное значение -->
+  <section class="state">
+    <h2>5. Сборное значение: «не учитывать» не снимает набор</h2>
+    <p class="why">КП 76, строка 223663 «Корпус 1,2,3,4,5,7,9 В40 W6 F150…»: «Тип конструкции» — сборное значение, в каталоге отпускаемый, аналогов нет. Переключатель на «не учитывать», но строка договора по-прежнему должна быть сборной из тех же частей — это сказано прямо. По ревью Codex.</p>
+    <div class="sheet">
+      <div class="sheet-head"><div class="title">Корпус 1,2,3,4,5,7,9 В40 W6 F150 арматурой класса А500С, А240</div><div class="sub">Устройство жб конструкций</div></div>
+      <div class="body">
+        <div>
+          <h4>Работа</h4>
+          <table>
+            <thead><tr><th>Параметр</th><th>В строке КП</th><th>Откуда</th><th>При подборе</th></tr></thead>
+            <tbody>
+              <tr><td>Класс бетона по прочности</td><td>B40</td><td class="muted">из наименования</td><td><span class="seg"><span class="on">должен совпасть</span><span>не учитывать</span></span></td></tr>
+              <tr><td>Марка по водонепроницаемости</td><td>W6</td><td class="muted">из наименования</td><td><span class="seg"><span>должен совпасть</span><span class="on">не учитывать</span></span></td></tr>
+              <tr><td>Тип конструкции</td><td>трансферные конструкции + балки + капители</td><td class="muted">из разделов смет</td><td><span class="seg"><span>должен совпасть</span><span class="on">не учитывать</span></span><span class="apply" style="color:var(--warn-text)">по-прежнему нужен такой же набор: трансферные конструкции + балки + капители</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div><h4>Сравнение</h4><div class="note">Аналогов нет: сборное значение требует такого же набора частей. Аналоги по частям — в «Как считает система», блок «По частям».</div></div>
       </div>
     </div>
   </section>
